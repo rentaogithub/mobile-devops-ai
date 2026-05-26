@@ -1,0 +1,134 @@
+import { getDatabase } from './connection';
+import fs from 'fs';
+import path from 'path';
+
+export function initializeDatabase(): void {
+  const db = getDatabase();
+
+  // 读取 schema.sql 文件
+  const schemaPath = path.join(__dirname, 'schema.sql');
+  const schema = fs.readFileSync(schemaPath, 'utf-8');
+
+  // 执行 schema 中的所有语句
+  db.exec(schema);
+
+  // 执行数据库迁移
+  migrateDatabase();
+
+  console.log('Database initialized successfully');
+}
+
+// 数据库迁移
+function migrateDatabase(): void {
+  const db = getDatabase();
+
+  try {
+    // 检查 related_app_version 列是否存在
+    const tableInfo = db.prepare("PRAGMA table_info(dsym_info)").all() as any[];
+    const hasRelatedAppVersion = tableInfo.some((col: any) => col.name === 'related_app_version');
+
+    if (!hasRelatedAppVersion) {
+      console.log('Adding related_app_version column...');
+      db.exec('ALTER TABLE dsym_info ADD COLUMN related_app_version TEXT');
+      console.log('Migration completed: added related_app_version column');
+    }
+
+    // 检查 symbolication_history 表是否存在
+    const historyTableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='symbolication_history'")
+      .get();
+
+    if (!historyTableExists) {
+      console.log('Creating symbolication_history table...');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS symbolication_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          app_version TEXT NOT NULL,
+          crash_type TEXT,
+          crash_reason TEXT,
+          last_stack_call TEXT,
+          crash_module TEXT,
+          original_log TEXT NOT NULL,
+          symbolicated_log TEXT NOT NULL,
+          used_uuids TEXT NOT NULL,
+          ai_analysis TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_app_version ON symbolication_history(app_version);
+        CREATE INDEX IF NOT EXISTS idx_created_at ON symbolication_history(created_at DESC);
+      `);
+      console.log('Migration completed: created symbolication_history table');
+    }
+
+    // 检查是否需要添加新字段
+    const historyTableInfo = db.prepare("PRAGMA table_info(symbolication_history)").all() as any[];
+    const hasLastStackCall = historyTableInfo.some((col: any) => col.name === 'last_stack_call');
+    const hasCrashModule = historyTableInfo.some((col: any) => col.name === 'crash_module');
+    const hasCrashLocation = historyTableInfo.some((col: any) => col.name === 'crash_location');
+    const hasIsFixed = historyTableInfo.some((col: any) => col.name === 'is_fixed');
+    const hasFixedVersion = historyTableInfo.some((col: any) => col.name === 'fixed_version');
+    const hasVersionDetected = historyTableInfo.some((col: any) => col.name === 'version_detected');
+
+    if (!hasLastStackCall) {
+      console.log('Adding last_stack_call column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN last_stack_call TEXT');
+      console.log('Migration completed: added last_stack_call column');
+    }
+
+    if (!hasCrashModule) {
+      console.log('Adding crash_module column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN crash_module TEXT');
+      console.log('Migration completed: added crash_module column');
+    }
+
+    if (!hasCrashLocation) {
+      console.log('Adding crash_location column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN crash_location TEXT');
+      console.log('Migration completed: added crash_location column');
+    }
+
+    if (!hasIsFixed) {
+      console.log('Adding is_fixed column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN is_fixed INTEGER DEFAULT 0');
+      console.log('Migration completed: added is_fixed column');
+    }
+
+    if (!hasFixedVersion) {
+      console.log('Adding fixed_version column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN fixed_version TEXT');
+      console.log('Migration completed: added fixed_version column');
+    }
+
+    if (!hasVersionDetected) {
+      console.log('Adding version_detected column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN version_detected INTEGER DEFAULT 1');
+      console.log('Migration completed: added version_detected column');
+    }
+  } catch (error) {
+    console.error('Migration error:', error);
+  }
+}
+
+// 检查数据库是否已初始化
+export function isDatabaseInitialized(): boolean {
+  const db = getDatabase();
+
+  try {
+    const result = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='dsym_info'")
+      .get();
+    return !!result;
+  } catch (error) {
+    return false;
+  }
+}
+
+// 重置数据库（仅用于开发/测试）
+export function resetDatabase(): void {
+  const db = getDatabase();
+
+  db.exec('DROP TABLE IF EXISTS dsym_info');
+  initializeDatabase();
+
+  console.log('Database reset successfully');
+}

@@ -1,0 +1,360 @@
+import { getDatabase } from '../database';
+import logger from '../utils/logger';
+
+export interface SymbolicationHistoryRecord {
+  id: number;
+  appVersion: string;
+  versionDetected: boolean;
+  crashType?: string;
+  crashReason?: string;
+  lastStackCall?: string;
+  crashModule?: string;
+  crashLocation?: string;
+  originalLog: string;
+  symbolicatedLog: string;
+  usedUuids: string[];
+  aiAnalysis?: any;
+  isFixed: boolean;
+  fixedVersion?: string;
+  createdAt: string;
+}
+
+export interface SaveHistoryParams {
+  appVersion: string;
+  versionDetected?: boolean;
+  crashType?: string;
+  crashReason?: string;
+  originalLog: string;
+  symbolicatedLog: string;
+  usedUuids: string[];
+  aiAnalysis?: any;
+  lastStackCall?: string;
+  crashModule?: string;
+  crashLocation?: string;
+}
+
+export class HistoryService {
+  /**
+   * 检查是否存在相同的历史记录（基于原始日志的哈希值）
+   */
+  private calculateLogHash(originalLog: string): string {
+    const crypto = require('crypto');
+    return crypto.createHash('sha256').update(originalLog).digest('hex');
+  }
+
+  /**
+   * 查找相同的历史记录
+   */
+  findDuplicateHistory(originalLog: string, usedUuids: string[]): SymbolicationHistoryRecord | null {
+    const db = getDatabase();
+
+    try {
+      // 查找最近24小时内的记录，避免全表扫描
+      const stmt = db.prepare(`
+        SELECT * FROM symbolication_history 
+        WHERE datetime(created_at) > datetime('now', '-24 hours')
+        ORDER BY created_at DESC
+        LIMIT 100
+      `);
+
+      const rows = stmt.all() as any[];
+      
+      // 在内存中比较原始日志和UUID
+      for (const row of rows) {
+        if (row.original_log === originalLog) {
+          const recordUuids = JSON.parse(row.used_uuids);
+          // 检查UUID是否完全匹配（顺序无关）
+          const uuidsMatch = 
+            recordUuids.length === usedUuids.length &&
+            recordUuids.every((uuid: string) => usedUuids.includes(uuid));
+          
+          if (uuidsMatch) {
+            logger.info('找到重复的历史记录', { 
+              id: row.id,
+              appVersion: row.app_version 
+            });
+            return this.mapRowToRecord(row);
+          }
+        }
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.error('查找重复历史记录失败', { error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * 保存符号化历史记录（如果不存在重复记录）
+   */
+  async saveHistory(params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
+    const db = getDatabase();
+
+    try {
+      // 检查是否存在重复记录
+      const duplicate = this.findDuplicateHistory(params.originalLog, params.usedUuids);
+      if (duplicate) {
+        logger.info('跳过保存重复的历史记录', {
+          existingId: duplicate.id,
+          appVersion: duplicate.appVersion,
+        });
+        return duplicate;
+      }
+
+      const stmt = db.prepare(`
+        INSERT INTO symbolication_history (
+          app_version, version_detected, crash_type, crash_reason, last_stack_call, crash_module, crash_location,
+          original_log, symbolicated_log, used_uuids, ai_analysis
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      const result = stmt.run(
+        params.appVersion,
+        params.versionDetected !== false ? 1 : 0,
+        params.crashType || null,
+        params.crashReason || null,
+        params.lastStackCall || null,
+        params.crashModule || null,
+        params.crashLocation || null,
+        params.originalLog,
+        params.symbolicatedLog,
+        JSON.stringify(params.usedUuids),
+        params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null
+      );
+
+      logger.info('符号化历史记录已保存', {
+        id: result.lastInsertRowid,
+        appVersion: params.appVersion,
+      });
+
+      // 返回保存的记录
+      return this.getHistoryById(result.lastInsertRowid as number);
+    } catch (error: any) {
+      logger.error('保存符号化历史记录失败', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * 根据 ID 获取历史记录
+   */
+  getHistoryById(id: number): SymbolicationHistoryRecord {
+    const db = getDatabase();
+
+    const stmt = db.prepare(`
+      SELECT * FROM symbolication_history WHERE id = ?
+    `);
+
+    const row = stmt.get(id) as any;
+
+    if (!row) {
+      throw new Error(`History record ${id} not found`);
+    }
+
+    return this.mapRowToRecord(row);
+  }
+
+  /**
+   * 获取所有历史记录（按主应用版本分组）
+   */
+  getAllHistoryGroupedByVersion(): Record<string, SymbolicationHistoryRecord[]> {
+    const db = getDatabase();
+
+    const stmt = db.prepare(`
+      SELECT * FROM symbolication_history 
+      ORDER BY created_at DESC
+    `);
+
+    const rows = stmt.all() as any[];
+    const records = rows.map((row) => this.mapRowToRecord(row));
+
+    // 按主应用版本分组
+    const grouped: Record<string, SymbolicationHistoryRecord[]> = {};
+    for (const record of records) {
+      if (!grouped[record.appVersion]) {
+        grouped[record.appVersion] = [];
+      }
+      grouped[record.appVersion].push(record);
+    }
+
+    return grouped;
+  }
+
+  /**
+   * 根据主应用版本获取历史记录
+   */
+  getHistoryByVersion(appVersion: string): SymbolicationHistoryRecord[] {
+    const db = getDatabase();
+
+    const stmt = db.prepare(`
+      SELECT * FROM symbolication_history 
+      WHERE app_version = ?
+      ORDER BY created_at DESC
+    `);
+
+    const rows = stmt.all(appVersion) as any[];
+    return rows.map((row) => this.mapRowToRecord(row));
+  }
+
+  /**
+   * 更新历史记录的 AI 分析结果
+   */
+  async updateAIAnalysis(id: number, aiAnalysis: any): Promise<void> {
+    const db = getDatabase();
+
+    try {
+      // 如果 AI 分析中包含崩溃模块，同时更新崩溃模块字段
+      let updateQuery = `
+        UPDATE symbolication_history 
+        SET ai_analysis = ?`;
+      
+      const params: any[] = [JSON.stringify(aiAnalysis)];
+      
+      if (aiAnalysis.crashModule) {
+        updateQuery += `, crash_module = ?`;
+        params.push(aiAnalysis.crashModule);
+      }
+      
+      updateQuery += ` WHERE id = ?`;
+      params.push(id);
+
+      const stmt = db.prepare(updateQuery);
+      stmt.run(...params);
+
+      logger.info('历史记录的 AI 分析已更新', { 
+        id,
+        updatedCrashModule: !!aiAnalysis.crashModule 
+      });
+    } catch (error: any) {
+      logger.error('更新 AI 分析失败', { error: error.message, id });
+      throw error;
+    }
+  }
+
+  /**
+   * 删除历史记录
+   */
+  deleteHistory(id: number): void {
+    const db = getDatabase();
+
+    const stmt = db.prepare(`
+      DELETE FROM symbolication_history WHERE id = ?
+    `);
+
+    stmt.run(id);
+
+    logger.info('符号化历史记录已删除', { id });
+  }
+
+  /**
+   * 清空所有历史记录
+   */
+  clearAllHistory(): void {
+    const db = getDatabase();
+
+    db.prepare('DELETE FROM symbolication_history').run();
+
+    logger.info('所有符号化历史记录已清空');
+  }
+
+  /**
+   * 获取历史记录统计
+   */
+  getStatistics(): {
+    totalRecords: number;
+    versionCount: number;
+    versions: { version: string; count: number }[];
+  } {
+    const db = getDatabase();
+
+    // 总记录数
+    const totalResult = db.prepare('SELECT COUNT(*) as count FROM symbolication_history').get() as any;
+    const totalRecords = totalResult.count;
+
+    // 按版本统计
+    const versionStats = db.prepare(`
+      SELECT app_version as version, COUNT(*) as count 
+      FROM symbolication_history 
+      GROUP BY app_version 
+      ORDER BY count DESC
+    `).all() as any[];
+
+    return {
+      totalRecords,
+      versionCount: versionStats.length,
+      versions: versionStats,
+    };
+  }
+
+  /**
+   * 对历史记录进行AI分析
+   */
+  async analyzeHistory(id: number, apiKey: string): Promise<any> {
+    const record = this.getHistoryById(id);
+
+    // 动态导入 QwenAIService
+    const { default: qwenAIService } = await import('./QwenAIService');
+
+    // 调用AI分析，使用应用版本作为fallback
+    const analysis = await qwenAIService.analyzeCrashLog(
+      record.symbolicatedLog,
+      apiKey,
+      record.appVersion
+    );
+
+    // 更新历史记录
+    await this.updateAIAnalysis(id, analysis);
+
+    logger.info('历史记录AI分析完成', { id });
+
+    return analysis;
+  }
+
+  /**
+   * 更新历史记录的修复状态
+   */
+  updateFixedStatus(id: number, isFixed: boolean, fixedVersion?: string): void {
+    const db = getDatabase();
+
+    try {
+      const stmt = db.prepare(`
+        UPDATE symbolication_history 
+        SET is_fixed = ?, fixed_version = ? 
+        WHERE id = ?
+      `);
+
+      stmt.run(isFixed ? 1 : 0, fixedVersion || null, id);
+
+      logger.info('历史记录修复状态已更新', { id, isFixed, fixedVersion });
+    } catch (error: any) {
+      logger.error('更新历史记录修复状态失败', { error: error.message });
+      throw error;
+    }
+  }
+
+  /**
+   * 将数据库行映射为记录对象
+   */
+  private mapRowToRecord(row: any): SymbolicationHistoryRecord {
+    return {
+      id: row.id,
+      appVersion: row.app_version,
+      versionDetected: row.version_detected === 1,
+      crashType: row.crash_type,
+      crashReason: row.crash_reason,
+      lastStackCall: row.last_stack_call,
+      crashModule: row.crash_module,
+      crashLocation: row.crash_location,
+      originalLog: row.original_log,
+      symbolicatedLog: row.symbolicated_log,
+      usedUuids: JSON.parse(row.used_uuids),
+      aiAnalysis: row.ai_analysis ? JSON.parse(row.ai_analysis) : undefined,
+      isFixed: row.is_fixed === 1,
+      fixedVersion: row.fixed_version,
+      createdAt: row.created_at,
+    };
+  }
+}
+
+export default new HistoryService();

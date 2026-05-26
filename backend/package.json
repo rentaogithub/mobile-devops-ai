@@ -1,0 +1,46 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "iOS 崩溃日志符号化系统 - 后端",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsc && cp src/database/schema.sql dist/database/schema.sql && mkdir -p dist/templates && cp src/templates/*.template dist/templates/",
+    "start": "node dist/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@types/archiver": "^7.0.0",
+    "@types/pdfkit": "^0.17.3",
+    "adm-zip": "^0.5.10",
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^9.2.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.17.2",
+    "tar": "^6.2.1",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jest": "^29.5.11",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.10.6",
+    "@types/supertest": "^6.0.2",
+    "@types/tar": "^6.1.13",
+    "@typescript-eslint/eslint-plugin": "^6.17.0",
+    "@typescript-eslint/parser": "^6.17.0",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.1.1",
+    "supertest": "^6.3.3",
+    "ts-jest": "^29.1.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}

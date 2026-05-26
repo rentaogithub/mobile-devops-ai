@@ -1,0 +1,2840 @@
+import { getDatabase } from '../database';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { execSync } from 'child_process';
+import logger from '../utils/logger';
+
+export interface PodComponent {
+  id: number;
+  name: string;
+  version: string;
+  summary: string;
+  homepage: string;
+  source_zip_url: string;
+  podspec_content: string;
+  upload_time: string;
+  status: 'uploaded' | 'published' | 'failed';
+  error_message?: string;
+}
+
+interface PodUploadParams {
+  name: string;
+  version: string;
+  lib_type?: 'framework' | 'static_library'; // 库类型：framework 或 .a 静态库
+  lib_name?: string;          // 库文件名，如 NNRtc.framework 或 libNNRtc.a
+  summary?: string;
+  homepage?: string;
+  authors?: string;
+  license?: string;
+  platform_version?: string;
+  dependencies?: string;      // JSON string of [{name, version}]
+  sys_frameworks?: string;    // 系统 frameworks，逗号分隔
+  sys_libraries?: string;     // 系统 libraries，逗号分隔
+}
+
+const NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
+const NEXUS_USER = 'admin';
+const NEXUS_PASS = 'admin123';
+const SPEC_REPO_URL = 'http://rentao:renyang%40666@git.leigod.top/nn_ios/nnspec.git';
+const SPEC_REPO_LOCAL = path.join(process.env.UPLOAD_DIR || '/tmp', '../pods-spec-repo');
+
+export class PodService {
+  private db = getDatabase();
+
+  /**
+   * 初始化 pods_components 表
+   */
+  initTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS pods_components (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        summary TEXT DEFAULT '',
+        homepage TEXT DEFAULT '',
+        source_zip_url TEXT NOT NULL,
+        podspec_content TEXT NOT NULL,
+        upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        status TEXT DEFAULT 'uploaded',
+        error_message TEXT,
+        UNIQUE(name, version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pod_name ON pods_components(name);
+      CREATE INDEX IF NOT EXISTS idx_pod_version ON pods_components(name, version);
+    `);
+
+    // 异步确保需要的第三方 spec repos 已注册（不阻塞启动）
+    this.ensureSpecRepos().catch((err) => {
+      logger.warn('确保 spec repos 失败', { error: err.message });
+    });
+  }
+
+  /**
+   * 自动注册需要的第三方 spec repos（如 aliyun-specs）
+   * 已经存在则跳过；执行幂等
+   */
+  private async ensureSpecRepos(): Promise<void> {
+    const wanted: Array<{ name: string; url: string }> = [
+      { name: 'aliyun-specs', url: 'https://github.com/aliyun/aliyun-specs.git' },
+    ];
+
+    let listOutput = '';
+    try {
+      listOutput = execSync('pod repo list 2>/dev/null', { encoding: 'utf-8', timeout: 15000 });
+    } catch {
+      // pod 命令不可用，直接放弃
+      return;
+    }
+
+    for (const repo of wanted) {
+      // pod repo list 输出里 URL 行类似 "- URL:  https://github.com/aliyun/aliyun-specs.git"
+      const alreadyAdded = listOutput.includes(repo.url);
+      if (alreadyAdded) continue;
+
+      logger.info('注册 spec 仓库', { name: repo.name, url: repo.url });
+      try {
+        execSync(`pod repo add ${repo.name} ${repo.url}`, {
+          encoding: 'utf-8',
+          timeout: 120000,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        logger.info('spec 仓库注册成功', { name: repo.name });
+      } catch (err: any) {
+        logger.warn('注册 spec 仓库失败', {
+          name: repo.name,
+          url: repo.url,
+          error: err.message,
+        });
+      }
+    }
+  }
+
+  /**
+   * 上传 zip 到 Nexus 仓库（带认证）
+   */
+  async uploadToNexus(filePath: string, name: string, version: string): Promise<string> {
+    const targetUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+
+    logger.info('上传组件到 Nexus', { name, version, targetUrl });
+
+    try {
+      const cmd = `curl -s -w "%{http_code}" -u "${NEXUS_USER}:${NEXUS_PASS}" --upload-file "${filePath}" "${targetUrl}"`;
+      const result = execSync(cmd, { encoding: 'utf-8', timeout: 120000 });
+
+      const statusCode = result.trim().slice(-3);
+      const statusNum = parseInt(statusCode, 10);
+
+      if (statusNum >= 200 && statusNum < 300) {
+        logger.info('Nexus 上传成功', { name, version, statusCode });
+        return targetUrl;
+      } else {
+        throw new Error(`Nexus 上传失败，HTTP 状态码: ${statusCode}`);
+      }
+    } catch (error: any) {
+      logger.error('Nexus 上传失败', { name, version, error: error.message });
+      throw new Error(`上传到 Nexus 失败: ${error.message}`);
+    }
+  }
+
+  /**
+   * 将上传的文件自动打包为 zip
+   * 支持：.zip（直接使用）、.framework（zip 打包）、.a（zip 打包）
+   * 如果上传的是 zip 文件则直接返回原路径
+   */
+  async packToZip(filePath: string, originalName: string): Promise<{ zipPath: string; needCleanup: boolean }> {
+    const ext = path.extname(originalName).toLowerCase();
+
+    // 已经是 zip，直接使用
+    if (ext === '.zip') {
+      return { zipPath: filePath, needCleanup: false };
+    }
+
+    const uploadDir = process.env.UPLOAD_DIR || '/tmp';
+    const zipPath = path.join(uploadDir, `pod_${Date.now()}.zip`);
+
+    if (ext === '.a') {
+      // .a 静态库：直接压缩文件
+      logger.info('打包 .a 文件为 zip', { originalName });
+      // 先把文件重命名为原始文件名，再压缩
+      const tempDir = path.join(uploadDir, `pod_pack_${Date.now()}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      const targetFile = path.join(tempDir, originalName);
+      fs.copyFileSync(filePath, targetFile);
+      execSync(`cd "${tempDir}" && zip -r "${zipPath}" "${originalName}"`, {
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+      // 清理临时目录
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return { zipPath, needCleanup: true };
+    }
+
+    if (ext === '.framework' || originalName.endsWith('.framework.zip')) {
+      // .framework 通常作为目录上传，但 multer 只能接收单文件
+      // 如果用户上传的是 framework 压缩后的文件（无 .zip 后缀），直接当 zip 用
+      // 实际上浏览器上传文件夹会被压缩，这里兜底处理
+      logger.info('打包 framework 文件为 zip', { originalName });
+      const tempDir = path.join(uploadDir, `pod_pack_${Date.now()}`);
+      fs.mkdirSync(tempDir, { recursive: true });
+      const targetFile = path.join(tempDir, originalName);
+      fs.copyFileSync(filePath, targetFile);
+      execSync(`cd "${tempDir}" && zip -r "${zipPath}" "${originalName}"`, {
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return { zipPath, needCleanup: true };
+    }
+
+    // 其他格式：直接压缩
+    logger.info('打包文件为 zip', { originalName, ext });
+    const tempDir = path.join(uploadDir, `pod_pack_${Date.now()}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    const targetFile = path.join(tempDir, originalName);
+    fs.copyFileSync(filePath, targetFile);
+    execSync(`cd "${tempDir}" && zip -r "${zipPath}" "${originalName}"`, {
+      encoding: 'utf-8',
+      timeout: 60000,
+    });
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    return { zipPath, needCleanup: true };
+  }
+
+  /**
+   * 生成 podspec 内容
+   */
+  generatePodspec(params: PodUploadParams, sha256?: string): string {
+    const {
+      name,
+      version,
+      lib_type = 'framework',
+      lib_name,
+      summary = `${name} iOS 组件`,
+      homepage = `http://git.leigod.top/nn_ios/${name}`,
+      authors = 'NN iOS Team',
+      license = 'MIT',
+      platform_version = '12.0',
+      dependencies,
+      sys_frameworks,
+      sys_libraries,
+    } = params;
+
+    const sourceUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+
+    let sourceLine: string;
+    if (sha256) {
+      sourceLine = `  s.source       = { :http => '${sourceUrl}', :sha256 => '${sha256}' }`;
+    } else {
+      sourceLine = `  s.source       = { :http => '${sourceUrl}' }`;
+    }
+
+    let spec = `Pod::Spec.new do |s|
+  s.name         = '${name}'
+  s.version      = '${version}'
+  s.summary      = '${summary}'
+  s.homepage     = '${homepage}'
+  s.license      = { :type => '${license}' }
+  s.authors      = '${authors}'
+${sourceLine}
+  s.platform     = :ios, '${platform_version}'
+`;
+
+    if (lib_type === 'static_library') {
+      // .a 静态库
+      const aName = lib_name || `lib${name}.a`;
+      const baseName = aName.replace(/^lib/, '').replace(/\.a$/, '');
+      spec += `  s.vendored_libraries   = '${aName}'\n`;
+      spec += `  s.public_header_files  = '${baseName}.Headers/**/*.h'\n`;
+      spec += `  s.source_files         = '${baseName}.Headers/**/*.h'\n`;
+    } else {
+      // framework（默认）
+      const fwName = lib_name || `${name}.framework`;
+      spec += `  s.vendored_frameworks = '${fwName}'\n`;
+      // 如果 framework 路径包含子目录，添加 preserve_paths
+      if (fwName.includes('/')) {
+        spec += `  s.preserve_paths      = '${fwName}'\n`;
+      }
+    }
+
+    // 系统 frameworks
+    if (sys_frameworks) {
+      const fws = sys_frameworks.split(',').map(f => `'${f.trim()}'`).filter(f => f !== "''").join(', ');
+      if (fws) {
+        spec += `  s.frameworks          = ${fws}\n`;
+      }
+    }
+
+    // 系统 libraries
+    if (sys_libraries) {
+      const libs = sys_libraries.split(',').map(l => `'${l.trim()}'`).filter(l => l !== "''").join(', ');
+      if (libs) {
+        spec += `  s.libraries           = ${libs}\n`;
+      }
+    }
+
+    // Pod 依赖
+    if (dependencies) {
+      try {
+        const deps = JSON.parse(dependencies);
+        if (Array.isArray(deps)) {
+          deps.forEach((dep: { name: string; version?: string }) => {
+            if (dep.version) {
+              spec += `  s.dependency '${dep.name}', '${dep.version}'\n`;
+            } else {
+              spec += `  s.dependency '${dep.name}'\n`;
+            }
+          });
+        }
+      } catch {
+        // 忽略解析错误
+      }
+    }
+
+    spec += `end\n`;
+    return spec;
+  }
+
+  /**
+   * 同步 podspec 到 git 仓库
+   */
+  async syncToSpecRepo(name: string, version: string, podspecContent: string): Promise<void> {
+    logger.info('同步 podspec 到 spec 仓库', { name, version });
+
+    try {
+      // 确保本地 spec 仓库存在
+      if (!fs.existsSync(SPEC_REPO_LOCAL)) {
+        logger.info('克隆 spec 仓库', { url: SPEC_REPO_URL });
+        execSync(`git clone "${SPEC_REPO_URL}" "${SPEC_REPO_LOCAL}"`, {
+          encoding: 'utf-8',
+          timeout: 60000,
+        });
+      } else {
+        // 拉取最新代码
+        execSync('git pull origin master || git pull origin main || true', {
+          cwd: SPEC_REPO_LOCAL,
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+      }
+
+      // 创建目录结构: name/version/name.podspec
+      const specDir = path.join(SPEC_REPO_LOCAL, name, version);
+      fs.mkdirSync(specDir, { recursive: true });
+
+      // 写入 podspec 文件
+      const specFilePath = path.join(specDir, `${name}.podspec`);
+      fs.writeFileSync(specFilePath, podspecContent, 'utf-8');
+
+      // Git add, commit, push
+      execSync('git add -A', { cwd: SPEC_REPO_LOCAL, encoding: 'utf-8' });
+
+      const commitMsg = `[Auto] Update ${name} ${version}`;
+      execSync(`git commit -m "${commitMsg}" --allow-empty`, {
+        cwd: SPEC_REPO_LOCAL,
+        encoding: 'utf-8',
+      });
+
+      execSync('git push origin HEAD', {
+        cwd: SPEC_REPO_LOCAL,
+        encoding: 'utf-8',
+        timeout: 30000,
+      });
+
+      logger.info('Spec 仓库同步成功', { name, version });
+    } catch (error: any) {
+      logger.error('Spec 仓库同步失败', { name, version, error: error.message });
+      throw new Error(`同步 spec 仓库失败: ${error.message}`);
+    }
+  }
+
+  /**
+   * 从 spec 仓库中删除指定版本或整个组件目录
+   * @param name 组件名称
+   * @param version 版本号（不传则删除整个组件目录）
+   */
+  private async deleteFromSpecRepo(name: string, version?: string): Promise<void> {
+    try {
+      if (!fs.existsSync(SPEC_REPO_LOCAL)) {
+        logger.warn('spec 仓库本地目录不存在，跳过删除', { name, version });
+        return;
+      }
+
+      // 拉取最新
+      execSync('git pull origin master || git pull origin main || true', {
+        cwd: SPEC_REPO_LOCAL,
+        encoding: 'utf-8',
+        timeout: 30000,
+      });
+
+      // 确定要删除的目录
+      const targetDir = version
+        ? path.join(SPEC_REPO_LOCAL, name, version)
+        : path.join(SPEC_REPO_LOCAL, name);
+
+      if (!fs.existsSync(targetDir)) {
+        logger.info('spec 仓库中目录不存在，无需删除', { name, version, targetDir });
+        return;
+      }
+
+      // 删除目录
+      fs.rmSync(targetDir, { recursive: true, force: true });
+
+      // 如果删除的是版本目录，检查组件目录是否为空，为空也删掉
+      if (version) {
+        const componentDir = path.join(SPEC_REPO_LOCAL, name);
+        if (fs.existsSync(componentDir) && fs.readdirSync(componentDir).length === 0) {
+          fs.rmSync(componentDir, { recursive: true, force: true });
+        }
+      }
+
+      // Git add, commit, push
+      execSync('git add -A', { cwd: SPEC_REPO_LOCAL, encoding: 'utf-8' });
+
+      const what = version ? `${name}/${version}` : name;
+      try {
+        execSync(`git commit -m "[Auto] Remove ${what}"`, {
+          cwd: SPEC_REPO_LOCAL,
+          encoding: 'utf-8',
+        });
+        execSync('git push origin HEAD', {
+          cwd: SPEC_REPO_LOCAL,
+          encoding: 'utf-8',
+          timeout: 30000,
+        });
+        logger.info('spec 仓库删除成功', { name, version });
+      } catch {
+        // 没有变更（目录已经不存在）时 commit 会失败，忽略
+        logger.info('spec 仓库无变更需要提交', { name, version });
+      }
+    } catch (error: any) {
+      // 删除 spec 仓库失败不应阻断主流程
+      logger.error('删除 spec 仓库失败', { name, version, error: error.message });
+    }
+  }
+
+  /**
+   * 自动检测 zip 包内的库类型和文件名
+   * 解压后扫描是否包含 .framework 或 .a 文件
+   */
+  detectLibType(zipPath: string): { lib_type: 'framework' | 'static_library'; lib_name: string } | null {
+    try {
+      // 用 unzip -l 列出 zip 内容，不实际解压
+      // 输出格式：  Length      Date    Time    Name
+      //            --------  ---------- -----   ----
+      //                   0  04-23-2026 21:10   QTCommon_1.5.8.PX/QTCommon.xcframework/
+      const listing = execSync(`unzip -l "${zipPath}"`, { encoding: 'utf-8', timeout: 10000 });
+      const lines = listing.split('\n');
+
+      // 查找 .xcframework 目录（优先级高于 .framework）— 保留完整相对路径
+      for (const line of lines) {
+        const match = line.match(/\s+((\S+\.xcframework)\/)\s*$/);
+        if (match) {
+          const fwPath = match[2]; // e.g. QTCommon_1.5.8.PX/QTCommon.xcframework
+          logger.info('自动检测到 xcframework', { lib_name: fwPath });
+          return { lib_type: 'framework', lib_name: fwPath };
+        }
+      }
+
+      // 查找 .framework 目录 — 保留完整相对路径
+      for (const line of lines) {
+        const match = line.match(/\s+((\S+\.framework)\/)\s*$/);
+        if (match) {
+          const fwPath = match[2]; // e.g. leigod_im_cross_sdk.framework 或 prefix/xxx.framework
+          logger.info('自动检测到 framework', { lib_name: fwPath });
+          return { lib_type: 'framework', lib_name: fwPath };
+        }
+      }
+
+      // 查找 .a 文件 — 只匹配行尾的文件名部分
+      for (const line of lines) {
+        const match = line.match(/\s+(\S+\.a)\s*$/);
+        if (match) {
+          const aFile = match[1]; // e.g. libNNRtc.a
+          // 去掉路径前缀，只取文件名
+          const aName = aFile.split('/').pop() || aFile;
+          logger.info('自动检测到静态库', { lib_name: aName });
+          return { lib_type: 'static_library', lib_name: aName };
+        }
+      }
+
+      return null;
+    } catch (error: any) {
+      logger.warn('自动检测库类型失败', { error: error.message });
+      return null;
+    }
+  }
+
+  /**
+   * 完整的发布流程：自动打包 zip + 检测库类型 + 上传 Nexus + 生成 podspec + 同步 spec 仓库
+   */
+  async publish(
+    filePath: string,
+    originalFileName: string,
+    params: PodUploadParams
+  ): Promise<PodComponent> {
+    const { name, version } = params;
+
+    // 检查是否已存在，拒绝重复发布
+    const existing = await this.getOne(name, version);
+    if (existing) {
+      throw new Error(`${name}@${version} 已存在，请在详情中重新上传 zip 或使用新版本号`);
+    }
+
+    // 1. 自动打包为 zip
+    let zipPath: string;
+    let needCleanupZip = false;
+    try {
+      const packResult = await this.packToZip(filePath, originalFileName);
+      zipPath = packResult.zipPath;
+      needCleanupZip = packResult.needCleanup;
+    } catch (error: any) {
+      throw new Error(`打包 zip 失败: ${error.message}`);
+    }
+
+    // 2. 自动检测库类型（如果用户未指定）
+    if (!params.lib_type || !params.lib_name) {
+      const detected = this.detectLibType(zipPath);
+      if (detected) {
+        if (!params.lib_type) {
+          params.lib_type = detected.lib_type;
+          logger.info('自动设置库类型', { lib_type: detected.lib_type });
+        }
+        if (!params.lib_name) {
+          params.lib_name = detected.lib_name;
+          logger.info('自动设置库文件名', { lib_name: detected.lib_name });
+        }
+      }
+    }
+
+    // 3. 计算 zip 文件的 sha256
+    const fileBuffer = fs.readFileSync(zipPath);
+    const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    logger.info('zip 文件 sha256', { name, version, sha256 });
+
+    // 4. 生成 podspec（带 sha256）
+    const podspecContent = this.generatePodspec(params, sha256);
+
+    // 5. 上传 zip 到 Nexus
+    let sourceZipUrl: string;
+    try {
+      sourceZipUrl = await this.uploadToNexus(zipPath, name, version);
+    } catch (error: any) {
+      // 清理临时 zip
+      if (needCleanupZip && fs.existsSync(zipPath)) {
+        fs.unlinkSync(zipPath);
+      }
+      this.saveComponent({
+        name,
+        version,
+        summary: params.summary || '',
+        homepage: params.homepage || '',
+        source_zip_url: `${NEXUS_BASE_URL}/${name}/${version}.zip`,
+        podspec_content: podspecContent,
+        status: 'failed',
+        error_message: error.message,
+      });
+      throw error;
+    }
+
+    // 清理临时 zip
+    if (needCleanupZip && fs.existsSync(zipPath)) {
+      fs.unlinkSync(zipPath);
+    }
+
+    // 6. 同步 podspec 到 git 仓库
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      await this.syncToSpecRepo(name, version, podspecContent);
+    } catch (error: any) {
+      status = 'failed';
+      errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
+      logger.warn('Spec 同步失败，但 Nexus 上传已成功', { name, version });
+    }
+
+    // 7. 保存到数据库
+    const component = this.saveComponent({
+      name,
+      version,
+      summary: params.summary || '',
+      homepage: params.homepage || '',
+      source_zip_url: sourceZipUrl,
+      podspec_content: podspecContent,
+      status,
+      error_message: errorMessage,
+    });
+
+    return component;
+  }
+
+  /**
+   * 保存组件信息到数据库（同名同版本自动覆盖）
+   */
+  private saveComponent(data: {
+    name: string;
+    version: string;
+    summary: string;
+    homepage: string;
+    source_zip_url: string;
+    podspec_content: string;
+    status: string;
+    error_message?: string;
+  }): PodComponent {
+    // 使用 REPLACE 实现 upsert，覆盖同名同版本记录，刷新 upload_time
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO pods_components 
+        (name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+    `);
+
+    const result = stmt.run(
+      data.name,
+      data.version,
+      data.summary,
+      data.homepage,
+      data.source_zip_url,
+      data.podspec_content,
+      data.status,
+      data.error_message || null
+    );
+
+    const row = this.db
+      .prepare('SELECT * FROM pods_components WHERE id = ?')
+      .get(result.lastInsertRowid) as any;
+
+    return this.mapRow(row);
+  }
+
+  /**
+   * 获取所有组件（按名称分组，每个名称取最新版本）
+   */
+  async getAll(): Promise<PodComponent[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM pods_components ORDER BY name ASC, upload_time DESC')
+      .all() as any[];
+    return rows.map(this.mapRow);
+  }
+
+  /**
+   * 获取指定组件的所有版本
+   */
+  async getVersions(name: string): Promise<PodComponent[]> {
+    const rows = this.db
+      .prepare('SELECT * FROM pods_components WHERE name = ? ORDER BY upload_time DESC')
+      .all(name) as any[];
+    return rows.map(this.mapRow);
+  }
+
+  /**
+   * 获取组件名称列表（去重）
+   */
+  async getComponentNames(): Promise<string[]> {
+    const rows = this.db
+      .prepare('SELECT DISTINCT name FROM pods_components ORDER BY name ASC')
+      .all() as any[];
+    return rows.map((r: any) => r.name);
+  }
+
+  /**
+   * 删除 Nexus 上的 zip 文件
+   */
+  async deleteFromNexus(name: string, version: string): Promise<void> {
+    const targetUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    logger.info('删除 Nexus 文件', { name, version, targetUrl });
+
+    try {
+      const cmd = `curl -s -w "%{http_code}" -u "${NEXUS_USER}:${NEXUS_PASS}" -X DELETE "${targetUrl}"`;
+      const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
+      const statusCode = result.trim().slice(-3);
+      const statusNum = parseInt(statusCode, 10);
+
+      if (statusNum >= 200 && statusNum < 300 || statusNum === 404) {
+        logger.info('Nexus 文件删除成功', { name, version, statusCode });
+      } else {
+        logger.warn('Nexus 文件删除失败', { name, version, statusCode });
+      }
+    } catch (error: any) {
+      logger.warn('Nexus 文件删除异常', { name, version, error: error.message });
+    }
+  }
+
+  /**
+   * 删除指定组件版本（同时删除 Nexus 文件）
+   */
+  async deleteVersion(name: string, version: string): Promise<void> {
+    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ? AND version = ?');
+    const result = stmt.run(name, version);
+    if (result.changes === 0) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
+    // 删除 Nexus 上的文件
+    await this.deleteFromNexus(name, version);
+    // 删除 spec 仓库中的版本目录
+    await this.deleteFromSpecRepo(name, version);
+  }
+
+  /**
+   * 删除整个组件（所有版本 + Nexus 文件）
+   */
+  async deleteComponent(name: string): Promise<number> {
+    const versions = await this.getVersions(name);
+    if (versions.length === 0) {
+      throw new Error(`组件 ${name} 不存在`);
+    }
+
+    // 逐个删除 Nexus 文件
+    for (const v of versions) {
+      await this.deleteFromNexus(name, v.version);
+    }
+
+    // 删除数据库记录
+    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ?');
+    const result = stmt.run(name);
+    logger.info('删除整个组件', { name, deletedVersions: result.changes });
+
+    // 删除 spec 仓库中的整个组件目录（包含所有版本）
+    await this.deleteFromSpecRepo(name);
+
+    return result.changes;
+  }
+
+  /**
+   * 获取单个组件
+   */
+  async getOne(name: string, version: string): Promise<PodComponent | null> {
+    const row = this.db
+      .prepare('SELECT * FROM pods_components WHERE name = ? AND version = ?')
+      .get(name, version) as any;
+    return row ? this.mapRow(row) : null;
+  }
+
+  /**
+   * 更新已发布组件的 podspec 内容，并同步到远程仓库
+   */
+  async updatePodspec(name: string, version: string, podspecContent: string): Promise<PodComponent> {
+    const component = await this.getOne(name, version);
+    if (!component) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
+
+    // 1. 同步新的 podspec 到 git 仓库
+    await this.syncToSpecRepo(name, version, podspecContent);
+
+    // 2. 更新数据库
+    this.db
+      .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = NULL WHERE name = ? AND version = ?')
+      .run(podspecContent, 'published', name, version);
+
+    logger.info('Podspec 更新成功', { name, version });
+
+    return { ...component, podspec_content: podspecContent, status: 'published', error_message: undefined };
+  }
+
+  /**
+   * 重新上传 zip 文件（替换已有版本的二进制）
+   * 重新上传到 Nexus、重新计算 sha256、重新生成 podspec、同步 spec 仓库
+   */
+  async replaceZip(
+    name: string,
+    version: string,
+    filePath: string,
+    originalFileName: string
+  ): Promise<PodComponent> {
+    const component = await this.getOne(name, version);
+    if (!component) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
+
+    // 1. 自动打包为 zip
+    let zipPath: string;
+    let needCleanupZip = false;
+    try {
+      const packResult = await this.packToZip(filePath, originalFileName);
+      zipPath = packResult.zipPath;
+      needCleanupZip = packResult.needCleanup;
+    } catch (error: any) {
+      throw new Error(`打包 zip 失败: ${error.message}`);
+    }
+
+    // 2. 自动检测库类型
+    const detected = this.detectLibType(zipPath);
+    const lib_type = detected?.lib_type || 'framework';
+    const lib_name = detected?.lib_name || `${name}.framework`;
+
+    // 3. 计算 sha256
+    const fileBuffer = fs.readFileSync(zipPath);
+    const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+    logger.info('替换 zip sha256', { name, version, sha256 });
+
+    // 4. 从旧 podspec 解析保留的字段（sys_frameworks, sys_libraries 等）
+    const oldSpec = component.podspec_content;
+    let sys_frameworks: string | undefined;
+    let sys_libraries: string | undefined;
+    const fwMatch = oldSpec.match(/^\s*s\.frameworks\s*=\s*(.+)$/m);
+    if (fwMatch) sys_frameworks = fwMatch[1].replace(/'/g, '').trim();
+    const libMatch = oldSpec.match(/^\s*s\.libraries\s*=\s*(.+)$/m);
+    if (libMatch) sys_libraries = libMatch[1].replace(/'/g, '').trim();
+
+    // 5. 生成新 podspec
+    const podspecContent = this.generatePodspec({
+      name, version, lib_type, lib_name, sys_frameworks, sys_libraries,
+    }, sha256);
+
+    // 6. 上传到 Nexus（覆盖）
+    let sourceZipUrl: string;
+    try {
+      sourceZipUrl = await this.uploadToNexus(zipPath, name, version);
+    } catch (error: any) {
+      if (needCleanupZip && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+      throw error;
+    }
+
+    if (needCleanupZip && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+
+    // 7. 同步 podspec 到 git 仓库
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      await this.syncToSpecRepo(name, version, podspecContent);
+    } catch (error: any) {
+      status = 'failed';
+      errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
+    }
+
+    // 8. 更新数据库
+    this.db
+      .prepare(`UPDATE pods_components SET source_zip_url = ?, podspec_content = ?, status = ?, error_message = ?, upload_time = datetime('now', 'localtime') WHERE name = ? AND version = ?`)
+      .run(sourceZipUrl, podspecContent, status, errorMessage || null, name, version);
+
+    logger.info('zip 替换成功', { name, version });
+
+    return {
+      ...component,
+      source_zip_url: sourceZipUrl,
+      podspec_content: podspecContent,
+      status,
+      error_message: errorMessage,
+    };
+  }
+
+  /**
+   * 重试发布（重新同步 spec 仓库）
+   */
+  async retrySync(name: string, version: string): Promise<PodComponent> {
+    const component = await this.getOne(name, version);
+    if (!component) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
+
+    try {
+      await this.syncToSpecRepo(name, version, component.podspec_content);
+
+      // 更新状态
+      this.db
+        .prepare('UPDATE pods_components SET status = ?, error_message = NULL WHERE name = ? AND version = ?')
+        .run('published', name, version);
+
+      return { ...component, status: 'published', error_message: undefined };
+    } catch (error: any) {
+      this.db
+        .prepare('UPDATE pods_components SET error_message = ? WHERE name = ? AND version = ?')
+        .run(error.message, name, version);
+      throw error;
+    }
+  }
+
+  /**
+   * 直接从源码编译 framework（绕过 CocoaPods pod install）
+   * 适用于纯 C/C++ 库（如 libwebp）pod install 会报错的场景
+   * 流程：git clone → 收集源文件 → xcrun clang 编译 → libtool 打静态库 → 包装为 .framework → zip → Nexus
+   */
+  private async buildDirectFromSource(
+    spec: any,
+    podName: string,
+    version: string,
+    pubVer: string,
+    workDir: string,
+    prepareCommand?: string
+  ): Promise<PodComponent> {
+    const gitUrl = spec.source.git;
+    const tag = spec.source.tag || `v${version}`;
+    const cloneDir = path.join(workDir, 'source');
+
+    logger.info('直接编译：克隆源码', { podName, gitUrl, tag });
+
+    // 1. Clone
+    const gitUrls = gitUrl.includes('github.com')
+      ? [
+          gitUrl.replace('https://github.com/', 'https://ghfast.top/https://github.com/'),
+          gitUrl,
+        ]
+      : [gitUrl];
+
+    let cloned = false;
+    for (const tryUrl of gitUrls) {
+      try {
+        execSync(`git clone --depth 1 --branch "${tag}" "${tryUrl}" "${cloneDir}"`, {
+          encoding: 'utf-8',
+          timeout: 120000,
+        });
+        cloned = true;
+        break;
+      } catch {
+        if (fs.existsSync(cloneDir)) fs.rmSync(cloneDir, { recursive: true, force: true });
+      }
+    }
+    if (!cloned) throw new Error(`git clone 失败：${gitUrl} tag=${tag}`);
+
+    // 2. 收集所有 .c/.m 源文件（从 subspecs 的 source_files 或 spec 根）
+    const srcPatterns: string[] = [];
+    if (spec.subspecs && Array.isArray(spec.subspecs)) {
+      for (const sub of spec.subspecs) {
+        if (sub.source_files) {
+          const files = Array.isArray(sub.source_files) ? sub.source_files : [sub.source_files];
+          srcPatterns.push(...files);
+        }
+      }
+    }
+    if (spec.source_files) {
+      const files = Array.isArray(spec.source_files) ? spec.source_files : [spec.source_files];
+      srcPatterns.push(...files);
+    }
+
+    // 用 glob 展开（简单处理：用 find + wildcard）
+    const allSrcFiles: string[] = [];
+    const allHeaderDirs = new Set<string>();
+
+    for (const pattern of srcPatterns) {
+      // 拆成目录 + 通配符
+      // 支持 src/webp/*.{h,c} → 用 find 过滤
+      const baseDir = pattern.replace(/\/\*.*$/, '').replace(/\/[^/]*\{[^}]+\}$/, '');
+      const searchDir = path.join(cloneDir, baseDir);
+      if (!fs.existsSync(searchDir)) continue;
+
+      try {
+        const found = execSync(
+          `find "${searchDir}" -maxdepth 2 \\( -name "*.c" -o -name "*.m" -o -name "*.cc" -o -name "*.cpp" -o -name "*.S" \\) -type f`,
+          { encoding: 'utf-8', timeout: 10000 }
+        ).trim().split('\n').filter(Boolean);
+        allSrcFiles.push(...found);
+      } catch { /* empty */ }
+
+      // 收集 header 搜索路径
+      try {
+        const hdrs = execSync(
+          `find "${searchDir}" -maxdepth 2 -name "*.h" -type f`,
+          { encoding: 'utf-8', timeout: 10000 }
+        ).trim().split('\n').filter(Boolean);
+        for (const h of hdrs) {
+          allHeaderDirs.add(path.dirname(h));
+        }
+      } catch { /* empty */ }
+    }
+
+    // 也加上根目录和 src 目录
+    allHeaderDirs.add(cloneDir);
+    if (fs.existsSync(path.join(cloneDir, 'src'))) allHeaderDirs.add(path.join(cloneDir, 'src'));
+
+    if (allSrcFiles.length === 0) {
+      throw new Error(`直接编译失败：未找到任何源文件（patterns: ${srcPatterns.join(', ')}）`);
+    }
+
+    const uniqueSrc = [...new Set(allSrcFiles)];
+    logger.info('直接编译：收集源文件', { count: uniqueSrc.length, headerDirs: allHeaderDirs.size });
+
+    // 3. 编译
+    const buildDir = path.join(workDir, 'build');
+    const objDir = path.join(buildDir, 'obj');
+    fs.mkdirSync(objDir, { recursive: true });
+
+    const arch = 'arm64';
+    const sdk = 'iphoneos';
+    const minIos = spec.platforms?.ios || '12.0';
+    const headerFlags = [...allHeaderDirs].map(d => `-I"${d}"`).join(' ');
+
+    // 编译所有 .c/.m → .o
+    const objFiles: string[] = [];
+    for (const srcFile of uniqueSrc) {
+      const baseName = path.basename(srcFile, path.extname(srcFile));
+      const objFile = path.join(objDir, `${baseName}_${objFiles.length}.o`);
+      const ext = path.extname(srcFile);
+      const isObjC = ext === '.m';
+      const isCpp = ext === '.cc' || ext === '.cpp';
+
+      let langFlag = '-x c';
+      if (isObjC) langFlag = '-x objective-c';
+      if (isCpp) langFlag = '-x c++';
+
+      try {
+        execSync(
+          `xcrun clang ${langFlag} -arch ${arch} -isysroot $(xcrun --sdk ${sdk} --show-sdk-path) ` +
+          `-miphoneos-version-min=${minIos} ${headerFlags} -O2 -DNDEBUG -fPIC ` +
+          `-c "${srcFile}" -o "${objFile}"`,
+          { encoding: 'utf-8', timeout: 30000 }
+        );
+        objFiles.push(objFile);
+      } catch (err: any) {
+        logger.warn('编译文件失败（跳过）', { file: srcFile, error: err.message?.slice(0, 200) });
+      }
+    }
+
+    if (objFiles.length === 0) {
+      throw new Error('直接编译失败：所有源文件编译失败');
+    }
+    logger.info('直接编译：.o 文件', { count: objFiles.length });
+
+    // 4. 打包为静态库 .a
+    const staticLib = path.join(buildDir, `lib${podName}.a`);
+    execSync(`xcrun libtool -static -o "${staticLib}" ${objFiles.map(f => `"${f}"`).join(' ')}`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+
+    // 5. 包装为 .framework
+    const fwName = `${podName}.framework`;
+    const fwDir = path.join(buildDir, fwName);
+    fs.mkdirSync(path.join(fwDir, 'Headers'), { recursive: true });
+
+    // 复制静态库为 framework binary
+    fs.copyFileSync(staticLib, path.join(fwDir, podName));
+
+    // 复制 public headers
+    const publicHeaders: string[] = [];
+    // 从 spec 的 public_header_files 或所有 headers
+    let headerPatterns: string[] = [];
+    if (spec.public_header_files) {
+      headerPatterns = Array.isArray(spec.public_header_files) ? spec.public_header_files : [spec.public_header_files];
+    }
+    // 从 subspecs
+    if (spec.subspecs) {
+      for (const sub of spec.subspecs) {
+        if (sub.public_header_files) {
+          const h = Array.isArray(sub.public_header_files) ? sub.public_header_files : [sub.public_header_files];
+          headerPatterns.push(...h);
+        }
+      }
+    }
+
+    // 如果没有 public_header_files，找所有 .h
+    if (headerPatterns.length === 0) {
+      const allHeaders = execSync(
+        `find "${cloneDir}" -name "*.h" -not -path "*/.git/*" -type f`,
+        { encoding: 'utf-8', timeout: 10000 }
+      ).trim().split('\n').filter(Boolean);
+      // 只取 src/ 和根下的
+      for (const h of allHeaders) {
+        const rel = path.relative(cloneDir, h);
+        if (!rel.startsWith('examples') && !rel.startsWith('tests') && !rel.startsWith('man')) {
+          publicHeaders.push(h);
+        }
+      }
+    } else {
+      for (const pat of headerPatterns) {
+        const baseDir = pat.replace(/\/\*.*$/, '').replace(/\/[^/]*\{[^}]+\}$/, '');
+        const searchDir = path.join(cloneDir, baseDir);
+        if (!fs.existsSync(searchDir)) continue;
+        try {
+          const found = execSync(
+            `find "${searchDir}" -maxdepth 2 -name "*.h" -type f`,
+            { encoding: 'utf-8', timeout: 10000 }
+          ).trim().split('\n').filter(Boolean);
+          publicHeaders.push(...found);
+        } catch { /* */ }
+      }
+    }
+
+    for (const h of [...new Set(publicHeaders)]) {
+      fs.copyFileSync(h, path.join(fwDir, 'Headers', path.basename(h)));
+    }
+
+    // 写 module.modulemap
+    const modulemapContent = `framework module ${podName} {\n  umbrella header "${podName}.h"\n  export *\n  module * { export * }\n}\n`;
+    const modulesDir = path.join(fwDir, 'Modules');
+    fs.mkdirSync(modulesDir, { recursive: true });
+    fs.writeFileSync(path.join(modulesDir, 'module.modulemap'), modulemapContent, 'utf-8');
+
+    // 写 umbrella header
+    const umbrellaLines = publicHeaders
+      .map(h => `#import <${podName}/${path.basename(h)}>`)
+      .join('\n');
+    fs.writeFileSync(path.join(fwDir, 'Headers', `${podName}.h`), umbrellaLines + '\n', 'utf-8');
+
+    // 写 Info.plist
+    const infoPlist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.pods.${podName}</string>
+  <key>CFBundleName</key><string>${podName}</string>
+  <key>CFBundleVersion</key><string>${pubVer}</string>
+  <key>CFBundleShortVersionString</key><string>${pubVer}</string>
+  <key>CFBundlePackageType</key><string>FMWK</string>
+</dict>
+</plist>`;
+    fs.writeFileSync(path.join(fwDir, 'Info.plist'), infoPlist, 'utf-8');
+
+    logger.info('直接编译：framework 打包完成', { headers: publicHeaders.length, fwDir });
+
+    // 6. Zip
+    const zipPath = path.join(workDir, `${podName}_${pubVer}.zip`);
+    execSync(`cd "${buildDir}" && zip -r "${zipPath}" "${fwName}"`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+    });
+
+    // 7. sha256 + upload Nexus + generate podspec + sync + save
+    const fileBuffer = fs.readFileSync(zipPath);
+    const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    // 生成 podspec，包含 subspec 别名（让依赖 libwebp/WebP 等写法的库能正常解析）
+    const sourceUrl = `${NEXUS_BASE_URL}/${podName}/${pubVer}.zip`;
+    let podspecContent = `Pod::Spec.new do |s|
+  s.name         = '${podName}'
+  s.version      = '${pubVer}'
+  s.summary      = '${(spec.summary || `${podName} iOS 组件`).replace(/'/g, "\\'")}'
+  s.homepage     = '${spec.homepage || gitUrl}'
+  s.license      = { :type => 'MIT' }
+  s.authors      = '${spec.authors ? (typeof spec.authors === 'string' ? spec.authors : Object.keys(spec.authors).join(', ')) : 'iOS Team'}'
+  s.source       = { :http => '${sourceUrl}', :sha256 => '${sha256}' }
+  s.platform     = :ios, '${minIos}'
+  s.vendored_frameworks = '${fwName}'
+${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` : `
+  s.prepare_command = <<-CMD
+    set -e
+    WEBP_BINARY="${fwName}/${podName}"
+    TMP_BINARY="${fwName}/${podName}.dynamic"
+    WEBP_INFO_PLIST="${fwName}/Info.plist"
+
+    if file "$WEBP_BINARY" | grep -q 'current ar archive'; then
+      xcrun --sdk iphoneos clang \\\\
+        -target arm64-apple-ios${minIos} \\\\
+        -dynamiclib \\\\
+        -all_load "$WEBP_BINARY" \\\\
+        -install_name @rpath/${fwName}/${podName} \\\\
+        -o "$TMP_BINARY"
+      mv "$TMP_BINARY" "$WEBP_BINARY"
+    fi
+
+    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable ${podName}" "$WEBP_INFO_PLIST" 2>/dev/null || \\\\
+      /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string ${podName}" "$WEBP_INFO_PLIST"
+    /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType FMWK" "$WEBP_INFO_PLIST" 2>/dev/null || \\\\
+      /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string FMWK" "$WEBP_INFO_PLIST"
+  CMD
+`}
+`;
+
+    // 添加 subspec 别名：每个原始 subspec 创建一个空 subspec 指向同一 framework
+    if (spec.subspecs && Array.isArray(spec.subspecs)) {
+      const subNames = spec.subspecs.map((s: any) => s.name || s).filter(Boolean);
+      if (subNames.length > 0) {
+        podspecContent += `\n  # Subspec aliases (all point to the same binary)\n`;
+        for (const subName of subNames) {
+          podspecContent += `  s.subspec '${subName}' do |ss|\n    ss.vendored_frameworks = '${fwName}'\n  end\n`;
+        }
+        podspecContent += `  s.default_subspecs = [${subNames.map((n: string) => `'${n}'`).join(', ')}]\n`;
+      }
+    }
+
+    podspecContent += `end\n`;
+
+    let nexusUrl: string;
+    try {
+      nexusUrl = await this.uploadToNexus(zipPath, podName, pubVer);
+    } catch (err: any) {
+      throw new Error(`Nexus 上传失败: ${err.message}`);
+    }
+
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      await this.syncToSpecRepo(podName, pubVer, podspecContent);
+    } catch (err: any) {
+      status = 'failed';
+      errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${err.message}`;
+    }
+
+    const component = this.saveComponent({
+      name: podName,
+      version: pubVer,
+      summary: spec.summary || '',
+      homepage: spec.homepage || '',
+      source_zip_url: nexusUrl,
+      podspec_content: podspecContent,
+      status,
+      error_message: errorMessage,
+    });
+
+    logger.info('直接编译发布成功', { podName, version, pubVer, objCount: objFiles.length, status });
+    return component;
+  }
+
+  /**
+   * 递归清除 JSON 对象中值为 null 的字段
+   * 解决 CocoaPods 解析 podspec 时遇到 null 值导致 "no implicit conversion of nil into String"
+   */
+  private cleanNullFields(obj: any): any {
+    if (Array.isArray(obj)) {
+      return obj.map(item => this.cleanNullFields(item));
+    }
+    if (obj && typeof obj === 'object') {
+      const cleaned: any = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value === null || value === undefined) continue;
+        cleaned[key] = this.cleanNullFields(value);
+      }
+      return cleaned;
+    }
+    return obj;
+  }
+
+  private mapRow(row: any): PodComponent {
+    return {
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      summary: row.summary || '',
+      homepage: row.homepage || '',
+      source_zip_url: row.source_zip_url,
+      podspec_content: row.podspec_content,
+      upload_time: row.upload_time,
+      status: row.status,
+      error_message: row.error_message || undefined,
+    };
+  }
+
+  /**
+   * 在本地已注册的 spec repos 中找指定 pod、版本的 podspec 文件
+   * 返回 podspec 文件的绝对路径，找不到返回 null
+   */
+  private findLocalPodspecFile(podName: string, version?: string): string | null {
+    const reposRoot = path.join(process.env.HOME || '', '.cocoapods/repos');
+    if (!fs.existsSync(reposRoot)) return null;
+
+    let repoEntries: string[] = [];
+    try {
+      repoEntries = fs.readdirSync(reposRoot);
+    } catch {
+      return null;
+    }
+
+    /** 给定 podDir，寻找指定版本（或最新版本）的 .podspec / .podspec.json */
+    const lookup = (podDir: string): string | null => {
+      if (!fs.existsSync(podDir)) return null;
+      let versions: string[] = [];
+      try {
+        versions = fs.readdirSync(podDir);
+      } catch {
+        return null;
+      }
+      const candidates = version ? [version] : this.sortVersionsDesc(versions);
+      for (const v of candidates) {
+        const dir = path.join(podDir, v);
+        if (!fs.existsSync(dir)) continue;
+        const json = path.join(dir, `${podName}.podspec.json`);
+        if (fs.existsSync(json)) return json;
+        const ruby = path.join(dir, `${podName}.podspec`);
+        if (fs.existsSync(ruby)) return ruby;
+      }
+      return null;
+    };
+
+    for (const repo of repoEntries) {
+      const repoDir = path.join(reposRoot, repo);
+      try {
+        if (!fs.statSync(repoDir).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+
+      // 普通 spec repo: <repo>/Specs/<Name> 或 <repo>/<Name>
+      const direct = lookup(path.join(repoDir, 'Specs', podName));
+      if (direct) return direct;
+      const flat = lookup(path.join(repoDir, podName));
+      if (flat) return flat;
+
+      // CDN trunk sharding: <repo>/Specs/<x>/<y>/<z>/<Name>
+      const trunkSpecs = path.join(repoDir, 'Specs');
+      if (!fs.existsSync(trunkSpecs)) continue;
+      try {
+        for (const x of fs.readdirSync(trunkSpecs)) {
+          if (x.length !== 1) continue;
+          const xp = path.join(trunkSpecs, x);
+          for (const y of fs.readdirSync(xp)) {
+            if (y.length !== 1) continue;
+            const yp = path.join(xp, y);
+            for (const z of fs.readdirSync(yp)) {
+              if (z.length !== 1) continue;
+              const found = lookup(path.join(yp, z, podName));
+              if (found) return found;
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 把本地 podspec 文件（Ruby 或 JSON）解析成 JSON 对象
+   * 优先：podspec.json 直接读；podspec(Ruby) 用 `pod ipc spec` 转 JSON
+   */
+  private parseLocalPodspec(specPath: string): any {
+    if (specPath.endsWith('.json')) {
+      return JSON.parse(fs.readFileSync(specPath, 'utf-8'));
+    }
+    const out = execSync(`pod ipc spec "${specPath}"`, {
+      encoding: 'utf-8',
+      timeout: 30000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return JSON.parse(out);
+  }
+
+  /**
+   * 查询官方组件的 podspec
+   * 先扫本地 spec repos（含 aliyun-specs / nnspec / trunk），命中则用 pod ipc spec 转 JSON；
+   * 找不到再退回到 `pod spec cat`（仅对 trunk 有效）
+   */
+  async fetchOfficialPodspec(podName: string, version?: string): Promise<any> {
+    // 1. 本地命中
+    const localPath = this.findLocalPodspecFile(podName, version);
+    if (localPath) {
+      try {
+        return this.parseLocalPodspec(localPath);
+      } catch (err: any) {
+        logger.warn('解析本地 podspec 失败，尝试 pod spec cat', {
+          podName,
+          version,
+          path: localPath,
+          error: err.message,
+        });
+        // fallthrough
+      }
+    }
+
+    // 2. 退回 pod spec cat（trunk 上的 pod 通常有 .podspec.json）
+    try {
+      const escapedName = podName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const versionFlag = version ? ` --version=${version}` : '';
+      const cmd = `pod spec cat "^${escapedName}$" --regex${versionFlag} 2>/dev/null`;
+      const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
+      return JSON.parse(result);
+    } catch (error: any) {
+      throw new Error(`获取官方 podspec 失败: ${error.message}`);
+    }
+  }
+
+  /**
+   * 排序版本号（语义化降序）
+   */
+  private sortVersionsDesc(versions: string[]): string[] {
+    const unique = [...new Set(versions)];
+    unique.sort((a, b) => {
+      const pa = a.split('.');
+      const pb = b.split('.');
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const sa = pa[i] || '';
+        const sb = pb[i] || '';
+        const na = Number(sa);
+        const nb = Number(sb);
+        if (!isNaN(na) && !isNaN(nb)) {
+          if (na !== nb) return nb - na;
+        } else {
+          if (sa !== sb) return sb.localeCompare(sa);
+        }
+      }
+      return 0;
+    });
+    return unique;
+  }
+
+  /**
+   * 扫描本地 ~/.cocoapods/repos 下所有 spec 仓库，找出该 pod 的全部版本目录
+   * 支持普通 git repo 和 CDN trunk 的目录结构
+   */
+  private listVersionsFromLocalSpecRepos(podName: string): string[] {
+    const reposRoot = path.join(process.env.HOME || '', '.cocoapods/repos');
+    if (!fs.existsSync(reposRoot)) return [];
+
+    const found = new Set<string>();
+    let repoEntries: string[] = [];
+    try {
+      repoEntries = fs.readdirSync(reposRoot);
+    } catch {
+      return [];
+    }
+
+    for (const repo of repoEntries) {
+      const repoDir = path.join(reposRoot, repo);
+      if (!fs.statSync(repoDir).isDirectory()) continue;
+
+      // 候选位置：
+      // - <repo>/Specs/<Name>/<version>/<Name>.podspec
+      // - <repo>/Specs/<a>/<b>/<c>/<Name>/<version>/<Name>.podspec   (trunk CDN sharding)
+      // - <repo>/<Name>/<version>/<Name>.podspec                      (有些 repo 没有 Specs/)
+      const candidates = [
+        path.join(repoDir, 'Specs', podName),
+        path.join(repoDir, podName),
+      ];
+      // trunk CDN: Specs/<x>/<y>/<z>/<Name>，x/y/z 是 podName 的 hash 前 3 位的目录
+      const trunkSpecs = path.join(repoDir, 'Specs');
+      if (fs.existsSync(trunkSpecs)) {
+        try {
+          const xs = fs.readdirSync(trunkSpecs);
+          for (const x of xs) {
+            if (x.length !== 1) continue; // CDN sharding 是单字符目录
+            const xp = path.join(trunkSpecs, x);
+            try {
+              const ys = fs.readdirSync(xp);
+              for (const y of ys) {
+                if (y.length !== 1) continue;
+                const yp = path.join(xp, y);
+                try {
+                  const zs = fs.readdirSync(yp);
+                  for (const z of zs) {
+                    if (z.length !== 1) continue;
+                    candidates.push(path.join(yp, z, podName));
+                  }
+                } catch { /* ignore */ }
+              }
+            } catch { /* ignore */ }
+          }
+        } catch { /* ignore */ }
+      }
+
+      for (const podDir of candidates) {
+        if (!fs.existsSync(podDir)) continue;
+        try {
+          const versions = fs.readdirSync(podDir);
+          for (const v of versions) {
+            const specFile = path.join(podDir, v, `${podName}.podspec`);
+            const jsonFile = path.join(podDir, v, `${podName}.podspec.json`);
+            if (fs.existsSync(specFile) || fs.existsSync(jsonFile)) {
+              found.add(v);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    return [...found];
+  }
+
+  /**
+   * 查询官方组件的可用版本列表
+   * 顺序：本地已添加的 spec repos（含 aliyun、trunk 等） → pod trunk info → pod spec cat
+   */
+  async fetchOfficialVersions(podName: string): Promise<string[]> {
+    // 1. 优先扫本地 spec repos，能拿到所有第三方源的完整版本列表
+    const local = this.listVersionsFromLocalSpecRepos(podName);
+    if (local.length > 0) {
+      return this.sortVersionsDesc(local);
+    }
+
+    // 2. 退回到 pod trunk info（仅命中 CocoaPods 官方 trunk）
+    try {
+      const cmd = `pod trunk info "${podName}" 2>/dev/null`;
+      const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
+      const versions: string[] = [];
+      for (const line of result.split('\n')) {
+        const match = line.match(/^\s+-\s+([\d.]+[A-Za-z0-9._-]*)/);
+        if (match) versions.push(match[1]);
+      }
+      if (versions.length > 0) {
+        return this.sortVersionsDesc(versions);
+      }
+    } catch {
+      // fallthrough
+    }
+
+    // 3. 最后兜底：pod spec cat 至少能拿到当前最新版本
+    try {
+      const spec = await this.fetchOfficialPodspec(podName);
+      if (spec?.version) return [spec.version];
+    } catch {
+      // ignore
+    }
+
+    throw new Error(`获取 ${podName} 版本列表失败`);
+  }
+
+  /**
+   * 获取组件的第三方依赖列表，并检查哪些已在内部仓库中存在
+   * 用于发布前提示用户先发布缺失的依赖
+   */
+  async checkDependencies(podName: string, version: string): Promise<{
+    dependencies: Array<{
+      name: string;
+      versionRequirement: string;
+      existsInInternal: boolean;
+      internalVersions: string[];
+      officialVersions: string[];
+    }>;
+    allSatisfied: boolean;
+    subspecs: string[];
+    defaultSubspecs: string[];
+  }> {
+    const spec = await this.fetchOfficialPodspec(podName, version);
+
+    // 收集所有第三方依赖（顶层 + subspecs）
+    const allDeps: Record<string, string[]> = {};
+
+    // 顶层依赖
+    if (spec.dependencies) {
+      for (const [depName, depVersions] of Object.entries(spec.dependencies)) {
+        allDeps[depName] = Array.isArray(depVersions) ? depVersions as string[] : [];
+      }
+    }
+
+    // 从 subspecs 收集依赖（同 Podfile 逻辑：有 default 只取 default，否则取全部）
+    if (spec.subspecs && Array.isArray(spec.subspecs)) {
+      const subsToCheck = spec.default_subspecs
+        ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
+        : spec.subspecs.map((s: any) => s.name);
+
+      for (const subName of subsToCheck) {
+        const sub = spec.subspecs.find((s: any) => s.name === subName);
+        if (sub?.dependencies) {
+          for (const [depName, depVersions] of Object.entries(sub.dependencies)) {
+            // 跳过自身 subspec 的内部依赖（如 SVGAPlayer/ProtoFiles）
+            if (depName.startsWith(`${podName}/`)) continue;
+            allDeps[depName] = Array.isArray(depVersions) ? depVersions as string[] : [];
+          }
+        }
+      }
+    }
+
+    // 检查每个依赖是否在内部仓库中存在，并获取官方可用版本
+    const results = [];
+    for (const [depName, depVersions] of Object.entries(allDeps)) {
+      // SDWebImage/Core 这种 subspec 依赖，用主组件名 SDWebImage 去查内部仓库
+      const mainPodName = depName.includes('/') ? depName.split('/')[0] : depName;
+      const internalVersions = await this.getVersions(mainPodName);
+
+      // 获取官方版本列表（用于未发布的依赖选择版本）
+      let officialVersions: string[] = [];
+      if (internalVersions.length === 0) {
+        try {
+          officialVersions = await this.fetchOfficialVersions(mainPodName);
+          // 只取前 20 个版本
+          officialVersions = officialVersions.slice(0, 20);
+        } catch {
+          // 获取失败不阻断
+        }
+      }
+
+      results.push({
+        name: depName,
+        versionRequirement: depVersions.length > 0 ? depVersions.join(', ') : '任意版本',
+        existsInInternal: internalVersions.length > 0,
+        internalVersions: internalVersions.map(v => v.version),
+        officialVersions,
+      });
+    }
+
+    return {
+      dependencies: results,
+      allSatisfied: results.every(d => d.existsInInternal),
+      subspecs: spec.subspecs ? spec.subspecs.map((s: any) => s.name) : [],
+      defaultSubspecs: spec.default_subspecs
+        ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
+        : [],
+    };
+  }
+
+  /**
+   * 从官方 CocoaPods 导入组件到内部仓库
+   * 下载官方 zip → 上传 Nexus → 生成内部 podspec → 同步 NNSpec
+   */
+  async importFromOfficial(podName: string, version: string, publishVersion?: string, prepareCommand?: string): Promise<PodComponent> {
+    // publishVersion: 内部发布用的版本号，可追加后缀如 1.4.0.1
+    const pubVer = publishVersion || version;
+
+    // 检查是否已存在（用发布版本号）
+    const existing = await this.getOne(podName, pubVer);
+    if (existing) {
+      throw new Error(`${podName}@${pubVer} 已存在`);
+    }
+
+    // 1. 获取官方 podspec（用原始 version 从源获取）
+    logger.info('获取官方 podspec', { podName, version, publishVersion: pubVer });
+    const spec = await this.fetchOfficialPodspec(podName, version);
+
+    // 2. 下载源文件（支持 http 和 git 两种方式）
+    const uploadDir = process.env.UPLOAD_DIR || '/tmp';
+    const tempZip = path.join(uploadDir, `official_${podName}_${version}_${Date.now()}.zip`);
+
+    if (spec.source?.http) {
+      // HTTP 下载
+      const sourceUrl = spec.source.http;
+      logger.info('下载官方 SDK (http)', { podName, version, url: sourceUrl });
+      // GitHub 下载加速：尝试镜像站，失败后回退到原始地址
+      const mirrors = [
+        (url: string) => url.replace('https://github.com/', 'https://ghfast.top/https://github.com/'),
+        (url: string) => url.replace('https://github.com/', 'https://mirror.ghproxy.com/https://github.com/'),
+        (url: string) => url, // 原始地址作为最后的 fallback
+      ];
+      const urlsToTry = sourceUrl.includes('github.com')
+        ? mirrors.map(fn => fn(sourceUrl))
+        : [sourceUrl];
+
+      let downloaded = false;
+      for (const tryUrl of urlsToTry) {
+        try {
+          logger.info('尝试下载', { url: tryUrl });
+          execSync(`curl -L --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 300 -o "${tempZip}" "${tryUrl}"`, {
+            encoding: 'utf-8',
+            timeout: 360000,
+          });
+          // 检查文件是否有效（大于 1KB）
+          const stat = fs.statSync(tempZip);
+          if (stat.size > 1024) {
+            downloaded = true;
+            logger.info('下载成功', { url: tryUrl, size: stat.size });
+            break;
+          }
+          fs.unlinkSync(tempZip);
+        } catch {
+          logger.warn('下载失败，尝试下一个镜像', { url: tryUrl });
+          if (fs.existsSync(tempZip)) fs.unlinkSync(tempZip);
+        }
+      }
+      if (!downloaded) {
+        throw new Error(`下载官方 SDK 失败：所有镜像均超时，请手动下载后使用"上传本地组件"功能`);
+      }
+    } else if (spec.source?.git) {
+      // Git 克隆后打包为 zip
+      const gitUrl = spec.source.git;
+      const tag = spec.source.tag || version;
+      const tempCloneDir = path.join(uploadDir, `official_clone_${Date.now()}`);
+      const cloneDirName = podName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const actualCloneDir = path.join(tempCloneDir, cloneDirName);
+      logger.info('克隆官方仓库 (git)', { podName, version, git: gitUrl, tag });
+
+      try {
+        fs.mkdirSync(tempCloneDir, { recursive: true });
+
+        // GitHub 仓库加速：尝试镜像站
+        const gitUrls = gitUrl.includes('github.com')
+          ? [
+              gitUrl.replace('https://github.com/', 'https://ghfast.top/https://github.com/'),
+              gitUrl.replace('https://github.com/', 'https://mirror.ghproxy.com/https://github.com/'),
+              gitUrl,
+            ]
+          : [gitUrl];
+
+        let cloned = false;
+        for (const tryGitUrl of gitUrls) {
+          try {
+            let cloneCmd = `git clone --depth 1`;
+            if (tag) cloneCmd += ` --branch "${tag}"`;
+            if (spec.source.submodules) cloneCmd += ` --recurse-submodules`;
+            cloneCmd += ` "${tryGitUrl}" "${actualCloneDir}"`;
+
+            logger.info('尝试 git clone', { url: tryGitUrl });
+            execSync(cloneCmd, { encoding: 'utf-8', timeout: 180000 });
+            cloned = true;
+            break;
+          } catch {
+            logger.warn('git clone 失败，尝试下一个镜像', { url: tryGitUrl });
+            if (fs.existsSync(actualCloneDir)) fs.rmSync(actualCloneDir, { recursive: true, force: true });
+          }
+        }
+        if (!cloned) {
+          throw new Error('所有镜像均克隆失败');
+        }
+
+        // 删除 .git 目录减小体积
+        const gitDir = path.join(actualCloneDir, '.git');
+        if (fs.existsSync(gitDir)) fs.rmSync(gitDir, { recursive: true, force: true });
+
+        // 打包为 zip（目录名与 pathPrefix 一致）
+        execSync(`cd "${tempCloneDir}" && zip -r "${tempZip}" "${cloneDirName}"`, {
+          encoding: 'utf-8',
+          timeout: 60000,
+        });
+
+        // 清理克隆目录
+        fs.rmSync(tempCloneDir, { recursive: true, force: true });
+      } catch (error: any) {
+        // 清理
+        if (fs.existsSync(tempCloneDir)) fs.rmSync(tempCloneDir, { recursive: true, force: true });
+        throw new Error(`克隆官方仓库失败: ${error.message}`);
+      }
+    } else {
+      throw new Error('官方 podspec 中未找到支持的下载方式（需要 http 或 git）');
+    }
+
+    if (!fs.existsSync(tempZip)) {
+      throw new Error('下载官方 SDK 失败：文件不存在');
+    }
+
+    // 3. 计算 sha256
+    const fileBuffer = fs.readFileSync(tempZip);
+    const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+    // 4. 基于官方 podspec 生成内部 podspec（保留原始路径，只替换 source）
+    const podspecContent = this.generateOfficialPodspec(spec, podName, pubVer, sha256, prepareCommand);
+
+    // 5. 上传到 Nexus
+    let nexusUrl: string;
+    try {
+      nexusUrl = await this.uploadToNexus(tempZip, podName, pubVer);
+    } catch (error: any) {
+      fs.unlinkSync(tempZip);
+      throw error;
+    }
+    fs.unlinkSync(tempZip);
+
+    // 6. 同步 podspec 到 NNSpec
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      await this.syncToSpecRepo(podName, pubVer, podspecContent);
+    } catch (error: any) {
+      status = 'failed';
+      errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
+    }
+
+    // 7. 保存到数据库
+    const component = this.saveComponent({
+      name: podName,
+      version: pubVer,
+      summary: spec.summary || '',
+      homepage: spec.source?.git || spec.source?.http || spec.homepage || '',
+      source_zip_url: nexusUrl,
+      podspec_content: podspecContent,
+      status,
+      error_message: errorMessage,
+    });
+
+    logger.info('官方组件导入成功', { podName, version, publishVersion: pubVer, status });
+    return component;
+  }
+
+  /**
+   * 从源码编译为二进制 framework 并发布
+   * 使用 xcodebuild 编译源码 Pod 为真机 .framework 或 .a
+   */
+  async buildBinaryFromSource(podName: string, version: string, outputType: 'framework' | 'static_library' = 'framework', depVersionOverrides?: Record<string, string>, selectedSubspecs?: string[], publishVersion?: string, prepareCommand?: string): Promise<PodComponent> {
+    const pubVer = publishVersion || version;
+    logger.info('buildBinaryFromSource 调用参数', { podName, version, outputType, depVersionOverrides, selectedSubspecs, publishVersion: pubVer });
+    const existing = await this.getOne(podName, pubVer);
+    if (existing) {
+      throw new Error(`${podName}@${pubVer} 已存在`);
+    }
+
+    const uploadDir = process.env.UPLOAD_DIR || '/tmp';
+    const workDir = path.join(uploadDir, `build_${podName}_${Date.now()}`);
+    fs.mkdirSync(workDir, { recursive: true });
+
+    try {
+      // 1. 获取官方 podspec
+      logger.info('编译源码组件', { podName, version, outputType });
+      const spec = await this.fetchOfficialPodspec(podName, version);
+
+      // 检测是否是预编译二进制库（自带 vendored_frameworks 或 vendored_libraries）
+      // 如果是，自动调整 outputType 以匹配实际产物类型
+      const hasVendoredFrameworks = spec.vendored_frameworks || spec.subspecs?.some((s: any) => s.vendored_frameworks);
+      const hasVendoredLibraries = spec.vendored_libraries || spec.subspecs?.some((s: any) => s.vendored_libraries);
+      const hasSourceFiles = spec.source_files || spec.subspecs?.some((s: any) => s.source_files);
+
+      // 如果既没有源码也没有 vendored 产物（如 SwiftLint 这种命令行工具），直接走导入流程
+      if (!hasSourceFiles && !hasVendoredFrameworks && !hasVendoredLibraries) {
+        logger.info('检测到非编译型组件（无源码、无二进制产物），切换为直接导入', { podName });
+        // 清理工作目录
+        if (fs.existsSync(workDir)) {
+          fs.rmSync(workDir, { recursive: true, force: true });
+        }
+        return this.importFromOfficial(podName, version, pubVer);
+      }
+
+      if (hasVendoredLibraries && !hasVendoredFrameworks && outputType === 'framework') {
+        logger.info('检测到预编译 .a 静态库，自动切换 outputType 为 static_library', { podName });
+        outputType = 'static_library';
+      } else if (hasVendoredFrameworks && !hasVendoredLibraries && outputType === 'static_library') {
+        logger.info('检测到预编译 .framework，自动切换 outputType 为 framework', { podName });
+        outputType = 'framework';
+      }
+
+      // 2. 从 pod lib create 模板生成合法 Xcode 工程（避免手写 pbxproj 的转义问题）
+      const projectDir = path.join(workDir, 'BuildProject');
+      const targetName = 'BuildTarget';
+      const iosVersion = spec.platforms?.ios || '12.0';
+      logger.info('从 CocoaPods 模板生成工程', { podName, version });
+
+      this.scaffoldProjectFromPodTemplate(projectDir, targetName, podName, version, iosVersion, outputType, spec, selectedSubspecs);
+
+      // 3. pod install（带重试，git clone 大仓库可能较慢）
+      // 临时设置 git URL 替换，让 CocoaPods clone GitHub 仓库时走镜像加速
+      logger.info('执行 pod install', { podName, version, cwd: projectDir });
+      let gitMirrorSet = false;
+      try {
+        execSync('git config --global url."https://ghfast.top/https://github.com/".insteadOf "https://github.com/"', { encoding: 'utf-8' });
+        gitMirrorSet = true;
+        logger.info('已设置 git GitHub 镜像加速');
+      } catch {
+        logger.warn('设置 git 镜像失败，将使用原始地址');
+      }
+
+      const podInstallTimeout = 600000; // 10 分钟
+      const maxRetries = 2;
+      let podInstalled = false;
+
+      try {
+        for (let attempt = 0; attempt <= maxRetries && !podInstalled; attempt++) {
+          const useRepoUpdate = attempt > 0;
+          const cmd = useRepoUpdate ? 'pod install 2>&1' : 'pod install --no-repo-update 2>&1';
+          logger.info(`pod install 尝试 ${attempt + 1}/${maxRetries + 1}`, { cmd });
+
+          try {
+            execSync(cmd, {
+              cwd: projectDir,
+              encoding: 'utf-8',
+              timeout: podInstallTimeout,
+              maxBuffer: 10 * 1024 * 1024,
+            });
+            podInstalled = true;
+          } catch (podErr: any) {
+            const errOutput = ((podErr.stdout || '') + '\n' + (podErr.stderr || '')).trim();
+            const last20 = errOutput.split('\n').slice(-20).join('\n');
+            logger.warn(`pod install 尝试 ${attempt + 1} 失败`, { output: last20 });
+
+            if (attempt === maxRetries) {
+              // pod install 最终失败，尝试直接编译 fallback（仅适用于无外部依赖的纯 C/C++ 库如 libwebp）
+              const hasDependencies = spec.dependencies && Object.keys(spec.dependencies).length > 0;
+              const subspecHasDeps = spec.subspecs?.some((s: any) =>
+                s.dependencies && Object.keys(s.dependencies).some((d: string) => !d.startsWith(`${podName}/`))
+              );
+              const canDirectBuild = spec.source?.git && hasSourceFiles &&
+                !hasVendoredFrameworks && !hasVendoredLibraries &&
+                !hasDependencies && !subspecHasDeps;
+
+              if (canDirectBuild) {
+                logger.info('pod install 失败，尝试直接编译 fallback（无外部依赖的纯 C/C++ 库）', { podName, version });
+                // 恢复 git 配置
+                if (gitMirrorSet) {
+                  try { execSync('git config --global --unset url."https://ghfast.top/https://github.com/".insteadOf', { encoding: 'utf-8' }); } catch { /* */ }
+                  gitMirrorSet = false;
+                }
+                const result = await this.buildDirectFromSource(spec, podName, version, pubVer, workDir, prepareCommand);
+                return result;
+              }
+              throw new Error(`pod install 失败（已重试 ${maxRetries} 次）:\n${last20}`);
+            }
+            execSync('sleep 3', { encoding: 'utf-8' });
+          }
+        }
+      } finally {
+        // 恢复 git 配置，避免影响其他 git 操作
+        if (gitMirrorSet) {
+          try {
+            execSync('git config --global --unset url."https://ghfast.top/https://github.com/".insteadOf', { encoding: 'utf-8' });
+            logger.info('已恢复 git 配置');
+          } catch {
+            // 忽略
+          }
+        }
+      }
+
+      // 3.5 源码兼容性 patch（pod install 后、编译前）
+      // 修复老库在新版 Xcode/SDK 下的编译错误
+      const podsDir = path.join(projectDir, 'Pods');
+      if (fs.existsSync(podsDir)) {
+        try {
+          // 先给所有源码文件加写权限（CocoaPods 下载的文件可能是只读的）
+          execSync(`find "${podsDir}" -name "*.m" -exec chmod u+w {} +`, { encoding: 'utf-8' });
+
+          // 查找使用了 OSAtomicCompareAndSwapPtrBarrier 的 .m 文件
+          const problematicFiles = execSync(
+            `grep -rl "OSAtomicCompareAndSwapPtrBarrier" "${podsDir}" --include="*.m" 2>/dev/null || true`,
+            { encoding: 'utf-8' }
+          ).trim();
+
+          if (problematicFiles) {
+            for (const filePath of problematicFiles.split('\n').filter(Boolean)) {
+              let content = fs.readFileSync(filePath, 'utf-8');
+              // 在文件头部添加宏定义，将 OSAtomicCompareAndSwapPtrBarrier 重定向到 __sync 内建函数
+              // 这比正则替换函数调用更安全，不会破坏括号匹配
+              const patch = [
+                '#include <stdatomic.h>',
+                '#define OSAtomicCompareAndSwapPtrBarrier(Old, New, Ptr) __sync_bool_compare_and_swap(Ptr, Old, New)',
+                '',
+              ].join('\n');
+              if (!content.includes('__sync_bool_compare_and_swap') && !content.includes('#define OSAtomicCompareAndSwapPtrBarrier')) {
+                content = patch + content;
+                fs.writeFileSync(filePath, content, 'utf-8');
+                logger.info('Patch: 添加 OSAtomicCompareAndSwapPtrBarrier 宏重定向', { file: path.basename(filePath) });
+              }
+            }
+          }
+        } catch (patchErr: any) {
+          logger.warn('源码 patch 失败（非致命）', { error: patchErr.message?.substring(0, 200) });
+        }
+      }
+
+      // 4. xcodebuild 编译真机版本
+      logger.info('xcodebuild 编译', { podName, version });
+      const buildDir = path.join(workDir, 'build');
+
+      // 列出可用 scheme
+      const workspaceName = `${targetName}.xcworkspace`;
+      const schemeList = execSync(
+        `xcodebuild -workspace ${workspaceName} -list 2>&1`,
+        { cwd: projectDir, encoding: 'utf-8', timeout: 30000 }
+      );
+      logger.info('可用 schemes', { schemes: schemeList.trim() });
+
+      // 从 Pods 工程中直接编译目标 pod
+      const podsProjectPath = path.join(projectDir, 'Pods', 'Pods.xcodeproj');
+      const usePodsProject = fs.existsSync(podsProjectPath);
+
+      // 先列出 Pods 工程中的 targets，确认目标 pod target 存在
+      if (usePodsProject) {
+        try {
+          const targetList = execSync(
+            `xcodebuild -project Pods/Pods.xcodeproj -list 2>&1`,
+            { cwd: projectDir, encoding: 'utf-8', timeout: 30000 }
+          );
+          logger.info('Pods 工程 targets', { targets: targetList.trim() });
+        } catch (e: any) {
+          logger.warn('列出 Pods targets 失败', { error: e.message?.substring(0, 300) });
+        }
+      }
+
+      // 用 -project + -target 时不能用 -derivedDataPath，改用 SYMROOT/OBJROOT 指定输出目录
+      // 同时强制覆盖 IPHONEOS_DEPLOYMENT_TARGET，避免老库声明的低版本不被新 SDK 支持
+      // 加 GCC_TREAT_INCOMPATIBLE_POINTER_TYPE_WARNINGS_AS_ERRORS=NO 和 OTHER_CFLAGS 抑制老代码编译错误
+      const minTarget = parseFloat(iosVersion) < 13.0 ? '13.0' : iosVersion;
+      const commonFlags = `BUILD_LIBRARY_FOR_DISTRIBUTION=YES SKIP_INSTALL=NO ` +
+        `ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO ` +
+        `IPHONEOS_DEPLOYMENT_TARGET=${minTarget} ` +
+        `GCC_TREAT_INCOMPATIBLE_POINTER_TYPE_WARNINGS_AS_ERRORS=NO ` +
+        `CLANG_ENABLE_EXPLICIT_MODULES=NO ` +
+        `OTHER_CFLAGS='$(inherited) -Wno-error=incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-error=conflicting-types'`;
+      const buildCmd = usePodsProject
+        ? `xcodebuild build -project Pods/Pods.xcodeproj -target "${podName}" ` +
+          `-configuration Release -sdk iphoneos ` +
+          `SYMROOT="${buildDir}/Build/Products" OBJROOT="${buildDir}/Build/Intermediates.noindex" ` +
+          commonFlags
+        : `xcodebuild build -workspace ${workspaceName} -scheme "${podName}" ` +
+          `-configuration Release -sdk iphoneos -derivedDataPath "${buildDir}" ` +
+          commonFlags;
+
+      // 用 shell 执行 xcodebuild，通过退出码判断成功/失败
+      // 加 || true 确保 shell 不会因为 xcodebuild 失败而抛异常，我们自己检查退出码
+      let buildOutput: string;
+      try {
+        buildOutput = execSync(`${buildCmd} 2>&1; echo "XCODEBUILD_EXIT_CODE:$?"`, {
+          cwd: projectDir,
+          encoding: 'utf-8',
+          timeout: 300000,
+          maxBuffer: 50 * 1024 * 1024, // 50MB，xcodebuild 输出很大
+        });
+      } catch (buildError: any) {
+        // maxBuffer 超限或超时
+        const output = (buildError.stdout || '') + '\n' + (buildError.stderr || '');
+        const lines = output.trim().split('\n').slice(-50).join('\n');
+        logger.error('xcodebuild 执行异常', { output: lines });
+        throw new Error(`xcodebuild 执行异常:\n${lines}`);
+      }
+
+      // 从输出中提取退出码
+      const exitCodeMatch = buildOutput.match(/XCODEBUILD_EXIT_CODE:(\d+)/);
+      const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : -1;
+      // 去掉退出码标记行
+      buildOutput = buildOutput.replace(/XCODEBUILD_EXIT_CODE:\d+\n?$/, '');
+
+      const outputLines = buildOutput.trim().split('\n');
+      const last30 = outputLines.slice(-30).join('\n');
+
+      if (exitCode !== 0) {
+        // 提取包含 error: 的行，比只取最后 N 行更有用
+        const errorLines = outputLines.filter(l => l.includes('error:') || l.includes('** BUILD FAILED **'));
+        const errorSummary = errorLines.length > 0
+          ? errorLines.slice(0, 20).join('\n')
+          : outputLines.slice(-30).join('\n');
+        logger.error('xcodebuild 编译失败', { exitCode, output: errorSummary });
+        throw new Error(`xcodebuild 编译失败 (exit ${exitCode}):\n${errorSummary}`);
+      }
+      logger.info('编译成功', { output: last30 });
+
+      // 5. 查找编译产物
+      // -project + SYMROOT 模式: 产物在 buildDir/Build/Products/Release-iphoneos/
+      // -workspace + derivedDataPath 模式: 产物在 buildDir/Build/Products/Release-iphoneos/
+      const productsDir = path.join(buildDir, 'Build', 'Products', 'Release-iphoneos');
+      if (!fs.existsSync(productsDir)) {
+        // fallback: 搜索整个 buildDir
+        if (!fs.existsSync(buildDir)) {
+          throw new Error(`编译产物目录不存在: ${buildDir}，xcodebuild 可能未正确执行`);
+        }
+        logger.warn('标准产物目录不存在，将搜索整个 buildDir', { productsDir });
+      }
+
+      const searchDir = fs.existsSync(productsDir) ? productsDir : buildDir;
+
+      let artifactPath = '';
+      let artifactName = '';
+
+      if (outputType === 'framework') {
+        // use_frameworks! 模式下，framework 产物在 Release-iphoneos/ 中
+        const fwSearch = execSync(
+          `find "${searchDir}" -name "${podName}.framework" -type d 2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        let fwPath = fwSearch || execSync(
+          `find "${searchDir}" -name "*.framework" -type d ` +
+          `-not -name "Pods_${targetName}_Example.framework" ` +
+          `-not -path "*/Pods_*.framework" ` +
+          `2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        if (!fwPath) {
+          // 检查 Pods 源码目录（预编译二进制库自带 .framework）
+          const podsVendoredFw = execSync(
+            `find "${path.join(projectDir, 'Pods', podName)}" -name "*.framework" -type d 2>/dev/null | head -1`,
+            { encoding: 'utf-8' }
+          ).trim();
+          if (podsVendoredFw) {
+            fwPath = podsVendoredFw;
+            logger.info('使用 Pods 源码目录中的预编译 .framework', { fwPath });
+          } else {
+            const allProducts = execSync(
+              `find "${buildDir}" \\( -name "*.framework" -o -name "*.a" \\) 2>/dev/null || true`,
+              { encoding: 'utf-8' }
+            ).trim();
+            logger.error('未找到 framework，所有编译产物', { allProducts });
+            throw new Error(`编译产物中未找到 .framework。所有产物: ${allProducts || '无'}`);
+          }
+        }
+        artifactPath = fwPath;
+        artifactName = path.basename(fwPath);
+      } else {
+        // 搜索 .a 文件，pod 名中的横杠可能被替换为下划线
+        const safeName = podName.replace(/-/g, '_');
+        const aSearch = execSync(
+          `find "${searchDir}" -name "lib${podName}.a" -o -name "lib${safeName}.a" 2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        const aPath = aSearch || execSync(
+          `find "${searchDir}" -name "*.a" -not -name "libPods*" 2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        // 如果 searchDir 没找到，扩大到整个 buildDir
+        const finalPath = aPath || execSync(
+          `find "${buildDir}" -name "*.a" -not -name "libPods*" 2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        // 如果编译产物中也没有，检查 Pods 源码目录（预编译二进制库如 libyuv-iOS 自带 .a）
+        const podsVendoredPath = !finalPath ? execSync(
+          `find "${path.join(projectDir, 'Pods', podName)}" -name "*.a" 2>/dev/null | head -1`,
+          { encoding: 'utf-8' }
+        ).trim() : '';
+        const resultPath = finalPath || podsVendoredPath;
+        if (!resultPath) {
+          const allProducts = execSync(
+            `find "${buildDir}" \\( -name "*.a" -o -name "*.framework" \\) 2>/dev/null || true`,
+            { encoding: 'utf-8' }
+          ).trim();
+          logger.error('未找到 .a，所有编译产物', { allProducts, searchDir });
+          throw new Error(`编译产物中未找到 .a。所有产物: ${allProducts || '无'}`);
+        }
+        artifactPath = resultPath;
+        artifactName = path.basename(resultPath);
+        if (podsVendoredPath) {
+          logger.info('使用 Pods 源码目录中的预编译 .a', { artifactPath });
+        }
+      }
+
+      logger.info('编译产物', { artifactName, artifactPath });
+
+      // 6. 打包为 zip（framework 包含头文件；.a 需要额外收集头文件）
+      const tempZip = path.join(uploadDir, `built_${podName}_${version}.zip`);
+      const packDir = path.join(workDir, 'pack');
+      fs.mkdirSync(packDir, { recursive: true });
+
+      if (outputType === 'framework') {
+        // 复制 framework 到打包目录
+        execSync(`cp -R "${artifactPath}" "${packDir}/"`, { encoding: 'utf-8' });
+
+        // 检查 framework 内是否包含 Headers 目录
+        const fwInPack = path.join(packDir, artifactName);
+        const headersInFw = path.join(fwInPack, 'Headers');
+        const fwContents = execSync(`ls -la "${fwInPack}/"`, { encoding: 'utf-8' }).trim();
+        logger.info('framework 内容', { contents: fwContents });
+
+        if (!fs.existsSync(headersInFw) || fs.readdirSync(headersInFw).length === 0) {
+          // Headers 目录不存在或为空，从编译产物中收集头文件
+          logger.warn('framework 中缺少 Headers，尝试从编译产物中收集');
+          fs.mkdirSync(headersInFw, { recursive: true });
+
+          // 方法1: 从 Pods 源码目录收集公开头文件
+          const podsSourceDir = path.join(projectDir, 'Pods', podName);
+          if (fs.existsSync(podsSourceDir)) {
+            const headers = execSync(
+              `find "${podsSourceDir}" -name "*.h" 2>/dev/null || true`,
+              { encoding: 'utf-8' }
+            ).trim();
+            if (headers) {
+              execSync(`find "${podsSourceDir}" -name "*.h" -exec cp {} "${headersInFw}/" \\;`, { encoding: 'utf-8' });
+              logger.info('从 Pods 源码目录收集头文件', { count: headers.split('\n').length });
+            }
+          }
+
+          // 方法2: 从编译中间产物中查找头文件
+          if (fs.readdirSync(headersInFw).length === 0) {
+            const headerSearch = execSync(
+              `find "${buildDir}" -path "*/${podName}/*.h" 2>/dev/null | head -20 || true`,
+              { encoding: 'utf-8' }
+            ).trim();
+            if (headerSearch) {
+              const headerFiles = headerSearch.split('\n');
+              for (const h of headerFiles) {
+                if (h && fs.existsSync(h)) {
+                  const dest = path.join(headersInFw, path.basename(h));
+                  if (!fs.existsSync(dest)) {
+                    fs.copyFileSync(h, dest);
+                  }
+                }
+              }
+              logger.info('从编译中间产物收集头文件', { count: headerFiles.length });
+            }
+          }
+
+          // 生成 umbrella header（如果不存在）
+          const umbrellaHeader = path.join(headersInFw, `${podName}.h`);
+          if (!fs.existsSync(umbrellaHeader)) {
+            const allHeaders = fs.readdirSync(headersInFw).filter(f => f.endsWith('.h') && f !== `${podName}.h`);
+            const imports = allHeaders.map(h => `#import <${podName}/${h}>`).join('\n');
+            fs.writeFileSync(umbrellaHeader, `#import <Foundation/Foundation.h>\n${imports}\n`, 'utf-8');
+            logger.info('生成 umbrella header', { headerCount: allHeaders.length });
+          }
+        }
+
+        // 确保有 module.modulemap
+        const modulesDir = path.join(fwInPack, 'Modules');
+        const modulemapPath = path.join(modulesDir, 'module.modulemap');
+        if (!fs.existsSync(modulemapPath)) {
+          fs.mkdirSync(modulesDir, { recursive: true });
+          const modulemap = `framework module ${podName} {\n  umbrella header "${podName}.h"\n  export *\n  module * { export * }\n}\n`;
+          fs.writeFileSync(modulemapPath, modulemap, 'utf-8');
+          logger.info('生成 module.modulemap');
+        }
+
+        const finalContents = execSync(`find "${fwInPack}" -type f | head -30`, { encoding: 'utf-8' }).trim();
+        logger.info('最终 framework 内容', { contents: finalContents });
+      } else {
+        // 复制 .a 和头文件
+        execSync(`cp "${artifactPath}" "${packDir}/"`, { encoding: 'utf-8' });
+        const headersTarget = path.join(packDir, `${podName}.Headers`);
+        fs.mkdirSync(headersTarget, { recursive: true });
+
+        // 方法1: 从编译产物目录查找头文件
+        const headerDir = execSync(
+          `find "${buildDir}" -path "*/Release-iphoneos/${podName}/*.h" -exec dirname {} \\; 2>/dev/null | sort -u | head -1`,
+          { encoding: 'utf-8' }
+        ).trim();
+        if (headerDir) {
+          execSync(`cp -R "${headerDir}/"*.h "${headersTarget}/" 2>/dev/null || true`, { encoding: 'utf-8' });
+        }
+
+        // 方法2: 从编译中间产物的 public headers 目录查找
+        if (fs.readdirSync(headersTarget).filter(f => f.endsWith('.h')).length === 0) {
+          const publicHeaderDir = execSync(
+            `find "${buildDir}" -path "*/${podName}.build/*/public_headers" -type d 2>/dev/null | head -1`,
+            { encoding: 'utf-8' }
+          ).trim();
+          if (publicHeaderDir) {
+            execSync(`cp "${publicHeaderDir}/"*.h "${headersTarget}/" 2>/dev/null || true`, { encoding: 'utf-8' });
+            logger.info('从 public_headers 目录收集头文件', { dir: publicHeaderDir });
+          }
+        }
+
+        // 方法3: 从 Pods 源码目录收集（源码库的头文件在这里）
+        if (fs.readdirSync(headersTarget).filter(f => f.endsWith('.h')).length === 0) {
+          const podsSourceDir = path.join(projectDir, 'Pods', podName);
+          if (fs.existsSync(podsSourceDir)) {
+            execSync(`find "${podsSourceDir}" -name "*.h" -exec cp {} "${headersTarget}/" \\;`, { encoding: 'utf-8' });
+            logger.info('从 Pods 源码目录收集头文件', { dir: podsSourceDir });
+          }
+        }
+
+        const headerCount = fs.readdirSync(headersTarget).filter(f => f.endsWith('.h')).length;
+        logger.info('收集到的头文件', { count: headerCount, files: fs.readdirSync(headersTarget).join(', ') });
+
+        if (headerCount === 0) {
+          logger.warn('未找到任何头文件，zip 中将不包含 Headers');
+        }
+      }
+
+      execSync(`cd "${packDir}" && zip -r "${tempZip}" .`, {
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+
+      // 7. 计算 sha256
+      const fileBuffer = fs.readFileSync(tempZip);
+      const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+      // 8. 生成 podspec（基于原始官方 podspec，保留 dependencies/swift_versions 等完整信息）
+      const podspecContent = this.generateBinaryPodspec(spec, podName, pubVer, outputType, artifactName, sha256, depVersionOverrides, selectedSubspecs, prepareCommand);
+
+      // 9. 上传到 Nexus
+      let nexusUrl: string;
+      try {
+        nexusUrl = await this.uploadToNexus(tempZip, podName, pubVer);
+      } catch (error: any) {
+        fs.unlinkSync(tempZip);
+        throw error;
+      }
+      fs.unlinkSync(tempZip);
+
+      // 10. 同步 podspec
+      let status: 'published' | 'failed' = 'published';
+      let errorMessage: string | undefined;
+      try {
+        await this.syncToSpecRepo(podName, pubVer, podspecContent);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
+      }
+
+      // 11. 保存到数据库
+      const component = this.saveComponent({
+        name: podName,
+        version: pubVer,
+        summary: spec.summary || '',
+        homepage: spec.homepage || '',
+        source_zip_url: nexusUrl,
+        podspec_content: podspecContent,
+        status,
+        error_message: errorMessage,
+      });
+
+      logger.info('源码编译发布成功', { podName, version, publishVersion: pubVer, outputType, status });
+      return component;
+    } finally {
+      // 清理工作目录
+      if (fs.existsSync(workDir)) {
+        fs.rmSync(workDir, { recursive: true, force: true });
+      }
+    }
+  }
+
+  /**
+   * 从静态模板文件生成合法的 Xcode 工程
+   * 使用项目内置的 pbxproj 模板（来自 CocoaPods 官方模板），替换占位符后生成完整工程
+   * 不依赖网络，不依赖 pod lib create
+   */
+  private scaffoldProjectFromPodTemplate(
+    projectDir: string,
+    targetName: string,
+    podName: string,
+    version: string,
+    iosVersion: string,
+    outputType: 'framework' | 'static_library' = 'framework',
+    spec?: any,
+    selectedSubspecs?: string[]
+  ): void {
+    fs.mkdirSync(projectDir, { recursive: true });
+
+    // 1. 从模板文件读取 pbxproj 并替换占位符
+    const templatePath = path.join(__dirname, '..', 'templates', 'project.pbxproj.template');
+    if (!fs.existsSync(templatePath)) {
+      throw new Error(`pbxproj 模板文件不存在: ${templatePath}`);
+    }
+    let pbxproj = fs.readFileSync(templatePath, 'utf-8');
+    pbxproj = pbxproj.replace(/__TARGET__/g, targetName);
+
+    // 2. 创建 xcodeproj 目录和 pbxproj 文件
+    const xcodeprojDir = path.join(projectDir, `${targetName}.xcodeproj`);
+    fs.mkdirSync(xcodeprojDir, { recursive: true });
+    fs.writeFileSync(path.join(xcodeprojDir, 'project.pbxproj'), pbxproj, 'utf-8');
+
+    // 创建 xcworkspace
+    const workspaceDir = path.join(xcodeprojDir, 'project.xcworkspace');
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, 'contents.xcworkspacedata'),
+      `<?xml version="1.0" encoding="UTF-8"?>\n<Workspace version="1.0">\n  <FileRef location="self:${targetName}.xcodeproj"></FileRef>\n</Workspace>\n`,
+      'utf-8'
+    );
+
+    // 3. 创建源文件目录和最小源文件（pod install 需要 target 有源文件）
+    const srcDir = path.join(projectDir, targetName);
+    fs.mkdirSync(srcDir, { recursive: true });
+
+    // Info.plist
+    fs.writeFileSync(path.join(srcDir, `${targetName}-Info.plist`), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>UILaunchStoryboardName</key><string>LaunchScreen</string>
+  <key>UIMainStoryboardFile</key><string>Main</string>
+</dict>
+</plist>`, 'utf-8');
+
+    // main.m
+    fs.writeFileSync(path.join(srcDir, 'main.m'),
+      '#import <UIKit/UIKit.h>\n#import "AppDelegate.h"\nint main(int argc, char * argv[]) {\n  @autoreleasepool {\n    return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));\n  }\n}\n',
+      'utf-8'
+    );
+
+    // AppDelegate
+    fs.writeFileSync(path.join(srcDir, 'AppDelegate.h'),
+      '#import <UIKit/UIKit.h>\n@interface AppDelegate : UIResponder <UIApplicationDelegate>\n@property (strong, nonatomic) UIWindow *window;\n@end\n',
+      'utf-8'
+    );
+    fs.writeFileSync(path.join(srcDir, 'AppDelegate.m'),
+      '#import "AppDelegate.h"\n@implementation AppDelegate\n@end\n',
+      'utf-8'
+    );
+
+    // ViewController
+    fs.writeFileSync(path.join(srcDir, 'ViewController.h'),
+      '#import <UIKit/UIKit.h>\n@interface ViewController : UIViewController\n@end\n',
+      'utf-8'
+    );
+    fs.writeFileSync(path.join(srcDir, 'ViewController.m'),
+      '#import "ViewController.h"\n@implementation ViewController\n@end\n',
+      'utf-8'
+    );
+
+    // Prefix header
+    fs.writeFileSync(path.join(srcDir, `${targetName}-Prefix.pch`),
+      '#import <Availability.h>\n#ifndef __IPHONE_5_0\n#warning "This project uses features only available in iOS SDK 5.0 and later."\n#endif\n#ifdef __OBJC__\n#import <UIKit/UIKit.h>\n#import <Foundation/Foundation.h>\n#endif\n',
+      'utf-8'
+    );
+
+    // Storyboards (minimal)
+    const baseLprojDir = path.join(srcDir, 'Base.lproj');
+    fs.mkdirSync(baseLprojDir, { recursive: true });
+    fs.writeFileSync(path.join(baseLprojDir, 'Main.storyboard'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="13122.16" targetRuntime="AppleSDK" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="BYZ-38-t0r">\n  <scenes>\n    <scene sceneID="tne-QT-ifu">\n      <objects>\n        <viewController id="BYZ-38-t0r" customClass="ViewController" sceneMemberID="viewController"/>\n      </objects>\n    </scene>\n  </scenes>\n</document>\n',
+      'utf-8'
+    );
+    fs.writeFileSync(path.join(baseLprojDir, 'LaunchScreen.storyboard'),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="13122.16" targetRuntime="AppleSDK" propertyAccessControl="none" useAutolayout="YES" launchScreen="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="01J-lp-oVM">\n  <scenes>\n    <scene sceneID="EHf-IW-A2E">\n      <objects>\n        <viewController id="01J-lp-oVM" sceneMemberID="viewController"/>\n      </objects>\n    </scene>\n  </scenes>\n</document>\n',
+      'utf-8'
+    );
+
+    // Images.xcassets
+    const assetsDir = path.join(srcDir, 'Images.xcassets', 'AppIcon.appiconset');
+    fs.mkdirSync(assetsDir, { recursive: true });
+    fs.writeFileSync(path.join(assetsDir, 'Contents.json'), '{"images":[],"info":{"version":1,"author":"xcode"}}\n', 'utf-8');
+
+    // en.lproj/InfoPlist.strings
+    const enLprojDir = path.join(srcDir, 'en.lproj');
+    fs.mkdirSync(enLprojDir, { recursive: true });
+    fs.writeFileSync(path.join(enLprojDir, 'InfoPlist.strings'), '/* Localized versions of Info.plist keys */\n', 'utf-8');
+
+    // 4. 写入 Podfile
+    const useFrameworks = outputType === 'framework' ? "use_frameworks!\n" : '';
+    const minDeployTarget = parseFloat(iosVersion) < 13.0 ? '13.0' : iosVersion;
+
+    // source 声明，确保能找到官方和第三方 spec repos
+    // 内部 nnspec 排最前，优先使用已发布的内部二进制版本（如 libwebp.framework）
+    const sources = [
+      "source 'http://git.leigod.top/nn_ios/nnspec.git'",
+      "source 'https://cdn.cocoapods.org/'",
+      "source 'https://github.com/aliyun/aliyun-specs.git'",
+    ].join('\n');
+
+    // 生成 pod 引用行：
+    // - 如果用户指定了 subspecs，只引入指定的
+    // - 如果有 subspecs 且有 default_subspecs 且全选了，直接用主 pod
+    // - 如果有 subspecs 且有 default_subspecs 且不全选，引入 default 的
+    // - 如果有 subspecs 但没有 default_subspecs，直接用主 pod（CocoaPods 会引入全部）
+    // - 如果没有 subspecs，直接引入主 pod
+    let podLines = '';
+    const subspecs = spec?.subspecs;
+    const allSubNames: string[] = (subspecs && Array.isArray(subspecs))
+      ? subspecs.map((s: any) => s.name || s)
+      : [];
+
+    if (selectedSubspecs && selectedSubspecs.length > 0) {
+      // 用户指定了要编译的 subspecs
+      // 如果选的等于全部，直接用主 pod（避免 CocoaPods 解析问题）
+      const isAllSelected = allSubNames.length > 0 &&
+        selectedSubspecs.length >= allSubNames.length &&
+        allSubNames.every((n: string) => selectedSubspecs.includes(n));
+
+      if (isAllSelected) {
+        podLines = `  pod '${podName}', '${version}'\n`;
+        logger.info('用户选择了全部 subspecs，使用主 pod', { podName });
+      } else {
+        for (const subName of selectedSubspecs) {
+          podLines += `  pod '${podName}/${subName}', '${version}'\n`;
+        }
+        logger.info('引入用户选择的 subspecs', { podName, subspecs: selectedSubspecs });
+      }
+    } else if (subspecs && Array.isArray(subspecs) && subspecs.length > 0) {
+      const defaultSubs = spec.default_subspecs;
+      let subsToInclude: string[];
+
+      if (defaultSubs) {
+        subsToInclude = Array.isArray(defaultSubs) ? defaultSubs : [defaultSubs];
+      } else {
+        subsToInclude = subspecs.map((s: any) => s.name || s);
+      }
+
+      // 如果引入的是全部 subspecs 或 default 等于全部，直接用主 pod
+      const allSubNames = subspecs.map((s: any) => s.name || s);
+      const isAllIncluded =
+        subsToInclude.length === allSubNames.length &&
+        subsToInclude.every((s: string) => allSubNames.includes(s));
+
+      if (isAllIncluded || !defaultSubs) {
+        podLines = `  pod '${podName}', '${version}'\n`;
+        logger.info('直接引入主 pod（全部 subspecs）', { podName });
+      } else {
+        for (const subName of subsToInclude) {
+          podLines += `  pod '${podName}/${subName}', '${version}'\n`;
+        }
+        logger.info('引入 default subspecs', { podName, subspecs: subsToInclude });
+      }
+    } else {
+      podLines = `  pod '${podName}', '${version}'\n`;
+    }
+
+    const podfile = `${sources}
+${useFrameworks}platform :ios, '${minDeployTarget}'
+
+target '${targetName}_Example' do
+${podLines}end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if current && current.to_f < ${minDeployTarget}
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '${minDeployTarget}'
+      end
+      # 禁用 explicit modules，兼容老库（如 SVGAPlayer 的 Protobuf 生成代码）
+      config.build_settings['CLANG_ENABLE_EXPLICIT_MODULES'] = 'NO'
+      # 抑制老代码的编译错误
+      config.build_settings['GCC_TREAT_INCOMPATIBLE_POINTER_TYPE_WARNINGS_AS_ERRORS'] = 'NO'
+      existing = config.build_settings['OTHER_CFLAGS'] || '$(inherited)'
+      config.build_settings['OTHER_CFLAGS'] = existing + ' -Wno-error -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype'
+    end
+  end
+end
+`;
+    fs.writeFileSync(path.join(projectDir, 'Podfile'), podfile, 'utf-8');
+
+    logger.info('工程脚手架生成完成（静态模板）', {
+      projectDir,
+      targetName,
+      podName,
+      version,
+    });
+  }
+
+  /**
+   * 基于原始官方 podspec 生成二进制版本的 podspec
+   * 保留 dependencies、swift_versions、frameworks、libraries、xcconfig 等完整信息
+   * 从 default_subspecs 对应的 subspec 中合并配置（如 GRDB.swift 的 standard subspec）
+   */
+  private generateBinaryPodspec(
+    spec: any,
+    name: string,
+    version: string,
+    outputType: 'framework' | 'static_library',
+    artifactName: string,
+    sha256: string,
+    depVersionOverrides?: Record<string, string>,
+    selectedSubspecs?: string[],
+    prepareCommand?: string
+  ): string {
+    const internalUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const platform = spec.platforms?.ios || '12.0';
+    const summary = spec.summary || `${name} iOS SDK`;
+    const homepage = spec.homepage || `https://cocoapods.org/pods/${name}`;
+    const authors = typeof spec.authors === 'object' ? Object.keys(spec.authors).join(', ') : (spec.authors || name);
+    const licenseType = spec.license?.type || spec.license || 'MIT';
+
+    // 合并 default subspec 的配置到顶层
+    // 例如 GRDB.swift 的 default_subspecs 是 "standard"，需要把 standard 的 frameworks/libraries/xcconfig/dependencies 合并
+    let mergedSpec = { ...spec };
+    if (spec.subspecs && Array.isArray(spec.subspecs) && spec.subspecs.length > 0) {
+      // 优先用用户选择的 subspecs，其次 default_subspecs，最后全部
+      const defaultSubNames = selectedSubspecs && selectedSubspecs.length > 0
+        ? selectedSubspecs
+        : spec.default_subspecs
+          ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
+          : spec.subspecs.map((s: any) => s.name);
+
+      for (const subName of defaultSubNames) {
+        const sub = spec.subspecs.find((s: any) => s.name === subName);
+        if (sub) {
+          logger.info('合并 default subspec 配置', { subName, keys: Object.keys(sub) });
+          // 合并 frameworks
+          if (sub.frameworks) {
+            const existing = mergedSpec.frameworks ? (Array.isArray(mergedSpec.frameworks) ? mergedSpec.frameworks : [mergedSpec.frameworks]) : [];
+            const subFw = Array.isArray(sub.frameworks) ? sub.frameworks : [sub.frameworks];
+            mergedSpec.frameworks = [...existing, ...subFw];
+          }
+          // 合并 libraries
+          if (sub.libraries) {
+            const existing = mergedSpec.libraries ? (Array.isArray(mergedSpec.libraries) ? mergedSpec.libraries : [mergedSpec.libraries]) : [];
+            const subLibs = Array.isArray(sub.libraries) ? sub.libraries : [sub.libraries];
+            mergedSpec.libraries = [...existing, ...subLibs];
+          }
+          // 合并 dependencies（过滤掉自身 subspec 的内部依赖，如 SVGAPlayer/ProtoFiles）
+          if (sub.dependencies) {
+            const filteredDeps: Record<string, any> = {};
+            for (const [depName, depVer] of Object.entries(sub.dependencies)) {
+              if (!depName.startsWith(`${name}/`)) {
+                filteredDeps[depName] = depVer;
+              }
+            }
+            mergedSpec.dependencies = { ...(mergedSpec.dependencies || {}), ...filteredDeps };
+          }
+          // 合并 xcconfig / pod_target_xcconfig
+          if (sub.xcconfig) {
+            mergedSpec.pod_target_xcconfig = { ...(mergedSpec.pod_target_xcconfig || {}), ...sub.xcconfig };
+          }
+          if (sub.pod_target_xcconfig) {
+            mergedSpec.pod_target_xcconfig = { ...(mergedSpec.pod_target_xcconfig || {}), ...sub.pod_target_xcconfig };
+          }
+          if (sub.user_target_xcconfig) {
+            mergedSpec.user_target_xcconfig = { ...(mergedSpec.user_target_xcconfig || {}), ...sub.user_target_xcconfig };
+          }
+          // 合并 compiler_flags
+          if (sub.compiler_flags) {
+            mergedSpec.compiler_flags = mergedSpec.compiler_flags
+              ? `${mergedSpec.compiler_flags} ${sub.compiler_flags}`
+              : sub.compiler_flags;
+          }
+          // 合并 weak_frameworks
+          if (sub.weak_frameworks) {
+            const existing = mergedSpec.weak_frameworks ? (Array.isArray(mergedSpec.weak_frameworks) ? mergedSpec.weak_frameworks : [mergedSpec.weak_frameworks]) : [];
+            const subWf = Array.isArray(sub.weak_frameworks) ? sub.weak_frameworks : [sub.weak_frameworks];
+            mergedSpec.weak_frameworks = [...existing, ...subWf];
+          }
+        }
+      }
+    }
+
+    let podspec = `Pod::Spec.new do |s|
+  s.name         = '${name}'
+  s.version      = '${version}'
+  s.summary      = '${summary}'
+  s.homepage     = '${homepage}'
+  s.license      = { :type => '${licenseType}' }
+  s.authors      = '${authors}'
+  s.source       = { :http => '${internalUrl}', :sha256 => '${sha256}' }
+  s.platform     = :ios, '${platform}'
+`;
+
+    // 编译产物
+    if (outputType === 'static_library') {
+      const aName = artifactName || `lib${name}.a`;
+      const baseName = aName.replace(/^lib/, '').replace(/\.a$/, '');
+      podspec += `  s.vendored_libraries   = '${aName}'\n`;
+      podspec += `  s.public_header_files  = '${baseName}.Headers/**/*.h'\n`;
+      podspec += `  s.source_files         = '${baseName}.Headers/**/*.h'\n`;
+    } else {
+      const fwName = artifactName || `${name}.framework`;
+      podspec += `  s.vendored_frameworks = '${fwName}'\n`;
+    }
+
+    // swift_versions
+    if (mergedSpec.swift_versions) {
+      const sv = Array.isArray(mergedSpec.swift_versions) ? mergedSpec.swift_versions : [mergedSpec.swift_versions];
+      podspec += `  s.swift_versions      = [${sv.map((v: string) => `'${v}'`).join(', ')}]\n`;
+    } else if (mergedSpec.swift_version) {
+      podspec += `  s.swift_version       = '${mergedSpec.swift_version}'\n`;
+    }
+
+    // frameworks（合并顶层和 ios 平台的）
+    const allFrameworks: string[] = [];
+    if (mergedSpec.frameworks) {
+      const fw = Array.isArray(mergedSpec.frameworks) ? mergedSpec.frameworks : [mergedSpec.frameworks];
+      allFrameworks.push(...fw);
+    }
+    if (mergedSpec.ios?.frameworks) {
+      const fw = Array.isArray(mergedSpec.ios.frameworks) ? mergedSpec.ios.frameworks : [mergedSpec.ios.frameworks];
+      allFrameworks.push(...fw);
+    }
+    if (allFrameworks.length > 0) {
+      podspec += `  s.frameworks          = ${[...new Set(allFrameworks)].map((f: string) => `'${f}'`).join(', ')}\n`;
+    }
+
+    // weak_frameworks
+    if (mergedSpec.weak_frameworks && mergedSpec.weak_frameworks.length > 0) {
+      const wf = Array.isArray(mergedSpec.weak_frameworks) ? mergedSpec.weak_frameworks : [mergedSpec.weak_frameworks];
+      podspec += `  s.weak_frameworks     = ${[...new Set(wf as string[])].map((f: string) => `'${f}'`).join(', ')}\n`;
+    }
+
+    // libraries
+    const allLibraries: string[] = [];
+    if (mergedSpec.libraries) {
+      const libs = Array.isArray(mergedSpec.libraries) ? mergedSpec.libraries : [mergedSpec.libraries];
+      allLibraries.push(...libs);
+    }
+    if (mergedSpec.ios?.libraries) {
+      const libs = Array.isArray(mergedSpec.ios.libraries) ? mergedSpec.ios.libraries : [mergedSpec.ios.libraries];
+      allLibraries.push(...libs);
+    }
+    if (allLibraries.length > 0) {
+      podspec += `  s.libraries           = ${[...new Set(allLibraries)].map((l: string) => `'${l}'`).join(', ')}\n`;
+    }
+
+    // requires_arc
+    if (mergedSpec.requires_arc === false) {
+      podspec += `  s.requires_arc        = false\n`;
+    }
+
+    // compiler_flags
+    if (mergedSpec.compiler_flags) {
+      const flags = Array.isArray(mergedSpec.compiler_flags) ? mergedSpec.compiler_flags.join(' ') : mergedSpec.compiler_flags;
+      podspec += `  s.compiler_flags      = '${flags}'\n`;
+    }
+
+    // pod_target_xcconfig（包含从 subspec 合并的 xcconfig）
+    if (mergedSpec.pod_target_xcconfig && Object.keys(mergedSpec.pod_target_xcconfig).length > 0) {
+      const entries = Object.entries(mergedSpec.pod_target_xcconfig)
+        .map(([k, v]) => `'${k}' => '${v}'`).join(', ');
+      podspec += `  s.pod_target_xcconfig = { ${entries} }\n`;
+    }
+
+    // user_target_xcconfig
+    if (mergedSpec.user_target_xcconfig && Object.keys(mergedSpec.user_target_xcconfig).length > 0) {
+      const entries = Object.entries(mergedSpec.user_target_xcconfig)
+        .map(([k, v]) => `'${k}' => '${v}'`).join(', ');
+      podspec += `  s.user_target_xcconfig = { ${entries} }\n`;
+    }
+
+    // dependencies（包含从 subspec 合并的依赖）
+    // 如果用户指定了依赖版本（depVersionOverrides），使用用户选择的版本
+    if (mergedSpec.dependencies && Object.keys(mergedSpec.dependencies).length > 0) {
+      for (const [depName, depVersions] of Object.entries(mergedSpec.dependencies)) {
+        const override = depVersionOverrides?.[depName];
+        if (override) {
+          // 用户指定了版本，使用精确版本
+          podspec += `  s.dependency '${depName}', '${override}'\n`;
+        } else {
+          const versions = Array.isArray(depVersions) ? depVersions : [];
+          if (versions.length > 0) {
+            podspec += `  s.dependency '${depName}', ${(versions as string[]).map((v: string) => `'${v}'`).join(', ')}\n`;
+          } else {
+            podspec += `  s.dependency '${depName}'\n`;
+          }
+        }
+      }
+    }
+
+    // resource_bundles
+    if (mergedSpec.resource_bundles) {
+      for (const [bundleName, patterns] of Object.entries(mergedSpec.resource_bundles)) {
+        const p = Array.isArray(patterns) ? patterns : [patterns];
+        podspec += `  s.resource_bundles    = { '${bundleName}' => [${(p as string[]).map((f: string) => `'${f}'`).join(', ')}] }\n`;
+      }
+    }
+
+    // resources
+    if (mergedSpec.resources) {
+      const res = Array.isArray(mergedSpec.resources) ? mergedSpec.resources : [mergedSpec.resources];
+      podspec += `  s.resources           = ${res.map((r: string) => `'${r}'`).join(', ')}\n`;
+    }
+
+    // 为原始 subspecs 创建空的别名 subspec
+    // 这样依赖 SDWebImage/Core 的库在 pod install 时能找到对应的 subspec
+    // 所有 subspec 都指向同一个二进制产物（已经包含了所有代码）
+    if (spec.subspecs && Array.isArray(spec.subspecs) && spec.subspecs.length > 0) {
+      const subsToAlias = selectedSubspecs && selectedSubspecs.length > 0
+        ? selectedSubspecs
+        : spec.default_subspecs
+          ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
+          : spec.subspecs.map((s: any) => s.name);
+
+      // 设置 default_subspecs 避免引入所有 subspec
+      if (spec.default_subspecs) {
+        const ds = Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs];
+        podspec += `  s.default_subspecs   = [${ds.map((d: string) => `'${d}'`).join(', ')}]\n`;
+      }
+
+      // 确定 vendored 声明（subspec 里需要重复声明，不会继承顶层）
+      const vendoredLine = outputType === 'static_library'
+        ? `    ss.vendored_libraries  = '${artifactName || `lib${name}.a`}'\n`
+        : `    ss.vendored_frameworks = '${artifactName || `${name}.framework`}'\n`;
+
+      for (const subName of subsToAlias) {
+        podspec += `\n  s.subspec '${subName}' do |ss|\n`;
+        podspec += vendoredLine;
+        podspec += `  end\n`;
+      }
+    }
+
+    // 注入自定义 prepare_command
+    if (prepareCommand) {
+      podspec += `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n`;
+    }
+
+    podspec += `end\n`;
+    return podspec;
+  }
+
+  /**
+   * 基于官方 podspec JSON 生成内部 podspec，保留原始路径，只替换 source 为内部 Nexus
+   */
+  private generateOfficialPodspec(spec: any, name: string, version: string, sha256: string, prepareCommand?: string): string {
+    const internalUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const platform = spec.platforms?.ios || '12.0';
+    const summary = spec.summary || `${name} iOS SDK`;
+    const homepage = spec.homepage || `https://cocoapods.org/pods/${name}`;
+    const authors = typeof spec.authors === 'object' ? Object.keys(spec.authors).join(', ') : (spec.authors || name);
+    const licenseType = spec.license?.type || spec.license || 'MIT';
+
+    // 对 git 源，zip 内会有一层目录包裹，需要加前缀
+    const isGitSource = !!spec.source?.git;
+    const pathPrefix = isGitSource ? `${name.replace(/[^a-zA-Z0-9_-]/g, '_')}/` : '';
+    const prefixPath = (p: string) => isGitSource ? `${pathPrefix}${p}` : p;
+
+    let podspec = `Pod::Spec.new do |s|
+  s.name         = '${name}'
+  s.version      = '${version}'
+  s.summary      = '${summary}'
+  s.homepage     = '${homepage}'
+  s.license      = { :type => '${licenseType}' }
+  s.authors      = '${authors}'
+  s.source       = { :http => '${internalUrl}', :sha256 => '${sha256}' }
+  s.platform     = :ios, '${platform}'
+`;
+
+    // 收集所有字段（包括 subspecs 中的）合并到顶层
+    const allVendoredFrameworks: string[] = [];
+    const allVendoredLibraries: string[] = [];
+    const allSourceFiles: string[] = [];
+    const allPublicHeaders: string[] = [];
+    const allResources: string[] = [];
+
+    // 顶层字段
+    const collectFields = (obj: any) => {
+      if (obj.vendored_frameworks) {
+        const vf = Array.isArray(obj.vendored_frameworks) ? obj.vendored_frameworks : [obj.vendored_frameworks];
+        allVendoredFrameworks.push(...vf);
+      }
+      if (obj.vendored_libraries) {
+        const vl = Array.isArray(obj.vendored_libraries) ? obj.vendored_libraries : [obj.vendored_libraries];
+        allVendoredLibraries.push(...vl);
+      }
+      if (obj.source_files) {
+        const sf = Array.isArray(obj.source_files) ? obj.source_files : [obj.source_files];
+        allSourceFiles.push(...sf);
+      }
+      if (obj.public_header_files) {
+        const ph = Array.isArray(obj.public_header_files) ? obj.public_header_files : [obj.public_header_files];
+        allPublicHeaders.push(...ph);
+      }
+      if (obj.resources) {
+        const res = Array.isArray(obj.resources) ? obj.resources : [obj.resources];
+        allResources.push(...res);
+      }
+    };
+
+    collectFields(spec);
+    // 从 subspecs 中收集
+    if (spec.subspecs && Array.isArray(spec.subspecs)) {
+      for (const sub of spec.subspecs) {
+        collectFields(sub);
+      }
+    }
+
+    if (allVendoredFrameworks.length > 0) {
+      podspec += `  s.vendored_frameworks = ${allVendoredFrameworks.map(f => `'${prefixPath(f)}'`).join(', ')}\n`;
+    }
+    if (allVendoredLibraries.length > 0) {
+      podspec += `  s.vendored_libraries  = ${allVendoredLibraries.map(l => `'${prefixPath(l)}'`).join(', ')}\n`;
+    }
+    if (allSourceFiles.length > 0) {
+      podspec += `  s.source_files        = ${allSourceFiles.map(f => `'${prefixPath(f)}'`).join(', ')}\n`;
+    }
+    if (allPublicHeaders.length > 0) {
+      podspec += `  s.public_header_files = ${allPublicHeaders.map(f => `'${prefixPath(f)}'`).join(', ')}\n`;
+    }
+    if (allResources.length > 0) {
+      podspec += `  s.resources           = ${allResources.map(r => `'${prefixPath(r)}'`).join(', ')}\n`;
+    }
+
+    // resource_bundles
+    if (spec.resource_bundles) {
+      for (const [bundleName, patterns] of Object.entries(spec.resource_bundles)) {
+        const p = Array.isArray(patterns) ? patterns : [patterns];
+        podspec += `  s.resource_bundles    = { '${bundleName}' => [${(p as string[]).map((f: string) => `'${prefixPath(f)}'`).join(', ')}] }\n`;
+      }
+    }
+
+    // frameworks
+    if (spec.frameworks) {
+      const fw = Array.isArray(spec.frameworks) ? spec.frameworks : [spec.frameworks];
+      podspec += `  s.frameworks          = ${fw.map((f: string) => `'${f}'`).join(', ')}\n`;
+    }
+
+    // weak_frameworks
+    if (spec.weak_frameworks) {
+      const wf = Array.isArray(spec.weak_frameworks) ? spec.weak_frameworks : [spec.weak_frameworks];
+      podspec += `  s.weak_frameworks     = ${wf.map((f: string) => `'${f}'`).join(', ')}\n`;
+    }
+
+    // libraries
+    if (spec.libraries) {
+      const libs = Array.isArray(spec.libraries) ? spec.libraries : [spec.libraries];
+      podspec += `  s.libraries           = ${libs.map((l: string) => `'${l}'`).join(', ')}\n`;
+    }
+
+    // requires_arc
+    if (spec.requires_arc === false) {
+      podspec += `  s.requires_arc        = false\n`;
+    }
+
+    // pod_target_xcconfig
+    if (spec.pod_target_xcconfig) {
+      const entries = Object.entries(spec.pod_target_xcconfig)
+        .map(([k, v]) => `'${k}' => '${v}'`).join(', ');
+      podspec += `  s.pod_target_xcconfig = { ${entries} }\n`;
+    }
+
+    // user_target_xcconfig
+    if (spec.user_target_xcconfig) {
+      const entries = Object.entries(spec.user_target_xcconfig)
+        .map(([k, v]) => `'${k}' => '${v}'`).join(', ');
+      podspec += `  s.user_target_xcconfig = { ${entries} }\n`;
+    }
+
+    // dependencies
+    if (spec.dependencies) {
+      for (const [depName, depVersions] of Object.entries(spec.dependencies)) {
+        const versions = Array.isArray(depVersions) ? depVersions : [];
+        if (versions.length > 0) {
+          podspec += `  s.dependency '${depName}', ${(versions as string[]).map((v: string) => `'${v}'`).join(', ')}\n`;
+        } else {
+          podspec += `  s.dependency '${depName}'\n`;
+        }
+      }
+    }
+
+    // 注入自定义 prepare_command
+    if (prepareCommand) {
+      podspec += `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n`;
+    }
+
+    podspec += `end\n`;
+    return podspec;
+  }
+}
+
+export default new PodService();
