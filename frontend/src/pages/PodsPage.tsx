@@ -61,6 +61,7 @@ export default function PodsPage() {
   const [selectedSubspecs, setSelectedSubspecs] = useState<string[]>([]);
   const [internalVersion, setInternalVersion] = useState<string>('');
   const [prepareCommand, setPrepareCommand] = useState<string>('');
+  const [publishTabKey, setPublishTabKey] = useState<string>('local');
 
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
@@ -465,7 +466,7 @@ export default function PodsPage() {
         </div>
         <Space>
           <Button icon={<SyncOutlined />} onClick={fetchComponents} loading={loading}>刷新</Button>
-          {isAdmin && <Button type="primary" icon={<PlusOutlined />} onClick={() => setPublishModalOpen(true)}>发布组件</Button>}
+          {isAdmin && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setPublishTabKey('local'); setPublishModalOpen(true); }}>发布组件</Button>}
         </Space>
       </div>
 
@@ -597,14 +598,21 @@ export default function PodsPage() {
                 size="small"
                 icon={<PlusOutlined />}
                 onClick={() => {
-                  const prefill: Record<string, string> = { name: selectedGroup.name };
-                  // 从最新版本的 podspec 解析字段预填
-                  if (selectedGroup.versions.length > 0) {
-                    const latest = selectedGroup.versions[0];
-                    const parsed = parsePodspecFields(latest.podspec_content);
-                    Object.assign(prefill, parsed);
+                  if (selectedGroup.isInternal) {
+                    // 内部组件：导航到"上传内部组件" Tab 并预填
+                    const prefill: Record<string, string> = { name: selectedGroup.name };
+                    if (selectedGroup.versions.length > 0) {
+                      const latest = selectedGroup.versions[0];
+                      const parsed = parsePodspecFields(latest.podspec_content);
+                      Object.assign(prefill, parsed);
+                    }
+                    form.setFieldsValue(prefill);
+                    setPublishTabKey('local');
+                  } else {
+                    // 官方组件：导航到"导入官方组件" Tab 并预填组件名
+                    setOfficialName(selectedGroup.name);
+                    setPublishTabKey('official');
                   }
-                  form.setFieldsValue(prefill);
                   setPublishModalOpen(true);
                 }}
               >
@@ -654,10 +662,12 @@ export default function PodsPage() {
         destroyOnClose
       >
         <Tabs
+          activeKey={publishTabKey}
+          onChange={(key) => setPublishTabKey(key)}
           items={[
             {
               key: 'local',
-              label: '上传本地组件',
+              label: '上传内部组件',
               children: (
                 <div>
                   <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
