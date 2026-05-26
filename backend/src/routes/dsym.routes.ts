@@ -14,7 +14,7 @@ const router = Router();
 
 // 配置 Multer
 const upload = multer({
-  dest: process.env.UPLOAD_DIR || '../../dSYMTool-data/uploads',
+  dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '524288000'), // 500MB
   },

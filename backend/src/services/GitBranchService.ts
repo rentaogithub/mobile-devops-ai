@@ -77,7 +77,7 @@ export type EventSink = (evt: StreamEvent) => void;
 
 const DEFAULT_BASE_DIR = path.resolve(
   process.env.GIT_WORK_DIR ||
-    path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.dSYMTool-data'), '../git-workspace')
+    path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.nn-ios-platform-data'), '../git-workspace')
 );
 
 /** 脚本中硬编码的默认仓库列表 */

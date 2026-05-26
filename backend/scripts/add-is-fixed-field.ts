@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const DB_DIR = path.resolve(__dirname, '../../dSYMTool-data');
+const DB_DIR = path.resolve(__dirname, '../../nn-ios-platform-data');
 const DB_PATH = path.join(DB_DIR, 'database.sqlite');
 
 console.log('🔧 开始数据库迁移：添加 is_fixed 字段');

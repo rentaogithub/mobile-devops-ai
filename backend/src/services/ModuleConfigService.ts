@@ -12,7 +12,7 @@ export class ModuleConfigService {
 
   constructor() {
     // 使用与数据库相同的数据目录
-    const dataDir = process.env.DATA_DIR || path.join(process.cwd(), '..', 'dSYMTool-data');
+    const dataDir = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
     this.configPath = path.join(dataDir, 'module-config.json');
     this.ensureConfigFile();
   }

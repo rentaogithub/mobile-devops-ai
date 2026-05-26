@@ -2,7 +2,7 @@ import path from 'path';
 import { getDatabase } from '../src/database/connection';
 
 const projectRoot = path.resolve(__dirname, '../../');
-const expectedPath = path.join(projectRoot, 'dSYMTool-data', 'database.sqlite');
+const expectedPath = path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite');
 
 console.log('项目根目录:', projectRoot);
 console.log('期望的数据库路径:', expectedPath);

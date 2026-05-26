@@ -8,7 +8,7 @@ import { adminMiddleware } from '../middleware/auth';
 const router = Router();
 
 const upload = multer({
-  dest: process.env.UPLOAD_DIR || '../../dSYMTool-data/uploads',
+  dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '524288000'),
   },

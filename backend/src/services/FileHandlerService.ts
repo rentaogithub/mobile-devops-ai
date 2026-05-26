@@ -15,8 +15,8 @@ export class FileHandlerService {
   private maxFileSize: number;
 
   constructor() {
-    this.uploadDir = process.env.UPLOAD_DIR || '../../dSYMTool-data/uploads';
-    this.dsymDir = process.env.DSYM_DIR || '../../dSYMTool-data/dsyms';
+    this.uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+    this.dsymDir = process.env.DSYM_DIR || '../../nn-ios-platform-data/dsyms';
     this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '524288000'); // 500MB
 
     // 确保目录存在

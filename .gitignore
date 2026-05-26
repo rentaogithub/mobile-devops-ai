@@ -14,6 +14,7 @@ backend/.env
 
 # ===== 运行时数据（与代码分离） =====
 dSYMTool-data/
+nn-ios-platform-data/
 builds/
 logs/
 backend/logs/

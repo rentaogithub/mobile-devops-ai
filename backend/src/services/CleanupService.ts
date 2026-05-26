@@ -11,7 +11,7 @@ export class CleanupService {
   private readonly maxAge: number; // 文件最大保留时间（毫秒）
 
   constructor() {
-    this.uploadDir = process.env.UPLOAD_DIR || '../../dSYMTool-data/uploads';
+    this.uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
     // 默认保留 24 小时
     const maxAgeHours = parseInt(process.env.CLEANUP_MAX_AGE_HOURS || '24', 10);
     this.maxAge = maxAgeHours * 60 * 60 * 1000;

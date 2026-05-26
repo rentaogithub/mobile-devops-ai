@@ -45,7 +45,7 @@ npm run dev
 
 ```bash
 cd backend
-sqlite3 ../../dSYMTool-data/database.sqlite
+sqlite3 ../../nn-ios-platform-data/database.sqlite
 ```
 
 然后执行以下 SQL：
@@ -113,7 +113,7 @@ npx tsx scripts/test-history.ts
 **A:** 使用 sqlite3 命令：
 
 ```bash
-sqlite3 ../../dSYMTool-data/database.sqlite
+sqlite3 ../../nn-ios-platform-data/database.sqlite
 .tables
 .schema symbolication_history
 .exit
@@ -124,7 +124,7 @@ sqlite3 ../../dSYMTool-data/database.sqlite
 **A:** 管理员可以在前端逐条删除，或者直接清空表：
 
 ```bash
-sqlite3 ../../dSYMTool-data/database.sqlite
+sqlite3 ../../nn-ios-platform-data/database.sqlite
 DELETE FROM symbolication_history;
 .exit
 ```

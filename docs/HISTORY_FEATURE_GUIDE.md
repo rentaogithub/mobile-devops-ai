@@ -244,13 +244,13 @@ GET /api/history/stats/summary
 ## 数据管理
 
 ### 存储位置
-- 数据库文件：`dSYMTool-data/database.sqlite`
+- 数据库文件：`nn-ios-platform-data/database.sqlite`
 - 表名：`symbolication_history`
 
 ### 数据备份
 建议定期备份数据库文件：
 ```bash
-cp dSYMTool-data/database.sqlite dSYMTool-data/database.backup.sqlite
+cp nn-ios-platform-data/database.sqlite nn-ios-platform-data/database.backup.sqlite
 ```
 
 ### 数据清理

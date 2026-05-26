@@ -31,12 +31,12 @@ npm install
 # 服务端口
 PORT=3001
 
-# 数据库路径（可选，默认使用 dSYMTool-data/database.sqlite）
-# DB_PATH=./dSYMTool-data/database.sqlite
+# 数据库路径（可选，默认使用 nn-ios-platform-data/database.sqlite）
+# DB_PATH=./nn-ios-platform-data/database.sqlite
 
 # 文件上传配置（可选）
-# UPLOAD_DIR=./dSYMTool-data/uploads
-# DSYM_DIR=./dSYMTool-data/dsyms
+# UPLOAD_DIR=./nn-ios-platform-data/uploads
+# DSYM_DIR=./nn-ios-platform-data/dsyms
 # MAX_FILE_SIZE=524288000
 
 # AI 配置（可选）

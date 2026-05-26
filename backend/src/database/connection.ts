@@ -11,7 +11,7 @@ export function getDatabase(): Database.Database {
 
   // 使用绝对路径，相对于项目根目录
   const projectRoot = path.resolve(__dirname, '../../../');
-  const dbPath = process.env.DB_PATH || path.join(projectRoot, 'dSYMTool-data', 'database.sqlite');
+  const dbPath = process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite');
   const dbDir = path.dirname(dbPath);
 
   // 确保数据库目录存在
