@@ -18,6 +18,7 @@ import moduleRoutes from './routes/module.routes';
 import wechatRoutes from './routes/wechat.routes';
 import podsRoutes from './routes/pods.routes';
 import gitRoutes from './routes/git.routes';
+import pairingRoutes from './routes/pairing.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -56,6 +57,7 @@ app.use('/api/config', moduleRoutes);
 app.use('/api/wechat', wechatRoutes);
 app.use('/api/pods', podsRoutes);
 app.use('/api/git', gitRoutes);
+app.use('/api/pairing', pairingRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

@@ -701,4 +701,41 @@ export const gitApi = {
   },
 };
 
+// ============ 设备配对（实时日志） ============
+
+export interface PairingSessionData {
+  pairingId: string;
+  token: string;
+}
+
+export interface PairingStatusData {
+  status: 'waiting' | 'paired' | 'expired';
+  deviceLogUrl?: string;
+  deviceInfo?: {
+    name?: string;
+    model?: string;
+    systemVersion?: string;
+    ip?: string;
+  };
+}
+
+export const pairingApi = {
+  /** 创建配对会话 */
+  create: async (): Promise<ApiResponse<PairingSessionData>> => {
+    const response = await api.post<ApiResponse<PairingSessionData>>('/pairing/create');
+    return response.data;
+  },
+
+  /** 查询配对状态 */
+  getStatus: async (pairingId: string): Promise<ApiResponse<PairingStatusData>> => {
+    const response = await api.get<ApiResponse<PairingStatusData>>(`/pairing/status/${pairingId}`);
+    return response.data;
+  },
+
+  /** 删除配对会话 */
+  delete: async (pairingId: string): Promise<void> => {
+    await api.delete(`/pairing/${pairingId}`);
+  },
+};
+
 export default api;
