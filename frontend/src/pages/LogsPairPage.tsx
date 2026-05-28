@@ -79,10 +79,10 @@ export default function LogsPairPage() {
 
       // 生成二维码内容 - App 扫码后解析此 JSON
       const qrData = JSON.stringify({
-        type: 'nn-realtime-log',
+        type: 'nn_browser_log_pair',
         pairingId,
         token,
-        serverUrl: `${window.location.origin}/api/pairing/confirm`,
+        reportUrl: `${window.location.origin}/api/pairing/confirm`,
       });
       setQrValue(qrData);
 
