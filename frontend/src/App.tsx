@@ -10,6 +10,7 @@ import PodsPage from './pages/PodsPage';
 import CICDPage from './pages/CICDPage';
 import GitPage from './pages/GitPage';
 import LogsPage from './pages/LogsPage';
+import LogsPairPage from './pages/LogsPairPage';
 import RoutesPage from './pages/RoutesPage';
 import LoginPage from './pages/LoginPage';
 import { authUtils } from './utils/auth';
@@ -44,6 +45,7 @@ function App() {
             <Route path="git" element={<GitPage />} />
             {/* 日志分析 */}
             <Route path="logs" element={<LogsPage />} />
+            <Route path="logs/pair" element={<LogsPairPage />} />
             {/* 路由管理 */}
             <Route path="routes" element={<RoutesPage />} />
           </Route>
