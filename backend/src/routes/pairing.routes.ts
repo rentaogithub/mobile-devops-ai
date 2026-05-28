@@ -12,6 +12,8 @@ router.post('/create', (req: Request, res: Response) => {
   try {
     const { pairingId, token } = pairingService.createSession();
 
+    logger.info(`[Pairing] 浏览器创建配对会话: pairingId=${pairingId}`);
+
     res.json({
       success: true,
       data: { pairingId, token },
@@ -37,6 +39,7 @@ router.post('/confirm', (req: Request, res: Response) => {
     const { pairingId, token, deviceLogUrl, deviceInfo } = req.body;
 
     if (!pairingId || !token || !deviceLogUrl) {
+      logger.warn(`[Pairing] App 扫码确认缺少参数: pairingId=${pairingId}, deviceLogUrl=${deviceLogUrl}`);
       res.status(400).json({
         success: false,
         error: '缺少必要参数: pairingId, token, deviceLogUrl',
@@ -48,6 +51,7 @@ router.post('/confirm', (req: Request, res: Response) => {
     try {
       new URL(deviceLogUrl);
     } catch {
+      logger.warn(`[Pairing] App 提交的 deviceLogUrl 格式无效: ${deviceLogUrl}`);
       res.status(400).json({
         success: false,
         error: 'deviceLogUrl 格式无效，需要完整的 URL（如 http://10.1.107.116:8989）',
@@ -55,11 +59,15 @@ router.post('/confirm', (req: Request, res: Response) => {
       return;
     }
 
+    logger.info(`[Pairing] App 扫码确认配对: pairingId=${pairingId}, deviceLogUrl=${deviceLogUrl}, deviceInfo=${JSON.stringify(deviceInfo || {})}`);
+
     const result = pairingService.confirmPairing(pairingId, token, deviceLogUrl, deviceInfo);
 
     if (result.success) {
+      logger.info(`[Pairing] 配对成功: pairingId=${pairingId}`);
       res.json({ success: true, message: '配对成功' });
     } else {
+      logger.warn(`[Pairing] 配对失败: pairingId=${pairingId}, reason=${result.error}`);
       res.status(400).json({ success: false, error: result.error });
     }
   } catch (error: any) {
@@ -83,11 +91,16 @@ router.get('/status/:pairingId', (req: Request, res: Response) => {
     const result = pairingService.getSessionStatus(pairingId);
 
     if (!result) {
+      logger.warn(`[Pairing] 轮询状态: 会话不存在 pairingId=${pairingId}`);
       res.status(404).json({
         success: false,
         error: '配对会话不存在或已过期',
       });
       return;
+    }
+
+    if (result.status === 'paired') {
+      logger.info(`[Pairing] 轮询状态: 已配对 pairingId=${pairingId}, deviceLogUrl=${result.deviceLogUrl}`);
     }
 
     res.json({ success: true, data: result });
@@ -104,6 +117,7 @@ router.get('/status/:pairingId', (req: Request, res: Response) => {
 router.delete('/:pairingId', (req: Request, res: Response) => {
   try {
     const { pairingId } = req.params;
+    logger.info(`[Pairing] 删除配对会话: pairingId=${pairingId}`);
     pairingService.deleteSession(pairingId);
     res.json({ success: true, message: '会话已删除' });
   } catch (error: any) {
