@@ -4,29 +4,83 @@ import {
   Card,
   Button,
   Space,
-  Steps,
   Tag,
   Spin,
   Alert,
-  Descriptions,
   message,
+  Table,
+  Popconfirm,
 } from 'antd';
 import {
-  FileSearchOutlined,
   QrcodeOutlined,
   MobileOutlined,
-  LinkOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   ReloadOutlined,
   DisconnectOutlined,
+  ClearOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
-import { pairingApi, PairingSessionData, PairingStatusData } from '../services/api';
+import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 
-type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'viewing' | 'error';
+type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'streaming' | 'error';
+type AppConnectionState = 'unknown' | 'waiting' | 'connected' | 'disconnected';
+
+interface LogEntry {
+  id: number;
+  timestamp: string;
+  message: string;
+  raw: string;
+}
+
+function normalizeWebSocketURL(url?: string): string | undefined {
+  if (!url) return undefined;
+
+  try {
+    const parsedURL = new URL(url);
+    if (parsedURL.protocol === 'ws:' || parsedURL.protocol === 'wss:') {
+      return parsedURL.toString();
+    }
+    if (parsedURL.protocol === 'http:' || parsedURL.protocol === 'https:') {
+      parsedURL.protocol = parsedURL.protocol === 'https:' ? 'wss:' : 'ws:';
+      parsedURL.pathname = '/ws/logs';
+      parsedURL.search = '';
+      parsedURL.hash = '';
+      return parsedURL.toString();
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function normalizeWebSocketURLs(urls: string[]): string[] {
+  return urls
+    .map((url) => normalizeWebSocketURL(url))
+    .filter((url): url is string => Boolean(url))
+    .filter((url, index, array) => array.indexOf(url) === index);
+}
+
+function makeRequestId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
 
 export default function LogsPairPage() {
   const [state, setState] = useState<ConnectionState>('idle');
@@ -34,23 +88,58 @@ export default function LogsPairPage() {
   const [pairingStatus, setPairingStatus] = useState<PairingStatusData | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
   const [qrValue, setQrValue] = useState('');
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [lastHeartbeatAt, setLastHeartbeatAt] = useState('');
+  const [appConnectionState, setAppConnectionState] = useState<AppConnectionState>('unknown');
+  const [devices, setDevices] = useState<RealtimeLogDeviceData[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [centerSuccessText, setCenterSuccessText] = useState('');
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<PairingSessionData | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const logIdRef = useRef(0);
+  const logContainerRef = useRef<HTMLDivElement>(null);
+  const refreshAfterOpenRef = useRef(false);
+  const centerSuccessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const logArchiveRef = useRef<{
+    requestId: string;
+    fileName: string;
+    totalBytes: number;
+    receivedBytes: number;
+    chunks: Uint8Array[];
+  } | null>(null);
 
-  // 保持 ref 同步
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    if (autoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [logs, autoScroll]);
 
   // 组件卸载时清理
   useEffect(() => {
     return () => {
       stopPolling();
-      if (sessionRef.current) {
-        pairingApi.delete(sessionRef.current.pairingId).catch(() => {});
+      disconnectWs();
+      if (centerSuccessTimerRef.current) {
+        clearTimeout(centerSuccessTimerRef.current);
+        centerSuccessTimerRef.current = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    loadDevices();
+    const timer = setInterval(loadDevices, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   const stopPolling = useCallback(() => {
@@ -60,14 +149,54 @@ export default function LogsPairPage() {
     }
   }, []);
 
+  const disconnectWs = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+  }, []);
+
+  const loadDevices = async () => {
+    try {
+      setDevicesLoading(true);
+      const response = await pairingApi.listDevices();
+      if (response.success && response.data) {
+        setDevices(response.data);
+      }
+    } catch {
+      // 设备列表只是辅助入口，失败不影响扫码链路。
+    } finally {
+      setDevicesLoading(false);
+    }
+  };
+
+  const showCenterSuccess = (text: string) => {
+    if (centerSuccessTimerRef.current) {
+      clearTimeout(centerSuccessTimerRef.current);
+    }
+    setCenterSuccessText(text);
+    centerSuccessTimerRef.current = setTimeout(() => {
+      setCenterSuccessText('');
+      centerSuccessTimerRef.current = null;
+    }, 1600);
+  };
+
   /**
-   * 开始配对流程 - 创建会话并生成二维码
+   * 开始配对流程
    */
   const startPairing = async () => {
     try {
+      if ((state === 'qrcode' || state === 'polling') && sessionRef.current) {
+        pairingApi.delete(sessionRef.current.pairingId).catch(() => {});
+      }
+      stopPolling();
+      disconnectWs();
       setState('qrcode');
       setErrorMsg('');
       setPairingStatus(null);
+      setLogs([]);
+      setLastHeartbeatAt('');
+      setAppConnectionState('unknown');
 
       const response = await pairingApi.create();
       if (!response.success || !response.data) {
@@ -75,20 +204,29 @@ export default function LogsPairPage() {
       }
 
       const { pairingId, token } = response.data;
-      setSession({ pairingId, token });
+      const wsUrl = normalizeWebSocketURL(response.data.wsUrl);
+      const wsUrls = normalizeWebSocketURLs(response.data.wsUrls || []);
+      const resolvedWsUrls = wsUrl ? [wsUrl, ...wsUrls.filter((item) => item !== wsUrl)] : wsUrls;
+      const pairingWsUrl = wsUrl || resolvedWsUrls[0];
+      if (!pairingWsUrl) {
+        throw new Error('WebSocket 地址为空，请重新生成二维码');
+      }
+      const nextSession = { pairingId, token, wsUrl, wsUrls: resolvedWsUrls };
+      setSession(nextSession);
 
-      // 生成二维码内容 - App 扫码后解析此 JSON
+      // 生成二维码内容
+      // App 扫码后只连接明确的 nn-ios-platform WebSocket 服务地址。
       const qrData = JSON.stringify({
-        type: 'nn_browser_log_pair',
-        pairingId,
-        token,
-        reportUrl: `${window.location.origin}/api/pairing/confirm`,
+        type: 'nn_log_pair',
+        p: pairingId,
+        t: token,
+        u: resolvedWsUrls,
       });
       setQrValue(qrData);
 
-      // 开始轮询配对状态
+      // 开始轮询配对状态（等待 App WebSocket 连接）
       setState('polling');
-      startPolling(pairingId);
+      startPolling(pairingId, nextSession);
     } catch (error: any) {
       setState('error');
       setErrorMsg(error?.error || error?.message || '创建配对会话失败');
@@ -98,47 +236,337 @@ export default function LogsPairPage() {
   /**
    * 轮询配对状态
    */
-  const startPolling = (pairingId: string) => {
+  const startPolling = (pairingId: string, targetSession: PairingSessionData) => {
     stopPolling();
 
     pollingRef.current = setInterval(async () => {
       try {
         const response = await pairingApi.getStatus(pairingId);
-        if (!response.success || !response.data) return;
+        if (!response.success || !response.data) {
+          stopPolling();
+          setState('error');
+          setErrorMsg(response.error || '配对会话不存在或已过期，请重新生成二维码');
+          return;
+        }
 
         const data = response.data;
         setPairingStatus(data);
 
-        if (data.status === 'paired') {
+        if (data.status === 'paired' || data.status === 'streaming') {
           stopPolling();
           setState('paired');
-          message.success('设备配对成功！');
+          loadDevices();
+          showCenterSuccess('设备配对成功，正在打开日志页面');
+          connectLogStream(targetSession);
         } else if (data.status === 'expired') {
           stopPolling();
           setState('error');
           setErrorMsg('配对会话已过期，请重新生成二维码');
         }
       } catch {
-        // 轮询失败不中断，继续重试
+        stopPolling();
+        setState('error');
+        setErrorMsg('配对会话不存在或已过期，请重新生成二维码');
       }
     }, 1500);
   };
 
   /**
-   * 打开设备日志页面
+   * 构建浏览器端 WebSocket 地址
    */
-  const openDeviceLog = () => {
-    if (pairingStatus?.deviceLogUrl) {
-      setState('viewing');
+  const makeBrowserLogWebSocketURL = (targetSession: PairingSessionData | null = session): string | null => {
+    if (!targetSession) {
+      message.error('配对会话不存在，请重新生成二维码');
+      return null;
     }
+
+    const { pairingId, token, wsUrl, wsUrls } = targetSession;
+    const baseWsUrl = wsUrl || wsUrls[0];
+    if (!baseWsUrl) {
+      message.error('WebSocket 地址为空，请重新生成二维码');
+      return null;
+    }
+
+    const logWsUrl = new URL(baseWsUrl);
+    logWsUrl.searchParams.set('role', 'browser');
+    logWsUrl.searchParams.set('pairingId', pairingId);
+    logWsUrl.searchParams.set('token', token);
+    return logWsUrl.toString();
   };
 
   /**
-   * 在新窗口打开设备日志
+   * 连接 WebSocket 接收日志流
    */
-  const openInNewWindow = () => {
-    if (pairingStatus?.deviceLogUrl) {
-      window.open(pairingStatus.deviceLogUrl, '_blank');
+  const connectLogStream = (targetSession: PairingSessionData | null = session) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      setState('streaming');
+      return;
+    }
+
+    const logWsUrl = makeBrowserLogWebSocketURL(targetSession);
+    if (!logWsUrl) return;
+
+    const ws = new WebSocket(logWsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      setState('streaming');
+      setAppConnectionState('waiting');
+      if (refreshAfterOpenRef.current) {
+        refreshAfterOpenRef.current = false;
+        ws.send(JSON.stringify({
+          type: 'command',
+          command: 'refreshLogs',
+          requestId: makeRequestId(),
+        }));
+      }
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'status' && data.status === 'app_disconnected') {
+          setAppConnectionState('disconnected');
+          message.warning('设备已断开连接');
+          return;
+        }
+        if (data.type === 'status') {
+          if (data.status === 'app_connected') {
+            setAppConnectionState('connected');
+            return;
+          }
+          if (data.status === 'waiting_app') {
+            setAppConnectionState('waiting');
+            return;
+          }
+          return;
+        }
+        if (data.type === 'heartbeat') {
+          setAppConnectionState('connected');
+          setLastHeartbeatAt(data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString());
+          return;
+        }
+        if (data.type === 'clear_logs') {
+          setLogs([]);
+          logIdRef.current = 0;
+          return;
+        }
+        if (data.type === 'deviceInfo') {
+          setPairingStatus((prev) => ({
+            status: prev?.status || 'paired',
+            deviceInfo: data.deviceInfo,
+          }));
+          return;
+        }
+        if (data.type === 'logArchivePreparing') {
+          setIsDownloadingLogs(true);
+          setDownloadProgress(0);
+          message.info('正在打包 NN 日志...');
+          return;
+        }
+        if (data.type === 'logArchiveStart') {
+          logArchiveRef.current = {
+            requestId: data.requestId,
+            fileName: data.fileName || `nn-logs-${Date.now()}.zip`,
+            totalBytes: Number(data.totalBytes || 0),
+            receivedBytes: 0,
+            chunks: [],
+          };
+          setIsDownloadingLogs(true);
+          setDownloadProgress(0);
+          return;
+        }
+        if (data.type === 'logArchiveChunk') {
+          appendLogArchiveChunk(data);
+          return;
+        }
+        if (data.type === 'logArchiveFinished') {
+          finishLogArchiveDownload(data.requestId);
+          return;
+        }
+        if (data.type === 'logArchiveFailed') {
+          logArchiveRef.current = null;
+          setIsDownloadingLogs(false);
+          setDownloadProgress(0);
+          message.error(data.message || 'NN 日志下载失败');
+          return;
+        }
+
+        if (data.type !== 'log') {
+          return;
+        }
+
+        const entry: LogEntry = {
+          id: ++logIdRef.current,
+          timestamp: data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
+          message: data.line || data.message || event.data,
+          raw: event.data,
+        };
+        setLogs((prev) => {
+          const next = [...prev, entry];
+          // 保留最近 5000 条
+          return next.length > 5000 ? next.slice(-5000) : next;
+        });
+      } catch {
+        // 非 JSON 格式，直接作为日志文本
+        const entry: LogEntry = {
+          id: ++logIdRef.current,
+          timestamp: new Date().toLocaleTimeString(),
+          message: event.data,
+          raw: event.data,
+        };
+        setLogs((prev) => {
+          const next = [...prev, entry];
+          return next.length > 5000 ? next.slice(-5000) : next;
+        });
+      }
+    };
+
+    ws.onerror = () => {
+      message.error('WebSocket 连接错误');
+    };
+
+    ws.onclose = (event) => {
+      if (event.code !== 1000) {
+        message.warning('日志流连接已断开');
+      }
+      setAppConnectionState('disconnected');
+      wsRef.current = null;
+    };
+  };
+
+  const requestNNLogsDownload = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      message.warning('日志流未连接，无法下载 NN 日志');
+      return;
+    }
+    const requestId = makeRequestId();
+    logArchiveRef.current = null;
+    setIsDownloadingLogs(true);
+    setDownloadProgress(0);
+    ws.send(JSON.stringify({
+      type: 'command',
+      command: 'downloadLogs',
+      requestId,
+    }));
+  };
+
+  const requestRefreshLogs = (targetSession?: PairingSessionData) => {
+    const currentSession = targetSession || sessionRef.current || session;
+    if (!currentSession) {
+      message.warning('当前没有可刷新的设备连接');
+      return;
+    }
+
+    setLogs([]);
+    logIdRef.current = 0;
+    setLastHeartbeatAt('');
+
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      refreshAfterOpenRef.current = true;
+      connectLogStream(currentSession);
+      return;
+    }
+
+    wsRef.current.send(JSON.stringify({
+      type: 'command',
+      command: 'refreshLogs',
+      requestId: makeRequestId(),
+    }));
+    message.success('已刷新日志流');
+  };
+
+  const appendLogArchiveChunk = (data: any) => {
+    const archive = logArchiveRef.current;
+    if (!archive || archive.requestId !== data.requestId || typeof data.data !== 'string') return;
+
+    const bytes = base64ToUint8Array(data.data);
+    const index = Number(data.index || 0);
+    archive.chunks[index] = bytes;
+    archive.receivedBytes += bytes.byteLength;
+    if (archive.totalBytes > 0) {
+      setDownloadProgress(Math.min(99, Math.floor((archive.receivedBytes / archive.totalBytes) * 100)));
+    }
+  };
+
+  const finishLogArchiveDownload = (requestId: string) => {
+    const archive = logArchiveRef.current;
+    if (!archive || archive.requestId !== requestId) return;
+
+    const blobParts = archive.chunks.map((chunk) => {
+      const copy = new Uint8Array(chunk.byteLength);
+      copy.set(chunk);
+      return copy.buffer;
+    });
+    const blob = new Blob(blobParts, { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = archive.fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    logArchiveRef.current = null;
+    setIsDownloadingLogs(false);
+    setDownloadProgress(100);
+    message.success('NN 日志已下载到电脑');
+  };
+
+  const enterDeviceLogStream = (device: RealtimeLogDeviceData) => {
+    stopPolling();
+    disconnectWs();
+    const targetSession: PairingSessionData = {
+      pairingId: device.pairingId,
+      token: device.token,
+      wsUrl: device.wsUrl,
+      wsUrls: device.wsUrls || (device.wsUrl ? [device.wsUrl] : []),
+    };
+    setSession(targetSession);
+    sessionRef.current = targetSession;
+    setPairingStatus(device);
+    setLastHeartbeatAt(device.lastActiveAt ? new Date(device.lastActiveAt).toLocaleTimeString() : '');
+    setAppConnectionState(device.appConnected ? 'connected' : 'waiting');
+    connectLogStream(targetSession);
+  };
+
+  const reconnectDeviceLogStream = (device: RealtimeLogDeviceData) => {
+    const targetSession: PairingSessionData = {
+      pairingId: device.pairingId,
+      token: device.token,
+      wsUrl: device.wsUrl,
+      wsUrls: device.wsUrls || (device.wsUrl ? [device.wsUrl] : []),
+    };
+    enterDeviceLogStream(device);
+    requestRefreshLogs(targetSession);
+  };
+
+  const stopViewing = () => {
+    disconnectWs();
+    setState('idle');
+    setSession(null);
+    setPairingStatus(null);
+    setQrValue('');
+    setLastHeartbeatAt('');
+    setAppConnectionState('unknown');
+    setLogs([]);
+    loadDevices();
+  };
+
+  const removeDevice = async (device: RealtimeLogDeviceData) => {
+    try {
+      await pairingApi.delete(device.pairingId);
+      if (sessionRef.current?.pairingId === device.pairingId) {
+        stopViewing();
+      } else {
+        loadDevices();
+      }
+      message.success('设备已移出');
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '移出设备失败');
     }
   };
 
@@ -147,6 +575,7 @@ export default function LogsPairPage() {
    */
   const disconnect = () => {
     stopPolling();
+    disconnectWs();
     if (session) {
       pairingApi.delete(session.pairingId).catch(() => {});
     }
@@ -155,56 +584,201 @@ export default function LogsPairPage() {
     setPairingStatus(null);
     setQrValue('');
     setErrorMsg('');
+    setLastHeartbeatAt('');
+    setAppConnectionState('unknown');
+    setLogs([]);
+    loadDevices();
   };
 
-  /**
-   * 获取当前步骤
-   */
-  const getCurrentStep = (): number => {
-    switch (state) {
-      case 'idle': return 0;
-      case 'qrcode':
-      case 'polling': return 1;
-      case 'paired': return 2;
-      case 'viewing': return 3;
-      default: return 0;
+  const getAppConnectionTag = () => {
+    switch (appConnectionState) {
+      case 'connected':
+        return <Tag color="green" icon={<CheckCircleOutlined />}>App 已连接</Tag>;
+      case 'waiting':
+        return <Tag color="gold">等待 App 重连</Tag>;
+      case 'disconnected':
+        return <Tag color="red">App 已断开</Tag>;
+      default:
+        return null;
     }
+  };
+
+  const getEmptyLogText = (): string => {
+    if (appConnectionState === 'connected') {
+      return lastHeartbeatAt
+        ? `设备已连接，等待新日志... 最近心跳 ${lastHeartbeatAt}`
+        : '设备已连接，等待新日志...';
+    }
+    if (appConnectionState === 'waiting') {
+      return '浏览器已连接，等待 App 重连...';
+    }
+    if (appConnectionState === 'disconnected') {
+      return 'App 已断开，请重启 App 自动重连；如果后端服务重启过，请重新扫码';
+    }
+    return '等待日志数据...';
   };
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4}>
-          <MobileOutlined style={{ marginRight: 8, color: '#1677ff' }} />
-          实时日志 - 扫码配对
-        </Title>
-        <Paragraph type="secondary">
-          通过 NN App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
-        </Paragraph>
+      {centerSuccessText && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 2000,
+            maxWidth: 'calc(100vw - 48px)',
+            minWidth: 280,
+            padding: '18px 24px',
+            borderRadius: 12,
+            background: '#f6ffed',
+            border: '1px solid #b7eb8f',
+            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.16)',
+            textAlign: 'center',
+            whiteSpace: 'normal',
+          }}
+        >
+          <Space size={12}>
+            <CheckCircleOutlined style={{ color: '#52c41a', fontSize: 22 }} />
+            <Text strong>{centerSuccessText}</Text>
+          </Space>
+        </div>
+      )}
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <Title level={4}>
+            <MobileOutlined style={{ marginRight: 8, color: '#1677ff' }} />
+            实时日志 - 扫码配对
+          </Title>
+          <Paragraph type="secondary">
+            通过 NN App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
+          </Paragraph>
+        </div>
+        {state !== 'streaming' && (
+          <Button type="primary" icon={<QrcodeOutlined />} onClick={startPairing}>
+            生成配对二维码
+          </Button>
+        )}
       </div>
 
-      {/* 步骤指示器 */}
-      <Card style={{ marginBottom: 24 }}>
-        <Steps
-          current={getCurrentStep()}
-          items={[
-            { title: '准备', description: '生成二维码', icon: <QrcodeOutlined /> },
-            { title: '扫码', description: 'App 扫描配对', icon: <MobileOutlined /> },
-            { title: '已配对', description: '获取日志地址', icon: <LinkOutlined /> },
-            { title: '查看日志', description: '实时日志流', icon: <CheckCircleOutlined /> },
-          ]}
-        />
-      </Card>
+      {devices.length > 0 && state !== 'streaming' && (
+        <Card
+          title="已连接设备"
+          extra={
+            <Space>
+              <Button size="small" icon={<ReloadOutlined />} onClick={loadDevices}>刷新</Button>
+            </Space>
+          }
+          style={{ marginBottom: 24 }}
+        >
+          <Table
+            rowKey="pairingId"
+            size="small"
+            loading={devicesLoading}
+            pagination={false}
+            dataSource={devices}
+            columns={[
+              {
+                title: '设备',
+                key: 'device',
+                render: (_, record) => (
+                  <Space direction="vertical" size={0}>
+                    <Space>
+                      <MobileOutlined />
+                      <span>{record.deviceInfo?.name || '未知设备'}</span>
+                      {record.deviceInfo?.model && <Tag>{record.deviceInfo.model}</Tag>}
+                    </Space>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      设备ID: {record.deviceInfo?.appDeviceId || '-'}
+                    </Text>
+                  </Space>
+                ),
+              },
+              {
+                title: '用户',
+                key: 'user',
+                render: (_, record) => (
+                  <Space direction="vertical" size={0}>
+                    <span>{record.deviceInfo?.nickName || '-'}</span>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      NN: {record.deviceInfo?.nnNumber || '-'}
+                      {record.deviceInfo?.userId ? ` / UID: ${record.deviceInfo.userId}` : ''}
+                    </Text>
+                  </Space>
+                ),
+              },
+              {
+                title: '状态',
+                dataIndex: 'appConnected',
+                key: 'appConnected',
+                width: 120,
+                render: (connected: boolean) => (
+                  connected
+                    ? <Tag color="green" icon={<CheckCircleOutlined />}>在线</Tag>
+                    : <Tag color="gold">等待重连</Tag>
+                ),
+              },
+              {
+                title: '最近活跃',
+                dataIndex: 'lastActiveAt',
+                key: 'lastActiveAt',
+                width: 160,
+                render: (value?: number) => value ? new Date(value).toLocaleTimeString() : '-',
+              },
+              {
+                title: '缓存日志',
+                dataIndex: 'recentLogCount',
+                key: 'recentLogCount',
+                width: 100,
+                render: (value: number) => `${value || 0} 条`,
+              },
+              {
+                title: '操作',
+                key: 'action',
+                width: 220,
+                render: (_, record) => (
+                  <Space size="small">
+                    <Button type="link" size="small" onClick={() => enterDeviceLogStream(record)}>
+                      查看日志
+                    </Button>
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<ReloadOutlined />}
+                      onClick={() => reconnectDeviceLogStream(record)}
+                    >
+                      {record.appConnected ? '刷新' : '重连'}
+                    </Button>
+                    <Popconfirm
+                      title="移出设备"
+                      description="移出后会断开该设备实时日志连接，确认继续？"
+                      okText="移出"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => removeDevice(record)}
+                    >
+                      <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                        移出
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      )}
 
-      {/* 主内容区 */}
-      {state === 'idle' && (
+      {state === 'idle' && devices.length === 0 && (
         <Card>
-          <div style={{ textAlign: 'center', padding: '40px 0' }}>
+          <div style={{ textAlign: 'center', padding: '72px 0' }}>
             <QrcodeOutlined style={{ fontSize: 64, color: '#1677ff', marginBottom: 24 }} />
             <Title level={5}>连接设备实时日志</Title>
-            <Paragraph type="secondary" style={{ maxWidth: 500, margin: '0 auto 24px' }}>
-              点击下方按钮生成二维码，然后在 NN App 中通过 Debug → 实时日志 → 扫描二维码 进行配对。
-              配对成功后，设备日志将实时展示在浏览器中。
+            <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 24px' }}>
+              点击生成二维码，然后在 NN App 中通过 Debug → 实时日志 → 扫描二维码进行配对。
+              配对成功后，设备日志将通过服务器中转实时展示在浏览器中。
             </Paragraph>
             <Button type="primary" size="large" icon={<QrcodeOutlined />} onClick={startPairing}>
               生成配对二维码
@@ -213,6 +787,7 @@ export default function LogsPairPage() {
         </Card>
       )}
 
+      {/* 等待扫码 */}
       {(state === 'qrcode' || state === 'polling') && (
         <Card>
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
@@ -234,10 +809,19 @@ export default function LogsPairPage() {
                   <Space>
                     <Spin size="small" />
                     <Text type="secondary">等待 App 扫码配对...</Text>
+                    <Tag color="blue">协议 nn_log_pair</Tag>
                   </Space>
                 </div>
                 <Paragraph type="secondary" style={{ fontSize: 13 }}>
                   请在 NN App 中打开：Debug → 实时日志 → 扫描二维码
+                </Paragraph>
+                <Paragraph
+                  copyable={{ text: qrValue }}
+                  type="secondary"
+                  style={{ maxWidth: 520, margin: '8px auto 0', fontSize: 12 }}
+                  ellipsis={{ rows: 2, expandable: true, symbol: '展开二维码内容' }}
+                >
+                  二维码内容：{qrValue}
                 </Paragraph>
                 <Space style={{ marginTop: 16 }}>
                   <Button onClick={startPairing} icon={<ReloadOutlined />}>
@@ -253,93 +837,91 @@ export default function LogsPairPage() {
         </Card>
       )}
 
-      {state === 'paired' && pairingStatus && (
-        <Card>
-          <Alert
-            type="success"
-            showIcon
-            icon={<CheckCircleOutlined />}
-            message="设备配对成功"
-            description="已成功连接到设备日志服务，点击下方按钮查看实时日志"
-            style={{ marginBottom: 24 }}
-          />
-
-          <Descriptions bordered column={1} size="small" style={{ marginBottom: 24 }}>
-            {pairingStatus.deviceInfo?.name && (
-              <Descriptions.Item label="设备名称">
-                {pairingStatus.deviceInfo.name}
-              </Descriptions.Item>
-            )}
-            {pairingStatus.deviceInfo?.model && (
-              <Descriptions.Item label="设备型号">
-                {pairingStatus.deviceInfo.model}
-              </Descriptions.Item>
-            )}
-            {pairingStatus.deviceInfo?.systemVersion && (
-              <Descriptions.Item label="系统版本">
-                {pairingStatus.deviceInfo.systemVersion}
-              </Descriptions.Item>
-            )}
-            <Descriptions.Item label="日志服务地址">
-              <Tag color="blue">{pairingStatus.deviceLogUrl}</Tag>
-            </Descriptions.Item>
-            <Descriptions.Item label="连接状态">
-              <Tag color="green" icon={<CheckCircleOutlined />}>已连接</Tag>
-            </Descriptions.Item>
-          </Descriptions>
-
-          <Space>
-            <Button type="primary" size="large" icon={<FileSearchOutlined />} onClick={openDeviceLog}>
-              在当前页面查看日志
-            </Button>
-            <Button size="large" icon={<LinkOutlined />} onClick={openInNewWindow}>
-              在新窗口打开
-            </Button>
-            <Button danger icon={<DisconnectOutlined />} onClick={disconnect}>
-              断开连接
-            </Button>
-          </Space>
-        </Card>
-      )}
-
-      {state === 'viewing' && pairingStatus?.deviceLogUrl && (
+      {/* 实时日志流 */}
+      {state === 'streaming' && (
         <Card
           title={
             <Space>
               <MobileOutlined />
               <span>设备实时日志</span>
-              {pairingStatus.deviceInfo?.name && (
+              {pairingStatus?.deviceInfo?.name && (
                 <Tag color="blue">{pairingStatus.deviceInfo.name}</Tag>
               )}
-              <Tag color="green" icon={<CheckCircleOutlined />}>已连接</Tag>
+              <Tag color="green" icon={<CheckCircleOutlined />}>浏览器接收中</Tag>
+              {getAppConnectionTag()}
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {logs.length} 条日志
+              </Text>
+              {lastHeartbeatAt && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  心跳 {lastHeartbeatAt}
+                </Text>
+              )}
             </Space>
           }
           extra={
             <Space>
-              <Button size="small" icon={<LinkOutlined />} onClick={openInNewWindow}>
-                新窗口
+              <Button
+                size="small"
+                icon={<ReloadOutlined />}
+                onClick={() => requestRefreshLogs()}
+              >
+                刷新日志流
               </Button>
-              <Button size="small" danger icon={<DisconnectOutlined />} onClick={disconnect}>
-                断开
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                loading={isDownloadingLogs}
+                onClick={requestNNLogsDownload}
+              >
+                {isDownloadingLogs ? `下载中 ${downloadProgress}%` : '下载 NN 日志'}
+              </Button>
+              <Button
+                size="small"
+                type={autoScroll ? 'primary' : 'default'}
+                onClick={() => setAutoScroll(!autoScroll)}
+              >
+                {autoScroll ? '自动滚动: 开' : '自动滚动: 关'}
+              </Button>
+              <Button size="small" icon={<ClearOutlined />} onClick={() => setLogs([])}>
+                清空
+              </Button>
+              <Button size="small" icon={<DisconnectOutlined />} onClick={stopViewing}>
+                停止查看
               </Button>
             </Space>
           }
           bodyStyle={{ padding: 0 }}
         >
-          <iframe
-            src={pairingStatus.deviceLogUrl}
+          <div
+            ref={logContainerRef}
             style={{
-              width: '100%',
-              height: 'calc(100vh - 320px)',
-              minHeight: 500,
-              border: 'none',
+              height: 'calc(100vh - 350px)',
+              minHeight: 400,
+              overflow: 'auto',
+              background: '#1e1e1e',
+              padding: '12px 16px',
+              fontFamily: 'Menlo, Monaco, Consolas, monospace',
+              fontSize: 12,
+              lineHeight: 1.6,
             }}
-            title="设备实时日志"
-            sandbox="allow-scripts allow-same-origin allow-popups"
-          />
+          >
+            {logs.length === 0 ? (
+              <div style={{ color: '#666', textAlign: 'center', paddingTop: 100 }}>
+                {getEmptyLogText()}
+              </div>
+            ) : (
+              logs.map((log) => (
+                <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  <span>{log.message}</span>
+                </div>
+              ))
+            )}
+          </div>
         </Card>
       )}
 
+      {/* 错误 */}
       {state === 'error' && (
         <Card>
           <Alert
@@ -358,45 +940,6 @@ export default function LogsPairPage() {
           </Space>
         </Card>
       )}
-
-      {/* 使用说明 */}
-      <Card title="使用说明" style={{ marginTop: 24 }} size="small">
-        <Steps
-          direction="vertical"
-          size="small"
-          current={-1}
-          items={[
-            {
-              title: '电脑浏览器打开实时日志平台',
-              description: '点击"生成配对二维码"按钮',
-            },
-            {
-              title: '平台生成配对二维码',
-              description: '包含 pairingId 和 token 信息',
-            },
-            {
-              title: 'App 扫描二维码',
-              description: '在 NN App 中打开 Debug → 实时日志 → 扫描二维码',
-            },
-            {
-              title: 'App 启动日志服务',
-              description: 'App 解析二维码后启动 NNBrowserLogServer，获取本机 IP 和端口',
-            },
-            {
-              title: 'App 回调平台',
-              description: 'App 将 deviceLogUrl（如 http://10.1.107.116:8989）提交给平台',
-            },
-            {
-              title: '浏览器获取日志地址',
-              description: '平台通知浏览器配对成功，返回 deviceLogUrl',
-            },
-            {
-              title: '查看实时日志',
-              description: '浏览器通过 iframe 或新窗口打开设备日志页面',
-            },
-          ]}
-        />
-      </Card>
     </div>
   );
 }

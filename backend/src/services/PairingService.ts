@@ -1,45 +1,44 @@
 import { v4 as uuidv4 } from 'uuid';
+import { getDatabase } from '../database';
 import logger from '../utils/logger';
 
 export interface PairingSession {
   pairingId: string;
   token: string;
   status: 'waiting' | 'paired' | 'expired';
-  deviceLogUrl?: string;
   deviceInfo?: {
+    deviceId?: string;
     name?: string;
     model?: string;
     systemVersion?: string;
     ip?: string;
+    appDeviceId?: string;
+    userId?: number | string;
+    nickName?: string;
+    nnNumber?: number | string;
   };
   createdAt: number;
   pairedAt?: number;
+  lastActiveAt?: number;
 }
 
 /**
- * 配对服务 - 管理浏览器与 App 之间的配对会话
- *
- * 流程：
- * 1. 浏览器请求创建配对会话，获得 pairingId + token，生成二维码
- * 2. App 扫描二维码，解析出 pairingId + token
- * 3. App 启动 NNBrowserLogServer，获取本机 IP:Port
- * 4. App 调用 confirm 接口，提交 deviceLogUrl + deviceInfo
- * 5. 浏览器通过轮询获取配对结果，拿到 deviceLogUrl
- * 6. 浏览器打开 deviceLogUrl 查看实时日志
+ * 配对服务 - 只管理浏览器与 App 的配对会话。
+ * WebSocket 连接、日志缓存和转发由 BrowserLogWebSocketService 负责。
  */
 class PairingService {
   private sessions: Map<string, PairingSession> = new Map();
-  private readonly SESSION_TTL = 5 * 60 * 1000; // 5 分钟过期
+  private readonly SESSION_TTL = 5 * 60 * 1000;
+  private readonly PAIRED_SESSION_TTL = 24 * 60 * 60 * 1000;
   private cleanupTimer: NodeJS.Timeout | null = null;
+  private db = getDatabase();
 
   constructor() {
-    // 每分钟清理过期会话
+    this.ensurePersistenceTable();
+    this.loadSessions();
     this.cleanupTimer = setInterval(() => this.cleanup(), 60 * 1000);
   }
 
-  /**
-   * 创建配对会话
-   */
   createSession(): { pairingId: string; token: string } {
     const pairingId = uuidv4();
     const token = uuidv4();
@@ -52,98 +51,113 @@ class PairingService {
     };
 
     this.sessions.set(pairingId, session);
+    this.saveSession(session);
     logger.info(`[Pairing] 创建配对会话: ${pairingId}`);
-
     return { pairingId, token };
   }
 
-  /**
-   * App 确认配对 - 提交设备日志 URL 和设备信息
-   */
-  confirmPairing(
-    pairingId: string,
-    token: string,
-    deviceLogUrl: string,
-    deviceInfo?: PairingSession['deviceInfo']
-  ): { success: boolean; error?: string } {
+  validateSession(pairingId: string, token: string): { success: boolean; error?: string } {
     const session = this.sessions.get(pairingId);
 
     if (!session) {
       return { success: false, error: '配对会话不存在或已过期' };
     }
-
     if (session.token !== token) {
       return { success: false, error: '配对令牌无效' };
     }
-
-    if (this.isExpired(session)) {
+    if (this.isExpired(session) && session.status === 'waiting') {
       session.status = 'expired';
+      this.saveSession(session);
       return { success: false, error: '配对会话已过期，请重新扫码' };
     }
-
-    if (session.status === 'paired') {
-      return { success: false, error: '该会话已被配对' };
-    }
-
-    // 更新会话状态
-    session.status = 'paired';
-    session.deviceLogUrl = deviceLogUrl;
-    session.deviceInfo = deviceInfo;
-    session.pairedAt = Date.now();
-
-    logger.info(`[Pairing] 配对成功: ${pairingId}, deviceLogUrl: ${deviceLogUrl}`);
 
     return { success: true };
   }
 
   /**
-   * 浏览器轮询配对状态
+   * App WebSocket 连接成功后标记为已配对。
    */
+  confirmWebSocketPairing(pairingId: string, token: string): { success: boolean; error?: string } {
+    const validateResult = this.validateSession(pairingId, token);
+    if (!validateResult.success) {
+      return validateResult;
+    }
+
+    const session = this.sessions.get(pairingId);
+    if (!session) {
+      return { success: false, error: '配对会话不存在或已过期' };
+    }
+
+    session.status = 'paired';
+    session.pairedAt = Date.now();
+    session.lastActiveAt = Date.now();
+    this.saveSession(session);
+
+    logger.info(`[Pairing] App WebSocket 已配对: pairingId=${pairingId}`);
+    return { success: true };
+  }
+
+  touchSession(pairingId: string): void {
+    const session = this.sessions.get(pairingId);
+    if (!session) return;
+    session.lastActiveAt = Date.now();
+    this.saveSession(session);
+  }
+
+  updateDeviceInfo(pairingId: string, deviceInfo?: PairingSession['deviceInfo']): string[] {
+    const session = this.sessions.get(pairingId);
+    if (!session || !deviceInfo) return [];
+    session.deviceInfo = deviceInfo;
+    this.saveSession(session);
+    return this.removeDuplicateDeviceSessions(session);
+  }
+
+  getSession(pairingId: string): PairingSession | null {
+    return this.sessions.get(pairingId) || null;
+  }
+
+  listSessions(): PairingSession[] {
+    return Array.from(this.sessions.values())
+      .filter((session) => session.status === 'paired')
+      .sort((left, right) => (right.lastActiveAt || right.pairedAt || right.createdAt) - (left.lastActiveAt || left.pairedAt || left.createdAt));
+  }
+
   getSessionStatus(pairingId: string): {
     status: PairingSession['status'];
-    deviceLogUrl?: string;
     deviceInfo?: PairingSession['deviceInfo'];
   } | null {
     const session = this.sessions.get(pairingId);
-
-    if (!session) {
-      return null;
-    }
+    if (!session) return null;
 
     if (this.isExpired(session) && session.status === 'waiting') {
       session.status = 'expired';
+      this.saveSession(session);
     }
 
     return {
       status: session.status,
-      deviceLogUrl: session.deviceLogUrl,
       deviceInfo: session.deviceInfo,
     };
   }
 
-  /**
-   * 删除配对会话
-   */
   deleteSession(pairingId: string): void {
     this.sessions.delete(pairingId);
+    this.db.prepare('DELETE FROM realtime_log_pairing_sessions WHERE pairing_id = ?').run(pairingId);
   }
 
-  /**
-   * 清理过期会话
-   */
   private cleanup(): void {
     const now = Date.now();
     let cleaned = 0;
-
     for (const [id, session] of this.sessions) {
-      // 已配对的会话保留 30 分钟后清理
-      const ttl = session.status === 'paired' ? 30 * 60 * 1000 : this.SESSION_TTL;
-      if (now - session.createdAt > ttl) {
-        this.sessions.delete(id);
+      const ttl = session.status === 'paired' ? this.PAIRED_SESSION_TTL : this.SESSION_TTL;
+      const baseTime = session.status === 'paired'
+        ? (session.lastActiveAt || session.pairedAt || session.createdAt)
+        : session.createdAt;
+      if (now - baseTime > ttl) {
+        this.deleteSession(id);
         cleaned++;
       }
     }
-
     if (cleaned > 0) {
       logger.info(`[Pairing] 清理了 ${cleaned} 个过期会话`);
     }
@@ -151,6 +165,132 @@ class PairingService {
 
   private isExpired(session: PairingSession): boolean {
     return Date.now() - session.createdAt > this.SESSION_TTL;
+  }
+
+  private removeDuplicateDeviceSessions(currentSession: PairingSession): string[] {
+    const currentIdentity = this.deviceIdentity(currentSession.deviceInfo);
+    if (!currentIdentity) return [];
+
+    const removedIds: string[] = [];
+    for (const [id, session] of this.sessions) {
+      if (id === currentSession.pairingId || session.status !== 'paired') continue;
+      if (this.deviceIdentity(session.deviceInfo) !== currentIdentity) continue;
+      this.deleteSession(id);
+      removedIds.push(id);
+    }
+    if (removedIds.length > 0) {
+      logger.info(`[Pairing] 移除同设备旧会话: current=${currentSession.pairingId}, removed=${removedIds.join(',')}`);
+    }
+    return removedIds;
+  }
+
+  private deviceIdentity(deviceInfo?: PairingSession['deviceInfo']): string | null {
+    if (!deviceInfo) return null;
+    const deviceId = this.normalized(deviceInfo.deviceId);
+    if (deviceId) {
+      return `device:${deviceId}`;
+    }
+
+    const user = this.normalized(deviceInfo.userId) || this.normalized(deviceInfo.nnNumber);
+    const name = this.normalized(deviceInfo.name);
+    const model = this.normalized(deviceInfo.model);
+    if (!user || !name || !model) return null;
+    return `fallback:${user}:${name}:${model}`;
+  }
+
+  private normalized(value: unknown): string {
+    return String(value ?? '').trim();
+  }
+
+  private ensurePersistenceTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
+        pairing_id TEXT PRIMARY KEY,
+        token TEXT NOT NULL,
+        status TEXT NOT NULL,
+        device_info TEXT,
+        created_at INTEGER NOT NULL,
+        paired_at INTEGER,
+        last_active_at INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_status ON realtime_log_pairing_sessions(status);
+      CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_last_active_at ON realtime_log_pairing_sessions(last_active_at DESC);
+    `);
+  }
+
+  private loadSessions(): void {
+    const rows = this.db.prepare(`
+      SELECT pairing_id, token, status, device_info, created_at, paired_at, last_active_at
+      FROM realtime_log_pairing_sessions
+      WHERE status IN ('waiting', 'paired')
+    `).all() as Array<{
+      pairing_id: string;
+      token: string;
+      status: PairingSession['status'];
+      device_info: string | null;
+      created_at: number;
+      paired_at: number | null;
+      last_active_at: number | null;
+    }>;
+
+    rows.forEach((row) => {
+      const session: PairingSession = {
+        pairingId: row.pairing_id,
+        token: row.token,
+        status: row.status,
+        deviceInfo: this.parseDeviceInfo(row.device_info),
+        createdAt: row.created_at,
+        pairedAt: row.paired_at ?? undefined,
+        lastActiveAt: row.last_active_at ?? undefined,
+      };
+      if (session.status === 'waiting' && this.isExpired(session)) {
+        session.status = 'expired';
+        this.saveSession(session);
+        return;
+      }
+      this.sessions.set(session.pairingId, session);
+    });
+
+    if (this.sessions.size > 0) {
+      logger.info(`[Pairing] 恢复 ${this.sessions.size} 个实时日志配对会话`);
+    }
+  }
+
+  private saveSession(session: PairingSession): void {
+    this.db.prepare(`
+      INSERT INTO realtime_log_pairing_sessions (
+        pairing_id, token, status, device_info, created_at, paired_at, last_active_at, updated_at
+      ) VALUES (
+        @pairingId, @token, @status, @deviceInfo, @createdAt, @pairedAt, @lastActiveAt, @updatedAt
+      )
+      ON CONFLICT(pairing_id) DO UPDATE SET
+        token = excluded.token,
+        status = excluded.status,
+        device_info = excluded.device_info,
+        created_at = excluded.created_at,
+        paired_at = excluded.paired_at,
+        last_active_at = excluded.last_active_at,
+        updated_at = excluded.updated_at
+    `).run({
+      pairingId: session.pairingId,
+      token: session.token,
+      status: session.status,
+      deviceInfo: session.deviceInfo ? JSON.stringify(session.deviceInfo) : null,
+      createdAt: session.createdAt,
+      pairedAt: session.pairedAt ?? null,
+      lastActiveAt: session.lastActiveAt ?? null,
+      updatedAt: Date.now(),
+    });
+  }
+
+  private parseDeviceInfo(value: string | null): PairingSession['deviceInfo'] | undefined {
+    if (!value) return undefined;
+    try {
+      return JSON.parse(value) as PairingSession['deviceInfo'];
+    } catch {
+      return undefined;
+    }
   }
 
   destroy(): void {

@@ -1,22 +1,92 @@
 import { Router, Request, Response } from 'express';
+import os from 'os';
 import pairingService from '../services/PairingService';
+import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
 import logger from '../utils/logger';
 
 const router = Router();
 
+function localIPv4Addresses(): string[] {
+  const interfaces = os.networkInterfaces();
+  const addresses: string[] = [];
+
+  Object.entries(interfaces).forEach(([name, items]) => {
+    if (/^(utun|awdl|llw|bridge|vnic)/.test(name)) return;
+    items?.forEach((item) => {
+      if (item.family !== 'IPv4' || item.internal) return;
+      addresses.push(item.address);
+    });
+  });
+
+  return Array.from(new Set(addresses));
+}
+
+function makeWebSocketUrls(req: Request, preferredHost?: string): string[] {
+  const configuredWsUrl = process.env.REALTIME_LOG_WS_URL || process.env.BROWSER_LOG_WS_URL;
+  if (configuredWsUrl) {
+    return [configuredWsUrl];
+  }
+
+  const port = process.env.PORT || '3000';
+  const wsUrls: string[] = [];
+  const normalizedPreferredHost = preferredHost?.split(':')[0];
+  if (normalizedPreferredHost && !['127.0.0.1', 'localhost'].includes(normalizedPreferredHost)) {
+    wsUrls.push(`ws://${normalizedPreferredHost}:${port}/ws/logs`);
+  }
+
+  const requestHost = req.get('host') || '';
+
+  if (requestHost && !requestHost.startsWith('127.0.0.1') && !requestHost.startsWith('localhost')) {
+    const hostOnly = requestHost.split(':')[0];
+    wsUrls.push(`ws://${hostOnly}:${port}/ws/logs`);
+  }
+
+  localIPv4Addresses().forEach((ip) => {
+    const url = `ws://${ip}:${port}/ws/logs`;
+    if (!wsUrls.includes(url)) {
+      wsUrls.push(url);
+    }
+  });
+
+  return wsUrls;
+}
+
+function makeHttpBaseUrl(req: Request): string {
+  const host = req.get('host') || `127.0.0.1:${process.env.PORT || '3000'}`;
+  const protocol = req.protocol || 'http';
+  return `${protocol}://${host}`;
+}
+
+function makeLogViewerUrl(req: Request, pairingId: string, token: string, wsUrl: string): string {
+  const url = new URL('/logs/view', makeHttpBaseUrl(req));
+  url.searchParams.set('pairingId', pairingId);
+  url.searchParams.set('token', token);
+  url.searchParams.set('wsUrl', wsUrl);
+  return url.toString();
+}
+
 /**
  * POST /api/pairing/create
  * 浏览器创建配对会话，返回 pairingId 和 token 用于生成二维码
+ *
+ * 二维码内容包含 wsUrls，App 扫码后通过后端 WebSocket relay 推送日志。
  */
 router.post('/create', (req: Request, res: Response) => {
   try {
     const { pairingId, token } = pairingService.createSession();
+    const pageHost = typeof req.body?.pageHost === 'string' ? req.body.pageHost : undefined;
+    const wsUrls = makeWebSocketUrls(req, pageHost);
 
-    logger.info(`[Pairing] 浏览器创建配对会话: pairingId=${pairingId}`);
+    logger.info(`[Pairing] 浏览器创建配对会话: pairingId=${pairingId}, wsUrls=${wsUrls.join(',')}`);
 
     res.json({
       success: true,
-      data: { pairingId, token },
+      data: {
+        pairingId,
+        token,
+        wsUrl: wsUrls[0] || '',
+        wsUrls,
+      },
     });
   } catch (error: any) {
     logger.error(`[Pairing] 创建会话失败: ${error.message}`);
@@ -25,73 +95,16 @@ router.post('/create', (req: Request, res: Response) => {
 });
 
 /**
- * POST /api/pairing/confirm
- * App 扫码后调用，提交 deviceLogUrl 和设备信息
- *
- * Body:
- * - pairingId: string
- * - token: string
- * - deviceLogUrl: string (例如 http://10.1.107.116:8989)
- * - deviceInfo?: { name, model, systemVersion, ip }
- */
-router.post('/confirm', (req: Request, res: Response) => {
-  try {
-    const { pairingId, token, deviceLogUrl, deviceInfo } = req.body;
-
-    if (!pairingId || !token || !deviceLogUrl) {
-      logger.warn(`[Pairing] App 扫码确认缺少参数: pairingId=${pairingId}, deviceLogUrl=${deviceLogUrl}`);
-      res.status(400).json({
-        success: false,
-        error: '缺少必要参数: pairingId, token, deviceLogUrl',
-      });
-      return;
-    }
-
-    // 验证 deviceLogUrl 格式
-    try {
-      new URL(deviceLogUrl);
-    } catch {
-      logger.warn(`[Pairing] App 提交的 deviceLogUrl 格式无效: ${deviceLogUrl}`);
-      res.status(400).json({
-        success: false,
-        error: 'deviceLogUrl 格式无效，需要完整的 URL（如 http://10.1.107.116:8989）',
-      });
-      return;
-    }
-
-    logger.info(`[Pairing] App 扫码确认配对: pairingId=${pairingId}, deviceLogUrl=${deviceLogUrl}, deviceInfo=${JSON.stringify(deviceInfo || {})}`);
-
-    const result = pairingService.confirmPairing(pairingId, token, deviceLogUrl, deviceInfo);
-
-    if (result.success) {
-      logger.info(`[Pairing] 配对成功: pairingId=${pairingId}`);
-      res.json({ success: true, message: '配对成功' });
-    } else {
-      logger.warn(`[Pairing] 配对失败: pairingId=${pairingId}, reason=${result.error}`);
-      res.status(400).json({ success: false, error: result.error });
-    }
-  } catch (error: any) {
-    logger.error(`[Pairing] 确认配对失败: ${error.message}`);
-    res.status(500).json({ success: false, error: '确认配对失败' });
-  }
-});
-
-/**
  * GET /api/pairing/status/:pairingId
- * 浏览器轮询配对状态
- *
- * 返回:
- * - status: 'waiting' | 'paired' | 'expired'
- * - deviceLogUrl?: string (配对成功后返回)
- * - deviceInfo?: object (配对成功后返回)
+ * 浏览器轮询配对状态（等待 App 扫码连接 WebSocket）
  */
 router.get('/status/:pairingId', (req: Request, res: Response) => {
   try {
     const { pairingId } = req.params;
     const result = pairingService.getSessionStatus(pairingId);
+    const session = pairingService.getSession(pairingId);
 
-    if (!result) {
-      logger.warn(`[Pairing] 轮询状态: 会话不存在 pairingId=${pairingId}`);
+    if (!result || !session) {
       res.status(404).json({
         success: false,
         error: '配对会话不存在或已过期',
@@ -100,10 +113,20 @@ router.get('/status/:pairingId', (req: Request, res: Response) => {
     }
 
     if (result.status === 'paired') {
-      logger.info(`[Pairing] 轮询状态: 已配对 pairingId=${pairingId}, deviceLogUrl=${result.deviceLogUrl}`);
+      logger.info(`[Pairing] 轮询状态: 已配对 pairingId=${pairingId}`);
     }
 
-    res.json({ success: true, data: result });
+    const wsUrls = makeWebSocketUrls(req);
+    const wsUrl = wsUrls[0] || '';
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        wsUrl,
+        wsUrls,
+        deviceLogUrl: wsUrl ? makeLogViewerUrl(req, pairingId, session.token, wsUrl) : '',
+      },
+    });
   } catch (error: any) {
     logger.error(`[Pairing] 查询状态失败: ${error.message}`);
     res.status(500).json({ success: false, error: '查询配对状态失败' });
@@ -111,13 +134,47 @@ router.get('/status/:pairingId', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/pairing/devices
+ * 查询已配对设备，便于从服务端页面直接进入日志流。
+ */
+router.get('/devices', (req: Request, res: Response) => {
+  try {
+    const wsUrls = makeWebSocketUrls(req);
+    const wsUrl = wsUrls[0] || '';
+    const devices = pairingService.listSessions().map((session) => ({
+      pairingId: session.pairingId,
+      token: session.token,
+      status: session.status,
+      deviceInfo: session.deviceInfo,
+      wsUrl,
+      wsUrls,
+      deviceLogUrl: wsUrl ? makeLogViewerUrl(req, session.pairingId, session.token, wsUrl) : '',
+      appConnected: browserLogWebSocketService.isAppConnected(session.pairingId),
+      recentLogCount: browserLogWebSocketService.getRecentLogCount(session.pairingId),
+      createdAt: session.createdAt,
+      pairedAt: session.pairedAt,
+      lastActiveAt: session.lastActiveAt,
+    }));
+
+    res.json({
+      success: true,
+      data: devices,
+    });
+  } catch (error: any) {
+    logger.error(`[Pairing] 查询设备列表失败: ${error.message}`);
+    res.status(500).json({ success: false, error: '查询设备列表失败' });
+  }
+});
+
+/**
  * DELETE /api/pairing/:pairingId
- * 删除配对会话（浏览器关闭页面时调用）
+ * 删除配对会话
  */
 router.delete('/:pairingId', (req: Request, res: Response) => {
   try {
     const { pairingId } = req.params;
     logger.info(`[Pairing] 删除配对会话: pairingId=${pairingId}`);
+    browserLogWebSocketService.closeSession(pairingId);
     pairingService.deleteSession(pairingId);
     res.json({ success: true, message: '会话已删除' });
   } catch (error: any) {

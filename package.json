@@ -8,14 +8,18 @@
     "backend"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "ensure:native": "node scripts/ensure-native-deps.mjs",
+    "dev": "node scripts/run-with-supported-node.mjs dev:actual",
+    "dev:actual": "npm run ensure:native && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",
     "dev:frontend": "npm run dev --workspace=frontend",
-    "build": "npm run build --workspaces",
+    "build": "node scripts/run-with-supported-node.mjs build:actual",
+    "build:actual": "npm run build --workspaces",
     "build:backend": "npm run build --workspace=backend",
     "build:frontend": "npm run build --workspace=frontend",
-    "start": "node --env-file=backend/.env backend/dist/index.js",
-    "start:dev-backend": "node --env-file=backend/.env backend/dist/index.js"
+    "start": "node scripts/run-with-supported-node.mjs start:actual",
+    "start:actual": "npm run ensure:native && env UPLOAD_DIR=nn-ios-platform-data/uploads DSYM_DIR=nn-ios-platform-data/dsyms DB_PATH=nn-ios-platform-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
+    "start:dev-backend": "node scripts/run-with-supported-node.mjs start:actual"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

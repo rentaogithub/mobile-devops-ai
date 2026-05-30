@@ -15,6 +15,11 @@ export default defineConfig({
         ws: true,
         timeout: 600000, // 10分钟超时
       },
+      '/ws': {
+        target: 'ws://127.0.0.1:3000',
+        ws: true,
+        changeOrigin: true,
+      },
     },
   },
 });

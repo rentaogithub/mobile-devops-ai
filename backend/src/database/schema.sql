@@ -43,3 +43,18 @@ CREATE INDEX IF NOT EXISTS idx_app_version ON symbolication_history(app_version)
 
 -- 为创建时间创建索引
 CREATE INDEX IF NOT EXISTS idx_created_at ON symbolication_history(created_at DESC);
+
+-- 实时日志配对会话表
+CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
+  pairing_id TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  status TEXT NOT NULL,
+  device_info TEXT,
+  created_at INTEGER NOT NULL,
+  paired_at INTEGER,
+  last_active_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_status ON realtime_log_pairing_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_last_active_at ON realtime_log_pairing_sessions(last_active_at DESC);

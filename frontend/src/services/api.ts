@@ -706,29 +706,56 @@ export const gitApi = {
 export interface PairingSessionData {
   pairingId: string;
   token: string;
+  wsUrl?: string;
+  wsUrls: string[];
 }
 
 export interface PairingStatusData {
-  status: 'waiting' | 'paired' | 'expired';
+  status: 'waiting' | 'paired' | 'streaming' | 'expired' | 'disconnected';
+  wsUrl?: string;
+  wsUrls?: string[];
   deviceLogUrl?: string;
   deviceInfo?: {
+    deviceId?: string;
     name?: string;
     model?: string;
     systemVersion?: string;
     ip?: string;
+    appDeviceId?: string;
+    userId?: number | string;
+    nickName?: string;
+    nnNumber?: number | string;
   };
+}
+
+export interface RealtimeLogDeviceData extends PairingStatusData {
+  pairingId: string;
+  token: string;
+  appConnected: boolean;
+  recentLogCount: number;
+  createdAt: number;
+  pairedAt?: number;
+  lastActiveAt?: number;
 }
 
 export const pairingApi = {
   /** 创建配对会话 */
   create: async (): Promise<ApiResponse<PairingSessionData>> => {
-    const response = await api.post<ApiResponse<PairingSessionData>>('/pairing/create');
+    const response = await api.post<ApiResponse<PairingSessionData>>('/pairing/create', {
+      pageHost: window.location.hostname,
+    });
     return response.data;
   },
 
   /** 查询配对状态 */
   getStatus: async (pairingId: string): Promise<ApiResponse<PairingStatusData>> => {
     const response = await api.get<ApiResponse<PairingStatusData>>(`/pairing/status/${pairingId}`);
+    return response.data;
+  },
+
+  /** 查询已连接/已配对设备 */
+  listDevices: async (): Promise<ApiResponse<RealtimeLogDeviceData[]>> => {
+    const response = await api.get<ApiResponse<RealtimeLogDeviceData[]>>('/pairing/devices');
     return response.data;
   },
 
