@@ -49,14 +49,35 @@ PORT=3001
 
 ### 开发模式启动
 
+#### 方式一：使用启动脚本（推荐）
+
+```bash
+# 一键启动开发环境（自动处理启动顺序和端口冲突）
+./scripts/start-dev.sh
+
+# 停止开发环境
+./scripts/stop-dev.sh
+```
+
+启动脚本会：
+- 自动检查并安装依赖
+- 按正确顺序启动后端和前端
+- 自动处理端口占用问题
+- 等待后端就绪后再启动前端（避免代理连接失败）
+- 输出日志到 `backend-dev.log` 和 `frontend-dev.log`
+
+#### 方式二：手动启动
+
 ```bash
 # 同时启动前端和后端开发服务器
 npm run dev
 
-# 或分别启动
-npm run dev:backend   # 后端服务：http://localhost:3001
+# 或分别启动（注意：必须先启动后端，再启动前端）
+npm run dev:backend   # 后端服务：http://localhost:3000
 npm run dev:frontend  # 前端服务：http://localhost:5173
 ```
+
+**注意**：如果前端出现 `ECONNREFUSED 127.0.0.1:3000` 错误，说明后端还未启动完成，请等待后端启动后再启动前端。
 
 ### 生产环境部署
 

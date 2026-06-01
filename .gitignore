@@ -18,6 +18,8 @@ nn-ios-platform-data/
 builds/
 logs/
 backend/logs/
+backend-dev.log
+frontend-dev.log
 
 # ===== 临时文件 =====
 tmp/
