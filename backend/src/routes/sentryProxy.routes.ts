@@ -39,6 +39,7 @@ function rewriteLocationHeader(location: string): string {
 function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
   const rewriteCookie = (cookie: string) =>
     cookie
+      .replace(/;\s*Domain=[^;]+/i, '')
       .replace(/;\s*Path=\/sentry\/?/i, '; Path=/sentry')
       .replace(/;\s*Path=\//i, '; Path=/sentry');
 
@@ -47,15 +48,33 @@ function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
     : [rewriteCookie(setCookie)];
 }
 
+function rewriteRequestURLHeader(value: string): string {
+  const target = new URL(SENTRY_TARGET);
+  return value.replace(/^https?:\/\/[^/]+\/sentry(?=\/|$)/i, `${target.origin}`);
+}
+
 router.use((req: Request, res: Response) => {
   const targetURL = buildTargetURL(req);
   const isHttps = targetURL.protocol === 'https:';
   const client = isHttps ? https : http;
+  const targetOrigin = `${targetURL.protocol}//${targetURL.host}`;
 
   const headers = {
     ...req.headers,
     host: targetURL.host,
+    'x-forwarded-host': req.get('host') || '',
+    'x-forwarded-proto': req.protocol,
+    'x-forwarded-prefix': '/sentry',
+    'x-forwarded-for': req.ip,
   };
+
+  if (typeof headers.origin === 'string') {
+    headers.origin = targetOrigin;
+  }
+
+  if (typeof headers.referer === 'string') {
+    headers.referer = rewriteRequestURLHeader(headers.referer);
+  }
 
   delete headers['content-length'];
 
