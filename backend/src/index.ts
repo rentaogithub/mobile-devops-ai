@@ -37,7 +37,17 @@ podService.initTable();
 // Middleware
 app.use(cors());
 // Sentry 反向代理需要保留原始请求体，必须放在 body parser 前面。
-app.use('/sentry', sentryProxyRoutes);
+const sentryProxyPaths = [
+  '/sentry',
+  '/_static',
+  '/_assets',
+  '/avatar',
+  '/auth',
+  '/organizations',
+  '/settings',
+  '/api/0',
+];
+sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, sentryProxyRoutes));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

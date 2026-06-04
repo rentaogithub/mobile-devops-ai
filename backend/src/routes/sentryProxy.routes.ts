@@ -10,7 +10,7 @@ const SENTRY_TARGET = (process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET)
 
 function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
-  const proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || '/';
+  const proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
   target.pathname = proxyPath.split('?')[0] || '/';
   const queryIndex = proxyPath.indexOf('?');
   target.search = queryIndex >= 0 ? proxyPath.substring(queryIndex) : '';
@@ -20,7 +20,8 @@ function buildTargetURL(req: Request): URL {
 function rewriteSentryAssetURLs(body: string): string {
   return body
     .replace(/(href|src|action)=["']\/(?!sentry\/)/g, '$1="/sentry/')
-    .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/');
+    .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
+    .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
 }
 
 function rewriteLocationHeader(location: string): string {
