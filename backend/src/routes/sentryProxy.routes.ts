@@ -7,6 +7,8 @@ import logger from '../utils/logger';
 const router = Router();
 const DEFAULT_SENTRY_TARGET = 'http://172.31.2.239:9000';
 const SENTRY_TARGET = (process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET).replace(/\/+$/, '');
+const DEFAULT_SENTRY_PUBLIC_URL = 'https://data.nn.com/sentry';
+const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLIC_URL).replace(/\/+$/, '');
 
 function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
@@ -17,8 +19,12 @@ function buildTargetURL(req: Request): URL {
   return target;
 }
 
-function rewriteSentryAssetURLs(body: string): string {
+function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
+  const sentryPublicURLPattern = SENTRY_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sentryTargetPattern = SENTRY_TARGET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return body
+    .replace(new RegExp(sentryPublicURLPattern, 'g'), proxyBaseURL)
+    .replace(new RegExp(sentryTargetPattern, 'g'), proxyBaseURL)
     .replace(/(href|src|action)=["']\/(?!sentry\/)/g, '$1="/sentry/')
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
     .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
@@ -59,6 +65,7 @@ router.use((req: Request, res: Response) => {
   const isHttps = targetURL.protocol === 'https:';
   const client = isHttps ? https : http;
   const targetOrigin = `${targetURL.protocol}//${targetURL.host}`;
+  const proxyBaseURL = `${req.protocol}://${req.get('host') || ''}/sentry`;
 
   const headers = {
     ...req.headers,
@@ -90,6 +97,9 @@ router.use((req: Request, res: Response) => {
       const responseHeaders = { ...proxyRes.headers };
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length'];
+      delete responseHeaders['content-security-policy'];
+      delete responseHeaders['content-security-policy-report-only'];
+      delete responseHeaders['x-frame-options'];
 
       if (typeof responseHeaders.location === 'string') {
         responseHeaders.location = rewriteLocationHeader(responseHeaders.location);
@@ -121,7 +131,7 @@ router.use((req: Request, res: Response) => {
       proxyRes.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
       proxyRes.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
-        res.send(rewriteSentryAssetURLs(body));
+        res.send(rewriteSentryAssetURLs(body, proxyBaseURL));
       });
     }
   );
