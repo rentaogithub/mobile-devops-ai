@@ -22,6 +22,7 @@
     "start:dev-backend": "node scripts/run-with-supported-node.mjs start:actual"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "playwright": "^1.60.0"
   }
 }

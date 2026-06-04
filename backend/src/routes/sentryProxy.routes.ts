@@ -12,7 +12,11 @@ const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLI
 
 function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
-  const proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
+  let proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
+  proxyPath = proxyPath.replace(
+    /^\/api\/0\/([^/?#]+)\/organizations\/\1(?=\/|[?#]|$)/,
+    '/api/0/organizations/$1'
+  );
   target.pathname = proxyPath.split('?')[0] || '/';
   const queryIndex = proxyPath.indexOf('?');
   target.search = queryIndex >= 0 ? proxyPath.substring(queryIndex) : '';
@@ -25,6 +29,10 @@ function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
   return body
     .replace(new RegExp(sentryPublicURLPattern, 'g'), proxyBaseURL)
     .replace(new RegExp(sentryTargetPattern, 'g'), proxyBaseURL)
+    .replace(
+      't.p=window.__initialData?.distPrefix||"/sentry/_assets/"',
+      't.p="/sentry/_static/dist/sentry/"'
+    )
     .replace(/(href|src|action)=["']\/(?!sentry\/)/g, '$1="/sentry/')
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
     .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
@@ -100,6 +108,8 @@ router.use((req: Request, res: Response) => {
       delete responseHeaders['content-security-policy'];
       delete responseHeaders['content-security-policy-report-only'];
       delete responseHeaders['x-frame-options'];
+      delete responseHeaders.etag;
+      responseHeaders['cache-control'] = 'no-cache, no-store, must-revalidate';
 
       if (typeof responseHeaders.location === 'string') {
         responseHeaders.location = rewriteLocationHeader(responseHeaders.location);
