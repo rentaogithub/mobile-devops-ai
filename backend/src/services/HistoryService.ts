@@ -95,6 +95,41 @@ export class HistoryService {
       // 检查是否存在重复记录
       const duplicate = this.findDuplicateHistory(params.originalLog, params.usedUuids);
       if (duplicate) {
+        if (this.shouldRefreshDuplicateHistory(duplicate, params)) {
+          const updateStmt = db.prepare(`
+            UPDATE symbolication_history
+            SET app_version = ?,
+                version_detected = ?,
+                crash_type = ?,
+                crash_reason = ?,
+                last_stack_call = ?,
+                crash_module = ?,
+                crash_location = ?,
+                symbolicated_log = ?,
+                ai_analysis = ?
+            WHERE id = ?
+          `);
+
+          updateStmt.run(
+            params.appVersion,
+            params.versionDetected !== false ? 1 : 0,
+            params.crashType || null,
+            params.crashReason || null,
+            params.lastStackCall || null,
+            params.crashModule || null,
+            params.crashLocation || null,
+            params.symbolicatedLog,
+            params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null,
+            duplicate.id
+          );
+
+          logger.info('刷新重复历史记录的符号化结果', {
+            existingId: duplicate.id,
+            appVersion: params.appVersion,
+          });
+          return this.getHistoryById(duplicate.id);
+        }
+
         logger.info('跳过保存重复的历史记录', {
           existingId: duplicate.id,
           appVersion: duplicate.appVersion,
@@ -134,6 +169,27 @@ export class HistoryService {
       logger.error('保存符号化历史记录失败', { error: error.message });
       throw error;
     }
+  }
+
+  private shouldRefreshDuplicateHistory(
+    duplicate: SymbolicationHistoryRecord,
+    params: SaveHistoryParams
+  ): boolean {
+    if (!params.symbolicatedLog || params.symbolicatedLog === duplicate.symbolicatedLog) {
+      return false;
+    }
+
+    if (duplicate.symbolicatedLog === duplicate.originalLog && params.symbolicatedLog !== params.originalLog) {
+      return true;
+    }
+
+    const oldUnknownNNIMCount = this.countUnknownNNIMFrames(duplicate.symbolicatedLog);
+    const newUnknownNNIMCount = this.countUnknownNNIMFrames(params.symbolicatedLog);
+    return oldUnknownNNIMCount > 0 && newUnknownNNIMCount < oldUnknownNNIMCount;
+  }
+
+  private countUnknownNNIMFrames(log: string): number {
+    return (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
   }
 
   /**

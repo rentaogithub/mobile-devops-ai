@@ -13,6 +13,21 @@ const router = Router();
 const symbolizer = new SymbolizerService();
 const storage = new StorageService();
 
+function hasValidSymbolicationResult(originalLog: string, symbolicatedLog: string): boolean {
+  if (!symbolicatedLog || symbolicatedLog === originalLog) {
+    return false;
+  }
+
+  // MetricKit/精简 crash 常见没有 Binary Images，旧结果会保留 NNIM <unknown> 栈。
+  const originalUnknownNNIMFrames = originalLog.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || [];
+  if (originalUnknownNNIMFrames.length > 0) {
+    const unresolvedNNIMFrames = symbolicatedLog.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || [];
+    return unresolvedNNIMFrames.length < originalUnknownNNIMFrames.length;
+  }
+
+  return symbolicatedLog.includes('(in ') || /^\d+\s+\S+\s+0x[0-9a-f]+\s+(?!<unknown>)/gim.test(symbolicatedLog);
+}
+
 /**
  * POST /api/symbolicate
  * 符号化崩溃日志
@@ -85,11 +100,9 @@ router.post('/', async (req: Request, res: Response) => {
     });
     
     const historyRecord = historyService.findDuplicateHistory(crashLog, targetUUIDs);
-    // 检查历史记录是否有效（符号化结果中不应该全是 <unknown>）
-    const isHistoryValid = historyRecord && 
-      historyRecord.symbolicatedLog !== historyRecord.originalLog &&
-      !(/Thread \d+ Crashed:[\s\S]*?(?:(?!Thread \d).)*/gm.test(historyRecord.symbolicatedLog) &&
-        !historyRecord.symbolicatedLog.includes('(in '));
+    // 检查历史记录是否有效，避免修复后仍返回旧的 NNIM <unknown> 结果。
+    const isHistoryValid = historyRecord &&
+      hasValidSymbolicationResult(crashLog, historyRecord.symbolicatedLog);
     
     if (historyRecord && isHistoryValid) {
       logger.info('✓ 从历史记录中找到相同的崩溃日志', { 
@@ -122,7 +135,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
     
     const cached = symbolicationCache.get(crashLog, targetUUIDs);
-    if (cached) {
+    if (cached && hasValidSymbolicationResult(crashLog, cached.symbolicatedLog)) {
       logger.info('✓ 使用缓存的符号化结果（快速返回）', { 
         uuids: cached.matchedUUIDs,
         fromCache: true,
@@ -219,6 +232,11 @@ router.post('/', async (req: Request, res: Response) => {
       }
 
       return;
+    } else if (cached) {
+      logger.warn('忽略无效符号化缓存，重新执行符号化', {
+        targetUUIDs,
+        crashLogLength: crashLog.length,
+      });
     }
     
     logger.info('✗ 缓存未命中，执行符号化', { targetUUIDs });

@@ -73,6 +73,7 @@ export class SymbolizerService {
   ): Promise<{ symbolicatedLog: string; warning?: string }> {
     try {
       logger.info('开始符号化崩溃日志', { dsymPath });
+      const warnings: string[] = [];
 
       // 先检测是否是 .ips JSON 格式（不进行完整解析）
       const trimmed = crashLog.trim();
@@ -185,7 +186,22 @@ export class SymbolizerService {
       }
 
       // 提取该应用的加载地址
-      const loadAddress = this.extractLoadAddressForBinary(crashLog, matchedBinaryName);
+      let loadAddress = this.extractLoadAddressForBinary(crashLog, matchedBinaryName);
+      let inferredLoadAddresses: string[] = [];
+      if (!loadAddress) {
+        inferredLoadAddresses = this.inferLoadAddressesFromSimplifiedStack(appFrames, matchedBinaryName);
+        loadAddress = inferredLoadAddresses[0];
+        if (loadAddress) {
+          const warning =
+            `⚠️ 当前崩溃日志缺少 Binary Images，已根据 "${matchedBinaryName}" 栈地址尝试推断加载基址。` +
+            `符号化结果可能存在偏差，建议上传完整 .ips 或包含 Binary Images 的 crash 日志。`;
+          warnings.push(warning);
+          logger.warn('缺少 Binary Images，使用栈地址推断加载地址候选', {
+            matchedBinaryName,
+            inferredLoadAddresses,
+          });
+        }
+      }
       if (!loadAddress) {
         logger.error('无法提取加载地址', { matchedBinaryName });
         throw new AppError(
@@ -202,7 +218,9 @@ export class SymbolizerService {
       logger.info(`提取到 ${addresses.length} 个地址需要符号化`);
 
       // 使用 atos 批量符号化
-      const symbolMap = await this.symbolicateWithAtos(addresses, dsymPath, loadAddress);
+      const symbolMap = inferredLoadAddresses.length > 1
+        ? await this.symbolicateWithCandidateLoadAddresses(addresses, dsymPath, inferredLoadAddresses)
+        : await this.symbolicateWithAtos(addresses, dsymPath, loadAddress);
       logger.info(`成功符号化 ${symbolMap.size} 个地址`);
 
       // 替换原始日志中的地址为符号信息
@@ -226,10 +244,13 @@ export class SymbolizerService {
       
       if (!matchedByUUID) {
         const warning = `⚠️ 警告：dSYM 文件的 UUID 与崩溃日志不匹配。符号化结果可能不准确。建议上传正确版本的 dSYM 文件以获得准确的符号化结果。`;
-        return { symbolicatedLog, warning };
+        warnings.push(warning);
       }
       
-      return { symbolicatedLog };
+      return {
+        symbolicatedLog,
+        warning: warnings.length > 0 ? warnings.join('\n\n') : undefined,
+      };
     } catch (error) {
       logger.error('符号化失败', { error });
       throw error;
@@ -524,11 +545,86 @@ export class SymbolizerService {
     if (unknownMatch) {
       const address = parseInt(unknownMatch[1], 16);
       const offset = parseInt(unknownMatch[2], 10);
-      const loadAddr = address - offset;
-      return '0x' + loadAddr.toString(16);
+      if (Number.isFinite(address) && Number.isFinite(offset) && offset > 0 && offset < address) {
+        const loadAddr = address - offset;
+        if (loadAddr > 0) {
+          return '0x' + loadAddr.toString(16);
+        }
+      }
+
+      logger.warn('unknown 模式中的 + 值不是有效偏移，跳过加载地址计算', {
+        binaryName,
+        address: unknownMatch[1],
+        value: unknownMatch[2],
+      });
     }
 
     return null;
+  }
+
+  /**
+   * 兼容 MetricKit/精简 crash 文本：只有栈地址，没有 Binary Images/load address。
+   * 这类日志无法严格还原 slide，只能按应用栈最小地址做页对齐推断。
+   */
+  private inferLoadAddressesFromSimplifiedStack(
+    frames: StackFrame[],
+    binaryName: string
+  ): string[] {
+    const addresses = frames
+      .filter((frame) => frame.binaryName === binaryName)
+      .map((frame) => parseInt(frame.address, 16))
+      .filter((address) => Number.isFinite(address) && address > 0);
+
+    if (addresses.length === 0) {
+      return [];
+    }
+
+    const minAddress = Math.min(...addresses);
+    // iOS 设备常见 16KB 页对齐；没有 Binary Images 时，多候选试探比固定猜一个基址可靠。
+    const alignments = [16 * 1024, 4 * 1024, 1024 * 1024];
+    const candidates: string[] = [];
+
+    for (const alignment of alignments) {
+      const base = Math.floor(minAddress / alignment) * alignment;
+      const offset = minAddress - base;
+      if (base > 0 && offset > 0 && offset < 512 * 1024 * 1024) {
+        const candidate = `0x${base.toString(16)}`;
+        if (!candidates.includes(candidate)) {
+          candidates.push(candidate);
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  private async symbolicateWithCandidateLoadAddresses(
+    addresses: string[],
+    dsymPath: string,
+    loadAddresses: string[]
+  ): Promise<Map<string, string>> {
+    let bestMap = new Map<string, string>();
+    let bestLoadAddress = loadAddresses[0];
+
+    for (const loadAddress of loadAddresses) {
+      const symbolMap = await this.symbolicateWithAtos(addresses, dsymPath, loadAddress);
+      logger.info('候选加载地址符号化结果', {
+        loadAddress,
+        symbolCount: symbolMap.size,
+      });
+
+      if (symbolMap.size > bestMap.size) {
+        bestMap = symbolMap;
+        bestLoadAddress = loadAddress;
+      }
+    }
+
+    logger.info('选择候选加载地址', {
+      loadAddress: bestLoadAddress,
+      symbolCount: bestMap.size,
+    });
+
+    return bestMap;
   }
 
   /**
