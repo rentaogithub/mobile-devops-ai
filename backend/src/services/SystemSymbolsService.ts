@@ -182,6 +182,8 @@ export class SystemSymbolsService {
       ),
       path.join(dir, 'usr', 'lib', binaryName),
       path.join(dir, 'usr', 'lib', `${binaryName}.dylib`),
+      path.join(dir, 'usr', 'lib', 'system', binaryName),
+      path.join(dir, 'usr', 'lib', 'system', `${binaryName}.dylib`),
     ];
 
     for (const filePath of commonPaths) {
