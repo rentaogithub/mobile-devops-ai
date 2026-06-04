@@ -63,6 +63,7 @@ router.use((req: Request, res: Response) => {
   const headers = {
     ...req.headers,
     host: targetURL.host,
+    'accept-encoding': 'identity',
     'x-forwarded-host': req.get('host') || '',
     'x-forwarded-proto': req.protocol,
     'x-forwarded-prefix': '/sentry',
