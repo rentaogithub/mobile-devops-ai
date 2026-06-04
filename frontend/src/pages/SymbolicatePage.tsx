@@ -810,22 +810,20 @@ Binary Images:
                   </Button>
                 </Upload>
               </Space>
-              <div style={{ 
-                background: '#f0f5ff', 
-                border: '1px solid #adc6ff', 
-                borderRadius: 4, 
+              <div style={{
+                background: '#f0f5ff',
+                border: '1px solid #adc6ff',
+                borderRadius: 4,
                 padding: '6px 10px',
                 fontSize: 12
               }}>
-                <Text style={{ color: '#1890ff', marginRight: 4 }}>📊 Sentry NN 项目：</Text>
                 <a 
                   href={SENTRY_IOS_PROJECT_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ 
                     color: '#1890ff',
-                    textDecoration: 'none',
-                    fontFamily: 'monospace'
+                    textDecoration: 'none'
                   }}
                   onMouseEnter={(e) => {
                     e.currentTarget.style.textDecoration = 'underline';
@@ -834,7 +832,7 @@ Binary Images:
                     e.currentTarget.style.textDecoration = 'none';
                   }}
                 >
-                  {SENTRY_IOS_PROJECT_URL}
+                  📊 Sentry NN 项目
                 </a>
               </div>
             </Space>
