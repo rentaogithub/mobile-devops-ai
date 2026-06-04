@@ -33,6 +33,9 @@ import { authUtils } from '../utils/auth';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
+const SENTRY_PROXY_BASE_URL = 'http://10.1.3.177';
+const SENTRY_IOS_PROJECT_PATH = '/organizations/sentry/projects/nn-ios/?project=6';
+const SENTRY_IOS_PROJECT_URL = `${SENTRY_PROXY_BASE_URL}${SENTRY_IOS_PROJECT_PATH}`;
 
 export default function SymbolicatePage() {
   const [crashLog, setCrashLog] = useState('');
@@ -814,9 +817,9 @@ Binary Images:
                 padding: '6px 10px',
                 fontSize: 12
               }}>
-                <Text style={{ color: '#1890ff', marginRight: 4 }}>📊 iOS 崩溃平台：</Text>
+                <Text style={{ color: '#1890ff', marginRight: 4 }}>📊 Sentry iOS 项目：</Text>
                 <a 
-                  href="http://172.31.2.239:9000/organizations/sentry/projects/nn-ios/?project=6"
+                  href={SENTRY_IOS_PROJECT_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ 
@@ -831,7 +834,7 @@ Binary Images:
                     e.currentTarget.style.textDecoration = 'none';
                   }}
                 >
-                  http://172.31.2.239:9000/organizations/sentry/projects/nn-ios/?project=6
+                  {SENTRY_IOS_PROJECT_URL}
                 </a>
               </div>
             </Space>
