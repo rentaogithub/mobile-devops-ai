@@ -817,7 +817,7 @@ Binary Images:
                 padding: '6px 10px',
                 fontSize: 12
               }}>
-                <Text style={{ color: '#1890ff', marginRight: 4 }}>📊 Sentry iOS 项目：</Text>
+                <Text style={{ color: '#1890ff', marginRight: 4 }}>📊 Sentry NN 项目：</Text>
                 <a 
                   href={SENTRY_IOS_PROJECT_URL}
                   target="_blank"

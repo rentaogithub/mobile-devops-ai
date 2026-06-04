@@ -9,6 +9,21 @@ const DEFAULT_SENTRY_TARGET = 'http://172.31.2.239:9000';
 const SENTRY_TARGET = (process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET).replace(/\/+$/, '');
 const DEFAULT_SENTRY_PUBLIC_URL = 'https://data.nn.com/sentry';
 const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLIC_URL).replace(/\/+$/, '');
+const SENTRY_AUTO_LOGIN = process.env.SENTRY_AUTO_LOGIN === 'true';
+const SENTRY_LOGIN_USERNAME = process.env.SENTRY_LOGIN_USERNAME || '';
+const SENTRY_LOGIN_PASSWORD = process.env.SENTRY_LOGIN_PASSWORD || '';
+const SENTRY_DEFAULT_PATH = process.env.SENTRY_DEFAULT_PATH || '/organizations/sentry/projects/nn-ios/?project=6';
+const SENTRY_SESSION_TTL_MS = 30 * 60 * 1000;
+
+type SentryHTTPResponse = {
+  statusCode: number;
+  headers: http.IncomingHttpHeaders;
+  body: Buffer;
+};
+
+const sentrySessionCookies = new Map<string, string>();
+let sentryLoginPromise: Promise<void> | null = null;
+let sentryLastLoginAt = 0;
 
 function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
@@ -51,6 +66,63 @@ function rewriteLocationHeader(location: string): string {
   return location;
 }
 
+function normalizeSetCookie(setCookie: string | string[] | undefined): string[] {
+  if (!setCookie) {
+    return [];
+  }
+  return Array.isArray(setCookie) ? setCookie : [setCookie];
+}
+
+function updateSentryCookieJar(setCookie: string | string[] | undefined) {
+  normalizeSetCookie(setCookie).forEach((cookie) => {
+    const firstPart = cookie.split(';')[0];
+    const equalIndex = firstPart.indexOf('=');
+    if (equalIndex <= 0) {
+      return;
+    }
+    const name = firstPart.substring(0, equalIndex).trim();
+    const value = firstPart.substring(equalIndex + 1).trim();
+    if (!name) {
+      return;
+    }
+    if (!value) {
+      sentrySessionCookies.delete(name);
+      return;
+    }
+    sentrySessionCookies.set(name, value);
+  });
+}
+
+function buildSentryCookieHeader(extraCookie?: string): string | undefined {
+  const cookies = new Map<string, string>();
+
+  if (extraCookie) {
+    extraCookie.split(';').forEach((part) => {
+      const equalIndex = part.indexOf('=');
+      if (equalIndex <= 0) {
+        return;
+      }
+      const name = part.substring(0, equalIndex).trim();
+      const value = part.substring(equalIndex + 1).trim();
+      if (name && value) {
+        cookies.set(name, value);
+      }
+    });
+  }
+
+  sentrySessionCookies.forEach((value, name) => {
+    cookies.set(name, value);
+  });
+
+  if (cookies.size === 0) {
+    return undefined;
+  }
+
+  return Array.from(cookies.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+}
+
 function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
   const rewriteCookie = (cookie: string) =>
     cookie
@@ -68,7 +140,141 @@ function rewriteRequestURLHeader(value: string): string {
   return value.replace(/^https?:\/\/[^/]+\/sentry(?=\/|$)/i, `${target.origin}`);
 }
 
-router.use((req: Request, res: Response) => {
+function requestSentry(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
+  const targetURL = new URL(path, SENTRY_TARGET);
+  const client = targetURL.protocol === 'https:' ? https : http;
+  const headers: Record<string, string> = {
+    ...(options.headers || {}),
+    host: targetURL.host,
+    'accept-encoding': 'identity',
+  };
+  const cookieHeader = buildSentryCookieHeader();
+  if (cookieHeader) {
+    headers.cookie = cookieHeader;
+  }
+
+  return new Promise<SentryHTTPResponse>((resolve, reject) => {
+    const request = client.request(
+      targetURL,
+      {
+        method: options.method || 'GET',
+        headers,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        updateSentryCookieJar(response.headers['set-cookie']);
+        response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          resolve({
+            statusCode: response.statusCode || 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks),
+          });
+        });
+      }
+    );
+
+    request.setTimeout(15000, () => {
+      request.destroy(new Error('Sentry auto login timeout'));
+    });
+    request.on('error', reject);
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
+}
+
+function decodeHTML(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;/g, "'")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function extractCSRFToken(html: string): string {
+  const token =
+    html.match(/name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)/i)?.[1] ||
+    html.match(/value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken/i)?.[1] ||
+    sentrySessionCookies.get('sc') ||
+    '';
+  return decodeHTML(token);
+}
+
+async function performSentryLogin() {
+  sentrySessionCookies.clear();
+  const loginPage = await requestSentry('/auth/login/sentry/');
+  const csrfToken = extractCSRFToken(loginPage.body.toString('utf8'));
+  if (!csrfToken) {
+    throw new Error('Sentry login csrf token missing');
+  }
+
+  const form = new URLSearchParams();
+  form.set('op', SENTRY_LOGIN_USERNAME);
+  form.set('password', SENTRY_LOGIN_PASSWORD);
+  form.set('csrfmiddlewaretoken', csrfToken);
+
+  await requestSentry('/auth/login/sentry/', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      origin: new URL(SENTRY_TARGET).origin,
+      referer: `${SENTRY_TARGET}/auth/login/sentry/`,
+    },
+    body: form.toString(),
+  });
+
+  sentryLastLoginAt = Date.now();
+  if (!sentrySessionCookies.has('sentrysid')) {
+    throw new Error('Sentry login session cookie missing');
+  }
+}
+
+async function ensureSentryAutoLogin() {
+  if (!SENTRY_AUTO_LOGIN || !SENTRY_LOGIN_USERNAME || !SENTRY_LOGIN_PASSWORD) {
+    return;
+  }
+
+  const isSessionFresh =
+    sentrySessionCookies.has('sentrysid') &&
+    Date.now() - sentryLastLoginAt < SENTRY_SESSION_TTL_MS;
+  if (isSessionFresh) {
+    return;
+  }
+
+  if (!sentryLoginPromise) {
+    sentryLoginPromise = performSentryLogin()
+      .catch((error) => {
+        logger.warn('Sentry 自动登录失败', {
+          target: SENTRY_TARGET,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        sentrySessionCookies.clear();
+      })
+      .finally(() => {
+        sentryLoginPromise = null;
+      });
+  }
+
+  await sentryLoginPromise;
+}
+
+function isSentryLoginPath(req: Request): boolean {
+  return req.originalUrl.startsWith('/sentry/auth/login/');
+}
+
+function buildDefaultProxyPath(): string {
+  return `/sentry${SENTRY_DEFAULT_PATH.startsWith('/') ? SENTRY_DEFAULT_PATH : `/${SENTRY_DEFAULT_PATH}`}`;
+}
+
+router.use(async (req: Request, res: Response) => {
+  await ensureSentryAutoLogin();
+  if (SENTRY_AUTO_LOGIN && isSentryLoginPath(req) && sentrySessionCookies.has('sentrysid')) {
+    res.redirect(buildDefaultProxyPath());
+    return;
+  }
+
   const targetURL = buildTargetURL(req);
   const isHttps = targetURL.protocol === 'https:';
   const client = isHttps ? https : http;
@@ -91,6 +297,11 @@ router.use((req: Request, res: Response) => {
 
   if (typeof headers.referer === 'string') {
     headers.referer = rewriteRequestURLHeader(headers.referer);
+  }
+
+  const sentryCookieHeader = buildSentryCookieHeader(typeof headers.cookie === 'string' ? headers.cookie : undefined);
+  if (sentryCookieHeader) {
+    headers.cookie = sentryCookieHeader;
   }
 
   delete headers['content-length'];
@@ -116,6 +327,7 @@ router.use((req: Request, res: Response) => {
       }
 
       if (responseHeaders['set-cookie']) {
+        updateSentryCookieJar(responseHeaders['set-cookie']);
         responseHeaders['set-cookie'] = rewriteSetCookieHeaders(responseHeaders['set-cookie']);
       }
 
@@ -152,6 +364,10 @@ router.use((req: Request, res: Response) => {
       error: error.message,
     });
     res.status(502).send('Sentry 代理请求失败，请确认固定电脑可以访问内网 Sentry 服务。');
+  });
+
+  proxyReq.setTimeout(15000, () => {
+    proxyReq.destroy(new Error('Sentry proxy timeout'));
   });
 
   req.pipe(proxyReq);
