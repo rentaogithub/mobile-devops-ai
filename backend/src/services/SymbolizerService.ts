@@ -668,19 +668,32 @@ export class SymbolizerService {
         }
 
         // 提取加载地址
-        const loadAddress = this.extractLoadAddressForBinary(crashLog, binaryName);
+        let loadAddress = this.extractLoadAddressForBinary(crashLog, binaryName);
+        let inferredLoadAddresses: string[] = [];
         if (!loadAddress) {
-          logger.warn(`无法提取加载地址`, { binaryName });
+          inferredLoadAddresses = this.inferLoadAddressesFromSimplifiedStack(frames, binaryName);
+          loadAddress = inferredLoadAddresses[0];
+        }
+
+        if (!loadAddress) {
+          logger.warn(`无法提取系统库加载地址`, { binaryName });
           continue;
         }
 
         // 符号化
         const addresses = frames.map((f) => f.address);
-        const symbolMap = await this.symbolicateWithAtosForSystemLib(
-          addresses,
-          systemDSYM,
-          loadAddress
-        );
+        const symbolMap = inferredLoadAddresses.length > 1
+          ? await this.symbolicateSystemLibWithCandidateLoadAddresses(
+            addresses,
+            systemDSYM,
+            inferredLoadAddresses,
+            binaryName
+          )
+          : await this.symbolicateWithAtosForSystemLib(
+            addresses,
+            systemDSYM,
+            loadAddress
+          );
 
         if (symbolMap.size > 0) {
           result = this.replaceSymbols(result, frames, symbolMap);
@@ -695,6 +708,42 @@ export class SymbolizerService {
     }
 
     return result;
+  }
+
+  private async symbolicateSystemLibWithCandidateLoadAddresses(
+    addresses: string[],
+    binaryPath: string,
+    loadAddresses: string[],
+    binaryName: string
+  ): Promise<Map<string, string>> {
+    let bestMap = new Map<string, string>();
+    let bestLoadAddress = loadAddresses[0];
+
+    for (const loadAddress of loadAddresses) {
+      const symbolMap = await this.symbolicateWithAtosForSystemLib(
+        addresses,
+        binaryPath,
+        loadAddress
+      );
+      logger.info('系统库候选加载地址符号化结果', {
+        binaryName,
+        loadAddress,
+        symbolCount: symbolMap.size,
+      });
+
+      if (symbolMap.size > bestMap.size) {
+        bestMap = symbolMap;
+        bestLoadAddress = loadAddress;
+      }
+    }
+
+    logger.info('选择系统库候选加载地址', {
+      binaryName,
+      loadAddress: bestLoadAddress,
+      symbolCount: bestMap.size,
+    });
+
+    return bestMap;
   }
 
   /**

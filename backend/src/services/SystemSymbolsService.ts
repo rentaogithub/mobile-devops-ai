@@ -98,10 +98,10 @@ export class SystemSymbolsService {
    * 在特定 iOS 版本中搜索
    */
   private async searchInVersion(binaryName: string, iosVersion: string): Promise<string | null> {
-    // iOS 版本目录格式: 15.0, 15.0 (19A346), 15.1 (19B74)
+    // iOS 版本目录格式: 15.0, 15.0 (19A346), iPhone12,1 26.2 (23C55)
     const versionDirs = fs
       .readdirSync(this.xcodeSymbolsPath)
-      .filter((dir) => dir.startsWith(iosVersion));
+      .filter((dir) => this.isMatchingVersionDirectory(dir, iosVersion));
 
     for (const versionDir of versionDirs) {
       const symbolsPath = path.join(this.xcodeSymbolsPath, versionDir, 'Symbols');
@@ -117,6 +117,11 @@ export class SystemSymbolsService {
     }
 
     return null;
+  }
+
+  private isMatchingVersionDirectory(directoryName: string, iosVersion: string): boolean {
+    const escapedVersion = iosVersion.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|\\s)${escapedVersion}(\\s|\\(|$)`).test(directoryName);
   }
 
   /**
@@ -198,6 +203,12 @@ export class SystemSymbolsService {
       return match[1];
     }
 
+    // OS Version: iOS 26.2 (23C55)
+    const iosMatch = crashLog.match(/OS Version:\s+iOS\s+([\d.]+)/i);
+    if (iosMatch) {
+      return iosMatch[1];
+    }
+
     // iOS Version: 15.0
     const match2 = crashLog.match(/iOS Version:\s+([\d.]+)/i);
     if (match2) {
@@ -221,6 +232,7 @@ export class SystemSymbolsService {
       'libsystem_pthread.dylib',
       'libdispatch.dylib',
       'CoreGraphics',
+      'ImageIO',
       'QuartzCore',
       'CoreAnimation',
       'AVFoundation',
