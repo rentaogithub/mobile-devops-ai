@@ -23,6 +23,30 @@ function rewriteSentryAssetURLs(body: string): string {
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/');
 }
 
+function rewriteLocationHeader(location: string): string {
+  if (location.startsWith(SENTRY_TARGET)) {
+    const target = new URL(location);
+    return `/sentry${target.pathname}${target.search}${target.hash}`;
+  }
+
+  if (location.startsWith('/') && !location.startsWith('/sentry/')) {
+    return `/sentry${location}`;
+  }
+
+  return location;
+}
+
+function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
+  const rewriteCookie = (cookie: string) =>
+    cookie
+      .replace(/;\s*Path=\/sentry\/?/i, '; Path=/sentry')
+      .replace(/;\s*Path=\//i, '; Path=/sentry');
+
+  return Array.isArray(setCookie)
+    ? setCookie.map(rewriteCookie)
+    : [rewriteCookie(setCookie)];
+}
+
 router.use((req: Request, res: Response) => {
   const targetURL = buildTargetURL(req);
   const isHttps = targetURL.protocol === 'https:';
@@ -45,7 +69,14 @@ router.use((req: Request, res: Response) => {
       const responseHeaders = { ...proxyRes.headers };
       delete responseHeaders['content-encoding'];
       delete responseHeaders['content-length'];
-      delete responseHeaders['set-cookie'];
+
+      if (typeof responseHeaders.location === 'string') {
+        responseHeaders.location = rewriteLocationHeader(responseHeaders.location);
+      }
+
+      if (responseHeaders['set-cookie']) {
+        responseHeaders['set-cookie'] = rewriteSetCookieHeaders(responseHeaders['set-cookie']);
+      }
 
       const contentType = String(proxyRes.headers['content-type'] || '');
       const shouldRewrite =
