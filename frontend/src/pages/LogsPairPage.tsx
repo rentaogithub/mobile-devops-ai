@@ -185,11 +185,36 @@ export default function LogsPairPage() {
     }, 1600);
   };
 
-  const normalizeLogChannel = (channel?: string): LogChannel => {
+  const normalizeLogChannel = (channel?: string, line?: string): LogChannel => {
     if (channel === 'im' || channel === 'rtc') {
       return channel;
     }
+    if (line && (line.includes('[IMSDK]') || /\[nnimsdk-[^\]]+\]/.test(line))) {
+      return 'im';
+    }
+    if (line && (line.includes('[RTCSDK]') || /\[nnrtc-[^\]]+\]/i.test(line))) {
+      return 'rtc';
+    }
     return 'business';
+  };
+
+  const normalizeDisplayLine = (line: string, channel: LogChannel): string => {
+    if (channel === 'im') {
+      return sdkRawLog(line, '[IMSDK]');
+    }
+    if (channel === 'rtc') {
+      return sdkRawLog(line, '[RTCSDK]');
+    }
+    return line;
+  };
+
+  const sdkRawLog = (line: string, marker: string): string => {
+    const markerIndex = line.indexOf(marker);
+    if (markerIndex < 0) {
+      return line;
+    }
+    const rawLog = line.slice(markerIndex + marker.length).trim();
+    return rawLog || marker;
   };
 
   const logChannelLabel = (channel: LogChannel): string => {
@@ -419,11 +444,13 @@ export default function LogsPairPage() {
           return;
         }
 
+        const line = data.line || data.message || event.data;
+        const channel = normalizeLogChannel(data.channel, line);
         const entry: LogEntry = {
           id: ++logIdRef.current,
           timestamp: data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
-          channel: normalizeLogChannel(data.channel),
-          message: data.line || data.message || event.data,
+          channel,
+          message: normalizeDisplayLine(line, channel),
           raw: event.data,
         };
         setLogs((prev) => {
