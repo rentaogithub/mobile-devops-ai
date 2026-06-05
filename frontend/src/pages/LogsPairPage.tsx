@@ -217,6 +217,10 @@ export default function LogsPairPage() {
     return rawLog || marker;
   };
 
+  const effectiveLogChannel = (log: LogEntry): LogChannel => {
+    return normalizeLogChannel(log.channel, `${log.message}\n${log.raw}`);
+  };
+
   const logChannelLabel = (channel: LogChannel): string => {
     switch (channel) {
       case 'im':
@@ -669,10 +673,10 @@ export default function LogsPairPage() {
     return '等待日志数据...';
   };
 
-  const businessLogs = logs.filter((log) => log.channel === 'business');
-  const imLogs = logs.filter((log) => log.channel === 'im');
-  const rtcLogs = logs.filter((log) => log.channel === 'rtc');
-  const activeLogs = logs.filter((log) => log.channel === activeLogChannel);
+  const businessLogs = logs.filter((log) => effectiveLogChannel(log) === 'business');
+  const imLogs = logs.filter((log) => effectiveLogChannel(log) === 'im');
+  const rtcLogs = logs.filter((log) => effectiveLogChannel(log) === 'rtc');
+  const activeLogs = logs.filter((log) => effectiveLogChannel(log) === activeLogChannel);
 
   return (
     <div>
@@ -990,11 +994,14 @@ export default function LogsPairPage() {
                 {getEmptyLogText()}
               </div>
             ) : (
-              activeLogs.map((log) => (
-                <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                  <span>{log.message}</span>
-                </div>
-              ))
+              activeLogs.map((log) => {
+                const channel = effectiveLogChannel(log);
+                return (
+                  <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                    <span>{normalizeDisplayLine(log.message, channel)}</span>
+                  </div>
+                );
+              })
             )}
           </div>
         </Card>
