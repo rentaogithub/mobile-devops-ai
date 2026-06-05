@@ -644,6 +644,7 @@ export default function LogsPairPage() {
 
   const businessLogs = logs.filter((log) => log.channel === 'business');
   const imLogs = logs.filter((log) => log.channel === 'im');
+  const rtcLogs = logs.filter((log) => log.channel === 'rtc');
   const activeLogs = logs.filter((log) => log.channel === activeLogChannel);
 
   return (
@@ -937,6 +938,10 @@ export default function LogsPairPage() {
               {
                 key: 'im',
                 label: `IM (${imLogs.length})`,
+              },
+              {
+                key: 'rtc',
+                label: `RTC (${rtcLogs.length})`,
               },
             ]}
           />

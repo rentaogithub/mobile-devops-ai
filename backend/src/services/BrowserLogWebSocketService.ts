@@ -191,7 +191,7 @@ class BrowserLogWebSocketService {
     const line = typeof parsed?.line === 'string'
       ? parsed.line
       : (typeof parsed?.message === 'string' ? parsed.message : message);
-    this.appendLog(client.pairingId, line, this.normalizeLogChannel(parsed?.channel));
+    this.appendLog(client.pairingId, line, this.normalizeLogChannel(parsed?.channel, line));
   }
 
   private handleBrowserMessage(client: BrowserLogClient, parsed: any): void {
@@ -259,11 +259,25 @@ class BrowserLogWebSocketService {
     });
   }
 
-  private normalizeLogChannel(channel: unknown): LogChannel {
+  private normalizeLogChannel(channel: unknown, line?: string): LogChannel {
     if (channel === 'im' || channel === 'rtc') {
       return channel;
     }
+    if (line && this.isIMLogLine(line)) {
+      return 'im';
+    }
+    if (line && this.isRTCLogLine(line)) {
+      return 'rtc';
+    }
     return 'business';
+  }
+
+  private isIMLogLine(line: string): boolean {
+    return line.includes('[IMSDK]');
+  }
+
+  private isRTCLogLine(line: string): boolean {
+    return line.includes('[RTCSDK]');
   }
 
   private broadcastToBrowsers(pairingId: string, payload: unknown): void {
