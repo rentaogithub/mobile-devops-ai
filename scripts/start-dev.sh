@@ -5,6 +5,10 @@
 
 set -e
 
+# Node 26 的实际路径
+NODE_BIN="/opt/homebrew/Cellar/node/26.0.0/bin/node"
+NPM_BIN="/opt/homebrew/Cellar/node/26.0.0/bin/npm"
+
 # 确保使用正确的 Node 版本
 export PATH="/opt/homebrew/opt/node/bin:$PATH"
 
@@ -21,7 +25,7 @@ echo "🔍 检查依赖..."
 if [ ! -d "$BACKEND_DIR/node_modules" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]; then
     echo "📦 安装依赖..."
     cd "$PROJECT_ROOT"
-    npm install
+    "$NPM_BIN" install
 fi
 
 # 2. 启动后端
@@ -31,7 +35,7 @@ if lsof -ti:3000 > /dev/null 2>&1; then
     echo "✅ 后端服务已在运行 (端口 3000)"
 else
     # 在后台启动后端
-    npm run dev > "$PROJECT_ROOT/backend-dev.log" 2>&1 &
+    "$NPM_BIN" run dev > "$PROJECT_ROOT/backend-dev.log" 2>&1 &
     BACKEND_PID=$!
     echo "📝 后端进程 PID: $BACKEND_PID"
     
@@ -64,7 +68,7 @@ if lsof -ti:5173 > /dev/null 2>&1; then
 fi
 
 # 启动前端
-npm run dev -- --port 5173 > "$PROJECT_ROOT/frontend-dev.log" 2>&1 &
+"$NPM_BIN" run dev -- --port 5173 > "$PROJECT_ROOT/frontend-dev.log" 2>&1 &
 FRONTEND_PID=$!
 echo "📝 前端进程 PID: $FRONTEND_PID"
 
