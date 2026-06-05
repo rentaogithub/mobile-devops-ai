@@ -8,6 +8,7 @@ import {
   QrcodeOutlined,
   UserOutlined,
   UploadOutlined,
+  LoadingOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { watermarkApi, WatermarkDecodeResult } from '../services/api';
@@ -32,6 +33,29 @@ const logColumns = [
   { title: '模块', dataIndex: 'module', key: 'module', width: 150 },
   { title: '内容', dataIndex: 'message', key: 'message', ellipsis: true },
 ];
+
+const formatWatermarkImageTime = (time?: string) => {
+  if (!time) {
+    return '未提取到';
+  }
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) {
+    return time;
+  }
+  return date.toLocaleString();
+};
+
+const formatWatermarkTimeSource = (source?: string, field?: string, reliable?: boolean) => {
+  const sourceNameMap: Record<string, string> = {
+    exif: 'EXIF 元信息',
+    pngText: 'PNG 文本元信息',
+    none: '图片未包含时间元信息',
+  };
+  const sourceName = sourceNameMap[source || 'none'] || source || '无';
+  const fieldText = field ? ` / ${field}` : '';
+  const reliableText = reliable ? '可信' : '兜底';
+  return `${sourceName}${fieldText}（${reliableText}）`;
+};
 
 export default function LogsPage() {
   const navigate = useNavigate();
@@ -126,10 +150,14 @@ export default function LogsPage() {
               disabled={watermarkLoading}
             >
               <p className="ant-upload-drag-icon">
-                <UploadOutlined />
+                {watermarkLoading ? <LoadingOutlined spin /> : <UploadOutlined />}
               </p>
-              <p className="ant-upload-text">上传截图识别水印用户</p>
-              <p className="ant-upload-hint">支持 JPG/PNG，默认使用深度识别，适合弱水印和多锚点场景</p>
+              <p className="ant-upload-text">
+                {watermarkLoading ? '识别中...' : '上传截图识别水印用户'}
+              </p>
+              <p className="ant-upload-hint">
+                {watermarkLoading ? '正在解析顶部/底部点阵水印，请稍候' : '支持 JPG/PNG，默认使用深度识别，适合弱水印和多锚点场景'}
+              </p>
             </Upload.Dragger>
           </Col>
           <Col xs={24} md={14}>
@@ -142,6 +170,14 @@ export default function LogsPage() {
                 <Descriptions.Item label="修复">{watermarkResult.bestCandidate.repaired ? '是' : '否'}</Descriptions.Item>
                 <Descriptions.Item label="候选数">{watermarkResult.candidates.length}</Descriptions.Item>
                 <Descriptions.Item label="增强方式">{watermarkResult.bestCandidate.enhancement}</Descriptions.Item>
+                <Descriptions.Item label="图片时间">{formatWatermarkImageTime(watermarkResult.imageTime?.time)}</Descriptions.Item>
+                <Descriptions.Item label="时间来源">
+                  {formatWatermarkTimeSource(
+                    watermarkResult.imageTime?.source,
+                    watermarkResult.imageTime?.field,
+                    watermarkResult.imageTime?.reliable
+                  )}
+                </Descriptions.Item>
                 <Descriptions.Item label="payload">{watermarkResult.bestCandidate.payloadHex}</Descriptions.Item>
               </Descriptions>
             ) : watermarkResult ? (

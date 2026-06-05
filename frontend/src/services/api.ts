@@ -147,11 +147,20 @@ export interface WatermarkCandidate {
   payloadHex: string;
 }
 
+export interface WatermarkImageTimeInfo {
+  time?: string;
+  timestamp?: number;
+  source: 'exif' | 'pngText' | 'none';
+  field?: string;
+  reliable: boolean;
+}
+
 export interface WatermarkDecodeResult {
   success: boolean;
   deep: boolean;
   candidates: WatermarkCandidate[];
   bestCandidate?: WatermarkCandidate;
+  imageTime: WatermarkImageTimeInfo;
   rawOutput: string;
 }
 
