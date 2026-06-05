@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch --env-file=.env src/index.ts",
-    "build": "tsc && cp src/database/schema.sql dist/database/schema.sql && mkdir -p dist/templates && cp src/templates/*.template dist/templates/",
+    "build": "npm run build:watermark && tsc && cp src/database/schema.sql dist/database/schema.sql && mkdir -p dist/templates && cp src/templates/*.template dist/templates/",
+    "build:watermark": "cd tools/watermark-decoder-rs && cargo build --release",
     "start": "node dist/index.js",
     "test": "jest"
   },

@@ -131,6 +131,50 @@ export const dsymApi = {
   },
 };
 
+export interface WatermarkCandidate {
+  anchor: string;
+  env: string;
+  uid: string;
+  score: number;
+  repaired: boolean;
+  scale: number;
+  safeTop: number;
+  start: {
+    x: number;
+    y: number;
+  };
+  enhancement: string;
+  payloadHex: string;
+}
+
+export interface WatermarkDecodeResult {
+  success: boolean;
+  deep: boolean;
+  candidates: WatermarkCandidate[];
+  bestCandidate?: WatermarkCandidate;
+  rawOutput: string;
+}
+
+export const watermarkApi = {
+  /**
+   * 上传截图并解析点阵水印
+   */
+  decode: async (file: File, deep = true): Promise<ApiResponse<WatermarkDecodeResult>> => {
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('deep', String(deep));
+
+    const response = await api.post<ApiResponse<WatermarkDecodeResult>>('/watermark/decode', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    });
+
+    return response.data;
+  },
+};
+
 export const symbolicateApi = {
   /**
    * 符号化崩溃日志

@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const backendTarget = process.env.VITE_BACKEND_TARGET || 'http://127.0.0.1:3000';
+const backendWsTarget = backendTarget.replace(/^http/, 'ws');
+
 export default defineConfig({
   plugins: [react()],
   server: {
@@ -9,14 +12,14 @@ export default defineConfig({
     strictPort: true, // 强制使用 5173 端口，如果被占用则报错
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:3000',
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
         ws: true,
         timeout: 600000, // 10分钟超时
       },
       '/ws': {
-        target: 'ws://127.0.0.1:3000',
+        target: backendWsTarget,
         ws: true,
         changeOrigin: true,
       },
