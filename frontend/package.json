@@ -15,22 +15,23 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.21.1"
+    "react-router-dom": "^6.21.1",
+    "tar": "7.5.16"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.1.5",
     "@testing-library/react": "^14.1.2",
     "@types/react": "^18.2.47",
     "@types/react-dom": "^18.2.18",
-    "@typescript-eslint/eslint-plugin": "^6.17.0",
-    "@typescript-eslint/parser": "^6.17.0",
+    "@typescript-eslint/eslint-plugin": "^8.60.1",
+    "@typescript-eslint/parser": "^8.60.1",
     "@vitejs/plugin-react": "^4.2.1",
     "eslint": "^8.56.0",
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
     "prettier": "^3.1.1",
     "typescript": "^5.3.3",
-    "vite": "^5.0.11",
-    "vitest": "^1.1.1"
+    "vite": "^8.0.16",
+    "vitest": "^4.1.8"
   }
 }
