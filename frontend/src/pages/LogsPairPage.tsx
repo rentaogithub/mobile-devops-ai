@@ -10,6 +10,7 @@ import {
   message,
   Table,
   Popconfirm,
+  Tabs,
 } from 'antd';
 import {
   QrcodeOutlined,
@@ -29,10 +30,12 @@ const { Title, Paragraph, Text } = Typography;
 
 type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'streaming' | 'error';
 type AppConnectionState = 'unknown' | 'waiting' | 'connected' | 'disconnected';
+type LogChannel = 'business' | 'im' | 'rtc';
 
 interface LogEntry {
   id: number;
   timestamp: string;
+  channel: LogChannel;
   message: string;
   raw: string;
 }
@@ -89,6 +92,7 @@ export default function LogsPairPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [qrValue, setQrValue] = useState('');
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [activeLogChannel, setActiveLogChannel] = useState<LogChannel>('business');
   const [autoScroll, setAutoScroll] = useState(true);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState('');
   const [appConnectionState, setAppConnectionState] = useState<AppConnectionState>('unknown');
@@ -122,7 +126,7 @@ export default function LogsPairPage() {
     if (autoScroll && logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs, autoScroll]);
+  }, [logs, activeLogChannel, autoScroll]);
 
   // 组件卸载时清理
   useEffect(() => {
@@ -179,6 +183,24 @@ export default function LogsPairPage() {
       setCenterSuccessText('');
       centerSuccessTimerRef.current = null;
     }, 1600);
+  };
+
+  const normalizeLogChannel = (channel?: string): LogChannel => {
+    if (channel === 'im' || channel === 'rtc') {
+      return channel;
+    }
+    return 'business';
+  };
+
+  const logChannelLabel = (channel: LogChannel): string => {
+    switch (channel) {
+      case 'im':
+        return 'IM';
+      case 'rtc':
+        return 'RTC';
+      default:
+        return '业务';
+    }
   };
 
   /**
@@ -400,6 +422,7 @@ export default function LogsPairPage() {
         const entry: LogEntry = {
           id: ++logIdRef.current,
           timestamp: data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(),
+          channel: normalizeLogChannel(data.channel),
           message: data.line || data.message || event.data,
           raw: event.data,
         };
@@ -413,6 +436,7 @@ export default function LogsPairPage() {
         const entry: LogEntry = {
           id: ++logIdRef.current,
           timestamp: new Date().toLocaleTimeString(),
+          channel: 'business',
           message: event.data,
           raw: event.data,
         };
@@ -606,8 +630,8 @@ export default function LogsPairPage() {
   const getEmptyLogText = (): string => {
     if (appConnectionState === 'connected') {
       return lastHeartbeatAt
-        ? `设备已连接，等待新日志... 最近心跳 ${lastHeartbeatAt}`
-        : '设备已连接，等待新日志...';
+        ? `设备已连接，等待新的${logChannelLabel(activeLogChannel)}日志... 最近心跳 ${lastHeartbeatAt}`
+        : `设备已连接，等待新的${logChannelLabel(activeLogChannel)}日志...`;
     }
     if (appConnectionState === 'waiting') {
       return '浏览器已连接，等待 App 重连...';
@@ -617,6 +641,10 @@ export default function LogsPairPage() {
     }
     return '等待日志数据...';
   };
+
+  const businessLogs = logs.filter((log) => log.channel === 'business');
+  const imLogs = logs.filter((log) => log.channel === 'im');
+  const activeLogs = logs.filter((log) => log.channel === activeLogChannel);
 
   return (
     <div>
@@ -850,7 +878,7 @@ export default function LogsPairPage() {
               <Tag color="green" icon={<CheckCircleOutlined />}>浏览器接收中</Tag>
               {getAppConnectionTag()}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {logs.length} 条日志
+                {activeLogs.length} 条{logChannelLabel(activeLogChannel)}日志
               </Text>
               {lastHeartbeatAt && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
@@ -883,7 +911,11 @@ export default function LogsPairPage() {
               >
                 {autoScroll ? '自动滚动: 开' : '自动滚动: 关'}
               </Button>
-              <Button size="small" icon={<ClearOutlined />} onClick={() => setLogs([])}>
+              <Button
+                size="small"
+                icon={<ClearOutlined />}
+                onClick={() => setLogs((prev) => prev.filter((log) => log.channel !== activeLogChannel))}
+              >
                 清空
               </Button>
               <Button size="small" icon={<DisconnectOutlined />} onClick={stopViewing}>
@@ -893,6 +925,21 @@ export default function LogsPairPage() {
           }
           bodyStyle={{ padding: 0 }}
         >
+          <Tabs
+            activeKey={activeLogChannel}
+            onChange={(key) => setActiveLogChannel(key as LogChannel)}
+            style={{ padding: '0 16px' }}
+            items={[
+              {
+                key: 'business',
+                label: `业务 (${businessLogs.length})`,
+              },
+              {
+                key: 'im',
+                label: `IM (${imLogs.length})`,
+              },
+            ]}
+          />
           <div
             ref={logContainerRef}
             style={{
@@ -906,12 +953,12 @@ export default function LogsPairPage() {
               lineHeight: 1.6,
             }}
           >
-            {logs.length === 0 ? (
+            {activeLogs.length === 0 ? (
               <div style={{ color: '#666', textAlign: 'center', paddingTop: 100 }}>
                 {getEmptyLogText()}
               </div>
             ) : (
-              logs.map((log) => (
+              activeLogs.map((log) => (
                 <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                   <span>{log.message}</span>
                 </div>

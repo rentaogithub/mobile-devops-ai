@@ -15,9 +15,17 @@ interface BrowserLogClient {
   receiveBuffer: Buffer;
 }
 
+type LogChannel = 'business' | 'im' | 'rtc';
+
+interface RecentLogEntry {
+  line: string;
+  channel: LogChannel;
+  timestamp: string;
+}
+
 class BrowserLogWebSocketService {
   private readonly clients = new Map<string, BrowserLogClient>();
-  private readonly recentLogs = new Map<string, string[]>();
+  private readonly recentLogs = new Map<string, RecentLogEntry[]>();
   private readonly maxRecentLogCount = 500;
 
   attach(server: Server): void {
@@ -110,7 +118,7 @@ class BrowserLogWebSocketService {
         timestamp: new Date().toISOString(),
       });
       this.broadcastToBrowsers(pairingId, { type: 'status', status: 'app_connected' });
-      this.appendLog(pairingId, '[NNRealtimeLog] app connected');
+    this.appendLog(pairingId, '[NNRealtimeLog] app connected', 'business');
     }
 
     socket.on('data', (data) => this.handleFrame(client, data));
@@ -134,7 +142,7 @@ class BrowserLogWebSocketService {
       parsed = JSON.parse(message);
     } catch {
       if (client.role === 'app') {
-        this.appendLog(client.pairingId, message);
+        this.appendLog(client.pairingId, message, 'business');
       }
       return;
     }
@@ -183,7 +191,7 @@ class BrowserLogWebSocketService {
     const line = typeof parsed?.line === 'string'
       ? parsed.line
       : (typeof parsed?.message === 'string' ? parsed.message : message);
-    this.appendLog(client.pairingId, line);
+    this.appendLog(client.pairingId, line, this.normalizeLogChannel(parsed?.channel));
   }
 
   private handleBrowserMessage(client: BrowserLogClient, parsed: any): void {
@@ -217,10 +225,11 @@ class BrowserLogWebSocketService {
     ].includes(parsed?.type);
   }
 
-  private appendLog(pairingId: string, line: string): void {
+  private appendLog(pairingId: string, line: string, channel: LogChannel): void {
     pairingService.touchSession(pairingId);
     const logs = this.recentLogs.get(pairingId) || [];
-    logs.push(line);
+    const timestamp = new Date().toISOString();
+    logs.push({ line, channel, timestamp });
     if (logs.length > this.maxRecentLogCount) {
       logs.splice(0, logs.length - this.maxRecentLogCount);
     }
@@ -228,7 +237,8 @@ class BrowserLogWebSocketService {
     this.broadcastToBrowsers(pairingId, {
       type: 'log',
       line,
-      timestamp: new Date().toISOString(),
+      channel,
+      timestamp,
     });
   }
 
@@ -238,9 +248,22 @@ class BrowserLogWebSocketService {
 
   private sendRecentLogs(client: BrowserLogClient): void {
     const logs = this.recentLogs.get(client.pairingId) || [];
-    logs.forEach((line) => {
-      this.sendJSON(client, { type: 'log', line, timestamp: new Date().toISOString(), cached: true });
+    logs.forEach((entry) => {
+      this.sendJSON(client, {
+        type: 'log',
+        line: entry.line,
+        channel: entry.channel,
+        timestamp: entry.timestamp,
+        cached: true,
+      });
     });
+  }
+
+  private normalizeLogChannel(channel: unknown): LogChannel {
+    if (channel === 'im' || channel === 'rtc') {
+      return channel;
+    }
+    return 'business';
   }
 
   private broadcastToBrowsers(pairingId: string, payload: unknown): void {
