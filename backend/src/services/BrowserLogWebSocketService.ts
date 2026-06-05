@@ -191,7 +191,8 @@ class BrowserLogWebSocketService {
     const line = typeof parsed?.line === 'string'
       ? parsed.line
       : (typeof parsed?.message === 'string' ? parsed.message : message);
-    this.appendLog(client.pairingId, line, this.normalizeLogChannel(parsed?.channel, line, parsed?.sdkMarker));
+    const channel = this.normalizeLogChannel(parsed?.channel, line);
+    this.appendLog(client.pairingId, this.normalizeDisplayLine(line, channel), channel);
   }
 
   private handleBrowserMessage(client: BrowserLogClient, parsed: any): void {
@@ -259,15 +260,9 @@ class BrowserLogWebSocketService {
     });
   }
 
-  private normalizeLogChannel(channel: unknown, line?: string, sdkMarker?: unknown): LogChannel {
+  private normalizeLogChannel(channel: unknown, line?: string): LogChannel {
     if (channel === 'im' || channel === 'rtc') {
       return channel;
-    }
-    if (sdkMarker === '[IMSDK]') {
-      return 'im';
-    }
-    if (sdkMarker === '[RTCSDK]') {
-      return 'rtc';
     }
     if (line && this.isIMLogLine(line)) {
       return 'im';
@@ -279,11 +274,30 @@ class BrowserLogWebSocketService {
   }
 
   private isIMLogLine(line: string): boolean {
-    return line.includes('[IMSDK]');
+    return line.includes('[IMSDK]') || /\[nnimsdk-[^\]]+\]/.test(line);
   }
 
   private isRTCLogLine(line: string): boolean {
-    return line.includes('[RTCSDK]');
+    return line.includes('[RTCSDK]') || /\[nnrtc-[^\]]+\]/i.test(line);
+  }
+
+  private normalizeDisplayLine(line: string, channel: LogChannel): string {
+    if (channel === 'im') {
+      return this.sdkRawLog(line, '[IMSDK]');
+    }
+    if (channel === 'rtc') {
+      return this.sdkRawLog(line, '[RTCSDK]');
+    }
+    return line;
+  }
+
+  private sdkRawLog(line: string, marker: string): string {
+    const markerIndex = line.indexOf(marker);
+    if (markerIndex < 0) {
+      return line;
+    }
+    const rawLog = line.slice(markerIndex + marker.length).trim();
+    return rawLog || marker;
   }
 
   private broadcastToBrowsers(pairingId: string, payload: unknown): void {
