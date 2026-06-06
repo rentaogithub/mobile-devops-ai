@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import {
   Typography,
   Card,
@@ -97,6 +97,46 @@ function deviceDisplayName(deviceInfo?: PairingDeviceInfo): string {
   const name = deviceInfo?.name || '未知设备';
   const suffix = shortDeviceId(deviceInfo);
   return suffix ? `${name} · ${suffix}` : name;
+}
+
+function highlightText(text: string, keyword: string): ReactNode {
+  if (!keyword) {
+    return text;
+  }
+
+  const lowerText = text.toLowerCase();
+  const lowerKeyword = keyword.toLowerCase();
+  const nodes: ReactNode[] = [];
+  let searchStart = 0;
+  let matchIndex = lowerText.indexOf(lowerKeyword, searchStart);
+
+  while (matchIndex >= 0) {
+    if (matchIndex > searchStart) {
+      nodes.push(text.slice(searchStart, matchIndex));
+    }
+    const matchEnd = matchIndex + keyword.length;
+    nodes.push(
+      <mark
+        key={`${matchIndex}-${matchEnd}-${nodes.length}`}
+        style={{
+          color: '#1e1e1e',
+          background: '#ffd666',
+          borderRadius: 2,
+          padding: '0 2px',
+        }}
+      >
+        {text.slice(matchIndex, matchEnd)}
+      </mark>
+    );
+    searchStart = matchEnd;
+    matchIndex = lowerText.indexOf(lowerKeyword, searchStart);
+  }
+
+  if (searchStart < text.length) {
+    nodes.push(text.slice(searchStart));
+  }
+
+  return nodes;
 }
 
 export default function LogsPairPage() {
@@ -1034,9 +1074,10 @@ export default function LogsPairPage() {
             ) : (
               visibleLogs.map((log) => {
                 const channel = effectiveLogChannel(log);
+                const displayLine = normalizeDisplayLine(log.message, channel);
                 return (
                   <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    <span>{normalizeDisplayLine(log.message, channel)}</span>
+                    <span>{highlightText(displayLine, normalizedLogSearchText)}</span>
                   </div>
                 );
               })
