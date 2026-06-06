@@ -11,6 +11,7 @@ import {
   Table,
   Popconfirm,
   Tabs,
+  Input,
 } from 'antd';
 import {
   QrcodeOutlined,
@@ -27,10 +28,12 @@ import { QRCodeSVG } from 'qrcode.react';
 import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
+const MAX_RENDERED_LOG_COUNT = 10000;
 
 type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'streaming' | 'error';
 type AppConnectionState = 'unknown' | 'waiting' | 'connected' | 'disconnected';
 type LogChannel = 'business' | 'im' | 'rtc';
+type PairingDeviceInfo = NonNullable<PairingStatusData['deviceInfo']>;
 
 interface LogEntry {
   id: number;
@@ -85,6 +88,17 @@ function base64ToUint8Array(base64: string): Uint8Array {
   return bytes;
 }
 
+function shortDeviceId(deviceInfo?: PairingDeviceInfo): string {
+  const deviceId = deviceInfo?.appDeviceId || deviceInfo?.deviceId || '';
+  return deviceId.replace(/-/g, '').slice(-6).toUpperCase();
+}
+
+function deviceDisplayName(deviceInfo?: PairingDeviceInfo): string {
+  const name = deviceInfo?.name || '未知设备';
+  const suffix = shortDeviceId(deviceInfo);
+  return suffix ? `${name} · ${suffix}` : name;
+}
+
 export default function LogsPairPage() {
   const [state, setState] = useState<ConnectionState>('idle');
   const [session, setSession] = useState<PairingSessionData | null>(null);
@@ -93,6 +107,7 @@ export default function LogsPairPage() {
   const [qrValue, setQrValue] = useState('');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [activeLogChannel, setActiveLogChannel] = useState<LogChannel>('business');
+  const [logSearchText, setLogSearchText] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState('');
   const [appConnectionState, setAppConnectionState] = useState<AppConnectionState>('unknown');
@@ -459,8 +474,7 @@ export default function LogsPairPage() {
         };
         setLogs((prev) => {
           const next = [...prev, entry];
-          // 保留最近 5000 条
-          return next.length > 5000 ? next.slice(-5000) : next;
+          return next.length > MAX_RENDERED_LOG_COUNT ? next.slice(-MAX_RENDERED_LOG_COUNT) : next;
         });
       } catch {
         // 非 JSON 格式，直接作为日志文本
@@ -473,7 +487,7 @@ export default function LogsPairPage() {
         };
         setLogs((prev) => {
           const next = [...prev, entry];
-          return next.length > 5000 ? next.slice(-5000) : next;
+          return next.length > MAX_RENDERED_LOG_COUNT ? next.slice(-MAX_RENDERED_LOG_COUNT) : next;
         });
       }
     };
@@ -677,6 +691,10 @@ export default function LogsPairPage() {
   const imLogs = logs.filter((log) => effectiveLogChannel(log) === 'im');
   const rtcLogs = logs.filter((log) => effectiveLogChannel(log) === 'rtc');
   const activeLogs = logs.filter((log) => effectiveLogChannel(log) === activeLogChannel);
+  const normalizedLogSearchText = logSearchText.trim().toLowerCase();
+  const visibleLogs = normalizedLogSearchText
+    ? activeLogs.filter((log) => `${log.message}\n${log.raw}`.toLowerCase().includes(normalizedLogSearchText))
+    : activeLogs;
 
   return (
     <div>
@@ -747,7 +765,7 @@ export default function LogsPairPage() {
                   <Space direction="vertical" size={0}>
                     <Space>
                       <MobileOutlined />
-                      <span>{record.deviceInfo?.name || '未知设备'}</span>
+                      <span>{deviceDisplayName(record.deviceInfo)}</span>
                       {record.deviceInfo?.model && <Tag>{record.deviceInfo.model}</Tag>}
                     </Space>
                     <Text type="secondary" style={{ fontSize: 12 }}>
@@ -904,13 +922,13 @@ export default function LogsPairPage() {
             <Space>
               <MobileOutlined />
               <span>设备实时日志</span>
-              {pairingStatus?.deviceInfo?.name && (
-                <Tag color="blue">{pairingStatus.deviceInfo.name}</Tag>
+              {pairingStatus?.deviceInfo && (
+                <Tag color="blue">{deviceDisplayName(pairingStatus.deviceInfo)}</Tag>
               )}
               <Tag color="green" icon={<CheckCircleOutlined />}>浏览器接收中</Tag>
               {getAppConnectionTag()}
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {activeLogs.length} 条{logChannelLabel(activeLogChannel)}日志
+                {visibleLogs.length} / {activeLogs.length} 条{logChannelLabel(activeLogChannel)}日志
               </Text>
               {lastHeartbeatAt && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
@@ -976,6 +994,22 @@ export default function LogsPairPage() {
               },
             ]}
           />
+          <div style={{ padding: '0 16px 12px' }}>
+            <Space>
+              <Input.Search
+                allowClear
+                placeholder={`检索${logChannelLabel(activeLogChannel)}日志`}
+                value={logSearchText}
+                onChange={(event) => setLogSearchText(event.target.value)}
+                style={{ width: 360 }}
+              />
+              {normalizedLogSearchText && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  命中 {visibleLogs.length} 条
+                </Text>
+              )}
+            </Space>
+          </div>
           <div
             ref={logContainerRef}
             style={{
@@ -993,8 +1027,12 @@ export default function LogsPairPage() {
               <div style={{ color: '#666', textAlign: 'center', paddingTop: 100 }}>
                 {getEmptyLogText()}
               </div>
+            ) : visibleLogs.length === 0 ? (
+              <div style={{ color: '#666', textAlign: 'center', paddingTop: 100 }}>
+                未找到匹配日志
+              </div>
             ) : (
-              activeLogs.map((log) => {
+              visibleLogs.map((log) => {
                 const channel = effectiveLogChannel(log);
                 return (
                   <div key={log.id} style={{ color: '#d4d4d4', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>

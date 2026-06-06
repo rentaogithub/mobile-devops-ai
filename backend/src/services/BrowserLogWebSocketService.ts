@@ -26,7 +26,7 @@ interface RecentLogEntry {
 class BrowserLogWebSocketService {
   private readonly clients = new Map<string, BrowserLogClient>();
   private readonly recentLogs = new Map<string, RecentLogEntry[]>();
-  private readonly maxRecentLogCount = 500;
+  private readonly maxRecentLogCount = 10000;
 
   attach(server: Server): void {
     server.on('upgrade', (req, socket, head) => {
