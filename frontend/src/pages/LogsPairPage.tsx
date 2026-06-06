@@ -99,6 +99,12 @@ function deviceDisplayName(deviceInfo?: PairingDeviceInfo): string {
   return suffix ? `${name} · ${suffix}` : name;
 }
 
+function deviceDetailDisplayName(deviceInfo?: PairingDeviceInfo): string {
+  const name = deviceDisplayName(deviceInfo);
+  const nickName = deviceInfo?.nickName?.trim();
+  return nickName ? `${name} · ${nickName}` : name;
+}
+
 function highlightText(text: string, keyword: string): ReactNode {
   if (!keyword) {
     return text;
@@ -846,7 +852,7 @@ export default function LogsPairPage() {
                 render: (value?: number) => value ? new Date(value).toLocaleTimeString() : '-',
               },
               {
-                title: '缓存日志',
+                title: '已缓存日志',
                 dataIndex: 'recentLogCount',
                 key: 'recentLogCount',
                 width: 100,
@@ -963,7 +969,7 @@ export default function LogsPairPage() {
               <MobileOutlined />
               <span>设备实时日志</span>
               {pairingStatus?.deviceInfo && (
-                <Tag color="blue">{deviceDisplayName(pairingStatus.deviceInfo)}</Tag>
+                <Tag color="blue">{deviceDetailDisplayName(pairingStatus.deviceInfo)}</Tag>
               )}
               <Tag color="green" icon={<CheckCircleOutlined />}>浏览器接收中</Tag>
               {getAppConnectionTag()}
