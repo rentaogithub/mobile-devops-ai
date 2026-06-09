@@ -117,9 +117,26 @@ class PairingService {
   }
 
   listSessions(): PairingSession[] {
-    return Array.from(this.sessions.values())
+    const uniqueSessions = new Map<string, PairingSession>();
+    const sessionsWithoutIdentity: PairingSession[] = [];
+
+    Array.from(this.sessions.values())
       .filter((session) => session.status === 'paired')
-      .sort((left, right) => (right.lastActiveAt || right.pairedAt || right.createdAt) - (left.lastActiveAt || left.pairedAt || left.createdAt));
+      .forEach((session) => {
+        const identity = this.deviceIdentity(session.deviceInfo);
+        if (!identity) {
+          sessionsWithoutIdentity.push(session);
+          return;
+        }
+
+        const existing = uniqueSessions.get(identity);
+        if (!existing || this.sessionTime(session) > this.sessionTime(existing)) {
+          uniqueSessions.set(identity, session);
+        }
+      });
+
+    return [...uniqueSessions.values(), ...sessionsWithoutIdentity]
+      .sort((left, right) => this.sessionTime(right) - this.sessionTime(left));
   }
 
   getSessionStatus(pairingId: string): {
@@ -186,6 +203,11 @@ class PairingService {
 
   private deviceIdentity(deviceInfo?: PairingSession['deviceInfo']): string | null {
     if (!deviceInfo) return null;
+    const appDeviceId = this.normalized(deviceInfo.appDeviceId);
+    if (appDeviceId) {
+      return `appDevice:${appDeviceId}`;
+    }
+
     const deviceId = this.normalized(deviceInfo.deviceId);
     if (deviceId) {
       return `device:${deviceId}`;
@@ -200,6 +222,10 @@ class PairingService {
 
   private normalized(value: unknown): string {
     return String(value ?? '').trim();
+  }
+
+  private sessionTime(session: PairingSession): number {
+    return session.lastActiveAt || session.pairedAt || session.createdAt;
   }
 
   private ensurePersistenceTable(): void {
