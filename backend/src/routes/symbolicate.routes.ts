@@ -14,6 +14,7 @@ const symbolizer = new SymbolizerService();
 const storage = new StorageService();
 
 const unknownNNIMFrameRegex = /^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
+const addressOnlyNNIMFrameRegex = /^\d+\s+NNIM\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in NNIM\)(?:\s+\+\s+\d+)?$/gim;
 const unknownSystemFrameRegex = /^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
 
 function countMatches(log: string, regex: RegExp): number {
@@ -28,7 +29,9 @@ function hasValidSymbolicationResult(originalLog: string, symbolicatedLog: strin
   // MetricKit/精简 crash 常见没有 Binary Images，旧结果会保留 NNIM <unknown> 栈。
   const originalUnknownNNIMCount = countMatches(originalLog, unknownNNIMFrameRegex);
   if (originalUnknownNNIMCount > 0) {
-    const unresolvedNNIMCount = countMatches(symbolicatedLog, unknownNNIMFrameRegex);
+    const unresolvedNNIMCount =
+      countMatches(symbolicatedLog, unknownNNIMFrameRegex) +
+      countMatches(symbolicatedLog, addressOnlyNNIMFrameRegex);
     if (unresolvedNNIMCount >= originalUnknownNNIMCount) {
       return false;
     }

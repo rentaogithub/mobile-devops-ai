@@ -195,7 +195,9 @@ export class HistoryService {
   }
 
   private countUnknownNNIMFrames(log: string): number {
-    return (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
+    const unknownCount = (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
+    const addressOnlyCount = (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in NNIM\)(?:\s+\+\s+\d+)?$/gim) || []).length;
+    return unknownCount + addressOnlyCount;
   }
 
   private countUnknownSystemFrames(log: string): number {

@@ -188,16 +188,26 @@ export class SymbolizerService {
       // 提取该应用的加载地址
       let loadAddress = this.extractLoadAddressForBinary(crashLog, matchedBinaryName);
       let inferredLoadAddresses: string[] = [];
-      if (!loadAddress) {
+      const hasBinaryImages = /Binary Images:/i.test(crashLog);
+      if (!hasBinaryImages) {
         inferredLoadAddresses = this.inferLoadAddressesFromSimplifiedStack(appFrames, matchedBinaryName);
-        loadAddress = inferredLoadAddresses[0];
-        if (loadAddress) {
-          const warning =
+
+        if (loadAddress && !inferredLoadAddresses.includes(loadAddress)) {
+          inferredLoadAddresses.unshift(loadAddress);
+        }
+
+        if (!loadAddress) {
+          loadAddress = inferredLoadAddresses[0];
+        }
+
+        if (inferredLoadAddresses.length > 0) {
+          warnings.push(
             `⚠️ 当前崩溃日志缺少 Binary Images，已根据 "${matchedBinaryName}" 栈地址尝试推断加载基址。` +
-            `符号化结果可能存在偏差，建议上传完整 .ips 或包含 Binary Images 的 crash 日志。`;
-          warnings.push(warning);
+            `符号化结果可能存在偏差，建议上传完整 .ips 或包含 Binary Images 的 crash 日志。`
+          );
           logger.warn('缺少 Binary Images，使用栈地址推断加载地址候选', {
             matchedBinaryName,
+            extractedLoadAddress: loadAddress,
             inferredLoadAddresses,
           });
         }
