@@ -20,7 +20,7 @@ export default defineConfig({
       },
       '/sentry': {
         target: backendTarget,
-        changeOrigin: true,
+        changeOrigin: false,
         secure: false,
         timeout: 600000,
       },
