@@ -96,4 +96,29 @@ describe('SymbolizerService simplified crash load address inference', () => {
 
     expect(result.get('0x100002000')).toBe('secondFrame');
   });
+
+  it('prefers the best system library candidate load address', async () => {
+    const service = new SymbolizerService() as any;
+    service.symbolicateWithAtosForSystemLib = jest.fn(
+      async (_addresses: string[], _binaryPath: string, loadAddress: string) => {
+        if (loadAddress === '0x38e490000') {
+          return new Map([
+            ['0x38e4a71e4', '_dispatch_source_set_handler (in libdispatch.dylib) + 60'],
+            ['0x38e492148', '_dispatch_xref_dispose (in libdispatch.dylib) + 8'],
+          ]);
+        }
+
+        return new Map();
+      }
+    );
+
+    const result = await service.symbolicateSystemLibWithCandidateLoadAddresses(
+      ['0x38e4a71e4', '0x38e492148'],
+      '/tmp/libdispatch.dylib',
+      ['0x2bd906000', '0x38e490000'],
+      'libdispatch.dylib'
+    );
+
+    expect(result.get('0x38e492148')).toContain('_dispatch_xref_dispose');
+  });
 });

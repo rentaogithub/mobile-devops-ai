@@ -79,7 +79,40 @@ ENABLE_SYSTEM_SYMBOLICATION=true
 
 # 系统符号路径（默认）
 XCODE_SYMBOLS_PATH=~/Library/Developer/Xcode/iOS DeviceSupport
+
+# 自动补齐缺失的 iOS DeviceSupport（默认开启）
+AUTO_UPDATE_SYSTEM_SYMBOLS=true
+
+# 可选：从本地符号包目录导入。目录中可放 zip 或已解压的 DeviceSupport 版本目录。
+IOS_DEVICE_SUPPORT_IMPORT_DIR=/Users/a1/工作/ios-device-support-packages
+
+# 可选：从内网或对象存储下载。支持 {version}、{build}、{versionDir} 及 encoded* 变量。
+IOS_DEVICE_SUPPORT_URL_TEMPLATE=http://your-internal-host/ios-device-support/{encodedVersionDir}.zip
 ```
+
+## 自动补齐系统符号
+
+当 crash 日志里出现 `OS Version: iOS 26.5 (23F77)`，但
+`~/Library/Developer/Xcode/iOS DeviceSupport/` 下没有对应目录，或目录中缺少需要的系统库时，后端会自动尝试补齐系统符号，然后重试系统库符号化。
+
+自动补齐顺序：
+
+1. 从 `IOS_DEVICE_SUPPORT_IMPORT_DIR` 查找匹配版本号或 build 号的 zip/目录并导入。
+2. 从 `IOS_DEVICE_SUPPORT_URLS` 逐个下载 zip 并导入。
+3. 按 `IOS_DEVICE_SUPPORT_URL_TEMPLATE` 渲染下载地址并导入。
+
+zip 或目录内部需要包含类似以下结构：
+
+```bash
+iPhone15,2 26.5 (23F77)/
+└── Symbols/
+    ├── System/
+    └── usr/
+```
+
+如果没有配置任何来源，系统会记录日志提示需要配置
+`IOS_DEVICE_SUPPORT_IMPORT_DIR`、`IOS_DEVICE_SUPPORT_URLS` 或
+`IOS_DEVICE_SUPPORT_URL_TEMPLATE`，并继续返回已能解析的应用/组件符号。
 
 ## 常见问题
 

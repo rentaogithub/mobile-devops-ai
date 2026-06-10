@@ -726,8 +726,10 @@ export class SymbolizerService {
           continue;
         }
 
-        // 提取加载地址
-        let loadAddress = this.extractLoadAddressForBinary(crashLog, binaryName);
+        // 提取加载地址。精简日志里的系统库 <unknown> + N 通常不是 image offset，
+        // 优先用页对齐候选，避免被 unknown 分支推成错误基址。
+        const hasBinaryImages = crashLog.includes('Binary Images:');
+        let loadAddress = hasBinaryImages ? this.extractLoadAddressForBinary(crashLog, binaryName) : null;
         let inferredLoadAddresses: string[] = [];
         if (!loadAddress) {
           inferredLoadAddresses = this.inferLoadAddressesFromSimplifiedStack(frames, binaryName);
@@ -790,7 +792,8 @@ export class SymbolizerService {
         symbolCount: symbolMap.size,
       });
 
-      if (symbolMap.size > bestMap.size) {
+      const score = this.scoreSymbolicationMap(addresses, symbolMap);
+      if (score > this.scoreSymbolicationMap(addresses, bestMap)) {
         bestMap = symbolMap;
         bestLoadAddress = loadAddress;
       }
