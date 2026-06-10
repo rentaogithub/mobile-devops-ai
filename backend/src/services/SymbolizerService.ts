@@ -579,19 +579,53 @@ export class SymbolizerService {
       return [];
     }
 
+    const candidates: string[] = [];
+
+    const addCandidate = (base: number) => {
+      if (!Number.isFinite(base) || base <= 0) {
+        return;
+      }
+
+      const candidate = `0x${base.toString(16)}`;
+      if (!candidates.includes(candidate)) {
+        candidates.push(candidate);
+      }
+    };
+
+    const maxReasonableImageOffset = 512 * 1024 * 1024;
+    const commonPreferredBase = 0x100000000;
+
+    // 精简日志里的 "<unknown> + N" 有三种常见来源：
+    // 1. N 是 image offset，可以用 address - N 得到加载基址；
+    // 2. N 是未 slide 的 Mach-O 虚拟地址，可用 address - N + 0x100000000 推出加载基址；
+    // 3. N 是实际绝对地址，这时 address - N 无效，只能继续走页对齐候选。
+    for (const frame of frames) {
+      if (frame.binaryName !== binaryName || !frame.offset) {
+        continue;
+      }
+
+      const address = parseInt(frame.address, 16);
+      const offset = parseInt(frame.offset, 10);
+      if (!Number.isFinite(address) || !Number.isFinite(offset)) {
+        continue;
+      }
+
+      const delta = address - offset;
+      if (delta > 0 && delta < address && offset > 0 && offset < maxReasonableImageOffset) {
+        addCandidate(delta);
+      } else if (delta > 0 && delta < address && offset >= commonPreferredBase) {
+        addCandidate(delta + commonPreferredBase);
+      }
+    }
+
     const minAddress = Math.min(...addresses);
     // iOS 设备常见 16KB 页对齐；没有 Binary Images 时，多候选试探比固定猜一个基址可靠。
     const alignments = [16 * 1024, 4 * 1024, 1024 * 1024];
-    const candidates: string[] = [];
-
     for (const alignment of alignments) {
       const base = Math.floor(minAddress / alignment) * alignment;
       const offset = minAddress - base;
       if (base > 0 && offset > 0 && offset < 512 * 1024 * 1024) {
-        const candidate = `0x${base.toString(16)}`;
-        if (!candidates.includes(candidate)) {
-          candidates.push(candidate);
-        }
+        addCandidate(base);
       }
     }
 
@@ -605,17 +639,21 @@ export class SymbolizerService {
   ): Promise<Map<string, string>> {
     let bestMap = new Map<string, string>();
     let bestLoadAddress = loadAddresses[0];
+    let bestScore = -1;
 
     for (const loadAddress of loadAddresses) {
       const symbolMap = await this.symbolicateWithAtos(addresses, dsymPath, loadAddress);
+      const score = this.scoreSymbolicationMap(addresses, symbolMap);
       logger.info('候选加载地址符号化结果', {
         loadAddress,
         symbolCount: symbolMap.size,
+        score,
       });
 
-      if (symbolMap.size > bestMap.size) {
+      if (score > bestScore) {
         bestMap = symbolMap;
         bestLoadAddress = loadAddress;
+        bestScore = score;
       }
     }
 
@@ -625,6 +663,17 @@ export class SymbolizerService {
     });
 
     return bestMap;
+  }
+
+  private scoreSymbolicationMap(addresses: string[], symbolMap: Map<string, string>): number {
+    return addresses.reduce((score, address, index) => {
+      if (!symbolMap.has(address)) {
+        return score;
+      }
+
+      // 主权重仍然是符号化数量；低位加入栈深度，平局时选覆盖更深帧的候选。
+      return score + 1000 + index;
+    }, 0);
   }
 
   /**
