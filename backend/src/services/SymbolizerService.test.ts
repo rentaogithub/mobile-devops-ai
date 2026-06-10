@@ -97,6 +97,43 @@ describe('SymbolizerService simplified crash load address inference', () => {
     expect(result.get('0x100002000')).toBe('secondFrame');
   });
 
+  it('does not count address-only atos output as a real symbol unless requested', () => {
+    const service = new SymbolizerService() as any;
+
+    expect(service.isUsableAtosSymbol('0x00003650 (in NNRtc)', '0x103c03650')).toBe(false);
+    expect(
+      service.isUsableAtosSymbol('0x00003650 (in NNRtc)', '0x103c03650', true)
+    ).toBe(true);
+  });
+
+  it('fills unresolved app frames with address-only atos output after choosing the best candidate', async () => {
+    const service = new SymbolizerService() as any;
+    service.symbolicateWithAtos = jest.fn(
+      async (addresses: string[], _dsymPath: string, loadAddress: string, options?: { includeAddressOnly?: boolean }) => {
+        if (options?.includeAddressOnly) {
+          return new Map(
+            addresses.map((address) => [address, `0x00003650 (in NNRtc)`])
+          );
+        }
+
+        if (loadAddress === '0x103c00000') {
+          return new Map([['0x103c11460', 'ParseInt<int> (in NNRtc) (time_zone_format.cc:242)']]);
+        }
+
+        return new Map();
+      }
+    );
+
+    const result = await service.symbolicateWithCandidateLoadAddresses(
+      ['0x103c11460', '0x103c03650'],
+      '/tmp/NNRtc.dSYM',
+      ['0x103c00000', '0x100000000']
+    );
+
+    expect(result.get('0x103c11460')).toContain('ParseInt<int>');
+    expect(result.get('0x103c03650')).toBe('0x00003650 (in NNRtc)');
+  });
+
   it('prefers the best system library candidate load address', async () => {
     const service = new SymbolizerService() as any;
     service.symbolicateWithAtosForSystemLib = jest.fn(

@@ -218,9 +218,10 @@ export class SymbolizerService {
       logger.info(`提取到 ${addresses.length} 个地址需要符号化`);
 
       // 使用 atos 批量符号化
-      const symbolMap = inferredLoadAddresses.length > 1
+      let symbolMap = inferredLoadAddresses.length > 1
         ? await this.symbolicateWithCandidateLoadAddresses(addresses, dsymPath, inferredLoadAddresses)
         : await this.symbolicateWithAtos(addresses, dsymPath, loadAddress);
+      symbolMap = await this.fillAddressOnlySymbols(addresses, symbolMap, dsymPath, loadAddress);
       logger.info(`成功符号化 ${symbolMap.size} 个地址`);
 
       // 替换原始日志中的地址为符号信息
@@ -263,7 +264,8 @@ export class SymbolizerService {
   async symbolicateWithAtos(
     addresses: string[],
     dsymPath: string,
-    loadAddress: string
+    loadAddress: string,
+    options: { includeAddressOnly?: boolean } = {}
   ): Promise<Map<string, string>> {
     const symbolMap = new Map<string, string>();
 
@@ -304,7 +306,7 @@ export class SymbolizerService {
         if (index < symbols.length) {
           const symbol = symbols[index].trim();
           // 只有当符号化成功时才添加（atos 失败时会返回原地址）
-          if (symbol && symbol !== address && !symbol.startsWith('0x')) {
+          if (this.isUsableAtosSymbol(symbol, address, options.includeAddressOnly)) {
             symbolMap.set(address, symbol);
           }
         }
@@ -339,6 +341,25 @@ export class SymbolizerService {
       logger.error('atos 命令执行失败', { error: error.message, stack: error.stack });
       throw new AppError(ErrorCode.SYMBOLICATION_FAILED, 'atos 命令执行失败', 500);
     }
+  }
+
+  private isUsableAtosSymbol(
+    symbol: string,
+    address: string,
+    includeAddressOnly = false
+  ): boolean {
+    if (!symbol || symbol === address) {
+      return false;
+    }
+
+    if (!symbol.startsWith('0x')) {
+      return true;
+    }
+
+    // 某些地址在 dSYM 里没有函数/DWARF 条目，atos 只能返回
+    // "0x00003650 (in NNRtc)"。最终结果里保留这个信息，比继续显示
+    // "<unknown> + ..." 更清楚，但它不能参与候选基址评分。
+    return includeAddressOnly && /^0x[0-9a-f]+\s+\(in [^)]+\)(?:\s+\+\s+\d+)?$/i.test(symbol);
   }
 
   /**
@@ -667,12 +688,44 @@ export class SymbolizerService {
       }
     }
 
+    const unresolvedAddresses = addresses.filter((address) => !bestMap.has(address));
+    if (unresolvedAddresses.length > 0 && bestLoadAddress) {
+      const fallbackMap = await this.symbolicateWithAtos(
+        unresolvedAddresses,
+        dsymPath,
+        bestLoadAddress,
+        { includeAddressOnly: true }
+      );
+      fallbackMap.forEach((symbol, address) => bestMap.set(address, symbol));
+    }
+
     logger.info('选择候选加载地址', {
       loadAddress: bestLoadAddress,
       symbolCount: bestMap.size,
     });
 
     return bestMap;
+  }
+
+  private async fillAddressOnlySymbols(
+    addresses: string[],
+    symbolMap: Map<string, string>,
+    dsymPath: string,
+    loadAddress: string
+  ): Promise<Map<string, string>> {
+    const unresolvedAddresses = addresses.filter((address) => !symbolMap.has(address));
+    if (unresolvedAddresses.length === 0) {
+      return symbolMap;
+    }
+
+    const fallbackMap = await this.symbolicateWithAtos(
+      unresolvedAddresses,
+      dsymPath,
+      loadAddress,
+      { includeAddressOnly: true }
+    );
+    fallbackMap.forEach((symbol, address) => symbolMap.set(address, symbol));
+    return symbolMap;
   }
 
   private scoreSymbolicationMap(addresses: string[], symbolMap: Map<string, string>): number {
@@ -842,7 +895,7 @@ export class SymbolizerService {
       addresses.forEach((address, index) => {
         if (index < symbols.length) {
           const symbol = symbols[index].trim();
-          if (symbol && symbol !== address && !symbol.startsWith('0x')) {
+          if (this.isUsableAtosSymbol(symbol, address)) {
             symbolMap.set(address, symbol);
           }
         }
