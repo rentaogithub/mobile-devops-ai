@@ -27,12 +27,14 @@ let sentryLastLoginAt = 0;
 
 function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
+  const targetBasePath = target.pathname.replace(/\/+$/, '');
   let proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
   proxyPath = proxyPath.replace(
     /^\/api\/0\/([^/?#]+)\/organizations\/\1(?=\/|[?#]|$)/,
     '/api/0/organizations/$1'
   );
-  target.pathname = proxyPath.split('?')[0] || '/';
+  const requestPath = proxyPath.split('?')[0] || '/';
+  target.pathname = `${targetBasePath}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
   const queryIndex = proxyPath.indexOf('?');
   target.search = queryIndex >= 0 ? proxyPath.substring(queryIndex) : '';
   return target;
@@ -44,10 +46,6 @@ function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
   const rewritten = body
     .replace(new RegExp(sentryPublicURLPattern, 'g'), proxyBaseURL)
     .replace(new RegExp(sentryTargetPattern, 'g'), proxyBaseURL)
-    .replace(
-      't.p=window.__initialData?.distPrefix||"/sentry/_assets/"',
-      't.p="/sentry/_static/dist/sentry/"'
-    )
     .replace(/(href|src|action)=["']\/(?!sentry\/)/g, '$1="/sentry/')
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
     .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
@@ -182,7 +180,7 @@ function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
     cookie
       .replace(/;\s*Domain=[^;]+/i, '')
       .replace(/;\s*Path=\/sentry\/?/i, '; Path=/sentry')
-      .replace(/;\s*Path=\//i, '; Path=/sentry');
+      .replace(/;\s*Path=\/(?=;|$)/i, '; Path=/sentry');
 
   return Array.isArray(setCookie)
     ? setCookie.map(rewriteCookie)
@@ -195,7 +193,13 @@ function rewriteRequestURLHeader(value: string): string {
 }
 
 function requestSentry(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
-  const targetURL = new URL(path, SENTRY_TARGET);
+  const baseURL = new URL(SENTRY_TARGET);
+  const targetBasePath = baseURL.pathname.replace(/\/+$/, '');
+  const targetURL = new URL(SENTRY_TARGET);
+  const queryIndex = path.indexOf('?');
+  const requestPath = queryIndex >= 0 ? path.substring(0, queryIndex) : path;
+  targetURL.pathname = `${targetBasePath}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
+  targetURL.search = queryIndex >= 0 ? path.substring(queryIndex) : '';
   const client = targetURL.protocol === 'https:' ? https : http;
   const headers: Record<string, string> = {
     ...(options.headers || {}),

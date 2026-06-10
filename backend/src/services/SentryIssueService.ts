@@ -245,7 +245,13 @@ export class SentryIssueService {
   }
 
   private request(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
-    const targetURL = new URL(path, this.target);
+    const baseURL = new URL(this.target);
+    const targetBasePath = baseURL.pathname.replace(/\/+$/, '');
+    const targetURL = new URL(this.target);
+    const queryIndex = path.indexOf('?');
+    const requestPath = queryIndex >= 0 ? path.substring(0, queryIndex) : path;
+    targetURL.pathname = `${targetBasePath}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
+    targetURL.search = queryIndex >= 0 ? path.substring(queryIndex) : '';
     const client = targetURL.protocol === 'https:' ? https : http;
     const headers: Record<string, string> = {
       ...(options.headers || {}),

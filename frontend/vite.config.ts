@@ -3,7 +3,6 @@ import react from '@vitejs/plugin-react';
 
 const backendTarget = process.env.VITE_BACKEND_TARGET || 'http://127.0.0.1:3000';
 const backendWsTarget = backendTarget.replace(/^http/, 'ws');
-const sentryProxyTarget = process.env.VITE_SENTRY_PROXY_BASE_URL || 'http://10.1.3.177:3000';
 
 export default defineConfig({
   plugins: [react()],
@@ -20,7 +19,7 @@ export default defineConfig({
         timeout: 600000, // 10分钟超时
       },
       '/sentry': {
-        target: sentryProxyTarget,
+        target: backendTarget,
         changeOrigin: true,
         secure: false,
         timeout: 600000,
