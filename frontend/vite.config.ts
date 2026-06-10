@@ -18,7 +18,7 @@ export default defineConfig({
         ws: true,
         timeout: 600000, // 10分钟超时
       },
-      '/sentry': {
+      '^/sentry(?=/|$)': {
         target: backendTarget,
         changeOrigin: false,
         secure: false,

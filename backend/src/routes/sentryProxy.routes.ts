@@ -29,6 +29,7 @@ function buildTargetURL(req: Request): URL {
   const target = new URL(SENTRY_TARGET);
   const targetBasePath = target.pathname.replace(/\/+$/, '');
   let proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
+  proxyPath = proxyPath.replace(/npm_modules/g, 'node_modules');
   proxyPath = proxyPath.replace(
     /^\/api\/0\/([^/?#]+)\/organizations\/\1(?=\/|[?#]|$)/,
     '/api/0/organizations/$1'
@@ -40,7 +41,7 @@ function buildTargetURL(req: Request): URL {
   return target;
 }
 
-function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
+function rewriteSentryAssetURLs(body: string, proxyBaseURL: string, options: { injectBridge?: boolean } = {}): string {
   const sentryPublicURLPattern = SENTRY_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const sentryTargetPattern = SENTRY_TARGET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rewritten = body
@@ -50,7 +51,15 @@ function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
     .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
 
-  return injectSentryIssueBridge(rewritten);
+  return options.injectBridge ? injectSentryIssueBridge(rewritten) : rewritten;
+}
+
+function rewriteSentryJavaScript(body: string): string {
+  return stripInjectedIssueBridge(body).replace(/node_modules/g, 'npm_modules');
+}
+
+function stripInjectedIssueBridge(body: string): string {
+  return body.replace(/\n?<script data-nn-sentry-issue-bridge>[\s\S]*?<\/script>\n?/g, '');
 }
 
 function injectSentryIssueBridge(body: string): string {
@@ -390,10 +399,12 @@ router.use(async (req: Request, res: Response) => {
       }
 
       const contentType = String(proxyRes.headers['content-type'] || '');
+      const shouldRewriteHTML = contentType.includes('text/html');
       const shouldRewrite =
-        contentType.includes('text/html') ||
+        shouldRewriteHTML ||
         contentType.includes('text/css') ||
         contentType.includes('javascript');
+      const shouldRewriteJavaScript = contentType.includes('javascript');
 
       res.status(proxyRes.statusCode || 200);
       Object.entries(responseHeaders).forEach(([key, value]) => {
@@ -411,7 +422,10 @@ router.use(async (req: Request, res: Response) => {
       proxyRes.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
       proxyRes.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
-        res.send(rewriteSentryAssetURLs(body, proxyBaseURL));
+        const rewrittenBody = shouldRewriteJavaScript
+          ? rewriteSentryJavaScript(body)
+          : rewriteSentryAssetURLs(body, proxyBaseURL, { injectBridge: shouldRewriteHTML });
+        res.send(rewrittenBody);
       });
     }
   );
