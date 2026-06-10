@@ -185,11 +185,21 @@ export class HistoryService {
 
     const oldUnknownNNIMCount = this.countUnknownNNIMFrames(duplicate.symbolicatedLog);
     const newUnknownNNIMCount = this.countUnknownNNIMFrames(params.symbolicatedLog);
-    return oldUnknownNNIMCount > 0 && newUnknownNNIMCount < oldUnknownNNIMCount;
+    if (oldUnknownNNIMCount > 0 && newUnknownNNIMCount < oldUnknownNNIMCount) {
+      return true;
+    }
+
+    const oldUnknownSystemCount = this.countUnknownSystemFrames(duplicate.symbolicatedLog);
+    const newUnknownSystemCount = this.countUnknownSystemFrames(params.symbolicatedLog);
+    return oldUnknownSystemCount > 0 && newUnknownSystemCount < oldUnknownSystemCount;
   }
 
   private countUnknownNNIMFrames(log: string): number {
     return (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
+  }
+
+  private countUnknownSystemFrames(log: string): number {
+    return (log.match(/^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
   }
 
   /**

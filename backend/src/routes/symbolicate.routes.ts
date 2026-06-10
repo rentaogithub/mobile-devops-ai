@@ -13,16 +13,37 @@ const router = Router();
 const symbolizer = new SymbolizerService();
 const storage = new StorageService();
 
+const unknownNNIMFrameRegex = /^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
+const unknownSystemFrameRegex = /^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
+
+function countMatches(log: string, regex: RegExp): number {
+  return (log.match(regex) || []).length;
+}
+
 function hasValidSymbolicationResult(originalLog: string, symbolicatedLog: string): boolean {
   if (!symbolicatedLog || symbolicatedLog === originalLog) {
     return false;
   }
 
   // MetricKit/精简 crash 常见没有 Binary Images，旧结果会保留 NNIM <unknown> 栈。
-  const originalUnknownNNIMFrames = originalLog.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || [];
-  if (originalUnknownNNIMFrames.length > 0) {
-    const unresolvedNNIMFrames = symbolicatedLog.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || [];
-    return unresolvedNNIMFrames.length < originalUnknownNNIMFrames.length;
+  const originalUnknownNNIMCount = countMatches(originalLog, unknownNNIMFrameRegex);
+  if (originalUnknownNNIMCount > 0) {
+    const unresolvedNNIMCount = countMatches(symbolicatedLog, unknownNNIMFrameRegex);
+    if (unresolvedNNIMCount >= originalUnknownNNIMCount) {
+      return false;
+    }
+  }
+
+  // 系统库符号文件补齐后，之前仅解析到 App/组件的历史结果也需要失效。
+  const shouldValidateSystemFrames = process.env.ENABLE_SYSTEM_SYMBOLICATION === 'true';
+  const originalUnknownSystemCount = shouldValidateSystemFrames
+    ? countMatches(originalLog, unknownSystemFrameRegex)
+    : 0;
+  if (originalUnknownSystemCount > 0) {
+    const unresolvedSystemCount = countMatches(symbolicatedLog, unknownSystemFrameRegex);
+    if (unresolvedSystemCount >= originalUnknownSystemCount) {
+      return false;
+    }
   }
 
   return symbolicatedLog.includes('(in ') || /^\d+\s+\S+\s+0x[0-9a-f]+\s+(?!<unknown>)/gim.test(symbolicatedLog);
