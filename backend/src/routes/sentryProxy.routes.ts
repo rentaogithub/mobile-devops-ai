@@ -41,7 +41,7 @@ function buildTargetURL(req: Request): URL {
 function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
   const sentryPublicURLPattern = SENTRY_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const sentryTargetPattern = SENTRY_TARGET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return body
+  const rewritten = body
     .replace(new RegExp(sentryPublicURLPattern, 'g'), proxyBaseURL)
     .replace(new RegExp(sentryTargetPattern, 'g'), proxyBaseURL)
     .replace(
@@ -51,6 +51,60 @@ function rewriteSentryAssetURLs(body: string, proxyBaseURL: string): string {
     .replace(/(href|src|action)=["']\/(?!sentry\/)/g, '$1="/sentry/')
     .replace(/url\(\s*["']?\/(?!sentry\/)/g, 'url(/sentry/')
     .replace(/(["'`])\/(api|auth|organizations|settings|_static|_assets|avatar|static)(?=\/)/g, '$1/sentry/$2');
+
+  return injectSentryIssueBridge(rewritten);
+}
+
+function injectSentryIssueBridge(body: string): string {
+  if (!body.includes('</body>') || body.includes('data-nn-sentry-issue-bridge')) {
+    return body;
+  }
+
+  const bridgeScript = `
+<script data-nn-sentry-issue-bridge>
+(function () {
+  function parseIssue(url, title) {
+    try {
+      var parsed = new URL(url, window.location.href);
+      var match = parsed.pathname.match(/\\/issues\\/([^/?#]+)/);
+      if (!match) {
+        return {
+          type: 'nn-sentry-issue-selected',
+          issue: null
+        };
+      }
+      return {
+        type: 'nn-sentry-issue-selected',
+        issue: {
+          id: decodeURIComponent(match[1]),
+          title: (title || '').trim() || decodeURIComponent(match[1]),
+          permalink: parsed.pathname + parsed.search + parsed.hash
+        }
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function postIssue(issueMessage) {
+    if (issueMessage && window.parent && window.parent !== window) {
+      window.parent.postMessage(issueMessage, '*');
+    }
+  }
+
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    var anchor = target && target.closest ? target.closest('a[href*="/issues/"]') : null;
+    if (anchor) {
+      postIssue(parseIssue(anchor.href, anchor.textContent));
+    }
+  }, true);
+
+  postIssue(parseIssue(window.location.href, document.title));
+})();
+</script>`;
+
+  return body.replace('</body>', `${bridgeScript}\n</body>`);
 }
 
 function rewriteLocationHeader(location: string): string {

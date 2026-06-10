@@ -41,6 +41,47 @@ export interface SymbolicationResult {
   historyId?: number; // 历史记录ID，用于生成分享链接
 }
 
+export interface SentryIssueSummary {
+  id: string;
+  shortId?: string;
+  title: string;
+  culprit?: string;
+  level?: string;
+  status?: string;
+  count?: string;
+  userCount?: number;
+  firstSeen?: string;
+  lastSeen?: string;
+  permalink?: string;
+}
+
+export interface SentryIssueAnalysisResult {
+  issue: SentryIssueSummary;
+  eventId?: string;
+  analysisLog?: string;
+  analysis?: CrashAnalysis;
+  error?: string;
+}
+
+export interface SentryFetchAnalyzeResult {
+  period: string;
+  query: string;
+  total: number;
+  results: SentryIssueAnalysisResult[];
+}
+
+export interface SentryIssueListResult {
+  period: string;
+  query: string;
+  total: number;
+  issues: SentryIssueSummary[];
+}
+
+export interface SentryAnalyzeSelectedResult {
+  total: number;
+  results: SentryIssueAnalysisResult[];
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;

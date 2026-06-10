@@ -1,5 +1,14 @@
 import axios from 'axios';
-import { DSYMInfo, SymbolicationResult, ApiResponse, CrashAnalysis } from '../types';
+import {
+  DSYMInfo,
+  SymbolicationResult,
+  ApiResponse,
+  CrashAnalysis,
+  SentryFetchAnalyzeResult,
+  SentryIssueListResult,
+  SentryAnalyzeSelectedResult,
+  SentryIssueSummary,
+} from '../types';
 import { authUtils } from '../utils/auth';
 
 const api = axios.create({
@@ -263,6 +272,48 @@ export const symbolicateApi = {
    */
   clearCache: async (): Promise<ApiResponse> => {
     const response = await api.post<ApiResponse>('/symbolicate/clear-cache');
+    return response.data;
+  },
+};
+
+export const sentryAnalysisApi = {
+  listIssues: async (params: {
+    period: string;
+    limit: number;
+    query?: string;
+  }): Promise<ApiResponse<SentryIssueListResult>> => {
+    const response = await api.post<ApiResponse<SentryIssueListResult>>(
+      '/sentry-analysis/issues',
+      params,
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
+  analyzeSelected: async (params: {
+    issueIds: string[];
+    issues: SentryIssueSummary[];
+    apiKey?: string;
+  }): Promise<ApiResponse<SentryAnalyzeSelectedResult>> => {
+    const response = await api.post<ApiResponse<SentryAnalyzeSelectedResult>>(
+      '/sentry-analysis/analyze-selected',
+      params,
+      { timeout: 180000 }
+    );
+    return response.data;
+  },
+
+  fetchAndAnalyze: async (params: {
+    period: string;
+    limit: number;
+    query?: string;
+    apiKey?: string;
+  }): Promise<ApiResponse<SentryFetchAnalyzeResult>> => {
+    const response = await api.post<ApiResponse<SentryFetchAnalyzeResult>>(
+      '/sentry-analysis/fetch-and-analyze',
+      params,
+      { timeout: 180000 }
+    );
     return response.data;
   },
 };

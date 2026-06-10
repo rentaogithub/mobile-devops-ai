@@ -37,13 +37,14 @@ export default function MainLayout() {
       label: '首页',
     },
     {
-      key: '/symbolicate',
+      key: '/symbolicate-group',
       icon: <BugOutlined />,
       label: '崩溃符号化',
       children: [
         { key: '/symbolicate', label: '符号化' },
         { key: '/manage', label: 'dSYM 管理' },
         { key: '/history', label: '历史记录' },
+        { key: '/sentry-service', label: 'Sentry 服务' },
       ],
     },
     {

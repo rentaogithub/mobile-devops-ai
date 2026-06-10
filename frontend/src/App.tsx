@@ -13,6 +13,7 @@ import LogsPage from './pages/LogsPage';
 import LogsPairPage from './pages/LogsPairPage';
 import RoutesPage from './pages/RoutesPage';
 import LoginPage from './pages/LoginPage';
+import SentryServicePage from './pages/SentryServicePage';
 import { authUtils } from './utils/auth';
 
 message.config({
@@ -37,6 +38,7 @@ function App() {
             <Route path="symbolicate" element={<SymbolicatePage />} />
             <Route path="manage" element={<ManagePage />} />
             <Route path="history" element={<HistoryPage />} />
+            <Route path="sentry-service" element={<SentryServicePage />} />
             {/* Pods 组件管理 */}
             <Route path="pods" element={<PodsPage />} />
             {/* CI/CD 管理 */}
