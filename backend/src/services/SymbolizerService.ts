@@ -543,13 +543,9 @@ export class SymbolizerService {
     logger.info('尝试 unknown 模式匹配', { pattern: unknownPattern.source, hasBinaryInLog: crashLog.includes(binaryName) });
     const unknownMatch = crashLog.match(unknownPattern);
     if (unknownMatch) {
-      const address = parseInt(unknownMatch[1], 16);
-      const offset = parseInt(unknownMatch[2], 10);
-      if (Number.isFinite(address) && Number.isFinite(offset) && offset > 0 && offset < address) {
-        const loadAddr = address - offset;
-        if (loadAddr > 0) {
-          return '0x' + loadAddr.toString(16);
-        }
+      const loadAddr = this.inferLoadAddressFromUnknownValue(unknownMatch[1], unknownMatch[2]);
+      if (loadAddr) {
+        return loadAddr;
       }
 
       logger.warn('unknown 模式中的 + 值不是有效偏移，跳过加载地址计算', {
@@ -592,9 +588,6 @@ export class SymbolizerService {
       }
     };
 
-    const maxReasonableImageOffset = 512 * 1024 * 1024;
-    const commonPreferredBase = 0x100000000;
-
     // 精简日志里的 "<unknown> + N" 有三种常见来源：
     // 1. N 是 image offset，可以用 address - N 得到加载基址；
     // 2. N 是未 slide 的 Mach-O 虚拟地址，可用 address - N + 0x100000000 推出加载基址；
@@ -604,17 +597,9 @@ export class SymbolizerService {
         continue;
       }
 
-      const address = parseInt(frame.address, 16);
-      const offset = parseInt(frame.offset, 10);
-      if (!Number.isFinite(address) || !Number.isFinite(offset)) {
-        continue;
-      }
-
-      const delta = address - offset;
-      if (delta > 0 && delta < address && offset > 0 && offset < maxReasonableImageOffset) {
-        addCandidate(delta);
-      } else if (delta > 0 && delta < address && offset >= commonPreferredBase) {
-        addCandidate(delta + commonPreferredBase);
+      const loadAddress = this.inferLoadAddressFromUnknownValue(frame.address, frame.offset);
+      if (loadAddress) {
+        addCandidate(parseInt(loadAddress, 16));
       }
     }
 
@@ -630,6 +615,31 @@ export class SymbolizerService {
     }
 
     return candidates;
+  }
+
+  private inferLoadAddressFromUnknownValue(addressHex: string, valueText: string): string | null {
+    const address = parseInt(addressHex, 16);
+    const value = parseInt(valueText, 10);
+    if (!Number.isFinite(address) || !Number.isFinite(value) || value <= 0) {
+      return null;
+    }
+
+    const delta = address - value;
+    if (delta <= 0 || delta >= address) {
+      return null;
+    }
+
+    const maxReasonableImageOffset = 512 * 1024 * 1024;
+    const commonPreferredBase = 0x100000000;
+    if (value < maxReasonableImageOffset) {
+      return `0x${delta.toString(16)}`;
+    }
+
+    if (value >= commonPreferredBase) {
+      return `0x${(delta + commonPreferredBase).toString(16)}`;
+    }
+
+    return null;
   }
 
   private async symbolicateWithCandidateLoadAddresses(

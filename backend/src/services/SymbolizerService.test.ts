@@ -2,6 +2,19 @@ import { SymbolizerService } from './SymbolizerService';
 import { StackFrame } from './CrashLogParser';
 
 describe('SymbolizerService simplified crash load address inference', () => {
+  it('extracts load address from unslid VM address style unknown frames', () => {
+    const service = new SymbolizerService() as any;
+    const crashLog = [
+      'Thread 0 Crashed:',
+      '7   NNIM                            0x200e28cd0         <unknown> + 4309814480',
+      '8   NNIM                            0x20142794c         <unknown> + 4316100940',
+    ].join('\n');
+
+    const loadAddress = service.extractLoadAddressForBinary(crashLog, 'NNIM');
+
+    expect(loadAddress).toBe('0x200000000');
+  });
+
   it('uses <unknown> unslid VM addresses as high-priority load address candidates', () => {
     const service = new SymbolizerService() as any;
     const frames: StackFrame[] = [
