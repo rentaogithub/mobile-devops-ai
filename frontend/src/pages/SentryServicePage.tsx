@@ -8,6 +8,7 @@ import {
   OrderedListOutlined,
   ReloadOutlined,
   RobotOutlined,
+  ShareAltOutlined,
   TrophyOutlined,
 } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
@@ -15,6 +16,7 @@ import { sentryAnalysisApi } from '../services/api';
 import { SentryIssueSummary, SentrySymbolicateAnalyzeResult } from '../types';
 import { downloadTextFile } from '../utils/helpers';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
+import { shareToWeChatWork } from '../utils/wechatShare';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -337,6 +339,35 @@ export default function SentryServicePage() {
     );
   };
 
+  const handleShareAnalysisResult = async () => {
+    if (!analysisResult?.historyId) {
+      message.error('无法生成分享链接，历史记录ID不存在');
+      return;
+    }
+
+    const detailUrl = `${window.location.origin}/history?id=${analysisResult.historyId}`;
+    const analysis = analysisResult.aiAnalysis;
+    const success = await shareToWeChatWork({
+      title: '',
+      description: [
+        `Sentry 问题：${analysisResult.issue.shortId || analysisResult.issue.id}`,
+        `应用版本：${analysisResult.appVersion}`,
+        analysisResult.issue.title && `标题：${analysisResult.issue.title}`,
+        analysis?.crashType && `崩溃类型：${analysis.crashType}`,
+        analysis?.crashModule && `崩溃模块：${analysis.crashModule}`,
+        analysis?.crashLocation && `崩溃位置：${analysis.crashLocation}`,
+        `时间：${new Date().toLocaleString('zh-CN')}`,
+      ].filter(Boolean).join('\n'),
+      url: detailUrl,
+    });
+
+    if (success) {
+      message.success('分享链接已复制到剪贴板，请在企业微信中粘贴发送', 3);
+    } else {
+      message.error('复制失败');
+    }
+  };
+
   const renderIssueCard = (issue: SentryIssueSummary) => {
     const selected = currentIssue?.id === issue.id;
     return (
@@ -571,6 +602,14 @@ export default function SentryServicePage() {
         onCancel={() => setAnalysisModalOpen(false)}
         width={1080}
         footer={[
+          <Button
+            key="share"
+            icon={<ShareAltOutlined />}
+            disabled={!analysisResult?.historyId}
+            onClick={handleShareAnalysisResult}
+          >
+            分享
+          </Button>,
           <Button key="original" disabled={!analysisResult} onClick={handleDownloadModalOriginalCrash}>
             下载原始崩溃
           </Button>,
