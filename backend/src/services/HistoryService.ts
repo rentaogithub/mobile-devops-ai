@@ -86,6 +86,43 @@ export class HistoryService {
   }
 
   /**
+   * 仅按原始日志查找历史记录。用于 Sentry 事件这类稳定来源：
+   * dSYM 选择策略调整后 UUID 集合可能变化，但同一份原始崩溃不应重复解析。
+   */
+  findDuplicateByOriginalLog(originalLog: string, appVersion?: string): SymbolicationHistoryRecord | null {
+    const db = getDatabase();
+
+    try {
+      const rows = appVersion
+        ? db.prepare(`
+            SELECT * FROM symbolication_history
+            WHERE app_version = ?
+            ORDER BY created_at DESC
+            LIMIT 500
+          `).all(appVersion) as any[]
+        : db.prepare(`
+            SELECT * FROM symbolication_history
+            ORDER BY created_at DESC
+            LIMIT 1000
+          `).all() as any[];
+
+      const row = rows.find((record) => record.original_log === originalLog);
+      if (!row) {
+        return null;
+      }
+
+      logger.info('按原始日志找到重复历史记录', {
+        id: row.id,
+        appVersion: row.app_version,
+      });
+      return this.mapRowToRecord(row);
+    } catch (error: any) {
+      logger.error('按原始日志查找重复历史记录失败', { error: error.message });
+      return null;
+    }
+  }
+
+  /**
    * 保存符号化历史记录（如果不存在重复记录）
    */
   async saveHistory(params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {

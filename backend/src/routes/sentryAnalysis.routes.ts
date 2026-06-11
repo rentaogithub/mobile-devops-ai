@@ -7,6 +7,8 @@ import { AppError, DSYMInfo, ErrorCode } from '../types';
 import { extractCrashInfo } from '../utils/crashLogParser';
 import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 import logger from '../utils/logger';
+import fs from 'fs';
+import path from 'path';
 
 const router = Router();
 const storage = new StorageService();
@@ -59,6 +61,69 @@ async function findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
   const unique = new Map<string, DSYMInfo>();
   candidates.forEach((dsym) => unique.set(dsym.uuid, dsym));
   return Array.from(unique.values());
+}
+
+function normalizeUUID(uuid?: string): string {
+  return String(uuid || '').replace(/-/g, '').toLowerCase();
+}
+
+function hasDWARFFile(dsymPath: string): boolean {
+  const dwarfDir = path.join(dsymPath, 'Contents', 'Resources', 'DWARF');
+  if (!fs.existsSync(dwarfDir)) {
+    return false;
+  }
+
+  return fs.readdirSync(dwarfDir).some((file) => !file.startsWith('.'));
+}
+
+function extractCrashBinaryNames(crashLog: string): Set<string> {
+  const names = new Set<string>();
+  crashLog.split('\n').forEach((line) => {
+    const frameMatch = line.match(/^\s*\d+\s+(\S+)\s+0x[0-9a-f]+/i);
+    if (frameMatch?.[1]) {
+      names.add(frameMatch[1]);
+    }
+
+    const imageMatch = line.match(/0x[0-9a-f]+\s+-\s+0x[0-9a-f]+\s+(\S+)\s+\S+\s+<[^>]+>/i);
+    if (imageMatch?.[1]) {
+      names.add(imageMatch[1]);
+    }
+  });
+  return names;
+}
+
+function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[] {
+  const crashBinaryNames = extractCrashBinaryNames(crashLog);
+  const normalizedCrashLog = normalizeUUID(crashLog);
+  const filtered = dsymInfos.filter((dsym) => {
+    const appName = dsym.appName;
+    const isMainApp = appName.toUpperCase() === 'NNIM';
+    const uuidMatches = normalizedCrashLog.includes(normalizeUUID(dsym.uuid));
+    const nameMatches = crashBinaryNames.has(appName);
+    const hasDWARF = hasDWARFFile(dsym.filePath);
+
+    if (!hasDWARF) {
+      logger.warn('跳过缺少 DWARF 的 Sentry dSYM', {
+        appName,
+        uuid: dsym.uuid,
+        filePath: dsym.filePath,
+      });
+      return false;
+    }
+
+    if (isMainApp || uuidMatches || nameMatches) {
+      return true;
+    }
+
+    logger.info('跳过本次崩溃中未出现的组件 dSYM', {
+      appName,
+      uuid: dsym.uuid,
+      crashBinaries: Array.from(crashBinaryNames),
+    });
+    return false;
+  });
+
+  return filtered.length > 0 ? filtered : dsymInfos.filter((dsym) => hasDWARFFile(dsym.filePath));
 }
 
 router.post('/issues', async (req: Request, res: Response) => {
@@ -260,8 +325,46 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
     const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
     const crashLog = originalCrashFile.crashLog;
-    const targetUUIDs = dsymInfos.map((dsym) => dsym.uuid);
-    const dsymPaths = dsymInfos.map((dsym) => dsym.filePath);
+    const crashDSYMInfos = filterDSYMsForCrash(dsymInfos, crashLog);
+    if (crashDSYMInfos.length === 0) {
+      throw new AppError(
+        ErrorCode.DSYM_NOT_FOUND,
+        `未找到 APP 版本 ${appVersion} 可用于本次崩溃的 dSYM，请检查 dSYM 文件是否完整`,
+        404
+      );
+    }
+
+    const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
+    const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
+    const existingHistory =
+      historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
+      historyService.findDuplicateByOriginalLog(crashLog, appVersion);
+
+    if (existingHistory) {
+      logger.info('Sentry 问题已解析过，直接返回历史记录', {
+        issueId: normalizedIssue.id,
+        appVersion,
+        historyId: existingHistory.id,
+      });
+
+      res.json({
+        success: true,
+        data: {
+          issue: normalizedIssue,
+          eventId: event?.id,
+          incidentIdentifier: originalCrashFile.incidentIdentifier,
+          appVersion: existingHistory.appVersion || appVersion,
+          originalLog: existingHistory.originalLog,
+          symbolicatedLog: existingHistory.symbolicatedLog,
+          matchedUUIDs: existingHistory.usedUuids,
+          aiAnalysis: existingHistory.aiAnalysis,
+          historyId: existingHistory.id,
+          fromHistory: true,
+        },
+      });
+      return;
+    }
+
     const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
 
     const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
