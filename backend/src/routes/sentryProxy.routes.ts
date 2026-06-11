@@ -3,6 +3,13 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 import logger from '../utils/logger';
+import {
+  buildSentryCookieHeader,
+  clearSentryCookieJar,
+  getSentryCookie,
+  hasSentryCookie,
+  updateSentryCookieJar,
+} from '../services/SentryCookieJar';
 
 const router = Router();
 const DEFAULT_SENTRY_TARGET = 'http://172.31.2.239:9000';
@@ -21,7 +28,6 @@ type SentryHTTPResponse = {
   body: Buffer;
 };
 
-const sentrySessionCookies = new Map<string, string>();
 let sentryLoginPromise: Promise<void> | null = null;
 let sentryLastLoginAt = 0;
 
@@ -127,63 +133,6 @@ function rewriteLocationHeader(location: string): string {
   return location;
 }
 
-function normalizeSetCookie(setCookie: string | string[] | undefined): string[] {
-  if (!setCookie) {
-    return [];
-  }
-  return Array.isArray(setCookie) ? setCookie : [setCookie];
-}
-
-function updateSentryCookieJar(setCookie: string | string[] | undefined) {
-  normalizeSetCookie(setCookie).forEach((cookie) => {
-    const firstPart = cookie.split(';')[0];
-    const equalIndex = firstPart.indexOf('=');
-    if (equalIndex <= 0) {
-      return;
-    }
-    const name = firstPart.substring(0, equalIndex).trim();
-    const value = firstPart.substring(equalIndex + 1).trim();
-    if (!name) {
-      return;
-    }
-    if (!value) {
-      sentrySessionCookies.delete(name);
-      return;
-    }
-    sentrySessionCookies.set(name, value);
-  });
-}
-
-function buildSentryCookieHeader(extraCookie?: string): string | undefined {
-  const cookies = new Map<string, string>();
-
-  if (extraCookie) {
-    extraCookie.split(';').forEach((part) => {
-      const equalIndex = part.indexOf('=');
-      if (equalIndex <= 0) {
-        return;
-      }
-      const name = part.substring(0, equalIndex).trim();
-      const value = part.substring(equalIndex + 1).trim();
-      if (name && value) {
-        cookies.set(name, value);
-      }
-    });
-  }
-
-  sentrySessionCookies.forEach((value, name) => {
-    cookies.set(name, value);
-  });
-
-  if (cookies.size === 0) {
-    return undefined;
-  }
-
-  return Array.from(cookies.entries())
-    .map(([name, value]) => `${name}=${value}`)
-    .join('; ');
-}
-
 function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
   const rewriteCookie = (cookie: string) =>
     cookie
@@ -264,13 +213,13 @@ function extractCSRFToken(html: string): string {
   const token =
     html.match(/name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)/i)?.[1] ||
     html.match(/value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken/i)?.[1] ||
-    sentrySessionCookies.get('sc') ||
+    getSentryCookie('sc') ||
     '';
   return decodeHTML(token);
 }
 
 async function performSentryLogin() {
-  sentrySessionCookies.clear();
+  clearSentryCookieJar();
   const loginPage = await requestSentry('/auth/login/sentry/');
   const csrfToken = extractCSRFToken(loginPage.body.toString('utf8'));
   if (!csrfToken) {
@@ -293,7 +242,7 @@ async function performSentryLogin() {
   });
 
   sentryLastLoginAt = Date.now();
-  if (!sentrySessionCookies.has('sentrysid')) {
+  if (!hasSentryCookie('sentrysid')) {
     throw new Error('Sentry login session cookie missing');
   }
 }
@@ -304,7 +253,7 @@ async function ensureSentryAutoLogin() {
   }
 
   const isSessionFresh =
-    sentrySessionCookies.has('sentrysid') &&
+    hasSentryCookie('sentrysid') &&
     Date.now() - sentryLastLoginAt < SENTRY_SESSION_TTL_MS;
   if (isSessionFresh) {
     return;
@@ -317,7 +266,7 @@ async function ensureSentryAutoLogin() {
           target: SENTRY_TARGET,
           error: error instanceof Error ? error.message : String(error),
         });
-        sentrySessionCookies.clear();
+        clearSentryCookieJar();
       })
       .finally(() => {
         sentryLoginPromise = null;
@@ -337,7 +286,7 @@ function buildDefaultProxyPath(): string {
 
 router.use(async (req: Request, res: Response) => {
   await ensureSentryAutoLogin();
-  if (SENTRY_AUTO_LOGIN && isSentryLoginPath(req) && sentrySessionCookies.has('sentrysid')) {
+  if (SENTRY_AUTO_LOGIN && isSentryLoginPath(req) && hasSentryCookie('sentrysid')) {
     res.redirect(buildDefaultProxyPath());
     return;
   }

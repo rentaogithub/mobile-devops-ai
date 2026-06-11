@@ -279,18 +279,212 @@ export const symbolicateApi = {
   },
 };
 
+function compareAppVersions(a: string, b: string): number {
+  const left = a.split('.').map((part) => Number(part) || 0);
+  const right = b.split('.').map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return a.localeCompare(b);
+}
+
+function extractAppVersion(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  const match =
+    trimmed.match(/@([0-9]+(?:\.[0-9]+){1,3})(?:[+._-]|$)/) ||
+    trimmed.match(/\b([0-9]+(?:\.[0-9]+){1,3})(?:[+._-]\d+)?\b/);
+  return match?.[1];
+}
+
+function getContextValues(contexts: unknown): any[] {
+  if (Array.isArray(contexts)) {
+    return contexts;
+  }
+  if (contexts && typeof contexts === 'object') {
+    return Object.values(contexts);
+  }
+  return [];
+}
+
+function collectAppVersions(source: any): string[] {
+  const candidates = [
+    source?.maxAppVersion,
+    source?.minAppVersion,
+    source?.appVersionRange,
+    source?.release,
+    source?.release?.version,
+    source?.release?.shortVersion,
+    source?.release?.versionInfo?.version?.raw,
+    source?.dist,
+    source?.metadata?.release,
+    source?.metadata?.dist,
+    ...(Array.isArray(source?.tags) ? source.tags.flatMap((tag: any) => {
+      const key = String(tag?.key || '').toLowerCase();
+      return ['release', 'dist', 'version', 'app.version', 'app_version'].includes(key)
+        ? [tag?.value]
+        : [];
+    }) : []),
+    ...getContextValues(source?.contexts).flatMap((context: any) => [
+      context?.release,
+      context?.dist,
+      context?.app_version,
+    ]),
+  ];
+
+  return candidates
+    .map(extractAppVersion)
+    .filter((version): version is string => Boolean(version));
+}
+
+function buildAppVersionRange(values: string[]) {
+  const versions = Array.from(new Set(values.filter(Boolean))).sort(compareAppVersions);
+  const min = versions[0];
+  const max = versions[versions.length - 1];
+  return {
+    versions,
+    min,
+    max,
+    range: min && max ? (min === max ? max : `${min} - ${max}`) : undefined,
+  };
+}
+
+function normalizeSentryIssue(issue: any): SentryIssueSummary {
+  const range = buildAppVersionRange(collectAppVersions(issue));
+  return {
+    id: String(issue.id || ''),
+    shortId: issue.shortId || issue.shortID,
+    title: issue.title || issue.metadata?.title || issue.type || '未知崩溃',
+    culprit: issue.culprit,
+    level: issue.level,
+    status: issue.status,
+    count: String(issue.count ?? issue.numComments ?? ''),
+    userCount: typeof issue.userCount === 'number' ? issue.userCount : Number(issue.userCount || 0),
+    firstSeen: issue.firstSeen,
+    lastSeen: issue.lastSeen,
+    permalink: issue.permalink,
+    appVersionRange: range.range || issue.appVersionRange,
+    minAppVersion: range.min || issue.minAppVersion,
+    maxAppVersion: range.max || issue.maxAppVersion,
+    appVersions: range.versions.length > 0 ? range.versions : issue.appVersions,
+  };
+}
+
+async function sentryProxyGet<T>(path: string): Promise<T> {
+  const response = await fetch(`/sentry${path}`, {
+    credentials: 'include',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`Sentry API failed: ${response.status} ${text.slice(0, 200)}`);
+  }
+  return JSON.parse(text) as T;
+}
+
+async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise<SentryIssueSummary> {
+  const versions = [...(issue.appVersions || [])];
+  try {
+    const events = await sentryProxyGet<any[]>(`/api/0/issues/${encodeURIComponent(issue.id)}/events/?limit=20`);
+    if (Array.isArray(events)) {
+      versions.push(...events.flatMap(collectAppVersions));
+    }
+  } catch {
+    // 版本范围是增强信息，失败时保留 issue 原始字段。
+  }
+
+  try {
+    const latestEvent = await sentryProxyGet<any>(`/api/0/issues/${encodeURIComponent(issue.id)}/events/latest/`);
+    versions.push(...collectAppVersions(latestEvent));
+  } catch {
+    // 同上。
+  }
+
+  const range = buildAppVersionRange(versions);
+  if (range.versions.length === 0) {
+    return issue;
+  }
+
+  return {
+    ...issue,
+    appVersionRange: range.range,
+    minAppVersion: range.min,
+    maxAppVersion: range.max,
+    appVersions: range.versions,
+  };
+}
+
+async function listSentryIssuesFromProxy(params: {
+  period: string;
+  limit: number;
+  query?: string;
+}): Promise<ApiResponse<SentryIssueListResult>> {
+  const period = params.period || '24h';
+  const limit = Math.min(Math.max(params.limit || 5, 1), 20);
+  const query = params.query || 'is:unresolved';
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const search = new URLSearchParams({
+    query,
+    sort: 'date',
+    limit: String(limit),
+  });
+
+  if (period === '7d') {
+    search.set('start', new Date(sevenDaysAgo).toISOString());
+    search.set('end', new Date().toISOString());
+  } else {
+    search.set('statsPeriod', period);
+  }
+
+  const data = await sentryProxyGet<any[] | { results?: any[] }>(
+    `/api/0/projects/sentry/nn-ios/issues/?${search.toString()}`
+  );
+  const rawIssues = Array.isArray(data) ? data : data?.results || [];
+  const issues = rawIssues
+    .map(normalizeSentryIssue)
+    .filter((issue) => {
+      if (period !== '7d') {
+        return true;
+      }
+      return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
+    });
+  const enrichedIssues = await Promise.all(issues.map(enrichSentryIssueVersionRange));
+
+  return {
+    success: true,
+    data: {
+      period,
+      query,
+      total: enrichedIssues.length,
+      issues: enrichedIssues,
+    },
+  };
+}
+
 export const sentryAnalysisApi = {
   listIssues: async (params: {
     period: string;
     limit: number;
     query?: string;
   }): Promise<ApiResponse<SentryIssueListResult>> => {
-    const response = await api.post<ApiResponse<SentryIssueListResult>>(
-      '/sentry-analysis/issues',
-      params,
-      { timeout: 60000 }
-    );
-    return response.data;
+    try {
+      return await listSentryIssuesFromProxy(params);
+    } catch (error) {
+      const response = await api.post<ApiResponse<SentryIssueListResult>>(
+        '/sentry-analysis/issues',
+        params,
+        { timeout: 60000 }
+      );
+      return response.data;
+    }
   },
 
   analyzeSelected: async (params: {

@@ -1,6 +1,7 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
+import { buildSentryCookieHeader, updateSentryCookieJar } from './SentryCookieJar';
 import logger from '../utils/logger';
 
 type SentryHTTPResponse = {
@@ -594,7 +595,7 @@ export class SentryIssueService {
       host: targetURL.host,
       'accept-encoding': 'identity',
     };
-    const cookieHeader = this.buildCookieHeader();
+    const cookieHeader = buildSentryCookieHeader(this.buildCookieHeader());
     if (cookieHeader) {
       headers.cookie = cookieHeader;
     }
@@ -606,6 +607,7 @@ export class SentryIssueService {
         (response) => {
           const chunks: Buffer[] = [];
           this.updateCookieJar(response.headers['set-cookie']);
+          updateSentryCookieJar(response.headers['set-cookie']);
           response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
           response.on('end', () => resolve({
             statusCode: response.statusCode || 0,
