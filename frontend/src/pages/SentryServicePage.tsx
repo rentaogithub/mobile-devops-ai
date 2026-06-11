@@ -72,12 +72,11 @@ function compareVersions(a: string, b: string) {
   return 0;
 }
 
-function getHighestAppVersion(issues: SentryIssueSummary[]) {
-  return issues
-    .flatMap((issue) => [issue.maxAppVersion, ...(issue.appVersions || [])])
+function getIssueHighestAppVersion(issue: SentryIssueSummary) {
+  return [issue.maxAppVersion, ...(issue.appVersions || [])]
     .filter((version): version is string => Boolean(version))
     .sort(compareVersions)
-    .pop();
+    .pop() || issue.minAppVersion;
 }
 
 function getIssueAppVersionLabel(issue: SentryIssueSummary) {
@@ -231,7 +230,7 @@ export default function SentryServicePage() {
     setAnalysisError('');
     setAnalysisModalOpen(true);
     try {
-      const targetAppVersion = highestAppVersion || issue.maxAppVersion;
+      const targetAppVersion = getIssueHighestAppVersion(issue);
       const response = await sentryAnalysisApi.symbolicateAndAnalyze({
         issue: {
           ...issue,
@@ -259,7 +258,7 @@ export default function SentryServicePage() {
     try {
       const targetIssue = {
         ...issue,
-        maxAppVersion: highestAppVersion || issue.maxAppVersion,
+        maxAppVersion: getIssueHighestAppVersion(issue),
       };
       const response = await sentryAnalysisApi.buildOriginalCrash({ issue: targetIssue });
       if (!response.success || !response.data?.crashLog) {
@@ -313,7 +312,6 @@ export default function SentryServicePage() {
     .sort((a, b) => Number(b.userCount || 0) - Number(a.userCount || 0))
     .slice(0, 10);
   const activeIssues = activeView === 'top' ? topIssues : recentIssues;
-  const highestAppVersion = getHighestAppVersion(activeIssues);
   const analysisTitle = analysisResult?.issue.shortId ||
     analysisTargetIssue?.shortId ||
     analysisTargetIssue?.id ||
@@ -402,10 +400,7 @@ export default function SentryServicePage() {
                   loading={symbolicatingIssueId === issue.id}
                   onClick={(event) => {
                     event.stopPropagation();
-                    handleSymbolicateIssue({
-                      ...issue,
-                      maxAppVersion: highestAppVersion || issue.maxAppVersion,
-                    });
+                    handleSymbolicateIssue(issue);
                   }}
                 >
                   解析
@@ -416,10 +411,7 @@ export default function SentryServicePage() {
                   loading={downloadingIssueId === issue.id}
                   onClick={(event) => {
                     event.stopPropagation();
-                    handleDownloadOriginalCrash({
-                      ...issue,
-                      maxAppVersion: highestAppVersion || issue.maxAppVersion,
-                    });
+                    handleDownloadOriginalCrash(issue);
                   }}
                 >
                   下载
