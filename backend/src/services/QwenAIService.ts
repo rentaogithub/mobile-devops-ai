@@ -23,11 +23,17 @@ export interface CrashAnalysis {
 export class QwenAIService {
   private readonly apiEndpoint: string;
   private readonly model: string;
+  private readonly provider: string;
+  private readonly openAIEndpoint: string;
+  private readonly openAIModel: string;
   private readonly timeout: number;
 
   constructor() {
     this.apiEndpoint = process.env.QWEN_API_ENDPOINT || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
     this.model = process.env.QWEN_MODEL || 'qwen-plus';
+    this.provider = (process.env.AI_PROVIDER || '').toLowerCase();
+    this.openAIEndpoint = (process.env.OPENAI_API_ENDPOINT || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    this.openAIModel = process.env.CODEX_MODEL || process.env.OPENAI_MODEL || 'gpt-5.1-codex';
     this.timeout = parseInt(process.env.AI_ANALYSIS_TIMEOUT || '30000', 10);
   }
 
@@ -44,7 +50,7 @@ export class QwenAIService {
   ): Promise<CrashAnalysis> {
     try {
       // 优先使用环境变量中的 Key，其次使用前端传入的 Key
-      const effectiveApiKey = process.env.QWEN_API_KEY || apiKey;
+      const effectiveApiKey = this.getEffectiveAPIKey(apiKey);
       
       logger.info('开始 AI 分析崩溃日志', { fallbackAppVersion });
 
@@ -76,8 +82,8 @@ export class QwenAIService {
         crashModule: basicInfo.crashModule
       });
 
-      // 调用通义千问 API
-      const response = await this.callQwenAPI(prompt, effectiveApiKey);
+      // 调用 AI API
+      const response = await this.callAIAPI(prompt, effectiveApiKey);
 
       // 解析 AI 响应
       const analysis = this.parseAIResponse(response);
@@ -491,14 +497,37 @@ ${symbolicatedLog.substring(0, 8000)}
     });
   }
 
+  private getEffectiveAPIKey(apiKey?: string): string {
+    if (this.shouldUseOpenAI()) {
+      return process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || apiKey || '';
+    }
+    return process.env.QWEN_API_KEY || apiKey || '';
+  }
+
+  hasConfiguredAPIKey(apiKey?: string): boolean {
+    return this.getEffectiveAPIKey(apiKey).trim().length > 0;
+  }
+
+  private shouldUseOpenAI(): boolean {
+    return this.provider === 'codex' || this.provider === 'openai' ||
+      !!process.env.OPENAI_API_KEY || !!process.env.CODEX_API_KEY;
+  }
+
+  private async callAIAPI(prompt: string, apiKey: string): Promise<string> {
+    if (this.shouldUseOpenAI()) {
+      return this.callOpenAIResponsesAPI(prompt, apiKey);
+    }
+    return this.callQwenAPI(prompt, apiKey);
+  }
+
   /**
-   * 调用通义千问 API
+   * 调用通义千问兼容 API
    */
   private async callQwenAPI(prompt: string, apiKey: string): Promise<string> {
     try {
       const { systemPrompt, userPrompt } = JSON.parse(prompt);
 
-      logger.info('调用 AI API', { keyPrefix: apiKey?.substring(0, 10), keyLength: apiKey?.length });
+      logger.info('调用 AI API', { provider: 'qwen', model: this.model, hasApiKey: !!apiKey });
 
       const response = await axios.post(
         `${this.apiEndpoint}/chat/completions`,
@@ -540,7 +569,7 @@ ${symbolicatedLog.substring(0, 8000)}
       if (axios.isAxiosError(error)) {
         const axiosError = error as AxiosError;
         if (axiosError.response?.status === 401) {
-          throw new Error('API Key 无效，请检查您的通义千问 API Key');
+          throw new Error('API Key 无效，请检查您的 AI API Key');
         }
         if (axiosError.code === 'ECONNABORTED') {
           throw new Error('AI 分析超时，请稍后重试');
@@ -552,6 +581,79 @@ ${symbolicatedLog.substring(0, 8000)}
       }
       throw error;
     }
+  }
+
+  /**
+   * 调用 OpenAI Responses API（Codex/OpenAI）
+   */
+  private async callOpenAIResponsesAPI(prompt: string, apiKey: string): Promise<string> {
+    try {
+      const { systemPrompt, userPrompt } = JSON.parse(prompt);
+
+      logger.info('调用 AI API', { provider: 'openai', model: this.openAIModel, hasApiKey: !!apiKey });
+
+      const response = await axios.post(
+        `${this.openAIEndpoint}/responses`,
+        {
+          model: this.openAIModel,
+          input: [
+            {
+              role: 'system',
+              content: systemPrompt,
+            },
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+          max_output_tokens: 2000,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          timeout: this.timeout,
+        }
+      );
+
+      const content = this.extractOpenAIResponseText(response.data);
+      if (!content) {
+        throw new Error('AI API 返回内容为空');
+      }
+      return content;
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 401) {
+          throw new Error('API Key 无效，请检查您的 OpenAI API Key');
+        }
+        if (axiosError.code === 'ECONNABORTED') {
+          throw new Error('AI 分析超时，请稍后重试');
+        }
+        if (axiosError.response) {
+          const detail = typeof axiosError.response.data === 'string'
+            ? axiosError.response.data
+            : JSON.stringify(axiosError.response.data || {});
+          throw new Error(`OpenAI API 调用失败: ${axiosError.response.status} ${axiosError.response.statusText} ${detail.slice(0, 200)}`);
+        }
+        throw new Error('网络连接失败，请检查网络设置');
+      }
+      throw error;
+    }
+  }
+
+  private extractOpenAIResponseText(data: any): string {
+    if (typeof data?.output_text === 'string') {
+      return data.output_text;
+    }
+
+    const output = Array.isArray(data?.output) ? data.output : [];
+    return output
+      .flatMap((item: any) => Array.isArray(item?.content) ? item.content : [])
+      .map((content: any) => content?.text || content?.content || '')
+      .filter(Boolean)
+      .join('\n');
   }
 
   /**
@@ -623,9 +725,8 @@ ${symbolicatedLog.substring(0, 8000)}
       return false;
     }
 
-    // 通义千问 API Key 通常以 sk- 开头
     if (!apiKey.startsWith('sk-')) {
-      logger.warn('API Key 格式可能不正确，通义千问 API Key 通常以 sk- 开头');
+      logger.warn('API Key 格式可能不正确，AI API Key 通常以 sk- 开头');
     }
 
     return true;

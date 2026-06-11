@@ -1,9 +1,65 @@
 import { Router, Request, Response } from 'express';
 import sentryIssueService from '../services/SentryIssueService';
 import qwenAIService from '../services/QwenAIService';
+import { StorageService, SymbolizerService } from '../services';
+import historyService from '../services/HistoryService';
+import { AppError, DSYMInfo, ErrorCode } from '../types';
+import { extractCrashInfo } from '../utils/crashLogParser';
+import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 import logger from '../utils/logger';
 
 const router = Router();
+const storage = new StorageService();
+const symbolizer = new SymbolizerService();
+
+function normalizeAppVersion(version?: string): string {
+  return String(version || '').trim();
+}
+
+function compareVersions(a: string, b: string): number {
+  const left = a.split('.').map((part) => Number(part) || 0);
+  const right = b.split('.').map((part) => Number(part) || 0);
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (left[index] || 0) - (right[index] || 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+function getHighestIssueVersion(issue: any): string {
+  const versions = [
+    issue?.maxAppVersion,
+    ...(Array.isArray(issue?.appVersions) ? issue.appVersions : []),
+    issue?.appVersionRange?.split(' - ').pop(),
+  ]
+    .map(normalizeAppVersion)
+    .filter(Boolean);
+
+  return versions.sort(compareVersions).pop() || '';
+}
+
+async function findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
+  const allDSYMs = await storage.getAllDSYMs();
+  const exactMainApps = allDSYMs.filter((dsym) =>
+    dsym.appName.toUpperCase() === 'NNIM' && dsym.version === appVersion
+  );
+  const relatedComponents = allDSYMs.filter((dsym) =>
+    dsym.appName.toUpperCase() !== 'NNIM' &&
+    Array.isArray(dsym.relatedAppVersions) &&
+    dsym.relatedAppVersions.includes(appVersion)
+  );
+
+  const candidates = exactMainApps.length > 0 || relatedComponents.length > 0
+    ? [...exactMainApps, ...relatedComponents]
+    : allDSYMs.filter((dsym) => dsym.version === appVersion);
+
+  const unique = new Map<string, DSYMInfo>();
+  candidates.forEach((dsym) => unique.set(dsym.uuid, dsym));
+  return Array.from(unique.values());
+}
 
 router.post('/issues', async (req: Request, res: Response) => {
   try {
@@ -92,6 +148,197 @@ router.post('/analyze-selected', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error.message || '分析指定 Sentry 问题失败',
+    });
+  }
+});
+
+router.post('/symbolicate-log', async (req: Request, res: Response) => {
+  try {
+    const { issue } = req.body || {};
+    if (!issue?.id) {
+      res.status(400).json({
+        success: false,
+        error: '请选择要解析的 Sentry 问题',
+      });
+      return;
+    }
+
+    const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+    const crashLog = sentryIssueService.buildAnalysisLog(normalizedIssue, event);
+
+    res.json({
+      success: true,
+      data: {
+        issue: normalizedIssue,
+        eventId: event?.id,
+        crashLog,
+      },
+    });
+  } catch (error: any) {
+    logger.error('生成 Sentry 解析日志失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '生成 Sentry 解析日志失败',
+    });
+  }
+});
+
+router.post('/original-crash', async (req: Request, res: Response) => {
+  try {
+    const { issue } = req.body || {};
+    if (!issue?.id) {
+      res.status(400).json({
+        success: false,
+        error: '请选择要下载的 Sentry 问题',
+      });
+      return;
+    }
+
+    const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+    const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
+
+    res.json({
+      success: true,
+      data: {
+        issue: normalizedIssue,
+        ...originalCrashFile,
+      },
+    });
+  } catch (error: any) {
+    logger.error('下载 Sentry 原始崩溃文件失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '下载 Sentry 原始崩溃文件失败',
+    });
+  }
+});
+
+router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
+  try {
+    const {
+      issue,
+      appVersion: requestedAppVersion = '',
+      apiKey = '',
+    } = req.body || {};
+
+    if (!issue?.id) {
+      res.status(400).json({
+        success: false,
+        error: '请选择要解析的 Sentry 问题',
+      });
+      return;
+    }
+
+    const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+    const appVersion = normalizeAppVersion(requestedAppVersion) || getHighestIssueVersion(normalizedIssue);
+    if (!appVersion) {
+      throw new AppError(
+        ErrorCode.INVALID_CRASH_LOG,
+        '未找到可用于解析的 APP 版本，请先刷新 Sentry 问题列表',
+        400
+      );
+    }
+
+    const dsymInfos = await findDSYMsForAppVersion(appVersion);
+    if (dsymInfos.length === 0) {
+      throw new AppError(
+        ErrorCode.DSYM_NOT_FOUND,
+        `未找到 APP 版本 ${appVersion} 对应的 dSYM，请先上传或关联组件库 dSYM`,
+        404
+      );
+    }
+
+    logger.info('开始解析 Sentry 问题', {
+      issueId: normalizedIssue.id,
+      shortId: normalizedIssue.shortId,
+      appVersion,
+      dsymCount: dsymInfos.length,
+    });
+
+    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+    const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
+    const crashLog = originalCrashFile.crashLog;
+    const targetUUIDs = dsymInfos.map((dsym) => dsym.uuid);
+    const dsymPaths = dsymInfos.map((dsym) => dsym.filePath);
+    const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
+
+    const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
+    const extractedVersion = extractVersionFromCrashLog(crashLog);
+    const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+
+    let aiAnalysis: any = undefined;
+    let aiError: string | undefined = undefined;
+    if (qwenAIService.hasConfiguredAPIKey(apiKey)) {
+      try {
+        aiAnalysis = await qwenAIService.analyzeCrashLog(
+          symbolicated.symbolicatedLog,
+          apiKey,
+          appVersion
+        );
+      } catch (error: any) {
+        aiError = error.message || 'AI 分析失败';
+        logger.warn('Sentry 问题 AI 分析失败，保留符号化结果', {
+          issueId: normalizedIssue.id,
+          error: aiError,
+        });
+      }
+    } else {
+      aiError = '未配置 AI API Key';
+    }
+
+    const savedRecord = await historyService.saveHistory({
+      appVersion,
+      versionDetected,
+      crashType: crashInfo.crashType,
+      crashReason: crashInfo.crashReason,
+      lastStackCall: crashInfo.lastStackCall,
+      crashModule: crashInfo.crashModule,
+      crashLocation: crashInfo.crashLocation,
+      originalLog: crashLog,
+      symbolicatedLog: symbolicated.symbolicatedLog,
+      usedUuids: targetUUIDs,
+      aiAnalysis,
+    });
+
+    logger.info('Sentry 问题解析完成', {
+      issueId: normalizedIssue.id,
+      appVersion,
+      historyId: savedRecord.id,
+      hasAIAnalysis: !!aiAnalysis,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        issue: normalizedIssue,
+        eventId: event?.id,
+        incidentIdentifier: originalCrashFile.incidentIdentifier,
+        appVersion,
+        originalLog: crashLog,
+        symbolicatedLog: symbolicated.symbolicatedLog,
+        matchedUUIDs: targetUUIDs,
+        warning: symbolicated.warning,
+        aiAnalysis,
+        aiError,
+        historyId: savedRecord.id,
+      },
+    });
+  } catch (error: any) {
+    logger.error('解析 Sentry 问题失败', { error: error.message });
+
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({
+        success: false,
+        error: error.message,
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      error: error.message || '解析 Sentry 问题失败',
     });
   }
 });

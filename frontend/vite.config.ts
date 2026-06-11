@@ -24,6 +24,12 @@ export default defineConfig({
         secure: false,
         timeout: 600000,
       },
+      '^/(organizations|settings|auth|_static|_assets|avatar|static)(?=/|$)': {
+        target: backendTarget,
+        changeOrigin: false,
+        secure: false,
+        timeout: 600000,
+      },
       '/ws': {
         target: backendWsTarget,
         ws: true,

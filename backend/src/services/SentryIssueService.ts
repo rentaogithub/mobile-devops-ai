@@ -21,6 +21,10 @@ export interface SentryIssueSummary {
   firstSeen?: string;
   lastSeen?: string;
   permalink?: string;
+  appVersionRange?: string;
+  minAppVersion?: string;
+  maxAppVersion?: string;
+  appVersions?: string[];
 }
 
 export interface SentryEventDetail {
@@ -32,6 +36,14 @@ export interface SentryEventDetail {
   entries?: any[];
   metadata?: Record<string, any>;
   tags?: Array<{ key: string; value: string }>;
+}
+
+export interface SentryOriginalCrashFile {
+  eventId?: string;
+  incidentIdentifier?: string;
+  crashLog: string;
+  previewLog: string;
+  rawEventJSON: string;
 }
 
 export class SentryIssueService {
@@ -58,12 +70,18 @@ export class SentryIssueService {
     const period = options.period || '24h';
     const limit = Math.min(Math.max(options.limit || 5, 1), 20);
     const query = options.query || 'is:unresolved';
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const params = new URLSearchParams({
       query,
-      sort: 'new',
+      sort: 'date',
       limit: String(limit),
-      statsPeriod: period,
     });
+    if (period === '7d') {
+      params.set('start', new Date(sevenDaysAgo).toISOString());
+      params.set('end', new Date().toISOString());
+    } else {
+      params.set('statsPeriod', period);
+    }
 
     const response = await this.request(`/api/0/projects/${organization}/${project}/issues/?${params}`);
     if (response.statusCode >= 400) {
@@ -72,7 +90,26 @@ export class SentryIssueService {
 
     const data = JSON.parse(response.body.toString('utf8'));
     const issues = Array.isArray(data) ? data : data?.results || [];
-    return issues.map((issue: any) => this.normalizeIssueSummary(issue));
+    const normalizedIssues = issues
+      .map((issue: any) => this.normalizeIssueSummary(issue))
+      .filter((issue: SentryIssueSummary) => {
+        if (period !== '7d') {
+          return true;
+        }
+        return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
+      });
+
+    return Promise.all(normalizedIssues.map(async (issue: SentryIssueSummary) => {
+      try {
+        return await this.enrichIssueVersionRange(issue);
+      } catch (error: any) {
+        logger.warn('提取 Sentry issue APP 版本范围失败', {
+          issueId: issue.id,
+          error: error.message,
+        });
+        return issue;
+      }
+    }));
   }
 
   async getLatestEvent(issueId: string): Promise<SentryEventDetail | undefined> {
@@ -158,6 +195,8 @@ export class SentryIssueService {
     return [
       `Sentry Issue: ${issue.shortId || issue.id}`,
       `Title: ${issue.title}`,
+      issue.maxAppVersion ? `App Version: ${issue.maxAppVersion}` : '',
+      issue.appVersionRange ? `App Version Range: ${issue.appVersionRange}` : '',
       issue.culprit ? `Culprit: ${issue.culprit}` : '',
       issue.level ? `Level: ${issue.level}` : '',
       issue.status ? `Status: ${issue.status}` : '',
@@ -172,7 +211,183 @@ export class SentryIssueService {
     ].filter(Boolean).join('\n');
   }
 
+  buildOriginalCrashFile(issue: SentryIssueSummary, event?: SentryEventDetail): SentryOriginalCrashFile {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      source: 'sentry',
+      issue,
+      event,
+    };
+    const rawEventJSON = JSON.stringify(payload, null, 2);
+    const crashLog = this.convertSentryEventToCrash(issue, event);
+
+    return {
+      eventId: event?.id,
+      incidentIdentifier: (event as any)?.eventID || event?.id,
+      crashLog,
+      previewLog: this.buildAnalysisLog(issue, event),
+      rawEventJSON,
+    };
+  }
+
+  private convertSentryEventToCrash(issue: SentryIssueSummary, event?: SentryEventDetail): string {
+    const entries = event?.entries || [];
+    const exceptionEntry = entries.find((entry: any) => entry?.type === 'exception');
+    const threadsEntry = entries.find((entry: any) => entry?.type === 'threads');
+    const debugMetaEntry = entries.find((entry: any) => entry?.type === 'debugmeta');
+    const exceptionValues = exceptionEntry?.data?.values || [];
+    const firstException = exceptionValues[0] || {};
+    const contextValues = this.getContextValues((event as any)?.contexts);
+    const deviceContext = (event as any)?.contexts?.device || contextValues.find((context: any) => context?.type === 'device') || {};
+    const osContext = (event as any)?.contexts?.os || contextValues.find((context: any) => context?.type === 'os') || {};
+    const appContext = (event as any)?.contexts?.app || contextValues.find((context: any) => context?.type === 'app') || {};
+    const release = this.tagValue(event, 'release') || issue.maxAppVersion || issue.appVersionRange || '';
+    const dist = this.tagValue(event, 'dist') || '';
+    const bundleId = this.tagValue(event, 'bundle_id') || '';
+    const processName = bundleId.split('.').pop() || 'NNIM';
+    const osName = osContext.name || this.tagValue(event, 'os.name') || 'iOS';
+    const osVersion = osContext.version || this.tagValue(event, 'os')?.replace(/^iOS\s+/i, '') || '';
+    const osBuild = osContext.build || '';
+    const debugImages = this.extractDebugImages(debugMetaEntry, event);
+    const threadValues = threadsEntry?.data?.values || [];
+    const exceptionThreadId = firstException.threadId;
+    const syntheticExceptionThread = firstException.stacktrace || firstException.rawStacktrace
+      ? [{
+        id: exceptionThreadId ?? 0,
+        crashed: true,
+        current: true,
+        stacktrace: firstException.stacktrace || firstException.rawStacktrace,
+      }]
+      : [];
+    const threads = threadValues.length > 0 ? threadValues : syntheticExceptionThread;
+    const crashedThreadIndex = Math.max(threads.findIndex((thread: any) =>
+      thread?.crashed || thread?.current || thread?.id === exceptionThreadId
+    ), 0);
+    const lines: string[] = [];
+
+    lines.push(`Incident Identifier: ${(event as any)?.eventID || event?.id || 'N/A'}`);
+    lines.push(`CrashReporter Key:   ${(event as any)?.user?.id || 'N/A'}`);
+    lines.push(`Hardware Model:      ${deviceContext.model || deviceContext.model_id || this.tagValue(event, 'device') || 'N/A'}`);
+    lines.push(`Process:             ${processName} [0]`);
+    lines.push('Path:                N/A');
+    lines.push(`Identifier:          ${bundleId || 'N/A'}`);
+    lines.push(`Version:             ${release || 'N/A'} (${dist || 'N/A'})`);
+    lines.push(`Code Type:           ${(deviceContext.arch || 'ARM-64').toString().toUpperCase()}`);
+    lines.push('Parent Process:      launchd [1]');
+    lines.push('');
+    lines.push(`Date/Time:           ${event?.dateCreated || (event as any)?.dateReceived || ''}`);
+    lines.push(`OS Version:          ${osName}${osVersion ? ` ${osVersion}` : ''}${osBuild ? ` (${osBuild})` : ''}`);
+    lines.push('Report Version:      104');
+    lines.push('');
+    lines.push(`Exception Type:      ${firstException.type || event?.metadata?.type || issue.title || 'N/A'}`);
+    if (firstException.value || event?.metadata?.value) {
+      lines.push(`Exception Message:   ${firstException.value || event?.metadata?.value}`);
+    }
+    const mechanism = firstException.mechanism?.type || this.tagValue(event, 'mechanism');
+    if (mechanism) {
+      lines.push(`Exception Mechanism: ${mechanism}`);
+    }
+    lines.push(`Crashed Thread:      ${threads.length > 0 ? crashedThreadIndex : 'N/A'}`);
+    lines.push('');
+    if (firstException.value || event?.message) {
+      lines.push('Application Specific Information:');
+      lines.push(firstException.value || event?.message || '');
+      lines.push('');
+    }
+    if (threads.length === 0) {
+      lines.push('Thread 0 Crashed:');
+      lines.push('0  <unknown>  0x0000000000000000 Sentry event does not contain stacktrace/threads');
+      lines.push('');
+    } else {
+      threads.forEach((thread: any, threadIndex: number) => {
+        const frames = thread?.stacktrace?.frames || thread?.rawStacktrace?.frames || [];
+        lines.push(`Thread ${threadIndex}${threadIndex === crashedThreadIndex ? ' Crashed' : ''}:`);
+        if (frames.length === 0) {
+          lines.push('0  <unknown>  0x0000000000000000 <no stack frames in Sentry event>');
+        } else {
+          [...frames].reverse().forEach((frame: any, frameIndex: number) => {
+            lines.push(this.formatSentryFrame(frame, frameIndex));
+          });
+        }
+        lines.push('');
+      });
+    }
+    lines.push('Binary Images:');
+    if (debugImages.length === 0) {
+      lines.push('0x000000000 - 0x000000000 <unknown> arm64  <N/A> Sentry event does not contain debug images');
+    } else {
+      debugImages.forEach((image) => lines.push(image));
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatSentryFrame(frame: any, index: number): string {
+    const packagePath = frame.package || frame.absPath || frame.filename || frame.module || '<unknown>';
+    const binaryName = this.basename(packagePath);
+    const instructionAddress = this.normalizeAddress(frame.instructionAddr || frame.instruction_addr || frame.addr);
+    const symbolAddress = this.normalizeAddress(frame.symbolAddr || frame.symbol_addr);
+    const imageAddress = this.normalizeAddress(frame.imageAddr || frame.image_addr || frame.package);
+    const offset = this.formatFrameOffset(frame, symbolAddress || imageAddress);
+    const functionName = frame.function || frame.symbol || '<unknown>';
+    const location = frame.filename ? ` (${frame.filename}${frame.lineno ? `:${frame.lineno}` : ''})` : '';
+    const symbol = symbolAddress || imageAddress
+      ? `${functionName}${location} (${symbolAddress || imageAddress} + ${offset})`
+      : `${functionName}${location}`;
+    return `${index}  ${binaryName}  ${instructionAddress || '0x0000000000000000'} ${symbol}`;
+  }
+
+  private formatFrameOffset(frame: any, baseAddress?: string): number {
+    if (typeof frame.instructionAddr === 'string' && baseAddress) {
+      const instruction = Number.parseInt(frame.instructionAddr.replace(/^0x/i, ''), 16);
+      const base = Number.parseInt(baseAddress.replace(/^0x/i, ''), 16);
+      if (Number.isFinite(instruction) && Number.isFinite(base) && instruction >= base) {
+        return instruction - base;
+      }
+    }
+    return Number(frame.instructionOffset || frame.instruction_offset || frame.offset || 0) || 0;
+  }
+
+  private extractDebugImages(debugMetaEntry: any, event?: SentryEventDetail): string[] {
+    const images = debugMetaEntry?.data?.images || (event as any)?.debugMeta?.images || [];
+    return images.map((image: any) => {
+      const start = this.normalizeAddress(image.image_addr || image.imageAddr || image.addr || image.start_addr) || '0x000000000';
+      const size = Number.parseInt(String(image.image_size || image.imageSize || image.size || '0'), 10) || 0;
+      const startNumber = Number.parseInt(start.replace(/^0x/i, ''), 16) || 0;
+      const end = `0x${(startNumber + size).toString(16).padStart(9, '0')}`;
+      const name = this.basename(image.name || image.code_file || image.codeFile || image.debug_file || image.debugFile || '<unknown>');
+      const arch = image.arch || image.cpu_type || 'arm64';
+      const uuid = image.uuid || image.debug_id || image.debugId || 'N/A';
+      const path = image.code_file || image.codeFile || image.name || '';
+      return `${start} - ${end} ${name} ${arch}  <${uuid}> ${path}`;
+    });
+  }
+
+  private tagValue(event: SentryEventDetail | undefined, key: string): string | undefined {
+    return event?.tags?.find((tag) => tag.key === key)?.value;
+  }
+
+  private basename(value: string): string {
+    return String(value).split('/').filter(Boolean).pop() || String(value);
+  }
+
+  private normalizeAddress(value: unknown): string | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return `0x${value.toString(16).padStart(16, '0')}`;
+    }
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const hex = value.match(/0x[0-9a-f]+/i)?.[0];
+    if (hex) {
+      return `0x${hex.replace(/^0x/i, '').padStart(16, '0')}`;
+    }
+    return undefined;
+  }
+
   normalizeIssueSummary(issue: any): SentryIssueSummary {
+    const appVersions = this.collectVersionCandidates(issue);
+    const versionRange = this.buildVersionRange(appVersions);
     return {
       id: String(issue.id || ''),
       shortId: issue.shortId || issue.shortID,
@@ -185,7 +400,128 @@ export class SentryIssueService {
       firstSeen: issue.firstSeen,
       lastSeen: issue.lastSeen,
       permalink: issue.permalink,
+      appVersionRange: versionRange.range || issue.appVersionRange,
+      minAppVersion: versionRange.min || issue.minAppVersion,
+      maxAppVersion: versionRange.max || issue.maxAppVersion,
+      appVersions: versionRange.versions.length > 0 ? versionRange.versions : issue.appVersions,
     };
+  }
+
+  private async enrichIssueVersionRange(issue: SentryIssueSummary): Promise<SentryIssueSummary> {
+    const resolvedIssueId = await this.resolveIssueId(issue.id);
+    const eventsResponse = await this.request(`/api/0/issues/${resolvedIssueId}/events/?limit=20`);
+    let events: any[] = [];
+    if (eventsResponse.statusCode >= 200 && eventsResponse.statusCode < 300) {
+      const data = JSON.parse(eventsResponse.body.toString('utf8'));
+      events = Array.isArray(data) ? data : [];
+    }
+
+    let latestEvent: any;
+    const latestResponse = await this.request(`/api/0/issues/${resolvedIssueId}/events/latest/`);
+    if (latestResponse.statusCode >= 200 && latestResponse.statusCode < 300) {
+      latestEvent = JSON.parse(latestResponse.body.toString('utf8'));
+    }
+
+    const versionRange = this.buildVersionRange([
+      ...(issue.appVersions || []),
+      ...events.flatMap((event) => this.collectVersionCandidates(event)),
+      ...this.collectVersionCandidates(latestEvent),
+    ]);
+
+    if (versionRange.versions.length === 0) {
+      return issue;
+    }
+
+    return {
+      ...issue,
+      appVersionRange: versionRange.range,
+      minAppVersion: versionRange.min,
+      maxAppVersion: versionRange.max,
+      appVersions: versionRange.versions,
+    };
+  }
+
+  private collectVersionCandidates(source: any): string[] {
+    const candidates = [
+      source?.maxAppVersion,
+      source?.minAppVersion,
+      source?.appVersionRange,
+      source?.release,
+      source?.release?.version,
+      source?.release?.shortVersion,
+      source?.release?.versionInfo?.version?.raw,
+      source?.dist,
+      source?.metadata?.release,
+      source?.metadata?.dist,
+      ...(Array.isArray(source?.tags) ? source.tags.flatMap((tag: any) => {
+        const key = String(tag?.key || '').toLowerCase();
+        if (['release', 'dist', 'version', 'app.version', 'app_version'].includes(key)) {
+          return [tag?.value];
+        }
+        return [];
+      }) : []),
+      ...this.getContextValues(source?.contexts).flatMap((context: any) => [
+        context?.release,
+        context?.dist,
+        context?.app_version,
+      ]),
+    ];
+
+    return candidates
+      .map((value) => this.extractAppVersion(value))
+      .filter((value): value is string => Boolean(value));
+  }
+
+  private getContextValues(contexts: unknown): any[] {
+    if (Array.isArray(contexts)) {
+      return contexts;
+    }
+    if (contexts && typeof contexts === 'object') {
+      return Object.values(contexts);
+    }
+    return [];
+  }
+
+  private extractAppVersion(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    const versionMatch =
+      trimmed.match(/@([0-9]+(?:\.[0-9]+){1,3})(?:[+._-]|$)/) ||
+      trimmed.match(/\b([0-9]+(?:\.[0-9]+){1,3})(?:[+._-]\d+)?\b/);
+
+    return versionMatch?.[1];
+  }
+
+  private buildVersionRange(values: string[]) {
+    const versions = Array.from(new Set(values.filter(Boolean))).sort((a, b) => this.compareVersions(a, b));
+    const min = versions[0];
+    const max = versions[versions.length - 1];
+    return {
+      versions,
+      min,
+      max,
+      range: min && max ? (min === max ? max : `${min} - ${max}`) : undefined,
+    };
+  }
+
+  private compareVersions(a: string, b: string): number {
+    const left = a.split('.').map((part) => Number(part) || 0);
+    const right = b.split('.').map((part) => Number(part) || 0);
+    const length = Math.max(left.length, right.length);
+    for (let index = 0; index < length; index += 1) {
+      const diff = (left[index] || 0) - (right[index] || 0);
+      if (diff !== 0) {
+        return diff;
+      }
+    }
+    return a.localeCompare(b);
   }
 
   private async ensureLogin() {

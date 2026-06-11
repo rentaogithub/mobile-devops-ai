@@ -7,6 +7,9 @@ import {
   SentryFetchAnalyzeResult,
   SentryIssueListResult,
   SentryAnalyzeSelectedResult,
+  SentrySymbolicateLogResult,
+  SentryOriginalCrashResult,
+  SentrySymbolicateAnalyzeResult,
   SentryIssueSummary,
 } from '../types';
 import { authUtils } from '../utils/auth';
@@ -214,7 +217,7 @@ export const symbolicateApi = {
   analyze: async (
     symbolicatedLog: string,
     uuids: string[],
-    apiKey: string
+    apiKey?: string
   ): Promise<ApiResponse<CrashAnalysis>> => {
     const response = await api.post<ApiResponse<CrashAnalysis>>('/symbolicate/analyze', {
       symbolicatedLog,
@@ -299,6 +302,41 @@ export const sentryAnalysisApi = {
       '/sentry-analysis/analyze-selected',
       params,
       { timeout: 180000 }
+    );
+    return response.data;
+  },
+
+  buildSymbolicateLog: async (params: {
+    issue: SentryIssueSummary;
+  }): Promise<ApiResponse<SentrySymbolicateLogResult>> => {
+    const response = await api.post<ApiResponse<SentrySymbolicateLogResult>>(
+      '/sentry-analysis/symbolicate-log',
+      params,
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
+  buildOriginalCrash: async (params: {
+    issue: SentryIssueSummary;
+  }): Promise<ApiResponse<SentryOriginalCrashResult>> => {
+    const response = await api.post<ApiResponse<SentryOriginalCrashResult>>(
+      '/sentry-analysis/original-crash',
+      params,
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
+  symbolicateAndAnalyze: async (params: {
+    issue: SentryIssueSummary;
+    appVersion?: string;
+    apiKey?: string;
+  }): Promise<ApiResponse<SentrySymbolicateAnalyzeResult>> => {
+    const response = await api.post<ApiResponse<SentrySymbolicateAnalyzeResult>>(
+      '/sentry-analysis/symbolicate-and-analyze',
+      params,
+      { timeout: 240000 }
     );
     return response.data;
   },

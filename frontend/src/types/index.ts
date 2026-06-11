@@ -53,6 +53,10 @@ export interface SentryIssueSummary {
   firstSeen?: string;
   lastSeen?: string;
   permalink?: string;
+  appVersionRange?: string;
+  minAppVersion?: string;
+  maxAppVersion?: string;
+  appVersions?: string[];
 }
 
 export interface SentryIssueAnalysisResult {
@@ -80,6 +84,34 @@ export interface SentryIssueListResult {
 export interface SentryAnalyzeSelectedResult {
   total: number;
   results: SentryIssueAnalysisResult[];
+}
+
+export interface SentrySymbolicateLogResult {
+  issue: SentryIssueSummary;
+  eventId?: string;
+  crashLog: string;
+}
+
+export interface SentryOriginalCrashResult {
+  issue: SentryIssueSummary;
+  eventId?: string;
+  incidentIdentifier?: string;
+  crashLog: string;
+  previewLog: string;
+}
+
+export interface SentrySymbolicateAnalyzeResult {
+  issue: SentryIssueSummary;
+  eventId?: string;
+  incidentIdentifier?: string;
+  appVersion: string;
+  originalLog: string;
+  symbolicatedLog: string;
+  matchedUUIDs: string[];
+  warning?: string;
+  aiAnalysis?: CrashAnalysis;
+  aiError?: string;
+  historyId?: number;
 }
 
 export interface ApiResponse<T = unknown> {

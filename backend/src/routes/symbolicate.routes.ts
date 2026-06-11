@@ -454,7 +454,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供符号化后的崩溃日志', 400);
     }
 
-    if (!apiKey || apiKey.trim().length === 0) {
+    if (!qwenAIService.hasConfiguredAPIKey(apiKey)) {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供 API Key', 400);
     }
 

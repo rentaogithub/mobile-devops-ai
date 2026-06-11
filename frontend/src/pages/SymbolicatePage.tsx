@@ -30,11 +30,12 @@ import APIKeyInput from '../components/APIKeyInput';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
 import { shareToWeChatWork } from '../utils/wechatShare';
 import { authUtils } from '../utils/auth';
+import { downloadTextFile, generateFilename } from '../utils/helpers';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
 const SENTRY_PROXY_BASE_URL = 'http://10.1.3.177:3000';
-const SENTRY_IOS_PROJECT_PATH = '/sentry/organizations/sentry/projects/nn-ios/?project=6';
+const SENTRY_IOS_PROJECT_PATH = '/organizations/sentry/projects/nn-ios/?project=6';
 const SENTRY_IOS_PROJECT_URL = `${SENTRY_PROXY_BASE_URL}${SENTRY_IOS_PROJECT_PATH}`;
 
 export default function SymbolicatePage() {
@@ -44,8 +45,8 @@ export default function SymbolicatePage() {
   const [selectedMainAppVersion, setSelectedMainAppVersion] = useState<string | undefined>(undefined);
   const [dsymList, setDsymList] = useState<DSYMInfo[]>([]);
   const [apiKey, setApiKey] = useState(() => {
-    // 从 localStorage 读取保存的 API Key，如果没有则使用默认值
-    return localStorage.getItem('qwen_api_key') || 'sk-af14207873244405ae33e5129fdd9700';
+    // 从 localStorage 读取保存的 API Key；Sentry 自动分析优先使用后端配置的 Codex/OpenAI Key。
+    return localStorage.getItem('qwen_api_key') || '';
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<{
@@ -57,9 +58,11 @@ export default function SymbolicatePage() {
     historyId?: number;
   } | null>(null);
   const [autoSymbolicate, setAutoSymbolicate] = useState(false);
+  const [autoAnalyzeAfterSymbolicate, setAutoAnalyzeAfterSymbolicate] = useState(false);
   const [canAnalyze, setCanAnalyze] = useState(false);
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [showWarningModal, setShowWarningModal] = useState(false);
+  const [originalCrashFileName, setOriginalCrashFileName] = useState('');
   const isAdmin = authUtils.isAdmin();
 
   // 加载 dSYM 列表
@@ -75,6 +78,24 @@ export default function SymbolicatePage() {
       }
     };
     loadDsyms();
+  }, []);
+
+  useEffect(() => {
+    const sentryCrashLog = sessionStorage.getItem('sentry_symbolicate_crash_log');
+    if (!sentryCrashLog) {
+      return;
+    }
+
+    const issueTitle = sessionStorage.getItem('sentry_symbolicate_issue_title') || 'Sentry 问题';
+    const shouldAutoAnalyze = sessionStorage.getItem('sentry_auto_ai_analysis') === 'true';
+    sessionStorage.removeItem('sentry_symbolicate_crash_log');
+    sessionStorage.removeItem('sentry_symbolicate_issue_title');
+    sessionStorage.removeItem('sentry_auto_ai_analysis');
+    setCrashLog(sentryCrashLog);
+    setOriginalCrashFileName(`${sanitizeFilename(issueTitle)}.crash`);
+    setAutoSymbolicate(true);
+    setAutoAnalyzeAfterSymbolicate(shouldAutoAnalyze);
+    message.success(`已载入 ${issueTitle} 的 Sentry 日志`);
   }, []);
 
   // 监听autoSymbolicate标记，自动触发符号化（仅文件上传且版本识别成功时）
@@ -352,7 +373,7 @@ export default function SymbolicatePage() {
           message.success('符号化成功！');
         }
         
-        setResult({
+        const nextResult = {
           original: response.data.originalLog,
           symbolicated: response.data.symbolicatedLog,
           uuid: response.data.matchedUUIDs 
@@ -361,10 +382,37 @@ export default function SymbolicatePage() {
           warning: response.data.warning,
           analysis: aiAnalysisData, // 保存AI分析结果
           historyId: response.data.historyId, // 保存历史记录ID
-        });
+        };
+        setResult(nextResult);
         
         // 符号化成功后，如果没有AI分析结果，允许进行AI分析
         setCanAnalyze(!hasAIAnalysis);
+        if (autoAnalyzeAfterSymbolicate && !hasAIAnalysis) {
+          setAutoAnalyzeAfterSymbolicate(false);
+          setIsAnalyzing(true);
+          try {
+            const analysisResponse = await symbolicateApi.analyze(
+              response.data.symbolicatedLog,
+              uuidsToUse,
+              apiKey || undefined
+            );
+            if (analysisResponse.success && analysisResponse.data) {
+              message.success('符号化完成，AI 分析完成！');
+              setResult({
+                ...nextResult,
+                analysis: analysisResponse.data,
+              });
+              setCanAnalyze(false);
+            } else {
+              throw new Error(analysisResponse.error || 'AI 分析失败');
+            }
+          } catch (analysisError: any) {
+            const analysisErrorMsg = analysisError.error || analysisError.message || 'AI 分析失败';
+            message.error(analysisErrorMsg);
+          } finally {
+            setIsAnalyzing(false);
+          }
+        }
       } else {
         throw new Error(response.error || '符号化失败');
       }
@@ -390,7 +438,7 @@ export default function SymbolicatePage() {
     }
 
     if (!apiKey || apiKey.trim().length === 0) {
-      message.warning('请输入通义千问 API Key');
+      message.warning('请输入 Codex/OpenAI API Key，或在后端配置默认 Key');
       return;
     }
 
@@ -510,6 +558,38 @@ export default function SymbolicatePage() {
     }
   };
 
+  const sanitizeFilename = (value: string) => {
+    return value
+      .trim()
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, '_')
+      .slice(0, 80) || 'crash';
+  };
+
+  const getOriginalCrashFileName = () => {
+    if (originalCrashFileName) {
+      return originalCrashFileName;
+    }
+
+    const sourceLog = result?.original || crashLog;
+    const extension = sourceLog.trim().startsWith('{') ? 'ips' : 'crash';
+    const version = selectedMainAppVersion || extractVersionFromCrashLog(sourceLog);
+    return version
+      ? `original_crash_${sanitizeFilename(version)}.${extension}`
+      : generateFilename('original_crash', extension);
+  };
+
+  const handleDownloadOriginalCrash = () => {
+    const originalLog = result?.original || crashLog;
+    if (!originalLog.trim()) {
+      message.warning('暂无原始崩溃文件可下载');
+      return;
+    }
+
+    downloadTextFile(originalLog, getOriginalCrashFileName());
+    message.success('原始崩溃文件下载已开始');
+  };
+
   // 从崩溃日志中提取版本号
   const extractVersionFromCrashLog = (crashLog: string): string | null => {
     // 检查是否是 .ips JSON 格式
@@ -627,6 +707,7 @@ export default function SymbolicatePage() {
     setErrorDetail(null);
     setSelectedMainAppVersion(undefined);
     setSelectedUUIDs([]);
+    setOriginalCrashFileName('');
   };
 
   const uploadProps: UploadProps = {
@@ -638,6 +719,7 @@ export default function SymbolicatePage() {
       setErrorDetail(null);
       setSelectedMainAppVersion(undefined);
       setSelectedUUIDs([]);
+      setOriginalCrashFileName(file.name);
       
       const reader = new FileReader();
       reader.onload = (e) => {
@@ -891,7 +973,7 @@ Binary Images:
               </Space>
               <APIKeyInput value={apiKey} onChange={setApiKey} />
               <Text type="secondary" style={{ fontSize: '12px', marginTop: '4px', display: 'block' }}>
-                提供通义千问 API Key 可获得智能崩溃分析。API Key 保存在浏览器本地。
+                提供 Codex/OpenAI API Key 可获得智能崩溃分析。API Key 保存在浏览器本地；Sentry 自动解析可使用后端默认配置。
               </Text>
             </div>
           )}
@@ -985,6 +1067,9 @@ Binary Images:
               <Button icon={<DownloadOutlined />} onClick={handleDownload}>
                 下载
               </Button>
+              <Button icon={<DownloadOutlined />} onClick={handleDownloadOriginalCrash}>
+                下载原始
+              </Button>
             </Space>
           }
         >
@@ -1042,7 +1127,23 @@ Binary Images:
                 },
                 {
                   key: 'original',
-                  label: '原始日志',
+                  label: (
+                    <Space>
+                      原始日志
+                      <Button
+                        type="link"
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleDownloadOriginalCrash();
+                        }}
+                        style={{ padding: 0 }}
+                      >
+                        下载原始
+                      </Button>
+                    </Space>
+                  ),
                   children: (
                     <TextArea
                       value={result.original}
