@@ -19,6 +19,7 @@ export default function ManagePage() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadedInfo, setUploadedInfo] = useState<DSYMInfo | null>(null);
+  const [activeTab, setActiveTab] = useState('list');
   const [form] = Form.useForm();
   
   // 模块配置相关状态
@@ -362,13 +363,21 @@ export default function ManagePage() {
 
   return (
     <div>
-      <Title level={2}>dSYM 文件管理</Title>
-      <Paragraph type="secondary">
-        上传、查看和管理 dSYM 文件，用于 Crash 符号化。
-      </Paragraph>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <Title level={2}>dSYM 文件管理</Title>
+          <Paragraph type="secondary">
+            上传、查看和管理 dSYM 文件，用于 Crash 符号化。
+          </Paragraph>
+        </div>
+        <Button type="primary" icon={<InboxOutlined />} onClick={() => setActiveTab('upload')}>
+          上传 dSYM 文件
+        </Button>
+      </div>
 
       <Tabs
-        defaultActiveKey="list"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'list',
@@ -447,7 +456,7 @@ export default function ManagePage() {
               </div>
             ),
           },
-          ...(isAdmin ? [{
+          {
             key: 'upload',
             label: '上传 dSYM 文件',
             children: (
@@ -747,7 +756,7 @@ export default function ManagePage() {
         />
               </Card>
             ),
-          }] : []),
+          },
           ...(isAdmin ? [{
             key: 'modules',
             label: (

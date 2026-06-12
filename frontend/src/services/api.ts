@@ -1101,4 +1101,71 @@ export const pairingApi = {
   },
 };
 
+// ============ Jenkins CI/CD ============
+
+export interface JenkinsBuild {
+  number: number;
+  result?: 'SUCCESS' | 'FAILURE' | 'ABORTED' | 'UNSTABLE' | null;
+  timestamp: number;
+  duration: number;
+  building: boolean;
+  url: string;
+  description?: string | null;
+  branchName?: string;
+  publishChannel?: string;
+  buildNumber?: string;
+  appVersion?: string;
+  packageUrl?: string;
+  channelQrUrl?: string;
+  archiveUrl?: string;
+}
+
+export interface JenkinsJobInfo {
+  name: string;
+  fullName: string;
+  url: string;
+  buildable: boolean;
+  color?: string;
+  lastBuild?: JenkinsBuild;
+}
+
+export interface JenkinsBuildListResult {
+  job: JenkinsJobInfo;
+  stats: {
+    total: number;
+    running: number;
+    latestBuild: number | string;
+    successRate: string;
+  };
+  builds: JenkinsBuild[];
+}
+
+export const jenkinsApi = {
+  listBranches: async (): Promise<ApiResponse<string[]>> => {
+    const response = await api.get<ApiResponse<string[]>>('/jenkins/nn/branches');
+    return response.data;
+  },
+
+  listNNBuilds: async (params?: {
+    deployTarget?: 'Pgyer' | 'TestFlight' | 'AppStore' | '';
+  }): Promise<ApiResponse<JenkinsBuildListResult>> => {
+    const response = await api.get<ApiResponse<JenkinsBuildListResult>>('/jenkins/nn/builds', { params });
+    return response.data;
+  },
+
+  publishNN: async (payload: {
+    deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
+    verificationPassword?: string;
+    branch?: string;
+  }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>>('/jenkins/nn/build', payload);
+    return response.data;
+  },
+
+  stopBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/builds/${buildNumber}/stop`);
+    return response.data;
+  },
+};
+
 export default api;
