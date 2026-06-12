@@ -315,6 +315,42 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
+  try {
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+      timeout: 30000,
+      responseType: 'text',
+      ...buildAuthConfig(),
+    });
+    const log = String(response.data || '');
+
+    res.json({
+      success: true,
+      data: {
+        jobName: DEFAULT_JOB_NAME,
+        buildNumber,
+        log,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '获取 Jenkins 打包日志失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
 router.post('/nn/build', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_JOB_NAME);

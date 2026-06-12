@@ -7,6 +7,7 @@ import {
   ExportOutlined,
   DownloadOutlined,
   StopOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons';
 import { JenkinsBuild, JenkinsBuildListResult, jenkinsApi } from '../services/api';
 
@@ -63,6 +64,9 @@ export default function CICDPage() {
   const [error, setError] = useState('');
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
+  const [logModalOpen, setLogModalOpen] = useState(false);
+  const [logLoading, setLogLoading] = useState(false);
+  const [selectedBuildLog, setSelectedBuildLog] = useState<{ build: JenkinsBuild; log: string } | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [publishBranch, setPublishBranch] = useState('develop');
@@ -139,6 +143,34 @@ export default function CICDPage() {
     } finally {
       setStoppingBuild(null);
     }
+  };
+
+  const showBuildLog = async (build: JenkinsBuild) => {
+    setLogModalOpen(true);
+    setSelectedBuildLog({ build, log: '' });
+    setLogLoading(true);
+    try {
+      const response = await jenkinsApi.getBuildLog(build.number);
+      setSelectedBuildLog({ build, log: response.data?.log || '' });
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '加载打包日志失败');
+      setSelectedBuildLog({ build, log: '加载打包日志失败' });
+    } finally {
+      setLogLoading(false);
+    }
+  };
+
+  const downloadBuildLog = () => {
+    if (!selectedBuildLog) return;
+    const blob = new Blob([selectedBuildLog.log || ''], { type: 'text/plain;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `nn-${selectedBuildLog.build.number}.log`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
   };
 
   useEffect(() => {
@@ -248,7 +280,7 @@ export default function CICDPage() {
           loading={loading}
           dataSource={data?.builds || []}
           tableLayout="fixed"
-          scroll={{ x: 1100 }}
+          scroll={{ x: 1280 }}
           pagination={{ pageSize: 10, showSizeChanger: false }}
           columns={[
             {
@@ -355,7 +387,7 @@ export default function CICDPage() {
                   >
                     下载
                   </Button>
-                  <Button size="small" onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
+                  <Button size="small" icon={<FileTextOutlined />} onClick={() => showBuildLog(record)}>
                     详情
                   </Button>
                   {record.building && (
@@ -448,6 +480,48 @@ export default function CICDPage() {
             type={deployTarget === 'Pgyer' ? 'info' : 'warning'}
             showIcon
             message={deployTarget === 'Pgyer' ? '蒲公英发布无需验证密码' : 'TestFlight / 苹果商店发布需要验证密码'}
+          />
+        </Space>
+      </Modal>
+
+      <Modal
+        title={selectedBuildLog ? `打包日志 - #${selectedBuildLog.build.number}` : '打包日志'}
+        open={logModalOpen}
+        width="82vw"
+        footer={(
+          <Space>
+            <Button onClick={() => setLogModalOpen(false)}>关闭</Button>
+            <Button
+              icon={<DownloadOutlined />}
+              disabled={!selectedBuildLog?.log}
+              onClick={downloadBuildLog}
+            >
+              下载日志
+            </Button>
+          </Space>
+        )}
+        onCancel={() => setLogModalOpen(false)}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          {selectedBuildLog && (
+            <Space wrap>
+              <Tag color="blue">构建 #{selectedBuildLog.build.number}</Tag>
+              {selectedBuildLog.build.publishChannel && <Tag>{selectedBuildLog.build.publishChannel}</Tag>}
+              {selectedBuildLog.build.branchName && <Tag>分支 {selectedBuildLog.build.branchName}</Tag>}
+              {selectedBuildLog.build.buildNumber && <Tag color="green">构建号 {selectedBuildLog.build.buildNumber}</Tag>}
+              {selectedBuildLog.build.appVersion && <Tag color="purple">APP {selectedBuildLog.build.appVersion}</Tag>}
+            </Space>
+          )}
+          <Input.TextArea
+            value={logLoading ? '正在加载打包日志...' : selectedBuildLog?.log || '暂无打包日志'}
+            readOnly
+            autoSize={false}
+            style={{
+              height: '62vh',
+              fontFamily: 'Menlo, Monaco, Consolas, monospace',
+              fontSize: 12,
+              whiteSpace: 'pre',
+            }}
           />
         </Space>
       </Modal>

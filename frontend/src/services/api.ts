@@ -1140,6 +1140,12 @@ export interface JenkinsBuildListResult {
   builds: JenkinsBuild[];
 }
 
+export interface JenkinsBuildLogResult {
+  jobName: string;
+  buildNumber: number;
+  log: string;
+}
+
 export const jenkinsApi = {
   listBranches: async (): Promise<ApiResponse<string[]>> => {
     const response = await api.get<ApiResponse<string[]>>('/jenkins/nn/branches');
@@ -1164,6 +1170,13 @@ export const jenkinsApi = {
 
   stopBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
     const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/builds/${buildNumber}/stop`);
+    return response.data;
+  },
+
+  getBuildLog: async (buildNumber: number): Promise<ApiResponse<JenkinsBuildLogResult>> => {
+    const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/nn/builds/${buildNumber}/log`, {
+      timeout: 120000,
+    });
     return response.data;
   },
 };

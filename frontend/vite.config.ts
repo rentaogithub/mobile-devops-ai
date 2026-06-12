@@ -1,7 +1,23 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { networkInterfaces } from 'os';
 
-const backendTarget = process.env.VITE_BACKEND_TARGET || 'http://127.0.0.1:3000';
+function getLocalBackendTarget() {
+  const addresses = Object.values(networkInterfaces())
+    .flat()
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item) => item.family === 'IPv4' && !item.internal)
+    .map((item) => item.address);
+  const preferred =
+    addresses.find((address) => address.startsWith('10.')) ||
+    addresses.find((address) => address.startsWith('192.168.')) ||
+    addresses.find((address) => /^172\.(1[6-9]|2\d|3[01])\./.test(address)) ||
+    addresses[0] ||
+    '127.0.0.1';
+  return `http://${preferred}:3000`;
+}
+
+const backendTarget = process.env.VITE_BACKEND_TARGET || getLocalBackendTarget();
 const backendWsTarget = backendTarget.replace(/^http/, 'ws');
 
 export default defineConfig({
