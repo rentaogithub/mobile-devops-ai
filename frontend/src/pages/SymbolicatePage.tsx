@@ -742,7 +742,7 @@ export default function SymbolicatePage() {
 
   return (
     <div>
-      <Title level={2}>符号化崩溃日志</Title>
+      <Title level={2}>Crash 符号化</Title>
       <Paragraph type="secondary">
         粘贴或上传 iOS 崩溃日志，系统会自动匹配对应的 dSYM 文件并进行符号化处理。
       </Paragraph>

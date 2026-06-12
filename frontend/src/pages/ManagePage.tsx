@@ -364,7 +364,7 @@ export default function ManagePage() {
     <div>
       <Title level={2}>dSYM 文件管理</Title>
       <Paragraph type="secondary">
-        上传、查看和管理 dSYM 文件，用于崩溃日志符号化。
+        上传、查看和管理 dSYM 文件，用于 Crash 符号化。
       </Paragraph>
 
       <Tabs

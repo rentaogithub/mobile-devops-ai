@@ -94,7 +94,7 @@ export default function LogsPage() {
         <div>
           <Title level={4}>
             <FileSearchOutlined style={{ marginRight: 8, color: '#faad14' }} />
-            日志分析
+            日志服务
           </Title>
           <Paragraph type="secondary">
             收集和分析应用运行日志，支持日志检索、统计分析和异常告警

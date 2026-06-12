@@ -25,6 +25,9 @@ export default function MainLayout() {
   const getSelectedKey = () => {
     const path = location.pathname;
     if (path === '/') return '/';
+    if (['/sentry-service', '/history', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
+      return '/symbolicate-group';
+    }
     // Match first segment
     const segment = '/' + path.split('/').filter(Boolean)[0];
     return segment;
@@ -39,11 +42,11 @@ export default function MainLayout() {
     {
       key: '/symbolicate-group',
       icon: <BugOutlined />,
-      label: '崩溃符号化',
+      label: <span onClick={() => navigate('/sentry-service')}>Crash 服务</span>,
       children: [
         { key: '/sentry-service', label: 'Sentry 服务' },
         { key: '/history', label: '历史记录' },
-        { key: '/symbolicate', label: '符号化' },
+        { key: '/symbolicate', label: 'Crash 符号化' },
         { key: '/manage', label: 'dSYM 管理' },
       ],
     },
@@ -60,7 +63,7 @@ export default function MainLayout() {
     {
       key: '/logs',
       icon: <FileSearchOutlined />,
-      label: '日志分析',
+      label: '日志服务',
     },
     {
       key: '/devops',

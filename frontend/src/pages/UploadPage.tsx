@@ -64,7 +64,7 @@ export default function UploadPage() {
     <div>
       <Title level={2}>上传 dSYM 文件</Title>
       <Paragraph type="secondary">
-        上传 iOS 应用的 dSYM 文件，用于后续的崩溃日志符号化。支持 .dSYM 目录、.xcarchive 或 .zip
+        上传 iOS 应用的 dSYM 文件，用于后续的 Crash 符号化。支持 .dSYM 目录、.xcarchive 或 .zip
         压缩包格式。
       </Paragraph>
 

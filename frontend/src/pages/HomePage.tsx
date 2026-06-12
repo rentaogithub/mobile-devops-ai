@@ -24,10 +24,10 @@ interface FeatureCard {
 const features: FeatureCard[] = [
   {
     key: 'symbolicate',
-    title: '崩溃日志符号化',
-    description: '上传 iOS 崩溃日志，自动匹配 dSYM 文件进行符号化解析，快速定位崩溃原因',
+    title: 'Crash 服务',
+    description: '查看 Sentry 线上崩溃、下载原始崩溃并进行符号化解析，快速定位崩溃原因',
     icon: <BugOutlined />,
-    path: '/symbolicate',
+    path: '/sentry-service',
     color: '#1677ff',
     gradient: 'linear-gradient(135deg, #1677ff 0%, #4096ff 100%)',
   },
@@ -51,7 +51,7 @@ const features: FeatureCard[] = [
   },
   {
     key: 'logs',
-    title: '日志分析',
+    title: '日志服务',
     description: '收集和分析应用运行日志，支持日志检索、统计分析和异常告警',
     icon: <FileSearchOutlined />,
     path: '/logs',

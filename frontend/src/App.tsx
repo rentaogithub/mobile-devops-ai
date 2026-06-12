@@ -34,7 +34,7 @@ function App() {
         <Routes>
           <Route path="/" element={<MainLayout />}>
             <Route index element={<HomePage />} />
-            {/* 崩溃日志符号化 */}
+            {/* Crash 服务 */}
             <Route path="symbolicate" element={<SymbolicatePage />} />
             <Route path="manage" element={<ManagePage />} />
             <Route path="history" element={<HistoryPage />} />
@@ -43,7 +43,7 @@ function App() {
             <Route path="pods" element={<PodsPage />} />
             {/* CI/CD 管理 */}
             <Route path="cicd" element={<CICDPage />} />
-            {/* 日志分析 */}
+            {/* 日志服务 */}
             <Route path="logs" element={<LogsPage />} />
             <Route path="logs/pair" element={<LogsPairPage />} />
             {/* DevOps 技能库 */}
