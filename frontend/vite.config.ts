@@ -18,6 +18,11 @@ export default defineConfig({
         ws: true,
         timeout: 600000, // 10分钟超时
       },
+      '/install-cocoapods-podx.sh': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false,
+      },
       '^/sentry(?=/|$)': {
         target: backendTarget,
         changeOrigin: false,

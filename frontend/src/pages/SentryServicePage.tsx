@@ -26,6 +26,7 @@ const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved';
 const TOP_PERIOD = '7d';
 const RECENT_PERIOD = '24h';
+const RECENT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 type CurrentSentryIssue = Pick<SentryIssueSummary, 'id' | 'title' | 'permalink'>;
 type SentryView = 'overview' | 'top' | 'recent';
@@ -45,6 +46,11 @@ function toSentryIssueURL(issue: Pick<SentryIssueSummary, 'id'>) {
 
 function getIssueTime(issue: SentryIssueSummary) {
   return Date.parse(issue.lastSeen || issue.firstSeen || '') || 0;
+}
+
+function isNewRecentIssue(issue: SentryIssueSummary) {
+  const firstSeenTime = Date.parse(issue.firstSeen || '');
+  return Boolean(firstSeenTime) && Date.now() - firstSeenTime <= RECENT_NEW_WINDOW_MS;
 }
 
 function formatIssueTime(value?: string) {
@@ -385,6 +391,9 @@ export default function SentryServicePage() {
             <Space wrap style={{ width: '100%', justifyContent: 'space-between' }} align="start">
               <Space wrap>
                 <Text strong>{issue.shortId || issue.id}</Text>
+                {activeView === 'recent' && isNewRecentIssue(issue) && (
+                  <Tag color="magenta">新增</Tag>
+                )}
                 {issue.level && <Tag color={getSeverityColor(issue.level)}>{issue.level}</Tag>}
                 {issue.status && <Tag>{issue.status}</Tag>}
               </Space>

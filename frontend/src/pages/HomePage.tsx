@@ -4,9 +4,9 @@ import {
   BugOutlined,
   AppstoreOutlined,
   RocketOutlined,
-  BranchesOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
+  ToolOutlined,
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -50,20 +50,20 @@ const features: FeatureCard[] = [
     gradient: 'linear-gradient(135deg, #722ed1 0%, #9254de 100%)',
   },
   {
-    key: 'git',
-    title: 'Git 管理',
-    description: '可视化管理 Git 仓库，查看分支、提交记录、合并请求，支持代码审查',
-    icon: <BranchesOutlined />,
-    path: '/git',
-    color: '#fa541c',
-    gradient: 'linear-gradient(135deg, #fa541c 0%, #ff7a45 100%)',
-  },
-  {
     key: 'logs',
     title: '日志分析',
     description: '收集和分析应用运行日志，支持日志检索、统计分析和异常告警',
     icon: <FileSearchOutlined />,
     path: '/logs',
+    color: '#fa541c',
+    gradient: 'linear-gradient(135deg, #fa541c 0%, #ff7a45 100%)',
+  },
+  {
+    key: 'devops',
+    title: 'DevOps 技能库',
+    description: '沉淀 podx、mgit 工具链用法，提供组件发布、仓库批量操作和日常命令速查',
+    icon: <ToolOutlined />,
+    path: '/devops',
     color: '#faad14',
     gradient: 'linear-gradient(135deg, #faad14 0%, #ffc53d 100%)',
   },
@@ -88,7 +88,7 @@ export default function HomePage() {
           iOS 移动管理平台
         </Title>
         <Paragraph type="secondary" style={{ fontSize: 16 }}>
-          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、Git、日志和路由
+          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、DevOps 工具链和路由
         </Paragraph>
       </div>
 

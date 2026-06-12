@@ -5,9 +5,9 @@ import {
   BugOutlined,
   AppstoreOutlined,
   RocketOutlined,
-  BranchesOutlined,
   FileSearchOutlined,
   NodeIndexOutlined,
+  ToolOutlined,
   LogoutOutlined,
   CrownOutlined,
 } from '@ant-design/icons';
@@ -41,10 +41,10 @@ export default function MainLayout() {
       icon: <BugOutlined />,
       label: '崩溃符号化',
       children: [
+        { key: '/sentry-service', label: 'Sentry 服务' },
+        { key: '/history', label: '历史记录' },
         { key: '/symbolicate', label: '符号化' },
         { key: '/manage', label: 'dSYM 管理' },
-        { key: '/history', label: '历史记录' },
-        { key: '/sentry-service', label: 'Sentry 服务' },
       ],
     },
     {
@@ -58,14 +58,14 @@ export default function MainLayout() {
       label: 'CI/CD',
     },
     {
-      key: '/git',
-      icon: <BranchesOutlined />,
-      label: 'Git 管理',
-    },
-    {
       key: '/logs',
       icon: <FileSearchOutlined />,
       label: '日志分析',
+    },
+    {
+      key: '/devops',
+      icon: <ToolOutlined />,
+      label: 'DevOps 技能库',
     },
     {
       key: '/routes',

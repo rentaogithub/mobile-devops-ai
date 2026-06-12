@@ -8,7 +8,7 @@ import ManagePage from './pages/ManagePage';
 import HistoryPage from './pages/HistoryPage';
 import PodsPage from './pages/PodsPage';
 import CICDPage from './pages/CICDPage';
-import GitPage from './pages/GitPage';
+import DevOpsPage from './pages/DevOpsPage';
 import LogsPage from './pages/LogsPage';
 import LogsPairPage from './pages/LogsPairPage';
 import RoutesPage from './pages/RoutesPage';
@@ -43,11 +43,11 @@ function App() {
             <Route path="pods" element={<PodsPage />} />
             {/* CI/CD 管理 */}
             <Route path="cicd" element={<CICDPage />} />
-            {/* Git 管理 */}
-            <Route path="git" element={<GitPage />} />
             {/* 日志分析 */}
             <Route path="logs" element={<LogsPage />} />
             <Route path="logs/pair" element={<LogsPairPage />} />
+            {/* DevOps 技能库 */}
+            <Route path="devops" element={<DevOpsPage />} />
             {/* 路由管理 */}
             <Route path="routes" element={<RoutesPage />} />
           </Route>

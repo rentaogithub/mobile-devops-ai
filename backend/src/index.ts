@@ -64,6 +64,18 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', database: 'connected' });
 });
 
+const backendPublic = path.join(__dirname, '../public');
+if (fs.existsSync(backendPublic)) {
+  app.use(express.static(backendPublic, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.sh')) {
+        res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    },
+  }));
+}
+
 app.get('/logs/view', (req, res) => {
   const pairingId = typeof req.query.pairingId === 'string' ? req.query.pairingId : '';
   const token = typeof req.query.token === 'string' ? req.query.token : '';
