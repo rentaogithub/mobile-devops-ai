@@ -12,6 +12,7 @@ import {
   Popconfirm,
   Tabs,
   Input,
+  Modal,
 } from 'antd';
 import {
   QrcodeOutlined,
@@ -34,6 +35,11 @@ type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'streaming' | 
 type AppConnectionState = 'unknown' | 'waiting' | 'connected' | 'disconnected';
 type LogChannel = 'business' | 'im' | 'rtc';
 type PairingDeviceInfo = NonNullable<PairingStatusData['deviceInfo']>;
+
+interface LogsPairPageProps {
+  embedded?: boolean;
+  pairingMode?: 'inline' | 'modal';
+}
 
 interface LogEntry {
   id: number;
@@ -145,7 +151,8 @@ function highlightText(text: string, keyword: string): ReactNode {
   return nodes;
 }
 
-export default function LogsPairPage() {
+export default function LogsPairPage({ embedded = false, pairingMode = 'inline' }: LogsPairPageProps = {}) {
+  const usePairingModal = pairingMode === 'modal';
   const [state, setState] = useState<ConnectionState>('idle');
   const [session, setSession] = useState<PairingSessionData | null>(null);
   const [pairingStatus, setPairingStatus] = useState<PairingStatusData | null>(null);
@@ -162,6 +169,7 @@ export default function LogsPairPage() {
   const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [centerSuccessText, setCenterSuccessText] = useState('');
+  const [qrModalOpen, setQrModalOpen] = useState(false);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<PairingSessionData | null>(null);
@@ -298,6 +306,9 @@ export default function LogsPairPage() {
    */
   const startPairing = async () => {
     try {
+      if (usePairingModal) {
+        setQrModalOpen(true);
+      }
       if ((state === 'qrcode' || state === 'polling') && sessionRef.current) {
         pairingApi.delete(sessionRef.current.pairingId).catch(() => {});
       }
@@ -367,6 +378,7 @@ export default function LogsPairPage() {
         if (data.status === 'paired' || data.status === 'streaming') {
           stopPolling();
           setState('paired');
+          setQrModalOpen(false);
           loadDevices();
           showCenterSuccess('设备配对成功，正在打开日志页面');
           connectLogStream(targetSession);
@@ -702,6 +714,7 @@ export default function LogsPairPage() {
     setLastHeartbeatAt('');
     setAppConnectionState('unknown');
     setLogs([]);
+    setQrModalOpen(false);
     loadDevices();
   };
 
@@ -770,32 +783,39 @@ export default function LogsPairPage() {
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
-        <div>
-          <Title level={4}>
-            <MobileOutlined style={{ marginRight: 8, color: '#1677ff' }} />
-            实时日志 - 扫码配对
-          </Title>
-          <Paragraph type="secondary">
-            通过 NN App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
-          </Paragraph>
+      {!embedded && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
+          <div>
+            <Title level={4}>
+              <MobileOutlined style={{ marginRight: 8, color: '#1677ff' }} />
+              实时日志 - 扫码配对
+            </Title>
+            <Paragraph type="secondary">
+              通过 NN App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
+            </Paragraph>
+          </div>
+          {state !== 'streaming' && (
+            <Button type="primary" icon={<QrcodeOutlined />} onClick={startPairing}>
+              生成配对二维码
+            </Button>
+          )}
         </div>
-        {state !== 'streaming' && (
-          <Button type="primary" icon={<QrcodeOutlined />} onClick={startPairing}>
-            生成配对二维码
-          </Button>
-        )}
-      </div>
+      )}
 
-      {devices.length > 0 && state !== 'streaming' && (
+      {(devices.length > 0 || embedded) && state !== 'streaming' && (
         <Card
           title="已连接设备"
           extra={
             <Space>
               <Button size="small" icon={<ReloadOutlined />} onClick={loadDevices}>刷新</Button>
+              {embedded && (
+                <Button size="small" type="primary" icon={<QrcodeOutlined />} onClick={startPairing}>
+                  打开实时日志（蒲公英）
+                </Button>
+              )}
             </Space>
           }
-          style={{ marginBottom: 24 }}
+          style={{ marginBottom: embedded ? 0 : 24 }}
         >
           <Table
             rowKey="pairingId"
@@ -803,6 +823,7 @@ export default function LogsPairPage() {
             loading={devicesLoading}
             pagination={false}
             dataSource={devices}
+            locale={{ emptyText: '暂无已连接设备，请点击右上角打开实时日志（蒲公英）' }}
             columns={[
               {
                 title: '设备',
@@ -895,7 +916,7 @@ export default function LogsPairPage() {
         </Card>
       )}
 
-      {state === 'idle' && devices.length === 0 && (
+      {state === 'idle' && devices.length === 0 && !embedded && (
         <Card>
           <div style={{ textAlign: 'center', padding: '72px 0' }}>
             <QrcodeOutlined style={{ fontSize: 64, color: '#1677ff', marginBottom: 24 }} />
@@ -912,7 +933,63 @@ export default function LogsPairPage() {
       )}
 
       {/* 等待扫码 */}
-      {(state === 'qrcode' || state === 'polling') && (
+      {(state === 'qrcode' || state === 'polling') && usePairingModal && (
+        <Modal
+          title="实时日志（蒲公英）"
+          open={qrModalOpen}
+          footer={null}
+          onCancel={disconnect}
+          width={520}
+          destroyOnHidden
+        >
+          <div style={{ textAlign: 'center', padding: '12px 0' }}>
+            {qrValue ? (
+              <>
+                <div
+                  style={{
+                    display: 'inline-block',
+                    padding: 16,
+                    background: '#fff',
+                    borderRadius: 8,
+                    border: '1px solid #f0f0f0',
+                    marginBottom: 24,
+                  }}
+                >
+                  <QRCodeSVG value={qrValue} size={220} level="M" />
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <Space>
+                    <Spin size="small" />
+                    <Text type="secondary">等待 App 扫码配对...</Text>
+                    <Tag color="blue">协议 nn_log_pair</Tag>
+                  </Space>
+                </div>
+                <Paragraph type="secondary" style={{ fontSize: 13 }}>
+                  请在 NN App 中打开：Debug → 实时日志 → 扫描二维码
+                </Paragraph>
+                <Paragraph
+                  copyable={{ text: qrValue }}
+                  type="secondary"
+                  style={{ maxWidth: 440, margin: '8px auto 0', fontSize: 12 }}
+                  ellipsis={{ rows: 2, expandable: true, symbol: '展开二维码内容' }}
+                >
+                  二维码内容：{qrValue}
+                </Paragraph>
+                <Space style={{ marginTop: 16 }}>
+                  <Button onClick={startPairing} icon={<ReloadOutlined />}>
+                    重新生成
+                  </Button>
+                  <Button onClick={disconnect}>取消</Button>
+                </Space>
+              </>
+            ) : (
+              <Spin tip="正在生成二维码..." />
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {(state === 'qrcode' || state === 'polling') && !usePairingModal && (
         <Card>
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
             {qrValue ? (

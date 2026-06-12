@@ -11,8 +11,8 @@ import {
   UploadOutlined,
   LoadingOutlined,
 } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
 import { watermarkApi, WatermarkDecodeResult } from '../services/api';
+import LogsPairPage from './LogsPairPage';
 
 const { Title, Paragraph } = Typography;
 const FEEDBACK_LOG_URL = 'https://op.nn.com/#/speed/logs';
@@ -41,7 +41,6 @@ const formatWatermarkTimeSource = (source?: string, field?: string, reliable?: b
 };
 
 export default function LogsPage() {
-  const navigate = useNavigate();
   const [watermarkDeep, setWatermarkDeep] = useState(true);
   const [watermarkLoading, setWatermarkLoading] = useState(false);
   const [watermarkResult, setWatermarkResult] = useState<WatermarkDecodeResult | null>(null);
@@ -98,18 +97,11 @@ export default function LogsPage() {
               label: (
                 <Space>
                   <QrcodeOutlined />
-                  扫码连接设备
+                  实时日志（蒲公英）
                 </Space>
               ),
               children: (
-                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                  <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    通过 NN App 扫描二维码连接设备，实时查看业务、IM、RTC 日志，并支持下载 NN 日志包。
-                  </Paragraph>
-                  <Button type="primary" icon={<QrcodeOutlined />} onClick={() => navigate('/logs/pair')}>
-                    打开扫码连接
-                  </Button>
-                </Space>
+                <LogsPairPage embedded pairingMode="modal" />
               ),
             },
             {
