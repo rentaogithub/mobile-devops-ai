@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Typography, Card, Row, Col, Input, Button, Space, DatePicker, Select, Table, Tag, Empty, Upload, Alert, Descriptions, Switch, message } from 'antd';
+import { Typography, Card, Input, Button, Space, Upload, Alert, Descriptions, Switch, Tabs, message } from 'antd';
 import {
+  ApiOutlined,
+  CommentOutlined,
+  ExportOutlined,
   FileSearchOutlined,
   SearchOutlined,
-  ReloadOutlined,
-  DownloadOutlined,
   QrcodeOutlined,
   UserOutlined,
   UploadOutlined,
@@ -14,25 +15,7 @@ import { useNavigate } from 'react-router-dom';
 import { watermarkApi, WatermarkDecodeResult } from '../services/api';
 
 const { Title, Paragraph } = Typography;
-const { RangePicker } = DatePicker;
-
-const logColumns = [
-  { title: '时间', dataIndex: 'timestamp', key: 'timestamp', width: 180 },
-  {
-    title: '级别',
-    dataIndex: 'level',
-    key: 'level',
-    width: 100,
-    render: (level: string) => {
-      const colorMap: Record<string, string> = {
-        ERROR: 'red', WARN: 'orange', INFO: 'blue', DEBUG: 'default',
-      };
-      return <Tag color={colorMap[level] || 'default'}>{level}</Tag>;
-    },
-  },
-  { title: '模块', dataIndex: 'module', key: 'module', width: 150 },
-  { title: '内容', dataIndex: 'message', key: 'message', ellipsis: true },
-];
+const FEEDBACK_LOG_URL = 'https://op.nn.com/#/speed/logs';
 
 const formatWatermarkImageTime = (time?: string) => {
   if (!time) {
@@ -62,6 +45,10 @@ export default function LogsPage() {
   const [watermarkDeep, setWatermarkDeep] = useState(true);
   const [watermarkLoading, setWatermarkLoading] = useState(false);
   const [watermarkResult, setWatermarkResult] = useState<WatermarkDecodeResult | null>(null);
+
+  const openFeedbackLogs = () => {
+    window.open(FEEDBACK_LOG_URL, '_blank', 'noopener,noreferrer');
+  };
 
   const handleWatermarkUpload = async (options: any) => {
     const file = options.file as File;
@@ -97,127 +84,153 @@ export default function LogsPage() {
             日志服务
           </Title>
           <Paragraph type="secondary">
-            收集和分析应用运行日志，支持日志检索、统计分析和异常告警
+            提供设备实时日志、截图水印识别、反馈日志查询和后端日志查询。
           </Paragraph>
         </div>
-        <Button
-          type="primary"
-          icon={<QrcodeOutlined />}
-          onClick={() => navigate('/logs/pair')}
-        >
-          扫码连接设备
-        </Button>
       </div>
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        {[
-          { label: '今日日志', value: 0, color: '#1677ff' },
-          { label: 'ERROR', value: 0, color: '#ff4d4f' },
-          { label: 'WARN', value: 0, color: '#faad14' },
-          { label: 'INFO', value: 0, color: '#52c41a' },
-        ].map((stat) => (
-          <Col xs={12} sm={6} key={stat.label}>
-            <Card size="small" style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 28, fontWeight: 'bold', color: stat.color }}>{stat.value}</div>
-              <div style={{ color: '#999', fontSize: 13 }}>{stat.label}</div>
-            </Card>
-          </Col>
-        ))}
-      </Row>
-
-      <Card
-        title={(
-          <Space>
-            <UserOutlined style={{ color: '#1677ff' }} />
-            查询用户
-          </Space>
-        )}
-        extra={(
-          <Space>
-            <span style={{ color: '#666' }}>深度识别</span>
-            <Switch size="small" checked={watermarkDeep} onChange={setWatermarkDeep} />
-          </Space>
-        )}
-        style={{ marginBottom: 24 }}
-      >
-        <Row gutter={[16, 16]}>
-          <Col xs={24} md={10}>
-            <Upload.Dragger
-              accept="image/png,image/jpeg"
-              maxCount={1}
-              showUploadList={false}
-              customRequest={handleWatermarkUpload}
-              disabled={watermarkLoading}
-            >
-              <p className="ant-upload-drag-icon">
-                {watermarkLoading ? <LoadingOutlined spin /> : <UploadOutlined />}
-              </p>
-              <p className="ant-upload-text">
-                {watermarkLoading ? '识别中...' : '上传截图识别水印用户'}
-              </p>
-              <p className="ant-upload-hint">
-                {watermarkLoading ? '正在解析顶部/底部点阵水印，请稍候' : '支持 JPG/PNG，默认使用深度识别，适合弱水印和多锚点场景'}
-              </p>
-            </Upload.Dragger>
-          </Col>
-          <Col xs={24} md={14}>
-            {watermarkResult?.bestCandidate ? (
-              <Descriptions size="small" bordered column={2}>
-                <Descriptions.Item label="UID">{watermarkResult.bestCandidate.uid}</Descriptions.Item>
-                <Descriptions.Item label="环境">{watermarkResult.bestCandidate.env}</Descriptions.Item>
-                <Descriptions.Item label="锚点">{watermarkResult.bestCandidate.anchor}</Descriptions.Item>
-                <Descriptions.Item label="置信度">{watermarkResult.bestCandidate.score.toFixed(2)}</Descriptions.Item>
-                <Descriptions.Item label="修复">{watermarkResult.bestCandidate.repaired ? '是' : '否'}</Descriptions.Item>
-                <Descriptions.Item label="候选数">{watermarkResult.candidates.length}</Descriptions.Item>
-                <Descriptions.Item label="增强方式">{watermarkResult.bestCandidate.enhancement}</Descriptions.Item>
-                <Descriptions.Item label="图片时间">{formatWatermarkImageTime(watermarkResult.imageTime?.time)}</Descriptions.Item>
-                <Descriptions.Item label="时间来源">
-                  {formatWatermarkTimeSource(
-                    watermarkResult.imageTime?.source,
-                    watermarkResult.imageTime?.field,
-                    watermarkResult.imageTime?.reliable
-                  )}
-                </Descriptions.Item>
-                <Descriptions.Item label="payload">{watermarkResult.bestCandidate.payloadHex}</Descriptions.Item>
-              </Descriptions>
-            ) : watermarkResult ? (
-              <Alert
-                type="warning"
-                showIcon
-                message="未识别到水印信息"
-                description="可以尝试开启深度识别、上传原图，或检查截图是否包含顶部/底部点阵水印。"
-              />
-            ) : (
-              <Alert
-                type="info"
-                showIcon
-                message="上传截图后会解析点阵水印"
-                description="用于从用户截图中快速反查 uid 和环境信息。"
-              />
-            )}
-          </Col>
-        </Row>
-      </Card>
-
       <Card>
-        <Space wrap style={{ marginBottom: 16, width: '100%' }}>
-          <Input placeholder="搜索日志内容..." prefix={<SearchOutlined />} style={{ width: 300 }} />
-          <Select placeholder="日志级别" style={{ width: 120 }} allowClear
-            options={[
-              { value: 'ERROR', label: 'ERROR' },
-              { value: 'WARN', label: 'WARN' },
-              { value: 'INFO', label: 'INFO' },
-              { value: 'DEBUG', label: 'DEBUG' },
-            ]}
-          />
-          <RangePicker showTime />
-          <Button icon={<ReloadOutlined />}>刷新</Button>
-          <Button icon={<DownloadOutlined />}>导出</Button>
-        </Space>
-        <Empty description="暂无日志数据，请先配置日志采集源">
-          <Button type="primary">配置日志源</Button>
-        </Empty>
-        <Table columns={logColumns} dataSource={[]} style={{ display: 'none' }} />
+        <Tabs
+          defaultActiveKey="pair"
+          items={[
+            {
+              key: 'pair',
+              label: (
+                <Space>
+                  <QrcodeOutlined />
+                  扫码连接设备
+                </Space>
+              ),
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                    通过 NN App 扫描二维码连接设备，实时查看业务、IM、RTC 日志，并支持下载 NN 日志包。
+                  </Paragraph>
+                  <Button type="primary" icon={<QrcodeOutlined />} onClick={() => navigate('/logs/pair')}>
+                    打开扫码连接
+                  </Button>
+                </Space>
+              ),
+            },
+            {
+              key: 'watermark',
+              label: (
+                <Space>
+                  <UserOutlined />
+                  识别水印用户
+                </Space>
+              ),
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <Space>
+                      <span style={{ color: '#666' }}>深度识别</span>
+                      <Switch size="small" checked={watermarkDeep} onChange={setWatermarkDeep} />
+                    </Space>
+                  </div>
+                  <Upload.Dragger
+                    accept="image/png,image/jpeg"
+                    maxCount={1}
+                    showUploadList={false}
+                    customRequest={handleWatermarkUpload}
+                    disabled={watermarkLoading}
+                  >
+                    <p className="ant-upload-drag-icon">
+                      {watermarkLoading ? <LoadingOutlined spin /> : <UploadOutlined />}
+                    </p>
+                    <p className="ant-upload-text">
+                      {watermarkLoading ? '识别中...' : '上传截图识别水印用户'}
+                    </p>
+                    <p className="ant-upload-hint">
+                      {watermarkLoading ? '正在解析顶部/底部点阵水印，请稍候' : '支持 JPG/PNG，默认使用深度识别，适合弱水印和多锚点场景'}
+                    </p>
+                  </Upload.Dragger>
+
+                  {watermarkResult?.bestCandidate ? (
+                    <Descriptions size="small" bordered column={1}>
+                      <Descriptions.Item label="UID">{watermarkResult.bestCandidate.uid}</Descriptions.Item>
+                      <Descriptions.Item label="环境">{watermarkResult.bestCandidate.env}</Descriptions.Item>
+                      <Descriptions.Item label="置信度">{watermarkResult.bestCandidate.score.toFixed(2)}</Descriptions.Item>
+                      <Descriptions.Item label="图片时间">{formatWatermarkImageTime(watermarkResult.imageTime?.time)}</Descriptions.Item>
+                      <Descriptions.Item label="时间来源">
+                        {formatWatermarkTimeSource(
+                          watermarkResult.imageTime?.source,
+                          watermarkResult.imageTime?.field,
+                          watermarkResult.imageTime?.reliable
+                        )}
+                      </Descriptions.Item>
+                    </Descriptions>
+                  ) : watermarkResult ? (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="未识别到水印信息"
+                      description="可以尝试开启深度识别、上传原图，或检查截图是否包含顶部/底部点阵水印。"
+                    />
+                  ) : (
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="上传截图后会解析点阵水印"
+                      description="用于从用户截图中快速反查 uid 和环境信息。"
+                    />
+                  )}
+                </Space>
+              ),
+            },
+            {
+              key: 'feedback',
+              label: (
+                <Space>
+                  <CommentOutlined />
+                  反馈日志查询
+                </Space>
+              ),
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <Space>
+                    <Button icon={<ExportOutlined />} onClick={openFeedbackLogs}>
+                      新窗口打开 OP 日志平台
+                    </Button>
+                  </Space>
+                  <iframe
+                    title="OP 反馈日志"
+                    src={FEEDBACK_LOG_URL}
+                    style={{
+                      width: '100%',
+                      height: 680,
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 6,
+                      background: '#fff',
+                    }}
+                  />
+                </Space>
+              ),
+            },
+            {
+              key: 'backend',
+              label: (
+                <Space>
+                  <ApiOutlined />
+                  后端日志查询
+                </Space>
+              ),
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                  <Input placeholder="服务名 / traceId / requestId / 关键字" prefix={<SearchOutlined />} />
+                  <Input placeholder="环境，如 prod、gray、test" />
+                  <Button type="primary" icon={<SearchOutlined />}>查询后端日志</Button>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="按服务或链路查询后端日志"
+                    description="用于排查接口异常、服务错误和客户端请求对应的后端链路。"
+                  />
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Card>
     </div>
   );
