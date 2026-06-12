@@ -1112,6 +1112,7 @@ export interface JenkinsBuild {
   url: string;
   description?: string | null;
   branchName?: string;
+  commitHash?: string;
   publishChannel?: string;
   buildNumber?: string;
   appVersion?: string;
@@ -1144,6 +1145,15 @@ export interface JenkinsBuildLogResult {
   jobName: string;
   buildNumber: number;
   log: string;
+  thirdSdkBranch: string;
+  thirdSdkRevision?: string;
+  thirdSdkDependencies: Array<{
+    name: string;
+    version: string;
+    source: string;
+  }>;
+  thirdSdkMissingFiles?: string[];
+  thirdSdkError?: string;
 }
 
 export const jenkinsApi = {

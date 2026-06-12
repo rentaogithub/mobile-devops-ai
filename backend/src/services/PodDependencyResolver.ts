@@ -140,7 +140,8 @@ async function shallowClone(
   url: string,
   branch: string,
   workDir: string,
-  creds?: { username?: string; password?: string }
+  creds?: { username?: string; password?: string },
+  revision?: string
 ): Promise<string> {
   const authedUrl = injectCredentials(url, creds?.username, creds?.password);
   const name = extractRepoName(url);
@@ -153,6 +154,28 @@ async function shallowClone(
   );
   if (code !== 0) {
     throw new Error((stderr || stdout || `git clone 失败 (exit ${code})`).trim());
+  }
+  if (revision && /^[0-9a-f]{7,40}$/i.test(revision)) {
+    const checkout = await runQuiet('git', ['checkout', '--detach', revision], {
+      cwd: dest,
+      timeoutMs: 30000,
+    });
+    if (checkout.code !== 0) {
+      const fetch = await runQuiet('git', ['fetch', '--depth=1', 'origin', revision], {
+        cwd: dest,
+        timeoutMs: 60000,
+      });
+      if (fetch.code !== 0) {
+        throw new Error((fetch.stderr || fetch.stdout || `git fetch ${revision} 失败 (exit ${fetch.code})`).trim());
+      }
+      const checkoutFetched = await runQuiet('git', ['checkout', '--detach', revision], {
+        cwd: dest,
+        timeoutMs: 30000,
+      });
+      if (checkoutFetched.code !== 0) {
+        throw new Error((checkoutFetched.stderr || checkoutFetched.stdout || `git checkout ${revision} 失败 (exit ${checkoutFetched.code})`).trim());
+      }
+    }
   }
   return dest;
 }
@@ -363,12 +386,13 @@ export class PodDependencyResolver {
   async loadNniosIndex(
     branch: string,
     creds?: { username?: string; password?: string },
-    workDir?: string
+    workDir?: string,
+    revision?: string
   ): Promise<NniosIndex> {
     const tmpRoot = workDir || fs.mkdtempSync(path.join(os.tmpdir(), 'pod-deps-'));
     let repoDir: string | undefined;
     try {
-      repoDir = await shallowClone(NNIOS_REPO_URL, branch, tmpRoot, creds);
+      repoDir = await shallowClone(NNIOS_REPO_URL, branch, tmpRoot, creds, revision);
 
       const read = (rel: string): string | null => {
         const p = path.join(repoDir!, rel);

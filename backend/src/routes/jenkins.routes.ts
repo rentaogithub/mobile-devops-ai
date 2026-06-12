@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import podDepsResolver from '../services/PodDependencyResolver';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -10,6 +11,12 @@ const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://10.1.3.177:808
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
+
+interface ThirdSdkDependency {
+  name: string;
+  version: string;
+  source: string;
+}
 
 function encodeJobPath(jobName: string) {
   return jobName
@@ -124,6 +131,13 @@ function extractErrorMessage(error: any, fallback: string) {
   return data?.message || data?.error || error.message || fallback;
 }
 
+function getGitCredentials() {
+  return {
+    username: process.env.GIT_USERNAME || undefined,
+    password: process.env.GIT_PASSWORD || undefined,
+  };
+}
+
 function parseConsoleMetadata(consoleText: string) {
   const appVersion =
     consoleText.match(/版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
@@ -155,11 +169,21 @@ function parseConsoleMetadata(consoleText: string) {
   return {
     appVersion,
     publishChannel,
+    commitHash: parseCheckoutRevision(consoleText),
     buildNumber,
     packageUrl,
     channelQrUrl: publishChannel === 'Pgyer' ? packageUrl : '',
     archiveUrl,
   };
+}
+
+function parseCheckoutRevision(consoleText: string) {
+  return (
+    consoleText.match(/Checking out Revision\s+([0-9a-f]{7,40})/i)?.[1] ||
+    consoleText.match(/git checkout -f\s+([0-9a-f]{7,40})/i)?.[1] ||
+    consoleText.match(/git rev-list --no-walk\s+([0-9a-f]{7,40})/i)?.[1] ||
+    ''
+  );
 }
 
 async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
@@ -173,10 +197,47 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
     return {
       appVersion: '',
       publishChannel: '',
+      commitHash: '',
       buildNumber: '',
       packageUrl: '',
       channelQrUrl: '',
       archiveUrl: '',
+    };
+  }
+}
+
+async function fetchThirdSdkDependencies(branch: string, revision?: string): Promise<{
+  branch: string;
+  revision?: string;
+  dependencies: ThirdSdkDependency[];
+  missingFiles: string[];
+  error?: string;
+}> {
+  try {
+    const normalizedBranch = normalizeBranchName(branch || 'develop') || 'develop';
+    const normalizedRevision = revision && /^[0-9a-f]{7,40}$/i.test(revision) ? revision : undefined;
+    const index = await podDepsResolver.loadNniosIndex(normalizedBranch, getGitCredentials(), undefined, normalizedRevision);
+    const dependencies = index.sources
+      .filter((item) => item.sourceFile === 'third_sdk.rb')
+      .map((item) => ({
+        name: item.podName,
+        version: item.version || item.tag || item.branch || item.commit || item.pathRef || '-',
+        source: item.raw,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      branch: index.branch,
+      revision: normalizedRevision,
+      dependencies,
+      missingFiles: index.missingFiles.filter((file) => file === 'third_sdk.rb'),
+    };
+  } catch (error: any) {
+    return {
+      branch: normalizeBranchName(branch || 'develop') || 'develop',
+      revision,
+      dependencies: [],
+      missingFiles: [],
+      error: error.message || '读取 third_sdk.rb 失败',
     };
   }
 }
@@ -266,6 +327,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         url: normalizeJenkinsUrl(build.url),
         branchName: buildParameters.branchName,
         publishChannel: consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel),
+        commitHash: consoleMetadata.commitHash,
         buildNumber: consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
         appVersion: consoleMetadata.appVersion,
         packageUrl: consoleMetadata.packageUrl,
@@ -333,6 +395,9 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       ...buildAuthConfig(),
     });
     const log = String(response.data || '');
+    const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
+    const checkoutRevision = parseCheckoutRevision(log);
+    const thirdSdk = await fetchThirdSdkDependencies(buildParameters.branchName || 'develop', checkoutRevision);
 
     res.json({
       success: true,
@@ -340,6 +405,11 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
         jobName: DEFAULT_JOB_NAME,
         buildNumber,
         log,
+        thirdSdkBranch: thirdSdk.branch,
+        thirdSdkRevision: thirdSdk.revision,
+        thirdSdkDependencies: thirdSdk.dependencies,
+        thirdSdkMissingFiles: thirdSdk.missingFiles,
+        thirdSdkError: thirdSdk.error,
       },
     });
   } catch (error: any) {

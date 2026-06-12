@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm } from 'antd';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -22,6 +22,26 @@ const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
 
 function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(branch.trim());
+}
+
+function getReleaseVersion(branch: string) {
+  const match = branch.trim().replace(/^origin\//, '').match(/^release\/(\d+(?:\.\d+){2,})$/);
+  return match ? match[1].split('.').map((item) => Number(item)) : [];
+}
+
+function compareReleaseBranches(a: string, b: string) {
+  const av = getReleaseVersion(a);
+  const bv = getReleaseVersion(b);
+  const len = Math.max(av.length, bv.length);
+  for (let i = 0; i < len; i += 1) {
+    const diff = (av[i] || 0) - (bv[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return a.localeCompare(b);
+}
+
+function getHighestReleaseBranch(list: string[]) {
+  return list.filter(isReleaseBranch).sort(compareReleaseBranches).at(-1) || '';
 }
 
 function formatBuildTime(timestamp: number) {
@@ -66,7 +86,15 @@ export default function CICDPage() {
   const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
-  const [selectedBuildLog, setSelectedBuildLog] = useState<{ build: JenkinsBuild; log: string } | null>(null);
+  const [selectedBuildLog, setSelectedBuildLog] = useState<{
+    build: JenkinsBuild;
+    log: string;
+    thirdSdkBranch: string;
+    thirdSdkRevision?: string;
+    thirdSdkDependencies: Array<{ name: string; version: string; source: string }>;
+    thirdSdkMissingFiles?: string[];
+    thirdSdkError?: string;
+  } | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [publishBranch, setPublishBranch] = useState('develop');
@@ -124,7 +152,11 @@ export default function CICDPage() {
     setBranchLoading(true);
     try {
       const response = await jenkinsApi.listBranches();
-      setBranches(response.data || []);
+      const nextBranches = response.data || [];
+      setBranches(nextBranches);
+      if (deployTarget !== 'Pgyer') {
+        setPublishBranch(getHighestReleaseBranch(nextBranches));
+      }
     } catch (err: any) {
       message.warning(err?.error || err?.message || '加载分支列表失败，可直接输入分支名');
     } finally {
@@ -145,16 +177,44 @@ export default function CICDPage() {
     }
   };
 
+  const openPgyerPublish = (build: JenkinsBuild) => {
+    setDeployTarget('Pgyer');
+    setVerificationPassword('');
+    setPublishBranch(build.branchName || 'develop');
+    setPublishModalOpen(true);
+  };
+
+  const openPublishModal = () => {
+    if (deployTarget !== 'Pgyer') {
+      setPublishBranch(getHighestReleaseBranch(branches));
+    }
+    setPublishModalOpen(true);
+  };
+
   const showBuildLog = async (build: JenkinsBuild) => {
     setLogModalOpen(true);
-    setSelectedBuildLog({ build, log: '' });
+    setSelectedBuildLog({ build, log: '', thirdSdkBranch: build.branchName || 'develop', thirdSdkDependencies: [] });
     setLogLoading(true);
     try {
       const response = await jenkinsApi.getBuildLog(build.number);
-      setSelectedBuildLog({ build, log: response.data?.log || '' });
+      setSelectedBuildLog({
+        build,
+        log: response.data?.log || '',
+        thirdSdkBranch: response.data?.thirdSdkBranch || build.branchName || 'develop',
+        thirdSdkRevision: response.data?.thirdSdkRevision,
+        thirdSdkDependencies: response.data?.thirdSdkDependencies || [],
+        thirdSdkMissingFiles: response.data?.thirdSdkMissingFiles || [],
+        thirdSdkError: response.data?.thirdSdkError,
+      });
     } catch (err: any) {
       message.error(err?.error || err?.message || '加载打包日志失败');
-      setSelectedBuildLog({ build, log: '加载打包日志失败' });
+      setSelectedBuildLog({
+        build,
+        log: '加载打包日志失败',
+        thirdSdkBranch: build.branchName || 'develop',
+        thirdSdkDependencies: [],
+        thirdSdkError: err?.error || err?.message || '加载打包日志失败',
+      });
     } finally {
       setLogLoading(false);
     }
@@ -183,6 +243,12 @@ export default function CICDPage() {
     }
   }, [publishModalOpen]);
 
+  useEffect(() => {
+    if (deployTarget !== 'Pgyer' && branches.length > 0) {
+      setPublishBranch(getHighestReleaseBranch(branches));
+    }
+  }, [deployTarget, branches]);
+
   const stats = useMemo(() => data?.stats || {
     total: 0,
     running: 0,
@@ -190,12 +256,10 @@ export default function CICDPage() {
     successRate: '-',
   }, [data]);
 
-  const publishBranchOptions = useMemo(() => {
-    const list = deployTarget === 'Pgyer'
-      ? branches
-      : branches.filter(isReleaseBranch);
-    return list.map((branch) => ({ value: branch, label: branch }));
-  }, [branches, deployTarget]);
+  const publishBranchOptions = useMemo(
+    () => branches.map((branch) => ({ value: branch, label: branch })),
+    [branches],
+  );
 
   return (
     <div>
@@ -216,7 +280,7 @@ export default function CICDPage() {
             <Button icon={<ReloadOutlined />} onClick={() => loadBuilds()} loading={loading}>
             刷新
           </Button>
-          <Button type="primary" icon={<PlayCircleOutlined />} loading={publishing} onClick={() => setPublishModalOpen(true)}>
+          <Button type="primary" icon={<PlayCircleOutlined />} loading={publishing} onClick={openPublishModal}>
             发布
           </Button>
         </Space>
@@ -310,6 +374,13 @@ export default function CICDPage() {
               render: (value?: string) => value ? <Tag>{value}</Tag> : <Text type="secondary">-</Text>,
             },
             {
+              title: 'Commit Hash',
+              dataIndex: 'commitHash',
+              key: 'commitHash',
+              width: 130,
+              render: (value?: string) => value ? <Text code title={value}>{value.slice(0, 12)}</Text> : <Text type="secondary">-</Text>,
+            },
+            {
               title: '构建号',
               dataIndex: 'buildNumber',
               key: 'buildNumber',
@@ -390,6 +461,11 @@ export default function CICDPage() {
                   <Button size="small" icon={<FileTextOutlined />} onClick={() => showBuildLog(record)}>
                     详情
                   </Button>
+                  {record.publishChannel === 'Pgyer' && (
+                    <Button size="small" type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openPgyerPublish(record)}>
+                      发布
+                    </Button>
+                  )}
                   {record.building && (
                     <Popconfirm
                       title="取消构建？"
@@ -428,23 +504,32 @@ export default function CICDPage() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <div>
             <Text strong>发布分支</Text>
-            <AutoComplete
-              value={publishBranch}
-              options={publishBranchOptions}
-              onChange={setPublishBranch}
-              placeholder="请输入分支名，如 develop 或 release/5.14.7"
-              style={{ marginTop: 8, width: '100%' }}
-              filterOption={(inputValue, option) =>
-                String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
-              }
-            />
+            {deployTarget === 'Pgyer' ? (
+              <AutoComplete
+                value={publishBranch}
+                options={publishBranchOptions}
+                onChange={setPublishBranch}
+                placeholder="请输入分支名，如 develop 或 release/5.14.7"
+                style={{ marginTop: 8, width: '100%' }}
+                filterOption={(inputValue, option) =>
+                  String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
+                }
+              />
+            ) : (
+              <Input
+                value={publishBranch || '未找到 release/x.x.x 分支'}
+                readOnly
+                status={publishBranch ? undefined : 'warning'}
+                style={{ marginTop: 8 }}
+              />
+            )}
             <Space style={{ marginTop: 8 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {branchLoading
                   ? '正在加载分支列表...'
                   : deployTarget === 'Pgyer'
                     ? '可选择已有分支，也可直接输入分支名'
-                    : 'TestFlight / 苹果商店只能选择 release/x.x.x 格式分支'}
+                    : 'TestFlight / 苹果商店自动使用当前 release/ 下最高版本分支'}
               </Text>
               <Button size="small" type="link" onClick={loadBranches} loading={branchLoading}>
                 刷新分支
@@ -460,11 +545,12 @@ export default function CICDPage() {
             options={DEPLOY_TARGET_OPTIONS}
             value={deployTarget}
             onChange={(event) => {
-              setDeployTarget(event.target.value);
-              if (event.target.value !== 'Pgyer' && !isReleaseBranch(publishBranch)) {
-                setPublishBranch('');
+              const nextTarget = event.target.value as DeployTarget;
+              setDeployTarget(nextTarget);
+              if (nextTarget !== 'Pgyer') {
+                setPublishBranch(getHighestReleaseBranch(branches));
               }
-              if (event.target.value === 'Pgyer') {
+              if (nextTarget === 'Pgyer') {
                 setVerificationPassword('');
               }
             }}
@@ -508,20 +594,87 @@ export default function CICDPage() {
               <Tag color="blue">构建 #{selectedBuildLog.build.number}</Tag>
               {selectedBuildLog.build.publishChannel && <Tag>{selectedBuildLog.build.publishChannel}</Tag>}
               {selectedBuildLog.build.branchName && <Tag>分支 {selectedBuildLog.build.branchName}</Tag>}
+              {(selectedBuildLog.thirdSdkRevision || selectedBuildLog.build.commitHash) && (
+                <Tag color="gold">commit {(selectedBuildLog.thirdSdkRevision || selectedBuildLog.build.commitHash || '').slice(0, 12)}</Tag>
+              )}
               {selectedBuildLog.build.buildNumber && <Tag color="green">构建号 {selectedBuildLog.build.buildNumber}</Tag>}
               {selectedBuildLog.build.appVersion && <Tag color="purple">APP {selectedBuildLog.build.appVersion}</Tag>}
             </Space>
           )}
-          <Input.TextArea
-            value={logLoading ? '正在加载打包日志...' : selectedBuildLog?.log || '暂无打包日志'}
-            readOnly
-            autoSize={false}
-            style={{
-              height: '62vh',
-              fontFamily: 'Menlo, Monaco, Consolas, monospace',
-              fontSize: 12,
-              whiteSpace: 'pre',
-            }}
+          <Tabs
+            key={selectedBuildLog?.build.number || 'build-log'}
+            defaultActiveKey="build-log"
+            items={[
+              {
+                key: 'build-log',
+                label: '打包日志',
+                children: (
+                  <Input.TextArea
+                    value={logLoading ? '正在加载打包日志...' : selectedBuildLog?.log || '暂无打包日志'}
+                    readOnly
+                    autoSize={false}
+                    style={{
+                      height: '58vh',
+                      fontFamily: 'Menlo, Monaco, Consolas, monospace',
+                      fontSize: 12,
+                      whiteSpace: 'pre',
+                    }}
+                  />
+                ),
+              },
+              {
+                key: 'third-sdk',
+                label: (
+                  <Space>
+                    <span>三方库</span>
+                    <Tag color="blue">{selectedBuildLog?.thirdSdkDependencies.length || 0}</Tag>
+                  </Space>
+                ),
+                children: (
+                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Text type="secondary">来源：当前构建主工程 third_sdk.rb</Text>
+                      {selectedBuildLog?.thirdSdkBranch && <Tag color="geekblue">分支 {selectedBuildLog.thirdSdkBranch}</Tag>}
+                    </Space>
+                    {selectedBuildLog?.thirdSdkError && (
+                      <Alert type="warning" showIcon message="读取 third_sdk.rb 失败" description={selectedBuildLog.thirdSdkError} />
+                    )}
+                    {selectedBuildLog?.thirdSdkMissingFiles?.length ? (
+                      <Alert type="warning" showIcon message={`未找到：${selectedBuildLog.thirdSdkMissingFiles.join(', ')}`} />
+                    ) : null}
+                    {selectedBuildLog?.thirdSdkDependencies.length ? (
+                      <Table
+                        size="small"
+                        rowKey={(record) => record.name}
+                        pagination={false}
+                        scroll={{ y: 430 }}
+                        dataSource={selectedBuildLog.thirdSdkDependencies}
+                        columns={[
+                          {
+                            title: '三方库',
+                            dataIndex: 'name',
+                            key: 'name',
+                            width: 240,
+                            render: (value: string) => <Text strong>{value}</Text>,
+                          },
+                          {
+                            title: '版本',
+                            dataIndex: 'version',
+                            key: 'version',
+                            width: 180,
+                            render: (value: string) => <Tag color="purple">{value}</Tag>,
+                          },
+                        ]}
+                      />
+                    ) : (
+                      <Text type="secondary">
+                        {logLoading ? '正在读取 third_sdk.rb...' : '未从 third_sdk.rb 解析到三方库'}
+                      </Text>
+                    )}
+                  </Space>
+                ),
+              },
+            ]}
           />
         </Space>
       </Modal>
