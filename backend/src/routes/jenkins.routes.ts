@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
 import podDepsResolver from '../services/PodDependencyResolver';
 
 const router = Router();
@@ -9,8 +11,42 @@ const execFileAsync = promisify(execFile);
 
 const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://10.1.3.177:8080').replace(/\/$/, '');
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
+const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
+const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'full']);
+const SONIC_API_BASE = (process.env.SONIC_API_BASE || '').replace(/\/$/, '');
+const SONIC_WEB_URL = (process.env.SONIC_WEB_URL || SONIC_API_BASE || '').replace(/\/$/, '');
+const SONIC_TOKEN = process.env.SONIC_TOKEN || '';
+const SONIC_PROJECT_ID = process.env.SONIC_PROJECT_ID || '';
+const SONIC_TEST_PLAN_ID = process.env.SONIC_TEST_PLAN_ID || '';
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+
+interface SonicDevicePool {
+  label: string;
+  value: string;
+  description: string;
+  groupId?: string;
+}
+
+const DEFAULT_SONIC_DEVICE_POOLS: SonicDevicePool[] = [
+  {
+    label: 'iOS 默认设备池',
+    value: 'ios-default',
+    description: '默认可用 iOS 真机设备，适合日常冒烟质检。',
+  },
+  {
+    label: 'iPhone 新系统池',
+    value: 'ios-latest',
+    description: '较新 iOS 系统设备，适合新系统兼容性检查。',
+  },
+  {
+    label: 'iPhone 兼容性池',
+    value: 'ios-compat',
+    description: '覆盖较旧机型或系统版本，适合发布前兼容性回归。',
+  },
+];
 
 interface ThirdSdkDependency {
   name: string;
@@ -24,6 +60,65 @@ function encodeJobPath(jobName: string) {
     .filter(Boolean)
     .map((part) => `job/${encodeURIComponent(part)}`)
     .join('/');
+}
+
+function normalizeSonicDevicePool(pool: any): SonicDevicePool | null {
+  const label = String(pool?.label || '').trim();
+  const value = String(pool?.value || '').trim();
+  if (!label || !value) return null;
+  return {
+    label,
+    value,
+    description: String(pool?.description || '用于 Sonic iOS 真机调度。').trim(),
+    groupId: pool?.groupId ? String(pool.groupId).trim() : undefined,
+  };
+}
+
+function getSonicDevicePools() {
+  try {
+    if (fs.existsSync(SONIC_DEVICE_POOLS_CONFIG_PATH)) {
+      const config = JSON.parse(fs.readFileSync(SONIC_DEVICE_POOLS_CONFIG_PATH, 'utf-8'));
+      const savedPools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
+        .map(normalizeSonicDevicePool)
+        .filter(Boolean) as SonicDevicePool[];
+      if (savedPools.length > 0) {
+        return savedPools;
+      }
+    }
+  } catch {
+    // 配置文件损坏时回退到环境变量或默认配置。
+  }
+
+  const raw = String(process.env.SONIC_DEVICE_POOLS_JSON || '').trim();
+  if (!raw) return DEFAULT_SONIC_DEVICE_POOLS;
+
+  try {
+    const parsed = JSON.parse(raw);
+    const pools = (Array.isArray(parsed) ? parsed : [])
+      .map(normalizeSonicDevicePool)
+      .filter(Boolean) as SonicDevicePool[];
+    return pools.length > 0 ? pools : DEFAULT_SONIC_DEVICE_POOLS;
+  } catch {
+    return DEFAULT_SONIC_DEVICE_POOLS;
+  }
+}
+
+function isValidSonicDevicePool(value: string) {
+  return getSonicDevicePools().some((pool) => pool.value === value);
+}
+
+function findSonicDevicePool(value: string) {
+  return getSonicDevicePools().find((pool) => pool.value === value);
+}
+
+function saveSonicDevicePools(pools: SonicDevicePool[]) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  fs.writeFileSync(SONIC_DEVICE_POOLS_CONFIG_PATH, JSON.stringify({
+    devicePools: pools,
+    updatedAt: new Date().toISOString(),
+  }, null, 2));
 }
 
 function buildAuthConfig() {
@@ -140,6 +235,7 @@ function getGitCredentials() {
 
 function parseConsoleMetadata(consoleText: string) {
   const appVersion =
+    consoleText.match(/ASC_VERSION\s*=\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     consoleText.match(/版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     consoleText.match(/显示版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     consoleText.match(/MARKETING_VERSION:\s*[^→\n]*→\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
@@ -147,14 +243,17 @@ function parseConsoleMetadata(consoleText: string) {
   const publishChannel = normalizeDeployTarget(
     consoleText.match(/发布渠道[:：]\s*([^\n\r]+)/)?.[1],
   );
-  const buildNumber =
-    consoleText.match(/build\s*\[?([0-9]+)\]?/i)?.[1] ||
-    consoleText.match(/构建号[:：]\s*([0-9]+)/)?.[1] ||
-    '';
   const packageUrl =
     consoleText.match(/蒲公英链接[:：]\s*(https?:\/\/\S+)/)?.[1] ||
     consoleText.match(/蒲公英版本[:：].*?\((https?:\/\/[^)\s]+)/)?.[1] ||
     consoleText.match(/build\s*\[[0-9]+\]\((https?:\/\/[^)\s]+)\)/i)?.[1] ||
+    '';
+  const buildNumber =
+    consoleText.match(/CHANNEL_BUILD_NUMBER\s*=\s*([0-9]+)/)?.[1] ||
+    consoleText.match(/渠道构建号[:：]\s*([0-9]+)/)?.[1] ||
+    consoleText.match(/(?:蒲公英|Pgyer|TestFlight|AppStore|苹果商店)\s*构建号[:：]\s*([0-9]+)/i)?.[1] ||
+    consoleText.match(/CURRENT_PROJECT_VERSION:\s*[^→\n]*→\s*([0-9]+)/)?.[1] ||
+    (packageUrl ? consoleText.match(/build\s*\[([0-9]+)\]\((https?:\/\/[^)\s]+)\)/i)?.[1] : '') ||
     '';
   const archivePath = (
     consoleText.match(/-archivePath\s+(.+?\.xcarchive)/)?.[1] ||
@@ -264,6 +363,48 @@ async function fetchBuildParameters(jobPath: string, buildNumber: number) {
   }
 }
 
+async function resolveChannelBuildNumber(
+  publishChannel: string,
+  currentBuildNumber: string,
+  jenkinsBuildNumber: number,
+) {
+  const normalizedChannel = normalizeDeployTarget(publishChannel);
+  const normalizedCurrent = String(currentBuildNumber || '').trim();
+  if (normalizedChannel === 'Pgyer') {
+    return normalizedCurrent;
+  }
+  if (normalizedChannel !== 'AppStore' && normalizedChannel !== 'TestFlight') {
+    return normalizedCurrent === String(jenkinsBuildNumber) ? '' : normalizedCurrent;
+  }
+
+  return normalizedCurrent === String(jenkinsBuildNumber) ? '' : normalizedCurrent;
+}
+
+async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
+  const url = `${JENKINS_BASE_URL}/${jobPath}/api/json`;
+  if (tree) {
+    try {
+      return await axios.get(url, {
+        timeout: 30000,
+        params: { tree },
+        ...buildAuthConfig(),
+      });
+    } catch (error: any) {
+      if (!error.response || error.response.status >= 500 || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+        return axios.get(url, {
+          timeout: 30000,
+          ...buildAuthConfig(),
+        });
+      }
+      throw error;
+    }
+  }
+  return axios.get(url, {
+    timeout: 30000,
+    ...buildAuthConfig(),
+  });
+}
+
 router.get('/nn/branches', async (_req: Request, res: Response) => {
   try {
     const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', DEFAULT_REPO_URL], {
@@ -308,11 +449,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
       'lastBuild[number,result,timestamp,duration,building,url,description]',
       'builds[number,result,timestamp,duration,building,url,description]{0,30}',
     ].join(',');
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/api/json`, {
-      timeout: 30000,
-      params: { tree },
-      ...buildAuthConfig(),
-    });
+    const response = await fetchJenkinsJobJson(jobPath, tree);
 
     const job = response.data || {};
     const rawBuilds = Array.isArray(job.builds) ? job.builds : [];
@@ -322,14 +459,21 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         fetchBuildConsoleMetadata(jobPath, build.number),
         fetchBuildParameters(jobPath, build.number),
       ]);
+      const publishChannel = consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel);
+      const appVersion = consoleMetadata.appVersion;
+      const buildNumber = await resolveChannelBuildNumber(
+        publishChannel,
+        consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
+        build.number,
+      );
       return {
         ...build,
         url: normalizeJenkinsUrl(build.url),
         branchName: buildParameters.branchName,
-        publishChannel: consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel),
+        publishChannel,
         commitHash: consoleMetadata.commitHash,
-        buildNumber: consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
-        appVersion: consoleMetadata.appVersion,
+        buildNumber,
+        appVersion,
         packageUrl: consoleMetadata.packageUrl,
         channelQrUrl: consoleMetadata.channelQrUrl,
         archiveUrl: consoleMetadata.archiveUrl,
@@ -372,7 +516,8 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(502).json({
       success: false,
-      error: error.response?.data?.message || error.message || '查询 Jenkins 构建列表失败',
+      error: extractErrorMessage(error, '查询 Jenkins 构建列表失败'),
+      status: error.response?.status,
     });
   }
 });
@@ -417,6 +562,160 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       success: false,
       error: extractErrorMessage(error, '获取 Jenkins 打包日志失败'),
       status: error.response?.status,
+    });
+  }
+});
+
+router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
+  try {
+    const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+    const tree = [
+      'displayName',
+      'fullName',
+      'url',
+      'buildable',
+      'color',
+      'lastBuild[number,result,timestamp,duration,building,url,description]',
+      'builds[number,result,timestamp,duration,building,url,description]{0,20}',
+    ].join(',');
+    const response = await fetchJenkinsJobJson(jobPath, tree);
+    const job = response.data || {};
+    const builds = (Array.isArray(job.builds) ? job.builds : []).map((build: any) => ({
+      ...build,
+      url: normalizeJenkinsUrl(build.url),
+    }));
+    const running = builds.filter((build: any) => build.building).length;
+    const success = builds.filter((build: any) => build.result === 'SUCCESS').length;
+    const finished = builds.filter((build: any) => !build.building && build.result).length;
+
+    res.json({
+      success: true,
+      data: {
+        job: {
+          name: job.displayName || DEFAULT_QA_JOB_NAME,
+          fullName: job.fullName || DEFAULT_QA_JOB_NAME,
+          url: normalizeJenkinsUrl(job.url) || `${JENKINS_BASE_URL}/${jobPath}/`,
+          buildable: job.buildable !== false,
+          color: job.color,
+        },
+        stats: {
+          total: builds.length,
+          running,
+          latestBuild: job.lastBuild?.number || '-',
+          successRate: finished > 0 ? `${Math.round((success / finished) * 100)}%` : '-',
+        },
+        builds,
+      },
+    });
+  } catch (error: any) {
+    if (error.response?.status === 404) {
+      res.status(404).json({
+        success: false,
+        error: `未找到 Jenkins 自动质检 Job：${DEFAULT_QA_JOB_NAME}，请先在 Jenkins 中创建或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称`,
+        status: 404,
+      });
+      return;
+    }
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '查询 Jenkins 自动质检列表失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
+router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
+  const configured = Boolean(SONIC_API_BASE && SONIC_TOKEN);
+  const status = {
+    configured,
+    apiBase: SONIC_API_BASE || '',
+    webUrl: SONIC_WEB_URL || '',
+    tokenConfigured: Boolean(SONIC_TOKEN),
+    projectId: SONIC_PROJECT_ID || '',
+    testPlanId: SONIC_TEST_PLAN_ID || '',
+    reachable: false,
+    message: configured ? 'Sonic 已配置，等待连通性检测' : '未配置 SONIC_API_BASE 或 SONIC_TOKEN',
+  };
+
+  if (!configured) {
+    res.json({
+      success: true,
+      data: status,
+    });
+    return;
+  }
+
+  try {
+    const response = await axios.get(`${SONIC_API_BASE}/`, {
+      timeout: 5000,
+      headers: {
+        Authorization: `Bearer ${SONIC_TOKEN}`,
+      },
+      validateStatus: () => true,
+    });
+    res.json({
+      success: true,
+      data: {
+        ...status,
+        reachable: response.status >= 200 && response.status < 500,
+        message: `Sonic HTTP ${response.status}`,
+      },
+    });
+  } catch (error: any) {
+    res.json({
+      success: true,
+      data: {
+        ...status,
+        reachable: false,
+        message: error.message || 'Sonic 连通性检测失败',
+      },
+    });
+  }
+});
+
+router.get('/nn/quality/sonic/device-pools', async (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    data: getSonicDevicePools(),
+  });
+});
+
+router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response) => {
+  try {
+    const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
+      .map(normalizeSonicDevicePool)
+      .filter(Boolean) as SonicDevicePool[];
+
+    if (pools.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: '至少需要配置一个 Sonic 设备池',
+      });
+      return;
+    }
+
+    const values = new Set<string>();
+    for (const pool of pools) {
+      if (values.has(pool.value)) {
+        res.status(400).json({
+          success: false,
+          error: `设备池 value 重复：${pool.value}`,
+        });
+        return;
+      }
+      values.add(pool.value);
+    }
+
+    saveSonicDevicePools(pools);
+
+    res.json({
+      success: true,
+      data: pools,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message || '保存 Sonic 设备池失败',
     });
   }
 });
@@ -521,6 +820,88 @@ router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
     res.status(502).json({
       success: false,
       error: extractErrorMessage(error, '取消 Jenkins 构建失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
+router.post('/nn/quality', async (req: Request, res: Response) => {
+  try {
+    const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+    const buildNumber = String(req.body?.buildNumber || '').trim();
+    const branch = normalizeBranchName(String(req.body?.branch || ''));
+    const commitHash = String(req.body?.commitHash || '').trim();
+    const appVersion = String(req.body?.appVersion || '').trim();
+    const packageUrl = String(req.body?.packageUrl || '').trim();
+    const archiveUrl = String(req.body?.archiveUrl || '').trim();
+    const testSuite = String(req.body?.testSuite || 'smoke').trim();
+    const devicePool = String(req.body?.devicePool || 'ios-default').trim();
+
+    if (!buildNumber) {
+      res.status(400).json({
+        success: false,
+        error: '请选择需要质检的构建',
+      });
+      return;
+    }
+    if (!QA_TEST_SUITES.has(testSuite)) {
+      res.status(400).json({
+        success: false,
+        error: '质检套件无效',
+      });
+      return;
+    }
+    const selectedDevicePool = findSonicDevicePool(devicePool);
+    if (!selectedDevicePool) {
+      res.status(400).json({
+        success: false,
+        error: '设备池无效，请在平台 Sonic 设备池配置中选择',
+      });
+      return;
+    }
+
+    const crumb = await getCrumb();
+    const params = new URLSearchParams({
+      SOURCE_JOB: DEFAULT_JOB_NAME,
+      SOURCE_BUILD_NUMBER: buildNumber,
+      BRANCH: branch,
+      COMMIT_HASH: commitHash,
+      APP_VERSION: appVersion,
+      PACKAGE_URL: packageUrl,
+      ARCHIVE_URL: archiveUrl,
+      TEST_SUITE: testSuite,
+      DEVICE_POOL: devicePool,
+      DEVICE_POOL_LABEL: selectedDevicePool.label,
+      SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
+      DEVICE_CLOUD: 'Sonic',
+      SONIC_API_BASE,
+      SONIC_PROJECT_ID,
+      SONIC_TEST_PLAN_ID,
+    });
+
+    await axios.post(`${JENKINS_BASE_URL}/${jobPath}/buildWithParameters`, params.toString(), {
+      timeout: 30000,
+      headers: {
+        ...crumb.headers,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      ...buildAuthConfig(),
+    });
+
+    res.json({
+      success: true,
+      data: {
+        jobName: DEFAULT_QA_JOB_NAME,
+        sourceBuildNumber: buildNumber,
+        testSuite,
+        devicePool,
+        url: `${JENKINS_BASE_URL}/${jobPath}/`,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '触发 Jenkins 自动质检失败'),
       status: error.response?.status,
     });
   }

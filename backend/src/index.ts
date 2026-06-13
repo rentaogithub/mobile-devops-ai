@@ -24,6 +24,7 @@ import pairingRoutes from './routes/pairing.routes';
 import sentryProxyRoutes from './routes/sentryProxy.routes';
 import sentryAnalysisRoutes from './routes/sentryAnalysis.routes';
 import watermarkRoutes from './routes/watermark.routes';
+import sonicProxyRoutes from './routes/sonicProxy.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -51,6 +52,8 @@ const sentryProxyPaths = [
   '/api/0',
 ];
 sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, sentryProxyRoutes));
+app.use('/sonic-admin', sonicProxyRoutes);
+app.use('/sonic-api', sonicProxyRoutes);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

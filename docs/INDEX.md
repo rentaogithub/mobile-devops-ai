@@ -41,3 +41,8 @@
 
 - [报告下载](REPORT_DOWNLOAD_GUIDE.md) - 下载符号化报告
 - [第三方崩溃日志](THIRD_PARTY_CRASH_LOGS.md) - 处理第三方日志
+
+## 🚀 CI/CD
+
+- [Sonic iOS 自动质检](SONIC_IOS_QUALITY_GUIDE.md) - Jenkins + Sonic 云真机自动化质检接入
+- [Sonic 单 Mac 部署说明](SONIC_SINGLE_MAC_DEPLOYMENT_GUIDE.md) - 一台 Mac 同时承载打包、平台、Sonic 和真机 Agent

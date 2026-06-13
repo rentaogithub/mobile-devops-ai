@@ -1156,6 +1156,53 @@ export interface JenkinsBuildLogResult {
   thirdSdkError?: string;
 }
 
+export type JenkinsQualitySuite = 'smoke' | 'login' | 'im' | 'rtc' | 'full';
+
+export interface JenkinsQualityBuild {
+  number: number;
+  result?: 'SUCCESS' | 'FAILURE' | 'ABORTED' | 'UNSTABLE' | null;
+  timestamp: number;
+  duration: number;
+  building: boolean;
+  url: string;
+  description?: string | null;
+}
+
+export interface JenkinsQualityListResult {
+  job: {
+    name: string;
+    fullName: string;
+    url: string;
+    buildable: boolean;
+    color?: string;
+  };
+  stats: {
+    total: number;
+    running: number;
+    latestBuild: number | string;
+    successRate: string;
+  };
+  builds: JenkinsQualityBuild[];
+}
+
+export interface SonicQualityStatus {
+  configured: boolean;
+  apiBase: string;
+  webUrl?: string;
+  tokenConfigured: boolean;
+  projectId: string;
+  testPlanId: string;
+  reachable: boolean;
+  message: string;
+}
+
+export interface SonicDevicePool {
+  label: string;
+  value: string;
+  description: string;
+  groupId?: string;
+}
+
 export const jenkinsApi = {
   listBranches: async (): Promise<ApiResponse<string[]>> => {
     const response = await api.get<ApiResponse<string[]>>('/jenkins/nn/branches');
@@ -1187,6 +1234,52 @@ export const jenkinsApi = {
     const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/nn/builds/${buildNumber}/log`, {
       timeout: 120000,
     });
+    return response.data;
+  },
+
+  listQualityBuilds: async (): Promise<ApiResponse<JenkinsQualityListResult>> => {
+    const response = await api.get<ApiResponse<JenkinsQualityListResult>>('/jenkins/nn/quality/builds');
+    return response.data;
+  },
+
+  getSonicQualityStatus: async (): Promise<ApiResponse<SonicQualityStatus>> => {
+    const response = await api.get<ApiResponse<SonicQualityStatus>>('/jenkins/nn/quality/sonic/status');
+    return response.data;
+  },
+
+  listSonicDevicePools: async (): Promise<ApiResponse<SonicDevicePool[]>> => {
+    const response = await api.get<ApiResponse<SonicDevicePool[]>>('/jenkins/nn/quality/sonic/device-pools');
+    return response.data;
+  },
+
+  updateSonicDevicePools: async (devicePools: SonicDevicePool[]): Promise<ApiResponse<SonicDevicePool[]>> => {
+    const response = await api.put<ApiResponse<SonicDevicePool[]>>('/jenkins/nn/quality/sonic/device-pools', { devicePools });
+    return response.data;
+  },
+
+  triggerQuality: async (payload: {
+    buildNumber: number;
+    branch?: string;
+    commitHash?: string;
+    appVersion?: string;
+    packageUrl?: string;
+    archiveUrl?: string;
+    testSuite: JenkinsQualitySuite;
+    devicePool: string;
+  }): Promise<ApiResponse<{
+    jobName: string;
+    sourceBuildNumber: string;
+    testSuite: JenkinsQualitySuite;
+    devicePool: string;
+    url: string;
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      jobName: string;
+      sourceBuildNumber: string;
+      testSuite: JenkinsQualitySuite;
+      devicePool: string;
+      url: string;
+    }>>('/jenkins/nn/quality', payload);
     return response.data;
   },
 };

@@ -43,7 +43,7 @@ const features: FeatureCard[] = [
   {
     key: 'cicd',
     title: 'CI/CD 管理',
-    description: '配置和管理持续集成与持续部署流水线，自动化构建、测试和发布流程',
+    description: 'nn-ios Jenkins 构建与发布蒲公英、TestFlight、苹果商店包',
     icon: <RocketOutlined />,
     path: '/cicd',
     color: '#722ed1',

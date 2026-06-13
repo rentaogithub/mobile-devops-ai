@@ -28,6 +28,9 @@ export default function MainLayout() {
     if (['/sentry-service', '/history', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
       return '/symbolicate-group';
     }
+    if (path.startsWith('/cicd')) {
+      return '/cicd-group';
+    }
     // Match first segment
     const segment = '/' + path.split('/').filter(Boolean)[0];
     return segment;
@@ -56,9 +59,13 @@ export default function MainLayout() {
       label: 'Pods 组件',
     },
     {
-      key: '/cicd',
+      key: '/cicd-group',
       icon: <RocketOutlined />,
-      label: 'CI/CD',
+      label: <span onClick={() => navigate('/cicd')}>CI/CD</span>,
+      children: [
+        { key: '/cicd', label: '发布管理' },
+        { key: '/cicd/quality', label: '自动质检' },
+      ],
     },
     {
       key: '/logs',

@@ -1,0 +1,78 @@
+services:
+  sonic-mysql:
+    image: mysql:8.0
+    container_name: nn-sonic-mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: ${SONIC_MYSQL_DATABASE:-sonic}
+      MYSQL_USER: ${SONIC_MYSQL_USER:-sonic}
+      MYSQL_PASSWORD: ${SONIC_MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${SONIC_MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    ports:
+      - "${SONIC_MYSQL_PORT:-3307}:3306"
+    volumes:
+      - sonic-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${SONIC_MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  sonic-redis:
+    image: redis:7-alpine
+    container_name: nn-sonic-redis
+    restart: unless-stopped
+    ports:
+      - "${SONIC_REDIS_PORT:-6380}:6379"
+    volumes:
+      - sonic-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  sonic-server:
+    image: ${SONIC_SERVER_IMAGE}
+    container_name: nn-sonic-server
+    restart: unless-stopped
+    depends_on:
+      sonic-mysql:
+        condition: service_healthy
+      sonic-redis:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_HOST: sonic-mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${SONIC_MYSQL_DATABASE:-sonic}
+      MYSQL_USERNAME: ${SONIC_MYSQL_USER:-sonic}
+      MYSQL_PASSWORD: ${SONIC_MYSQL_PASSWORD}
+      REDIS_HOST: sonic-redis
+      REDIS_PORT: 6379
+    ports:
+      - "${SONIC_API_PORT:-8094}:8094"
+    volumes:
+      - sonic-server-data:/data
+
+  sonic-web:
+    image: ${SONIC_WEB_IMAGE}
+    container_name: nn-sonic-web
+    restart: unless-stopped
+    depends_on:
+      - sonic-server
+    environment:
+      TZ: Asia/Shanghai
+      SONIC_API_BASE: http://${SONIC_HOST:-127.0.0.1}:${SONIC_API_PORT:-8094}
+    ports:
+      - "${SONIC_WEB_PORT:-3002}:80"
+
+volumes:
+  sonic-mysql-data:
+  sonic-redis-data:
+  sonic-server-data:
