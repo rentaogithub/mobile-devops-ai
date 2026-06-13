@@ -83,7 +83,15 @@ brew install libimobiledevice ideviceinstaller
 ### tidevice
 
 ```bash
-python3 -m pip install -U tidevice
+brew install pipx
+pipx ensurepath
+pipx install tidevice
+```
+
+如果当前终端还找不到 `tidevice`，重新打开终端，或执行：
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ### 连接 iPhone
@@ -221,6 +229,46 @@ Agent 需要配置：
 ```text
 http://10.1.3.177:5173/sonic-admin
 ```
+
+### 随 nn-ios-platform 自动启动 Agent
+
+平台启动脚本已经支持自动拉起 Sonic Agent。先在 `backend/.env` 中配置其中一种方式：
+
+```bash
+SONIC_AGENT_AUTO_START=true
+SONIC_AGENT_DIR=/opt/sonic-agent
+SONIC_AGENT_API_BASE=http://127.0.0.1:8094
+```
+
+如果 Agent 不是标准目录结构，也可以直接指定启动命令：
+
+```bash
+SONIC_AGENT_AUTO_START=true
+SONIC_AGENT_CMD='cd /opt/sonic-agent && sh start.sh'
+```
+
+之后启动平台即可：
+
+```bash
+npm run dev
+# 或
+npm start
+```
+
+启动行为：
+
+- 如果 Sonic Agent 已经运行，会跳过。
+- 如果没有配置 `SONIC_AGENT_DIR` 或 `SONIC_AGENT_CMD`，只打印提示，不阻断平台启动。
+- Agent 日志默认写入 `sonic-agent.log`。
+- Agent PID 默认写入 `nn-ios-platform-data/sonic-agent.pid`。
+
+停止开发环境时：
+
+```bash
+sh scripts/stop-dev.sh
+```
+
+如果 Agent 是由平台启动的，会一起停止。
 
 ## Sonic 后台配置
 
