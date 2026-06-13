@@ -1,12 +1,9 @@
+import './config/env';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import http from 'http';
-
-// 必须最先加载，确保后续模块能读到环境变量
-dotenv.config({ path: path.join(__dirname, '../.env') });
 
 import { initializeDatabase } from './database';
 import { errorHandler, notFoundHandler } from './middleware';

@@ -1,3 +1,4 @@
+import '../config/env';
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import { execFile } from 'child_process';
@@ -15,13 +16,46 @@ const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'full']);
-const SONIC_API_BASE = (process.env.SONIC_API_BASE || '').replace(/\/$/, '');
-const SONIC_WEB_URL = (process.env.SONIC_WEB_URL || SONIC_API_BASE || '').replace(/\/$/, '');
-const SONIC_TOKEN = process.env.SONIC_TOKEN || '';
-const SONIC_PROJECT_ID = process.env.SONIC_PROJECT_ID || '';
-const SONIC_TEST_PLAN_ID = process.env.SONIC_TEST_PLAN_ID || '';
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+
+const ENV_FILE_CANDIDATES = [
+  path.resolve(process.cwd(), 'backend/.env'),
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(__dirname, '../../.env'),
+  path.resolve(__dirname, '../../../backend/.env'),
+];
+
+function readEnvFileValue(key: string): string {
+  for (const envFile of ENV_FILE_CANDIDATES) {
+    if (!fs.existsSync(envFile)) continue;
+    const lines = fs.readFileSync(envFile, 'utf-8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const equalIndex = trimmed.indexOf('=');
+      if (equalIndex <= 0) continue;
+      if (trimmed.slice(0, equalIndex).trim() !== key) continue;
+      return trimmed.slice(equalIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+    }
+  }
+  return '';
+}
+
+function getRuntimeEnv(key: string): string {
+  return process.env[key] || readEnvFileValue(key);
+}
+
+function getSonicConfig() {
+  const apiBase = (getRuntimeEnv('SONIC_API_BASE') || 'http://10.1.3.177:5173/sonic-api').replace(/\/$/, '');
+  return {
+    apiBase,
+    webUrl: (getRuntimeEnv('SONIC_WEB_URL') || 'http://10.1.3.177:5173/sonic-admin').replace(/\/$/, ''),
+    token: getRuntimeEnv('SONIC_TOKEN') || '',
+    projectId: getRuntimeEnv('SONIC_PROJECT_ID') || 'nn-ios',
+    testPlanId: getRuntimeEnv('SONIC_TEST_PLAN_ID') || 'smoke',
+  };
+}
 
 interface SonicDevicePool {
   label: string;
@@ -625,16 +659,19 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
 });
 
 router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
-  const configured = Boolean(SONIC_API_BASE && SONIC_TOKEN);
+  const sonicConfig = getSonicConfig();
+  const configured = Boolean(sonicConfig.apiBase);
   const status = {
     configured,
-    apiBase: SONIC_API_BASE || '',
-    webUrl: SONIC_WEB_URL || '',
-    tokenConfigured: Boolean(SONIC_TOKEN),
-    projectId: SONIC_PROJECT_ID || '',
-    testPlanId: SONIC_TEST_PLAN_ID || '',
+    apiBase: sonicConfig.apiBase || '',
+    webUrl: sonicConfig.webUrl || '',
+    tokenConfigured: Boolean(sonicConfig.token),
+    projectId: sonicConfig.projectId || '',
+    testPlanId: sonicConfig.testPlanId || '',
     reachable: false,
-    message: configured ? 'Sonic 已配置，等待连通性检测' : '未配置 SONIC_API_BASE 或 SONIC_TOKEN',
+    message: configured
+      ? (sonicConfig.token ? 'Sonic 已配置，等待连通性检测' : 'Sonic API 已配置，Token 未配置')
+      : '未配置 SONIC_API_BASE',
   };
 
   if (!configured) {
@@ -646,10 +683,10 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
   }
 
   try {
-    const response = await axios.get(`${SONIC_API_BASE}/`, {
+    const response = await axios.get(`${sonicConfig.apiBase}/`, {
       timeout: 5000,
       headers: {
-        Authorization: `Bearer ${SONIC_TOKEN}`,
+        Authorization: `Bearer ${sonicConfig.token}`,
       },
       validateStatus: () => true,
     });
@@ -828,6 +865,7 @@ router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
 router.post('/nn/quality', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+    const sonicConfig = getSonicConfig();
     const buildNumber = String(req.body?.buildNumber || '').trim();
     const branch = normalizeBranchName(String(req.body?.branch || ''));
     const commitHash = String(req.body?.commitHash || '').trim();
@@ -874,9 +912,9 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       DEVICE_POOL_LABEL: selectedDevicePool.label,
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
       DEVICE_CLOUD: 'Sonic',
-      SONIC_API_BASE,
-      SONIC_PROJECT_ID,
-      SONIC_TEST_PLAN_ID,
+      SONIC_API_BASE: sonicConfig.apiBase,
+      SONIC_PROJECT_ID: sonicConfig.projectId,
+      SONIC_TEST_PLAN_ID: sonicConfig.testPlanId,
     });
 
     await axios.post(`${JENKINS_BASE_URL}/${jobPath}/buildWithParameters`, params.toString(), {

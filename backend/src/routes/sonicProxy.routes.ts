@@ -1,3 +1,4 @@
+import '../config/env';
 import { Router, Request, Response } from 'express';
 import http from 'http';
 import https from 'https';
