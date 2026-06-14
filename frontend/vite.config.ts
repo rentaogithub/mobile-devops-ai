@@ -15,12 +15,12 @@ function getBackendCandidates() {
   const addresses = getLocalAddresses();
   const candidates = [
     explicit,
-    'http://10.1.3.177:3001',
     'http://127.0.0.1:3001',
-    'http://10.1.3.177:3000',
-    'http://127.0.0.1:3000',
     ...addresses.map((address) => `http://${address}:3001`),
+    'http://10.1.3.177:3001',
+    'http://127.0.0.1:3000',
     ...addresses.map((address) => `http://${address}:3000`),
+    'http://10.1.3.177:3000',
   ].filter((target): target is string => Boolean(target));
 
   return Array.from(new Set(candidates));

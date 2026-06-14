@@ -1189,6 +1189,8 @@ export interface SonicQualityStatus {
   configured: boolean;
   apiBase: string;
   webUrl?: string;
+  apiProxyTarget?: string;
+  webProxyTarget?: string;
   tokenConfigured: boolean;
   projectId: string;
   testPlanId: string;

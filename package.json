@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "ensure:native": "node scripts/ensure-native-deps.mjs",
+    "start:sonic-stack": "bash scripts/start-sonic-stack.sh",
     "start:sonic-agent": "bash scripts/start-sonic-agent.sh",
+    "start:sonic": "npm run start:sonic-stack && npm run start:sonic-agent",
     "dev": "node scripts/run-with-supported-node.mjs dev:actual",
-    "dev:actual": "npm run ensure:native && npm run start:sonic-agent && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:actual": "npm run ensure:native && npm run start:sonic && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",
     "dev:frontend": "npm run dev --workspace=frontend",
     "build": "node scripts/run-with-supported-node.mjs build:actual",
@@ -19,7 +21,7 @@
     "build:backend": "npm run build --workspace=backend",
     "build:frontend": "npm run build --workspace=frontend",
     "start": "node scripts/run-with-supported-node.mjs start:actual",
-    "start:actual": "npm run ensure:native && npm run start:sonic-agent && env UPLOAD_DIR=nn-ios-platform-data/uploads DSYM_DIR=nn-ios-platform-data/dsyms DB_PATH=nn-ios-platform-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
+    "start:actual": "npm run ensure:native && npm run start:sonic && env UPLOAD_DIR=nn-ios-platform-data/uploads DSYM_DIR=nn-ios-platform-data/dsyms DB_PATH=nn-ios-platform-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
     "start:dev-backend": "node scripts/run-with-supported-node.mjs start:actual"
   },
   "devDependencies": {

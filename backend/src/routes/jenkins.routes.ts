@@ -51,10 +51,17 @@ function getSonicConfig() {
   return {
     apiBase,
     webUrl: (getRuntimeEnv('SONIC_WEB_URL') || 'http://10.1.3.177:5173/sonic-admin').replace(/\/$/, ''),
+    apiProxyTarget: (getRuntimeEnv('SONIC_API_PROXY_TARGET') || 'http://127.0.0.1:8094').replace(/\/$/, ''),
+    webProxyTarget: (getRuntimeEnv('SONIC_WEB_PROXY_TARGET') || 'http://127.0.0.1:3002').replace(/\/$/, ''),
     token: getRuntimeEnv('SONIC_TOKEN') || '',
     projectId: getRuntimeEnv('SONIC_PROJECT_ID') || 'nn-ios',
     testPlanId: getRuntimeEnv('SONIC_TEST_PLAN_ID') || 'smoke',
   };
+}
+
+function getConnectionErrorMessage(error: any) {
+  const code = error?.code ? ` ${error.code}` : '';
+  return error?.message ? `${error.message}${code}` : '连接失败';
 }
 
 interface SonicDevicePool {
@@ -665,6 +672,8 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
     configured,
     apiBase: sonicConfig.apiBase || '',
     webUrl: sonicConfig.webUrl || '',
+    apiProxyTarget: sonicConfig.apiProxyTarget || '',
+    webProxyTarget: sonicConfig.webProxyTarget || '',
     tokenConfigured: Boolean(sonicConfig.token),
     projectId: sonicConfig.projectId || '',
     testPlanId: sonicConfig.testPlanId || '',
@@ -683,11 +692,19 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
   }
 
   try {
+    const apiTargetResponse = await axios.get(`${sonicConfig.apiProxyTarget}/`, {
+      timeout: 5000,
+      validateStatus: () => true,
+    });
+    const webTargetResponse = await axios.get(`${sonicConfig.webProxyTarget}/`, {
+      timeout: 5000,
+      validateStatus: () => true,
+    });
     const response = await axios.get(`${sonicConfig.apiBase}/`, {
       timeout: 5000,
-      headers: {
+      headers: sonicConfig.token ? {
         Authorization: `Bearer ${sonicConfig.token}`,
-      },
+      } : undefined,
       validateStatus: () => true,
     });
     res.json({
@@ -695,16 +712,17 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
       data: {
         ...status,
         reachable: response.status >= 200 && response.status < 500,
-        message: `Sonic HTTP ${response.status}`,
+        message: `Sonic API ${response.status}，代理目标 API ${apiTargetResponse.status}，Web ${webTargetResponse.status}`,
       },
     });
   } catch (error: any) {
+    const targetMessage = getConnectionErrorMessage(error);
     res.json({
       success: true,
       data: {
         ...status,
         reachable: false,
-        message: error.message || 'Sonic 连通性检测失败',
+        message: `Sonic 代理目标未启动或不可达：${targetMessage}。请确认 Sonic Server(API ${sonicConfig.apiProxyTarget}) 和 Sonic Web(${sonicConfig.webProxyTarget}) 已启动。`,
       },
     });
   }
