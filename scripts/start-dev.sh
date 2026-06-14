@@ -18,7 +18,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
-BACKEND_PORT="${BACKEND_PORT:-3001}"
+ENV_BACKEND_PORT=""
+if [ -f "$BACKEND_DIR/.env" ]; then
+    ENV_BACKEND_PORT="$(awk -F= '/^PORT=/{print $2; exit}' "$BACKEND_DIR/.env" | tr -d '[:space:]')"
+fi
+BACKEND_PORT="${BACKEND_PORT:-${ENV_BACKEND_PORT:-3000}}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 BACKEND_PID=""
 FRONTEND_PID=""

@@ -19,8 +19,10 @@ nn-ios-platform-data/
 builds/
 logs/
 backend/logs/
+*-dev.log
 backend-dev.log
 frontend-dev.log
+sonic-dev.log
 
 # ===== 临时文件 =====
 tmp/
