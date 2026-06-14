@@ -1,0 +1,87 @@
+#!/bin/bash
+
+# Diagnose Sonic Server/Web deployment on the fixed build Mac.
+
+set +e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
+SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
+
+section() {
+  echo
+  echo "==== $* ===="
+}
+
+check_command() {
+  local command_name="$1"
+  if command -v "$command_name" >/dev/null 2>&1; then
+    echo "OK: $command_name -> $(command -v "$command_name")"
+  else
+    echo "MISS: $command_name"
+  fi
+}
+
+check_http() {
+  local url="$1"
+  local name="$2"
+  local code
+  code="$(curl -s -o /tmp/nn-ios-platform-sonic-check.out -w "%{http_code}" --connect-timeout 2 "$url")"
+  if [ "$code" = "000" ]; then
+    echo "FAIL: $name $url -> connect failed"
+  else
+    echo "OK: $name $url -> HTTP $code"
+  fi
+}
+
+section "Commands"
+check_command docker
+check_command colima
+check_command curl
+
+section "Colima"
+if command -v colima >/dev/null 2>&1; then
+  colima status
+else
+  echo "colima not installed"
+fi
+
+section "Docker"
+if command -v docker >/dev/null 2>&1; then
+  docker version
+  docker compose version
+  echo
+  docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}'
+else
+  echo "docker not installed"
+fi
+
+section "Sonic Env"
+if [ -f "$SONIC_ENV_FILE" ]; then
+  sed -n '1,120p' "$SONIC_ENV_FILE"
+else
+  echo "missing $SONIC_ENV_FILE"
+fi
+
+section "Sonic Compose"
+if [ -f "$SONIC_ENV_FILE" ] && command -v docker >/dev/null 2>&1; then
+  docker compose -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps
+else
+  echo "skip compose check"
+fi
+
+section "Ports"
+lsof -nP -iTCP:3002 -sTCP:LISTEN
+lsof -nP -iTCP:8094 -sTCP:LISTEN
+
+section "HTTP"
+check_http "http://127.0.0.1:3002" "Sonic Web"
+check_http "http://127.0.0.1:8094" "Sonic API"
+check_http "http://127.0.0.1:5173/sonic-admin" "Platform Sonic Admin Proxy"
+check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy"
+
+section "Hint"
+echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"
+echo "如果 8094 不通：Sonic Server/API 容器未启动或启动失败。"
+echo "如果 .env 里还是 sonic-web-image:latest / sonic-server-image:latest，需要先替换成真实 Sonic 镜像。"
