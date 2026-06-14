@@ -21,6 +21,12 @@ Sonic
 
 ## 初始化配置
 
+如果固定电脑没有 Docker，先在项目根目录安装 Docker CLI + Colima：
+
+```bash
+sh scripts/install-docker-colima.sh
+```
+
 ```bash
 cd deploy/sonic
 cp .env.example .env
