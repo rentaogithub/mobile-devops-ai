@@ -27,21 +27,26 @@ Sonic
 sh scripts/install-docker-colima.sh
 ```
 
+在项目根目录初始化 Sonic 配置：
+
 ```bash
-cd deploy/sonic
-cp .env.example .env
+sh scripts/init-sonic-stack-env.sh
 ```
 
-编辑 `.env`：
+```bash
+cd deploy/sonic
+```
+
+脚本会自动生成 `deploy/sonic/.env`：
 
 - `SONIC_WEB_IMAGE`：Sonic Web 后台镜像
 - `SONIC_SERVER_IMAGE`：Sonic Server/API 镜像
 - `SONIC_HOST`：部署主机 IP，例如 `10.1.3.177`
 - `SONIC_WEB_PORT`：Sonic 后台端口，默认 `3002`
 - `SONIC_API_PORT`：Sonic API 端口，默认 `8094`
-- `SONIC_MYSQL_PASSWORD` / `SONIC_MYSQL_ROOT_PASSWORD`：数据库密码
+- `SONIC_MYSQL_PASSWORD` / `SONIC_MYSQL_ROOT_PASSWORD`：数据库密码，默认自动生成
 
-> 镜像名故意放在 `.env`，不写死在平台代码里。Sonic 官方服务拆分或镜像命名变化时，只需要调整 `.env`。
+默认使用 `sonicorg/sonic-client-web:v2.7.2` 和 `sonicorg/sonic-server-simple:v1.3.2-release`。如果内部网络无法拉取 Docker Hub，可在 `.env` 中覆盖为内部镜像仓库地址。
 
 ## 启动
 

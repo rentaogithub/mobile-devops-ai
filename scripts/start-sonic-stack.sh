@@ -12,6 +12,7 @@ BACKEND_ENV_FILE="${SONIC_PLATFORM_ENV_FILE:-$PROJECT_ROOT/backend/.env}"
 SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
 SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
 SONIC_ENV_EXAMPLE="$SONIC_DIR/.env.example"
+SONIC_ENV_INIT_SCRIPT="$PROJECT_ROOT/scripts/init-sonic-stack-env.sh"
 
 load_platform_env() {
   if [ ! -f "$BACKEND_ENV_FILE" ]; then
@@ -57,6 +58,17 @@ has_placeholder_images() {
   return 1
 }
 
+has_placeholder_passwords() {
+  local mysql_password mysql_root_password
+  mysql_password="$(read_env_value SONIC_MYSQL_PASSWORD "$SONIC_ENV_FILE")"
+  mysql_root_password="$(read_env_value SONIC_MYSQL_ROOT_PASSWORD "$SONIC_ENV_FILE")"
+  [ -z "$mysql_password" ] && return 0
+  [ -z "$mysql_root_password" ] && return 0
+  [ "$mysql_password" = "sonic_password_here" ] && return 0
+  [ "$mysql_root_password" = "sonic_root_password_here" ] && return 0
+  return 1
+}
+
 ensure_docker_runtime() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "Sonic Server/Web not started: docker command not found."
@@ -78,6 +90,18 @@ ensure_docker_runtime() {
   return 1
 }
 
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    echo "docker-compose"
+    return
+  fi
+  echo ""
+}
+
 load_platform_env
 
 if [ "${SONIC_STACK_AUTO_START:-true}" = "false" ]; then
@@ -90,8 +114,10 @@ if [ ! -d "$SONIC_DIR" ]; then
   exit 0
 fi
 
-if [ ! -f "$SONIC_ENV_FILE" ]; then
-  if [ -f "$SONIC_ENV_EXAMPLE" ]; then
+if [ ! -f "$SONIC_ENV_FILE" ] || has_placeholder_images || has_placeholder_passwords; then
+  if [ -x "$SONIC_ENV_INIT_SCRIPT" ] || [ -f "$SONIC_ENV_INIT_SCRIPT" ]; then
+    sh "$SONIC_ENV_INIT_SCRIPT"
+  elif [ -f "$SONIC_ENV_EXAMPLE" ]; then
     cp "$SONIC_ENV_EXAMPLE" "$SONIC_ENV_FILE"
     echo "Created Sonic compose env: $SONIC_ENV_FILE"
   else
@@ -109,6 +135,12 @@ if ! ensure_docker_runtime; then
   exit 0
 fi
 
+COMPOSE_CMD="$(compose_cmd)"
+if [ -z "$COMPOSE_CMD" ]; then
+  echo "Sonic Server/Web not started: docker compose or docker-compose command not found."
+  exit 0
+fi
+
 echo "Starting Sonic Server/Web by docker compose..."
-docker compose -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d
-docker compose -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps
+$COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d
+$COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps

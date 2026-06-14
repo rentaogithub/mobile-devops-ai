@@ -134,11 +134,10 @@ Sonic Agent 控制 iOS 真机时通常需要 WebDriverAgent。
 平台已经提供 Sonic 子服务部署模板：
 
 ```bash
-cd deploy/sonic
-cp .env.example .env
+sh scripts/init-sonic-stack-env.sh
 ```
 
-编辑 `.env`：
+脚本会自动生成 `deploy/sonic/.env`：
 
 ```bash
 SONIC_HOST=10.1.3.177
@@ -147,14 +146,14 @@ SONIC_API_PORT=8094
 SONIC_MYSQL_PORT=3307
 SONIC_REDIS_PORT=6380
 
-SONIC_WEB_IMAGE=sonic-web-image:latest
-SONIC_SERVER_IMAGE=sonic-server-image:latest
+SONIC_WEB_IMAGE=sonicorg/sonic-client-web:v2.7.2
+SONIC_SERVER_IMAGE=sonicorg/sonic-server-simple:v1.3.2-release
 
-SONIC_MYSQL_PASSWORD=your_password
-SONIC_MYSQL_ROOT_PASSWORD=your_root_password
+SONIC_MYSQL_PASSWORD=自动生成
+SONIC_MYSQL_ROOT_PASSWORD=自动生成
 ```
 
-`SONIC_WEB_IMAGE` 和 `SONIC_SERVER_IMAGE` 需要替换成实际可用的 Sonic 镜像。
+如果内部网络无法拉取 Docker Hub，可把 `SONIC_WEB_IMAGE` 和 `SONIC_SERVER_IMAGE` 覆盖成内部镜像仓库地址。
 
 启动：
 

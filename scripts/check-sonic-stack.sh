@@ -35,8 +35,21 @@ check_http() {
   fi
 }
 
+compose_cmd() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    echo "docker compose"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    echo "docker-compose"
+    return
+  fi
+  echo ""
+}
+
 section "Commands"
 check_command docker
+check_command docker-compose
 check_command colima
 check_command curl
 
@@ -50,7 +63,13 @@ fi
 section "Docker"
 if command -v docker >/dev/null 2>&1; then
   docker version
-  docker compose version
+  if docker compose version >/dev/null 2>&1; then
+    docker compose version
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose version
+  else
+    echo "MISS: docker compose / docker-compose"
+  fi
   echo
   docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}'
 else
@@ -65,8 +84,9 @@ else
 fi
 
 section "Sonic Compose"
-if [ -f "$SONIC_ENV_FILE" ] && command -v docker >/dev/null 2>&1; then
-  docker compose -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps
+COMPOSE_CMD="$(compose_cmd)"
+if [ -f "$SONIC_ENV_FILE" ] && [ -n "$COMPOSE_CMD" ]; then
+  $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps
 else
   echo "skip compose check"
 fi
@@ -84,4 +104,4 @@ check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy"
 section "Hint"
 echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"
 echo "如果 8094 不通：Sonic Server/API 容器未启动或启动失败。"
-echo "如果 .env 里还是 sonic-web-image:latest / sonic-server-image:latest，需要先替换成真实 Sonic 镜像。"
+echo "如果 .env 缺失或仍是占位配置，执行 sh scripts/init-sonic-stack-env.sh 自动初始化。"
