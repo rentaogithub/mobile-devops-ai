@@ -115,7 +115,7 @@ router.use((req: Request, res: Response) => {
       target: targetURL.toString(),
       error: error.message,
     });
-    res.status(502).send('Sonic 代理请求失败，请确认 Sonic 服务已在固定电脑启动。');
+    res.status(502).send(`Sonic 代理请求失败：无法连接 ${targetURL.origin}。请确认 Sonic Server/Web 已在固定电脑启动。`);
   });
 
   proxyReq.setTimeout(15000, () => {
