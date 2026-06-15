@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
 SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
+PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 section() {
   echo
@@ -100,6 +102,8 @@ check_http "http://127.0.0.1:3002" "Sonic Web"
 check_http "http://127.0.0.1:8094" "Sonic API"
 check_http "http://127.0.0.1:5173/sonic-admin" "Platform Sonic Admin Proxy"
 check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy"
+check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-admin" "External Platform Sonic Admin Proxy"
+check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-api" "External Platform Sonic API Proxy"
 
 section "Hint"
 echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"

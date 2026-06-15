@@ -24,6 +24,7 @@ if [ -f "$BACKEND_DIR/.env" ]; then
 fi
 BACKEND_PORT="${BACKEND_PORT:-${ENV_BACKEND_PORT:-3000}}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
 BACKEND_PID=""
 FRONTEND_PID=""
 
@@ -55,13 +56,17 @@ else
 fi
 
 if lsof -ti:3002 > /dev/null 2>&1; then
-    echo "   ✅ Sonic Web: http://127.0.0.1:3002"
+    echo "   ✅ Sonic Web: http://$PLATFORM_HOST:3002"
 else
     echo "   ⚠️  Sonic Web 未监听 3002"
+    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-web$'; then
+        echo "   nn-sonic-web 最近日志:"
+        docker logs --tail 40 nn-sonic-web 2>&1 | sed 's/^/      /' || true
+    fi
 fi
 
 if lsof -ti:8094 > /dev/null 2>&1; then
-    echo "   ✅ Sonic API: http://127.0.0.1:8094"
+    echo "   ✅ Sonic API: http://$PLATFORM_HOST:8094"
 else
     echo "   ⚠️  Sonic API 未监听 8094"
 fi
@@ -118,7 +123,7 @@ if lsof -ti:$FRONTEND_PORT > /dev/null 2>&1; then
 fi
 
 # 启动前端
-run_npm run dev -- --port "$FRONTEND_PORT" > "$PROJECT_ROOT/frontend-dev.log" 2>&1 &
+run_npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" > "$PROJECT_ROOT/frontend-dev.log" 2>&1 &
 FRONTEND_PID=$!
 echo "📝 前端进程 PID: $FRONTEND_PID"
 
@@ -143,9 +148,9 @@ echo "========================================"
 echo "🎉 开发环境启动完成！"
 echo ""
 echo "🔗 访问地址:"
-echo "   前端: http://localhost:$FRONTEND_PORT"
-echo "   后端: http://localhost:$BACKEND_PORT"
-echo "   Sonic: http://localhost:$FRONTEND_PORT/sonic-admin"
+echo "   前端: http://$PLATFORM_HOST:$FRONTEND_PORT"
+echo "   后端: http://$PLATFORM_HOST:$BACKEND_PORT"
+echo "   Sonic: http://$PLATFORM_HOST:$FRONTEND_PORT/sonic-admin"
 echo ""
 echo "📋 进程信息:"
 echo "   后端 PID: $BACKEND_PID"
