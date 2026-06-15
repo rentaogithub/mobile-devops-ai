@@ -30,7 +30,9 @@ FRONTEND_PID=""
 
 function check_http() {
     local url="$1"
-    curl -fsS --connect-timeout 2 "$url" >/dev/null 2>&1
+    local code
+    code="$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null || true)"
+    [ "$code" != "000" ] && [ -n "$code" ]
 }
 
 echo "🚀 启动 iOS 崩溃日志符号化系统开发环境"

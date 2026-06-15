@@ -16,7 +16,9 @@ SONIC_API_PORT="${SONIC_API_PORT:-8094}"
 
 check_http() {
   local url="$1"
-  curl -fsS --connect-timeout 2 "$url" >/dev/null 2>&1
+  local code
+  code="$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null || true)"
+  [ "$code" != "000" ] && [ -n "$code" ]
 }
 
 echo "🚀 Bootstrap Sonic for nn-ios-platform"
@@ -43,15 +45,15 @@ echo
 
 echo "5. 检查 Sonic 服务摘要..."
 if check_http "http://127.0.0.1:$SONIC_WEB_PORT"; then
-  echo "✅ Sonic Web reachable: http://$PLATFORM_HOST:$SONIC_WEB_PORT"
+  echo "✅ Sonic Web 可访问: http://$PLATFORM_HOST:$SONIC_WEB_PORT"
 else
-  echo "⚠️  Sonic Web not reachable on port $SONIC_WEB_PORT"
+  echo "⚠️  Sonic Web HTTP 不通: $SONIC_WEB_PORT"
 fi
 
 if check_http "http://127.0.0.1:$SONIC_API_PORT"; then
-  echo "✅ Sonic API reachable: http://$PLATFORM_HOST:$SONIC_API_PORT"
+  echo "✅ Sonic API 可访问: http://$PLATFORM_HOST:$SONIC_API_PORT"
 else
-  echo "⚠️  Sonic API not reachable on port $SONIC_API_PORT"
+  echo "⚠️  Sonic API HTTP 不通: $SONIC_API_PORT"
 fi
 
 echo "完整诊断: sh scripts/sonic/sonic.sh check"

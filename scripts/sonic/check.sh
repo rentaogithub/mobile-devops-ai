@@ -32,8 +32,10 @@ check_http() {
   code="$(curl -s -o /tmp/nn-ios-platform-sonic-check.out -w "%{http_code}" --connect-timeout 2 "$url")"
   if [ "$code" = "000" ]; then
     echo "FAIL: $name $url -> connect failed"
-  else
+  elif [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
     echo "OK: $name $url -> HTTP $code"
+  else
+    echo "WARN: $name $url -> HTTP $code"
   fi
 }
 
