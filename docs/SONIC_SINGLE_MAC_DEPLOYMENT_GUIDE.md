@@ -247,6 +247,15 @@ cd /Users/a1/工作/nn-ios-platform
 sh scripts/prepare-sonic-agent.sh
 ```
 
+如果希望一次性完成 Sonic Server/Web、Agent 准备、Agent 启动和诊断，直接执行：
+
+```bash
+cd /Users/a1/工作/nn-ios-platform
+sh scripts/bootstrap-sonic.sh
+```
+
+如果真实 Agent 包还没放到 `/Users/a1/工作/sonic-agent`，这个脚本会明确以“缺少 Sonic Agent runtime package”结束；这时不是 `.env` 配置问题，而是还缺实际 Agent 程序。
+
 这个脚本会创建目录并检查结构。后续只需要把 Sonic Agent 的真实运行包放到 `/Users/a1/工作/sonic-agent`。如果目录中存在 `sonic-agent*.zip`、`sonic-agent*.tar.gz`、`sonic-agent*.tgz` 或 `sonic-agent*.jar`，脚本会自动解压或识别。
 
 如果解压后存在 `sonic-agent*.jar`，且目录中还没有 `start.sh`，脚本会自动生成可执行的 `start.sh`：

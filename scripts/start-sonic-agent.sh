@@ -65,6 +65,15 @@ fi
 AGENT_DIR="${SONIC_AGENT_DIR:-}"
 AGENT_CMD="${SONIC_AGENT_CMD:-}"
 
+prepare_agent_dir() {
+  local prepare_script="$PROJECT_ROOT/scripts/prepare-sonic-agent.sh"
+  if [ -x "$prepare_script" ]; then
+    "$prepare_script" >/dev/null 2>&1 || true
+  elif [ -f "$prepare_script" ]; then
+    /bin/bash "$prepare_script" >/dev/null 2>&1 || true
+  fi
+}
+
 detect_agent_dir() {
   local candidates=(
     "/Users/a1/工作/sonic-agent"
@@ -79,7 +88,7 @@ detect_agent_dir() {
 
   local candidate
   for candidate in "${candidates[@]}"; do
-    if [ -x "$candidate/start.sh" ] || ls "$candidate"/sonic-agent*.jar >/dev/null 2>&1; then
+    if [ -x "$candidate/start.sh" ] || find "$candidate" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
       echo "$candidate"
       return 0
     fi
@@ -89,6 +98,7 @@ detect_agent_dir() {
 }
 
 if [ -z "$AGENT_DIR" ] && [ -z "$AGENT_CMD" ]; then
+  prepare_agent_dir
   AGENT_DIR="$(detect_agent_dir || true)"
   if [ -n "$AGENT_DIR" ]; then
     echo "Detected Sonic Agent dir: $AGENT_DIR"
@@ -103,8 +113,8 @@ elif [ -n "$AGENT_DIR" ] && [ -x "$AGENT_DIR/start.sh" ]; then
   pushd "$AGENT_DIR" >/dev/null
   nohup ./start.sh > "$LOG_FILE" 2>&1 &
   popd >/dev/null
-elif [ -n "$AGENT_DIR" ] && ls "$AGENT_DIR"/sonic-agent*.jar >/dev/null 2>&1; then
-  AGENT_JAR="$(ls "$AGENT_DIR"/sonic-agent*.jar | head -n 1)"
+elif [ -n "$AGENT_DIR" ] && find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
+  AGENT_JAR="$(find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1)"
   API_BASE="${SONIC_AGENT_API_BASE:-${SONIC_API_PROXY_TARGET:-${SONIC_API_BASE:-http://127.0.0.1:8094}}}"
   echo "Starting Sonic Agent jar: $AGENT_JAR"
   pushd "$AGENT_DIR" >/dev/null
@@ -116,7 +126,7 @@ else
     echo "Configured SONIC_AGENT_DIR: $AGENT_DIR"
     if [ -d "$AGENT_DIR" ]; then
       echo "Directory exists, but the real Sonic Agent package is not installed."
-      echo "No executable start.sh or sonic-agent*.jar was found."
+      echo "No executable start.sh or sonic-agent*.jar was found under this directory."
     else
       echo "Directory does not exist."
     fi

@@ -17,7 +17,7 @@ install_package_if_present() {
   local package="$PACKAGE_PATH"
 
   if [ -z "$package" ]; then
-    package="$(find "$AGENT_DIR" -maxdepth 1 -type f \( -name 'sonic-agent*.zip' -o -name 'sonic-agent*.tar.gz' -o -name 'sonic-agent*.tgz' -o -name 'sonic-agent*.jar' \) | head -n 1)"
+    package="$(find "$AGENT_DIR" -maxdepth 2 -type f \( -name 'sonic-agent*.zip' -o -name 'sonic-agent*.tar.gz' -o -name 'sonic-agent*.tgz' -o -name 'sonic-agent*.jar' \) | head -n 1)"
   fi
 
   if [ -z "$package" ]; then
@@ -56,7 +56,7 @@ write_start_script_if_possible() {
     return 0
   fi
 
-  if ! ls "$AGENT_DIR"/sonic-agent*.jar >/dev/null 2>&1; then
+  if ! find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
     return 0
   fi
 
@@ -66,7 +66,7 @@ write_start_script_if_possible() {
 set -e
 cd "\$(dirname "\$0")"
 
-AGENT_JAR="\$(ls sonic-agent*.jar | head -n 1)"
+AGENT_JAR="\$(find . -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1)"
 API_BASE="\${SONIC_AGENT_API_BASE:-$API_BASE}"
 
 if [ -z "\$AGENT_JAR" ]; then
@@ -146,10 +146,13 @@ echo "Expected files:"
 echo "  $AGENT_DIR/start.sh"
 echo "  $AGENT_DIR/sonic-agent*.jar"
 echo
+echo "Current Sonic Agent directory files:"
+find "$AGENT_DIR" -maxdepth 2 -mindepth 1 -print | sed 's/^/  /' || true
+echo
 
 if [ -x "$AGENT_DIR/start.sh" ]; then
   echo "OK: found executable start.sh"
-elif ls "$AGENT_DIR"/sonic-agent*.jar >/dev/null 2>&1; then
+elif find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
   echo "OK: found sonic-agent jar"
 else
   echo "MISSING: no executable start.sh or sonic-agent*.jar found yet."

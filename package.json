@@ -11,7 +11,7 @@
     "ensure:native": "node scripts/ensure-native-deps.mjs",
     "start:sonic-stack": "bash scripts/start-sonic-stack.sh",
     "start:sonic-agent": "bash scripts/start-sonic-agent.sh",
-    "start:sonic": "bash scripts/start-sonic-stack.sh && bash scripts/start-sonic-agent.sh",
+    "start:sonic": "bash scripts/bootstrap-sonic.sh",
     "dev": "node scripts/run-with-supported-node.mjs dev:actual",
     "dev:actual": "npm run ensure:native && npm run start:sonic && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",
