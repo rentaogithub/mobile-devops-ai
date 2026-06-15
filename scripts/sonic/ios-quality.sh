@@ -165,6 +165,31 @@ package_ipa_from_xcarchive() {
   [ -s "${IPA_FILE}" ]
 }
 
+url_decode() {
+  local value="$1"
+  python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$value" 2>/dev/null || printf '%s\n' "$value"
+}
+
+resolve_xcarchive_path() {
+  if [ -n "${XCARCHIVE_PATH}" ] && [ -d "${XCARCHIVE_PATH}" ]; then
+    printf '%s\n' "${XCARCHIVE_PATH}"
+    return
+  fi
+
+  case "${ARCHIVE_URL}" in
+    smb://*/Archives/*.xcarchive*)
+      local relative decoded candidate
+      relative="${ARCHIVE_URL#smb://*/Archives/}"
+      decoded="$(url_decode "${relative}")"
+      candidate="${HOME}/Library/Developer/Xcode/Archives/${decoded}"
+      if [ -d "${candidate}" ]; then
+        printf '%s\n' "${candidate}"
+        return
+      fi
+      ;;
+  esac
+}
+
 [[ -n "${SOURCE_BUILD_NUMBER}" ]] || fail "SOURCE_BUILD_NUMBER is required"
 [[ -n "${TEST_SUITE}" ]] || fail "TEST_SUITE is required"
 [[ -n "${DEVICE_POOL}" ]] || fail "DEVICE_POOL is required"
@@ -199,6 +224,10 @@ log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
 log "xcarchive: ${XCARCHIVE_PATH:-N/A}"
+RESOLVED_XCARCHIVE_PATH="$(resolve_xcarchive_path)"
+if [ -n "${RESOLVED_XCARCHIVE_PATH}" ] && [ "${RESOLVED_XCARCHIVE_PATH}" != "${XCARCHIVE_PATH}" ]; then
+  log "解析到本地 xcarchive: ${RESOLVED_XCARCHIVE_PATH}"
+fi
 
 TIDEVICE_CMD="$(find_tidevice)"
 if [ -z "${TIDEVICE_CMD}" ]; then
@@ -217,10 +246,10 @@ log "使用设备: ${SELECTED_DEVICE}"
 
 download_status=0
 download_ipa "${PACKAGE_URL}" || download_status=$?
-if [ "${download_status}" != "0" ] && [ -n "${XCARCHIVE_PATH}" ]; then
-  log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${XCARCHIVE_PATH}"
+if [ "${download_status}" != "0" ] && [ -n "${RESOLVED_XCARCHIVE_PATH}" ]; then
+  log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${RESOLVED_XCARCHIVE_PATH}"
   download_status=0
-  package_ipa_from_xcarchive "${XCARCHIVE_PATH}" || download_status=$?
+  package_ipa_from_xcarchive "${RESOLVED_XCARCHIVE_PATH}" || download_status=$?
 fi
 if [ "${download_status}" != "0" ] && [ -n "${ARCHIVE_URL}" ] && [ "${ARCHIVE_URL}" != "${PACKAGE_URL}" ]; then
   log "PACKAGE_URL 不可用，尝试 ARCHIVE_URL: ${ARCHIVE_URL}"
