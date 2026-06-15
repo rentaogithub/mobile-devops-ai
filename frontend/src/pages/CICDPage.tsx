@@ -218,7 +218,9 @@ export default function CICDPage() {
   };
 
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
-    const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000];
+    const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000];
+    const previousNumber = previousLatest ? Number(previousLatest) : 0;
+    let targetBuildNumber: number | null = null;
     setQualityLoading(true);
     try {
       for (const delay of delays) {
@@ -226,8 +228,17 @@ export default function CICDPage() {
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
         const nextData = await loadQualityBuilds({ silent: true });
-        const latest = nextData?.builds?.[0]?.number;
-        if (latest && (!previousLatest || Number(latest) > Number(previousLatest))) {
+        const latestBuild = nextData?.builds?.[0];
+        const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
+
+        if (!targetBuildNumber && latestNumber && (!previousNumber || latestNumber > previousNumber)) {
+          targetBuildNumber = latestNumber;
+        }
+
+        const targetBuild = targetBuildNumber
+          ? nextData?.builds?.find((build) => Number(build.number) === targetBuildNumber)
+          : null;
+        if (targetBuild && !targetBuild.building) {
           return;
         }
       }

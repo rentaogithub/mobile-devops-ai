@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec /usr/bin/env bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 # Jenkins nn-auto-quality job entry script.
@@ -681,6 +685,7 @@ log "测试套件: ${REQUESTED_TEST_SUITE}"
 if [ "${REQUESTED_TEST_SUITE}" != "${TEST_SUITE}" ]; then
   log "Jenkins TEST_SUITE: ${TEST_SUITE}"
 fi
+log "执行模式: QUALITY_RUNNER=${QUALITY_RUNNER:-N/A}, QA_RUNNER_MODE=${QA_RUNNER_MODE:-N/A}, RUN_MONKEY=${RUN_MONKEY:-0}"
 log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
