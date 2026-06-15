@@ -120,6 +120,8 @@ else
       echo "Directory does not exist."
     fi
   fi
+  echo "If the standard Agent directory has not been created yet, run:"
+  echo "  sh scripts/prepare-sonic-agent.sh"
   echo "Set one of the following in backend/.env:"
   echo "  SONIC_AGENT_DIR=/path/to/sonic-agent"
   echo "  SONIC_AGENT_CMD='cd /path/to/sonic-agent && sh start.sh'"

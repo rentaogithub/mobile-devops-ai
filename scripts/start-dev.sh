@@ -85,6 +85,7 @@ else
         tail -n 40 "$PROJECT_ROOT/sonic-agent.log" 2>/dev/null | sed 's/^/      /' || true
     else
         echo "   配置方式: 在 backend/.env 设置 SONIC_AGENT_DIR 或 SONIC_AGENT_CMD"
+        echo "   初始化目录: sh scripts/prepare-sonic-agent.sh"
     fi
 fi
 echo "   详细诊断: sh scripts/check-sonic-stack.sh"
