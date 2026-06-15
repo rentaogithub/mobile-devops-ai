@@ -112,6 +112,14 @@ elif [ -n "$AGENT_DIR" ] && ls "$AGENT_DIR"/sonic-agent*.jar >/dev/null 2>&1; th
   popd >/dev/null
 else
   echo "Sonic Agent not configured or not found."
+  if [ -n "$AGENT_DIR" ]; then
+    echo "Configured SONIC_AGENT_DIR: $AGENT_DIR"
+    if [ -d "$AGENT_DIR" ]; then
+      echo "Directory exists, but no executable start.sh or sonic-agent*.jar was found."
+    else
+      echo "Directory does not exist."
+    fi
+  fi
   echo "Set one of the following in backend/.env:"
   echo "  SONIC_AGENT_DIR=/path/to/sonic-agent"
   echo "  SONIC_AGENT_CMD='cd /path/to/sonic-agent && sh start.sh'"

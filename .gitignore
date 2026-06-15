@@ -23,6 +23,7 @@ backend/logs/
 backend-dev.log
 frontend-dev.log
 sonic-dev.log
+sonic-agent.log
 
 # ===== 临时文件 =====
 tmp/

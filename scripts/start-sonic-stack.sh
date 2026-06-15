@@ -143,4 +143,12 @@ fi
 
 echo "Starting Sonic Server/Web by docker compose..."
 $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d
+
+if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-web$'; then
+  if docker logs --tail 80 nn-sonic-web 2>&1 | grep -q 'sonic-server-gateway'; then
+    echo "Sonic Web upstream DNS is stale. Recreating Sonic Server/Web containers..."
+    $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server sonic-web
+  fi
+fi
+
 $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" ps

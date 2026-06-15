@@ -80,7 +80,7 @@ fi
 
 section "Sonic Env"
 if [ -f "$SONIC_ENV_FILE" ]; then
-  sed -n '1,120p' "$SONIC_ENV_FILE"
+  sed -n '1,120p' "$SONIC_ENV_FILE" | sed -E 's/^(.*PASSWORD=).*/\1******/'
 else
   echo "missing $SONIC_ENV_FILE"
 fi
