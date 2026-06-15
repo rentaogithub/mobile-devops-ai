@@ -1068,6 +1068,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const archiveUrl = String(req.body?.archiveUrl || '').trim();
     const rawTestSuite = String(req.body?.testSuite || 'smoke').trim();
     const testSuite = normalizeQualitySuite(rawTestSuite);
+    const jenkinsTestSuite = testSuite === 'monkey' ? 'smoke' : testSuite;
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
 
     if (!buildNumber) {
@@ -1103,7 +1104,9 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       PACKAGE_URL: packageUrl,
       XCARCHIVE_PATH: xcarchivePath,
       ARCHIVE_URL: archiveUrl,
-      TEST_SUITE: testSuite,
+      TEST_SUITE: jenkinsTestSuite,
+      REQUESTED_TEST_SUITE: testSuite,
+      RUN_MONKEY: testSuite === 'monkey' ? '1' : '0',
       DEVICE_POOL: devicePool,
       DEVICE_POOL_LABEL: selectedDevicePool.label,
       DEVICE_UDID: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',

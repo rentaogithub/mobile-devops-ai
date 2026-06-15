@@ -14,6 +14,7 @@ PACKAGE_URL="${PACKAGE_URL:-}"
 XCARCHIVE_PATH="${XCARCHIVE_PATH:-}"
 ARCHIVE_URL="${ARCHIVE_URL:-}"
 TEST_SUITE="${TEST_SUITE:-smoke}"
+REQUESTED_TEST_SUITE="${REQUESTED_TEST_SUITE:-${TEST_SUITE}}"
 DEVICE_POOL="${DEVICE_POOL:-ios-default}"
 DEVICE_POOL_LABEL="${DEVICE_POOL_LABEL:-${DEVICE_POOL}}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
@@ -25,7 +26,7 @@ DETECTED_EXECUTABLE_NAME=""
 export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 WORKSPACE_DIR="${WORKSPACE:-$(pwd)}"
-RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${TEST_SUITE}"
+RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${REQUESTED_TEST_SUITE}"
 REPORT_FILE="${RESULT_DIR}/junit.xml"
 META_FILE="${RESULT_DIR}/metadata.json"
 SUMMARY_FILE="${RESULT_DIR}/summary.json"
@@ -85,7 +86,7 @@ write_report() {
     cat > "${REPORT_FILE}" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <testsuite name="local-ios-quality" tests="1" failures="0" errors="0" skipped="0">
-  <testcase classname="quality.${TEST_SUITE}" name="Local iOS quality gate"/>
+  <testcase classname="quality.${REQUESTED_TEST_SUITE}" name="Local iOS quality gate"/>
 </testsuite>
 XML
     return
@@ -116,7 +117,7 @@ write_summary() {
   local message="${2:-}"
   python3 - "$SUMMARY_FILE" \
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
-    "${TEST_SUITE:-}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL:-}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
+    "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL:-}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
     "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${WDA_URL:-}" \
     "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" <<'PY'
@@ -657,7 +658,7 @@ cat > "${META_FILE}" <<JSON
   "packageUrl": "${PACKAGE_URL}",
   "xcarchivePath": "${XCARCHIVE_PATH}",
   "archiveUrl": "${ARCHIVE_URL}",
-  "testSuite": "${TEST_SUITE}",
+  "testSuite": "${REQUESTED_TEST_SUITE}",
   "devicePool": "${DEVICE_POOL}",
   "devicePoolLabel": "${DEVICE_POOL_LABEL}",
   "deviceUdid": "${DEVICE_UDID}",
@@ -673,7 +674,10 @@ log "源构建: ${SOURCE_BUILD_NUMBER}"
 log "分支: ${BRANCH:-N/A}"
 log "Commit: ${COMMIT_HASH:-N/A}"
 log "APP版本: ${APP_VERSION:-N/A}"
-log "测试套件: ${TEST_SUITE}"
+log "测试套件: ${REQUESTED_TEST_SUITE}"
+if [ "${REQUESTED_TEST_SUITE}" != "${TEST_SUITE}" ]; then
+  log "Jenkins TEST_SUITE: ${TEST_SUITE}"
+fi
 log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
@@ -749,7 +753,7 @@ fi
 
 process_status=0
 check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
-if [ "${TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ]; then
+if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ]; then
   monkey_status=0
   run_monkey_test || monkey_status=$?
   load_monkey_result
