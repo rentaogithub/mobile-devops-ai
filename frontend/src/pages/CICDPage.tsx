@@ -146,27 +146,83 @@ export default function CICDPage() {
   const [branchLoading, setBranchLoading] = useState(false);
   const [verificationPassword, setVerificationPassword] = useState('');
 
-  const loadBuilds = async (target = filterDeployTarget) => {
-    setLoading(true);
+  const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setLoading(true);
+    }
     setError('');
     try {
       const response = await jenkinsApi.listNNBuilds({ deployTarget: target });
       setData(response.data || null);
+      return response.data || null;
     } catch (err: any) {
       setError(err?.error || err?.message || '加载 Jenkins 构建列表失败');
+      return null;
+    } finally {
+      if (!options?.silent) {
+        setLoading(false);
+      }
+    }
+  };
+
+  const refreshBuildsUntilUpdated = async (target: DeployTarget | '', previousLatest?: number | string) => {
+    const delays = [0, 1500, 1500, 2000, 3000, 4000, 4000, 4000];
+    setLoading(true);
+    try {
+      for (const delay of delays) {
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        const nextData = await loadBuilds(target, { silent: true });
+        const latest = nextData?.builds?.[0]?.number;
+        if (latest && previousLatest && Number(latest) > Number(previousLatest)) {
+          return;
+        }
+        if (nextData?.builds?.some((build) => build.building)) {
+          return;
+        }
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const loadQualityBuilds = async () => {
-    setQualityLoading(true);
+  const loadQualityBuilds = async (options?: { silent?: boolean }) => {
+    if (!options?.silent) {
+      setQualityLoading(true);
+    }
     setQualityError('');
     try {
       const response = await jenkinsApi.listQualityBuilds();
       setQualityData(response.data || null);
+      return response.data || null;
     } catch (err: any) {
       setQualityError(normalizeQualityError(err));
+      return null;
+    } finally {
+      if (!options?.silent) {
+        setQualityLoading(false);
+      }
+    }
+  };
+
+  const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
+    const delays = [0, 1500, 1500, 2000, 3000, 4000, 4000, 4000];
+    setQualityLoading(true);
+    try {
+      for (const delay of delays) {
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+        const nextData = await loadQualityBuilds({ silent: true });
+        const latest = nextData?.builds?.[0]?.number;
+        if (latest && previousLatest && Number(latest) > Number(previousLatest)) {
+          return;
+        }
+        if (nextData?.builds?.some((build) => build.building)) {
+          return;
+        }
+      }
     } finally {
       setQualityLoading(false);
     }
@@ -257,18 +313,22 @@ export default function CICDPage() {
       return;
     }
     setPublishing(true);
+    const publishTarget = deployTarget;
+    const previousLatestBuild = data?.job.lastBuild?.number;
     try {
       await jenkinsApi.publishNN({
-        deployTarget,
+        deployTarget: publishTarget,
         branch: publishBranch.trim(),
         verificationPassword: verificationPassword.trim(),
       });
-      message.success(`已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === deployTarget)?.label} 发布构建`);
+      message.success(`已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === publishTarget)?.label} 发布构建，正在刷新构建列表`);
       setPublishModalOpen(false);
       setVerificationPassword('');
-      await loadBuilds();
-      setTimeout(() => loadBuilds(), 1500);
-      setTimeout(() => loadBuilds(), 5000);
+      const nextFilter = filterDeployTarget && filterDeployTarget !== publishTarget ? publishTarget : filterDeployTarget;
+      if (nextFilter !== filterDeployTarget) {
+        setFilterDeployTarget(nextFilter);
+      }
+      await refreshBuildsUntilUpdated(nextFilter, previousLatestBuild);
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发发布失败');
     } finally {
@@ -333,6 +393,7 @@ export default function CICDPage() {
       return;
     }
     setQualitySubmitting(true);
+    const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
     try {
       await jenkinsApi.triggerQuality({
         buildNumber: qualityBuild.number,
@@ -345,11 +406,9 @@ export default function CICDPage() {
         testSuite: qualitySuite,
         devicePool: qualityDevicePool,
       });
-      message.success(`已触发自动质检：#${qualityBuild.number}`);
+      message.success(`已触发自动质检：#${qualityBuild.number}，正在刷新质检任务列表`);
       setQualityModalOpen(false);
-      await loadQualityBuilds();
-      setTimeout(() => loadQualityBuilds(), 1500);
-      setTimeout(() => loadQualityBuilds(), 5000);
+      await refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发自动质检失败');
     } finally {
@@ -481,7 +540,7 @@ export default function CICDPage() {
             <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
               设备池
             </Button>
-            <Button icon={<ReloadOutlined />} onClick={loadQualityBuilds} loading={qualityLoading}>
+            <Button icon={<ReloadOutlined />} onClick={() => loadQualityBuilds()} loading={qualityLoading}>
               刷新
             </Button>
             <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} disabled={!data?.builds?.length}>
@@ -585,7 +644,7 @@ export default function CICDPage() {
               dataIndex: 'commitHash',
               key: 'commitHash',
               width: 130,
-              render: (value?: string) => value ? <Text code title={value}>{value.slice(0, 12)}</Text> : <Text type="secondary">-</Text>,
+              render: (value?: string) => value ? <Text code title={value}>{value.slice(0, 6)}</Text> : <Text type="secondary">-</Text>,
             },
             {
               title: '渠道构建号',
