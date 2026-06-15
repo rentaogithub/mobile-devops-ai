@@ -13,7 +13,7 @@ sh scripts/sonic/ios-quality.sh
 1. 读取平台传入的构建号、分支、Commit、APP 版本和 IPA 地址。
 2. 使用 `tidevice` 识别打包机 USB 连接的 iPhone。
 3. 获取安装包：优先使用 Jenkins 本地 IPA，其次从 `XCARCHIVE_PATH/Products/Applications/*.app` 生成临时 IPA，最后才尝试外部 URL。
-4. 启动 `APP_BUNDLE_ID`，生成 `quality-results/**` 日志和 JUnit 报告。
+4. 从 IPA 或 `.xcarchive` 自动识别真实 Bundle ID，启动 App，生成 `quality-results/**` 日志和 JUnit 报告。
 
 Jenkins `nn-auto-quality` 的 `Execute shell` 不写死平台目录。平台触发质检时会自动传入 `NN_IOS_PLATFORM_DIR`；手动点 `Build with Parameters` 时才需要填写该参数：
 
@@ -45,8 +45,10 @@ bash scripts/sonic/ios-quality.sh
 | `XCARCHIVE_PATH` | 打包机本地 `.xcarchive` 路径，可从 `Products/Applications/*.app` 生成临时 IPA |
 | `DEVICE_POOL` | 平台设备池 value |
 | `DEVICE_UDID` | 指定真机 UDID，留空自动选择第一台 |
-| `APP_BUNDLE_ID` | 启动校验的 Bundle ID，默认 `com.nnhuyu.im` |
+| `APP_BUNDLE_ID` | 启动校验的 Bundle ID，蒲公英渠道默认 `com.nndev.im` |
 | `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`full` |
+
+当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 
 ### 同步 Jenkins Job
 

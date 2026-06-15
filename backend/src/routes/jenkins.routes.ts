@@ -965,7 +965,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       DEVICE_CLOUD: 'LocalMac',
       QUALITY_RUNNER: 'local-ios-device',
       QA_RUNNER_MODE: 'local-usb',
-      APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nnhuyu.im',
+      APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',

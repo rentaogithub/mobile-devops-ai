@@ -81,7 +81,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>APP_BUNDLE_ID</name>
-          <defaultValue>com.nnhuyu.im</defaultValue>
+          <defaultValue>com.nndev.im</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>

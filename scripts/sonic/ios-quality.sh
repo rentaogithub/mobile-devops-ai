@@ -18,7 +18,8 @@ DEVICE_POOL="${DEVICE_POOL:-ios-default}"
 DEVICE_POOL_LABEL="${DEVICE_POOL_LABEL:-${DEVICE_POOL}}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
-APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nnhuyu.im}"
+APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
+DETECTED_BUNDLE_ID=""
 
 export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -142,6 +143,42 @@ download_ipa() {
   return 0
 }
 
+read_bundle_id_from_plist() {
+  local plist_path="$1"
+  if [ -z "${plist_path}" ] || [ ! -f "${plist_path}" ]; then
+    return 1
+  fi
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${plist_path}" 2>/dev/null && return
+  fi
+  python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb")).get("CFBundleIdentifier", ""))' "${plist_path}" 2>/dev/null
+}
+
+read_bundle_id_from_app() {
+  local app_path="$1"
+  read_bundle_id_from_plist "${app_path}/Info.plist"
+}
+
+detect_bundle_id_from_ipa() {
+  if [ ! -s "${IPA_FILE}" ] || ! command -v unzip >/dev/null 2>&1; then
+    return 1
+  fi
+  local tmp_dir plist_path bundle_id
+  tmp_dir="$(mktemp -d "${RESULT_DIR}/ipa-info.XXXXXX")"
+  unzip -q "${IPA_FILE}" 'Payload/*.app/Info.plist' -d "${tmp_dir}" >/dev/null 2>&1 || {
+    rm -rf "${tmp_dir}"
+    return 1
+  }
+  plist_path="$(find "${tmp_dir}/Payload" -path '*.app/Info.plist' -type f 2>/dev/null | head -n 1)"
+  bundle_id="$(read_bundle_id_from_plist "${plist_path}" 2>/dev/null || true)"
+  rm -rf "${tmp_dir}"
+  if [ -n "${bundle_id}" ]; then
+    DETECTED_BUNDLE_ID="${bundle_id}"
+    return 0
+  fi
+  return 1
+}
+
 package_ipa_from_xcarchive() {
   local archive_path="$1"
   if [ -z "${archive_path}" ] || [ ! -d "${archive_path}" ]; then
@@ -153,6 +190,7 @@ package_ipa_from_xcarchive() {
   if [ -z "${app_path}" ] || [ ! -d "${app_path}" ]; then
     return 1
   fi
+  DETECTED_BUNDLE_ID="$(read_bundle_id_from_app "${app_path}" 2>/dev/null || true)"
 
   local payload_dir="${RESULT_DIR}/Payload"
   rm -rf "${payload_dir}" "${IPA_FILE}"
@@ -163,6 +201,29 @@ package_ipa_from_xcarchive() {
     zip -qry "${IPA_FILE}" Payload
   )
   [ -s "${IPA_FILE}" ]
+}
+
+launch_app() {
+  local bundle_id="$1"
+  local launch_output="${RESULT_DIR}/launch-${bundle_id}.log"
+
+  log "启动 App: ${bundle_id}"
+  if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" launch "${bundle_id}" 2>&1 | tee "${launch_output}" | tee -a "${LOG_FILE}"; then
+    return 0
+  fi
+
+  if grep -q 'DeveloperImage not found\|InvalidService' "${launch_output}" 2>/dev/null; then
+    log "tidevice 启动失败，尝试使用 Xcode devicectl 启动 iOS 17+ 设备。"
+    if command -v xcrun >/dev/null 2>&1 && xcrun devicectl --help >/dev/null 2>&1; then
+      if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee -a "${LOG_FILE}"; then
+        return 0
+      fi
+    else
+      log "未找到 xcrun devicectl，无法自动绕过 tidevice DeveloperImage 限制。"
+    fi
+  fi
+
+  return 1
 }
 
 url_decode() {
@@ -262,16 +323,24 @@ if [ "${download_status}" = "2" ]; then
 elif [ "${download_status}" != "0" ]; then
   fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
 fi
+detect_bundle_id_from_ipa || true
 log "IPA: ${IPA_FILE}"
+if [ -n "${DETECTED_BUNDLE_ID}" ]; then
+  log "检测到安装包 Bundle ID: ${DETECTED_BUNDLE_ID}"
+fi
 
 log "安装 IPA..."
 ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" install "${IPA_FILE}" 2>&1 | tee -a "${LOG_FILE}"
 
-if [ -n "${APP_BUNDLE_ID}" ]; then
-  log "启动 App: ${APP_BUNDLE_ID}"
-  ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" launch "${APP_BUNDLE_ID}" 2>&1 | tee -a "${LOG_FILE}" || {
-    fail "安装成功但启动失败：${APP_BUNDLE_ID}"
-  }
+LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID:-${DETECTED_BUNDLE_ID}}"
+if [ -n "${APP_BUNDLE_ID}" ] && [ -n "${DETECTED_BUNDLE_ID}" ] && [ "${APP_BUNDLE_ID}" != "${DETECTED_BUNDLE_ID}" ]; then
+  log "配置的 APP_BUNDLE_ID=${APP_BUNDLE_ID} 与安装包 Bundle ID=${DETECTED_BUNDLE_ID} 不一致，按配置启动。"
+fi
+
+if [ -n "${LAUNCH_BUNDLE_ID}" ]; then
+  if ! launch_app "${LAUNCH_BUNDLE_ID}"; then
+    fail "安装成功但启动失败：${LAUNCH_BUNDLE_ID}。如果日志包含 DeveloperImage not found，请在打包机安装匹配当前 iOS 版本的 Xcode，或确认 xcrun devicectl 可用。"
+  fi
 fi
 
 log "等待基础启动稳定..."
