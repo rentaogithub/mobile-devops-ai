@@ -1158,7 +1158,7 @@ export interface JenkinsBuildLogResult {
   thirdSdkError?: string;
 }
 
-export type JenkinsQualitySuite = 'smoke' | 'login' | 'im' | 'rtc' | 'full';
+export type JenkinsQualitySuite = 'smoke' | 'login' | 'im' | 'rtc' | 'monkey' | 'full';
 
 export interface JenkinsQualityBuild {
   number: number;
@@ -1182,11 +1182,20 @@ export interface JenkinsQualityBuild {
     bundleId?: string;
     detectedBundleId?: string;
     launchMethod?: string;
+    launchDurationMs?: number;
+    coldStartReadyMs?: number;
+    coldStartWaitSeconds?: number;
+    monkeyStatus?: string;
+    monkeyMessage?: string;
+    monkeyExecutedEvents?: number;
+    monkeyEventCount?: number;
+    wdaUrl?: string;
     artifacts?: {
       summaryUrl?: string;
       screenshotUrl?: string;
       deviceLogUrl?: string;
       processesUrl?: string;
+      monkeyReportUrl?: string;
       junitUrl?: string;
       qualityLogUrl?: string;
     };

@@ -29,6 +29,7 @@ const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
   { label: '登录测试', value: 'login' },
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
+  { label: 'Monkey 测试', value: 'monkey' },
   { label: '全量回归', value: 'full' },
 ];
 
@@ -78,6 +79,16 @@ function formatDuration(duration: number, building: boolean) {
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
   return minutes > 0 ? `${minutes}分${restSeconds}秒` : `${restSeconds}秒`;
+}
+
+function formatMilliseconds(value?: number | string | null) {
+  if (value === undefined || value === null || value === '') return '-';
+  const ms = Number(value);
+  if (!Number.isFinite(ms)) return '-';
+  if (ms >= 1000) {
+    return `${ms}ms (${(ms / 1000).toFixed(2)}秒)`;
+  }
+  return `${ms}ms`;
 }
 
 function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
@@ -1101,6 +1112,14 @@ export default function CICDPage() {
                   {qualityReportBuild.qualitySummary?.appVersion && <Tag color="purple">APP {qualityReportBuild.qualitySummary.appVersion}</Tag>}
                   {qualityReportBuild.qualitySummary?.testSuite && <Tag>套件 {qualityReportBuild.qualitySummary.testSuite}</Tag>}
                   {qualityReportBuild.qualitySummary?.launchMethod && <Tag color="cyan">启动 {qualityReportBuild.qualitySummary.launchMethod}</Tag>}
+                  {qualityReportBuild.qualitySummary?.coldStartReadyMs !== undefined && (
+                    <Tag color="geekblue">冷启动 {formatMilliseconds(qualityReportBuild.qualitySummary.coldStartReadyMs)}</Tag>
+                  )}
+                  {qualityReportBuild.qualitySummary?.monkeyStatus && (
+                    <Tag color={qualityReportBuild.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>
+                      Monkey {qualityReportBuild.qualitySummary.monkeyExecutedEvents || 0}/{qualityReportBuild.qualitySummary.monkeyEventCount || 0}
+                    </Tag>
+                  )}
                 </Space>
               )}
             />
@@ -1108,6 +1127,18 @@ export default function CICDPage() {
               <Descriptions.Item label="质检任务">#{qualityReportBuild.number}</Descriptions.Item>
               <Descriptions.Item label="状态">{resultTag(qualityReportBuild)}</Descriptions.Item>
               <Descriptions.Item label="耗时">{formatDuration(qualityReportBuild.duration, qualityReportBuild.building)}</Descriptions.Item>
+              <Descriptions.Item label="启动命令耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.launchDurationMs)}</Descriptions.Item>
+              <Descriptions.Item label="冷启动稳定耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.coldStartReadyMs)}</Descriptions.Item>
+              <Descriptions.Item label="Monkey 结果">
+                {qualityReportBuild.qualitySummary?.monkeyStatus ? (
+                  <Space wrap>
+                    <Tag color={qualityReportBuild.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>
+                      {qualityReportBuild.qualitySummary.monkeyStatus}
+                    </Tag>
+                    <Text>{qualityReportBuild.qualitySummary.monkeyExecutedEvents || 0}/{qualityReportBuild.qualitySummary.monkeyEventCount || 0} 次</Text>
+                  </Space>
+                ) : '-'}
+              </Descriptions.Item>
               <Descriptions.Item label="开始时间">{formatBuildTime(qualityReportBuild.timestamp)}</Descriptions.Item>
               <Descriptions.Item label="设备池">{qualityReportBuild.qualitySummary?.devicePoolLabel || qualityReportBuild.qualitySummary?.devicePool || '-'}</Descriptions.Item>
               <Descriptions.Item label="设备 UDID">
@@ -1123,6 +1154,11 @@ export default function CICDPage() {
               <Descriptions.Item label="检测 Bundle">
                 <Text code copyable={!!qualityReportBuild.qualitySummary?.detectedBundleId}>
                   {qualityReportBuild.qualitySummary?.detectedBundleId || '-'}
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="WDA 地址">
+                <Text code copyable={!!qualityReportBuild.qualitySummary?.wdaUrl}>
+                  {qualityReportBuild.qualitySummary?.wdaUrl || '-'}
                 </Text>
               </Descriptions.Item>
               <Descriptions.Item label="Jenkins 任务">
@@ -1174,6 +1210,12 @@ export default function CICDPage() {
                       onClick={() => qualityReportBuild.qualitySummary?.artifacts?.processesUrl && window.open(qualityReportBuild.qualitySummary.artifacts.processesUrl, '_blank', 'noopener,noreferrer')}
                     >
                       进程信息
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl && window.open(qualityReportBuild.qualitySummary.artifacts.monkeyReportUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      Monkey 报告
                     </Button>
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.junitUrl}

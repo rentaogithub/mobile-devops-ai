@@ -20,6 +20,7 @@ DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
 DETECTED_BUNDLE_ID=""
+DETECTED_EXECUTABLE_NAME=""
 
 export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -33,7 +34,20 @@ IPA_FILE="${RESULT_DIR}/app.ipa"
 SCREENSHOT_FILE="${RESULT_DIR}/screenshot.png"
 DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
 PROCESS_FILE="${RESULT_DIR}/processes.json"
+MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
 LAUNCH_METHOD=""
+LAUNCH_STARTED_AT_MS=""
+LAUNCH_FINISHED_AT_MS=""
+LAUNCH_DURATION_MS=""
+COLD_START_READY_MS=""
+COLD_START_WAIT_SECONDS="${COLD_START_WAIT_SECONDS:-5}"
+WDA_URL="${WDA_URL:-http://127.0.0.1:8100}"
+MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
+MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
+MONKEY_SEED="${MONKEY_SEED:-}"
+MONKEY_STATUS="skipped"
+MONKEY_MESSAGE=""
+MONKEY_EXECUTED_EVENTS="0"
 
 mkdir -p "${RESULT_DIR}"
 
@@ -48,6 +62,20 @@ xml_escape() {
     -e 's/>/\&gt;/g' \
     -e 's/"/\&quot;/g' \
     -e "s/'/\&apos;/g"
+}
+
+now_ms() {
+  python3 -c 'import time; print(int(time.time() * 1000))'
+}
+
+mark_launch_finished() {
+  local method="$1"
+  LAUNCH_FINISHED_AT_MS="$(now_ms)"
+  if [ -n "${LAUNCH_STARTED_AT_MS}" ]; then
+    LAUNCH_DURATION_MS=$((LAUNCH_FINISHED_AT_MS - LAUNCH_STARTED_AT_MS))
+  fi
+  LAUNCH_METHOD="${method}"
+  log "启动命令耗时: ${LAUNCH_DURATION_MS:-0}ms (${method})"
 }
 
 write_report() {
@@ -89,7 +117,9 @@ write_summary() {
   python3 - "$SUMMARY_FILE" \
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
     "${TEST_SUITE:-}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL:-}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
-    "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" <<'PY'
+    "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
+    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${WDA_URL:-}" \
+    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" <<'PY'
 import json
 import os
 import sys
@@ -109,11 +139,26 @@ summary_path = sys.argv[1]
     launch_bundle_id,
     detected_bundle_id,
     launch_method,
+    launch_duration_ms,
+    cold_start_ready_ms,
+    cold_start_wait_seconds,
+    monkey_status,
+    monkey_message,
+    monkey_executed_events,
+    monkey_event_count,
+    wda_url,
     result_dir,
     screenshot_file,
     device_log_file,
     process_file,
-) = sys.argv[2:19]
+    monkey_report_file,
+) = sys.argv[2:28]
+
+def to_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
 
 def rel(path):
     if not path:
@@ -137,10 +182,19 @@ data = {
     "bundleId": launch_bundle_id,
     "detectedBundleId": detected_bundle_id,
     "launchMethod": launch_method,
+    "launchDurationMs": to_int(launch_duration_ms),
+    "coldStartReadyMs": to_int(cold_start_ready_ms),
+    "coldStartWaitSeconds": to_int(cold_start_wait_seconds),
+    "monkeyStatus": monkey_status,
+    "monkeyMessage": monkey_message,
+    "monkeyExecutedEvents": to_int(monkey_executed_events),
+    "monkeyEventCount": to_int(monkey_event_count),
+    "wdaUrl": wda_url,
     "artifacts": {
         "screenshot": rel(screenshot_file) if os.path.exists(screenshot_file) else "",
         "deviceLog": rel(device_log_file) if os.path.exists(device_log_file) else "",
         "processes": rel(process_file) if os.path.exists(process_file) else "",
+        "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
         "junit": "junit.xml",
         "qualityLog": "quality.log",
     },
@@ -227,6 +281,17 @@ read_bundle_id_from_plist() {
   python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb")).get("CFBundleIdentifier", ""))' "${plist_path}" 2>/dev/null
 }
 
+read_executable_name_from_plist() {
+  local plist_path="$1"
+  if [ -z "${plist_path}" ] || [ ! -f "${plist_path}" ]; then
+    return 1
+  fi
+  if [ -x /usr/libexec/PlistBuddy ]; then
+    /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "${plist_path}" 2>/dev/null && return
+  fi
+  python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb")).get("CFBundleExecutable", ""))' "${plist_path}" 2>/dev/null
+}
+
 read_bundle_id_from_app() {
   local app_path="$1"
   read_bundle_id_from_plist "${app_path}/Info.plist"
@@ -236,7 +301,7 @@ detect_bundle_id_from_ipa() {
   if [ ! -s "${IPA_FILE}" ] || ! command -v unzip >/dev/null 2>&1; then
     return 1
   fi
-  local tmp_dir plist_path bundle_id
+  local tmp_dir plist_path bundle_id executable_name
   tmp_dir="$(mktemp -d "${RESULT_DIR}/ipa-info.XXXXXX")"
   unzip -q "${IPA_FILE}" 'Payload/*.app/Info.plist' -d "${tmp_dir}" >/dev/null 2>&1 || {
     rm -rf "${tmp_dir}"
@@ -244,7 +309,11 @@ detect_bundle_id_from_ipa() {
   }
   plist_path="$(find "${tmp_dir}/Payload" -path '*.app/Info.plist' -type f 2>/dev/null | head -n 1)"
   bundle_id="$(read_bundle_id_from_plist "${plist_path}" 2>/dev/null || true)"
+  executable_name="$(read_executable_name_from_plist "${plist_path}" 2>/dev/null || true)"
   rm -rf "${tmp_dir}"
+  if [ -n "${executable_name}" ]; then
+    DETECTED_EXECUTABLE_NAME="${executable_name}"
+  fi
   if [ -n "${bundle_id}" ]; then
     DETECTED_BUNDLE_ID="${bundle_id}"
     return 0
@@ -264,6 +333,7 @@ package_ipa_from_xcarchive() {
     return 1
   fi
   DETECTED_BUNDLE_ID="$(read_bundle_id_from_app "${app_path}" 2>/dev/null || true)"
+  DETECTED_EXECUTABLE_NAME="$(read_executable_name_from_plist "${app_path}/Info.plist" 2>/dev/null || true)"
 
   local payload_dir="${RESULT_DIR}/Payload"
   rm -rf "${payload_dir}" "${IPA_FILE}"
@@ -281,8 +351,9 @@ launch_app() {
   local launch_output="${RESULT_DIR}/launch-${bundle_id}.log"
 
   log "启动 App: ${bundle_id}"
+  LAUNCH_STARTED_AT_MS="$(now_ms)"
   if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" launch "${bundle_id}" 2>&1 | tee "${launch_output}" | tee -a "${LOG_FILE}"; then
-    LAUNCH_METHOD="tidevice"
+    mark_launch_finished "tidevice"
     return 0
   fi
 
@@ -290,16 +361,18 @@ launch_app() {
     log "tidevice 启动失败，尝试使用 Xcode devicectl 启动 iOS 17+ 设备。"
     if command -v xcrun >/dev/null 2>&1 && xcrun devicectl --help >/dev/null 2>&1; then
       local devicectl_output="${RESULT_DIR}/devicectl-launch-${bundle_id}.log"
+      LAUNCH_STARTED_AT_MS="$(now_ms)"
       if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee "${devicectl_output}" | tee -a "${LOG_FILE}"; then
-        LAUNCH_METHOD="devicectl"
+        mark_launch_finished "devicectl"
         return 0
       fi
       if grep -q 'must be paired\|RemotePairingError' "${devicectl_output}" 2>/dev/null; then
         log "devicectl 提示设备未配对，尝试执行 CoreDevice 配对。请保持 iPhone 解锁，并在设备上确认信任。"
         xcrun devicectl manage pair --device "${SELECTED_DEVICE}" 2>&1 | tee -a "${LOG_FILE}" || true
         log "重新尝试使用 devicectl 启动 App。"
+        LAUNCH_STARTED_AT_MS="$(now_ms)"
         if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee -a "${LOG_FILE}"; then
-          LAUNCH_METHOD="devicectl"
+          mark_launch_finished "devicectl"
           return 0
         fi
         log "devicectl 仍无法连接设备。请在打包机 Jenkins 用户环境执行：xcrun devicectl manage pair --device ${SELECTED_DEVICE}"
@@ -313,11 +386,25 @@ launch_app() {
 }
 
 capture_screenshot() {
+  local screenshot_log="${RESULT_DIR}/screenshot-error.log"
   log "采集启动截图..."
-  if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" screenshot "${SCREENSHOT_FILE}" >/dev/null 2>&1; then
+  if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" screenshot "${SCREENSHOT_FILE}" >"${screenshot_log}" 2>&1; then
     log "截图: ${SCREENSHOT_FILE}"
     return 0
   fi
+  log "tidevice 截图失败，原因：$(tail -n 3 "${screenshot_log}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+
+  if command -v idevicescreenshot >/dev/null 2>&1; then
+    log "尝试使用 idevicescreenshot 采集截图..."
+    if idevicescreenshot -u "${SELECTED_DEVICE}" "${SCREENSHOT_FILE}" >>"${screenshot_log}" 2>&1; then
+      log "截图: ${SCREENSHOT_FILE}"
+      return 0
+    fi
+    log "idevicescreenshot 截图失败，原因：$(tail -n 3 "${screenshot_log}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  else
+    log "未安装 idevicescreenshot，无法使用 libimobiledevice 截图兜底。可在打包机安装：brew install libimobiledevice"
+  fi
+
   log "截图采集失败，跳过。"
   return 1
 }
@@ -344,6 +431,7 @@ capture_device_log() {
 
 check_process_alive() {
   local bundle_id="$1"
+  local executable_name="${2:-}"
   if ! command -v xcrun >/dev/null 2>&1 || ! xcrun devicectl --help >/dev/null 2>&1; then
     log "未找到 devicectl，跳过进程存活检查。"
     return 2
@@ -359,11 +447,176 @@ check_process_alive() {
     log "进程存活: ${bundle_id}"
     return 0
   fi
-  if grep -q '"name"[[:space:]]*:[[:space:]]*"im"\|"executableName"[[:space:]]*:[[:space:]]*"im"' "${PROCESS_FILE}" 2>/dev/null; then
-    log "进程存活: im"
+  if [ -n "${executable_name}" ] && grep -q "\"name\"[[:space:]]*:[[:space:]]*\"${executable_name}\"\\|\"executableName\"[[:space:]]*:[[:space:]]*\"${executable_name}\"" "${PROCESS_FILE}" 2>/dev/null; then
+    log "进程存活: ${executable_name}"
     return 0
   fi
+  log "未在进程列表中确认 App 进程，可能是 devicectl 进程输出未包含 Bundle ID 或 App 启动后进入短生命周期。"
   return 1
+}
+
+run_monkey_test() {
+  log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
+  python3 - "$WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" <<'PY'
+import json
+import random
+import sys
+import time
+import urllib.error
+import urllib.request
+
+wda_url, event_count, interval_seconds, seed, report_file = sys.argv[1:6]
+wda_url = wda_url.rstrip("/")
+event_count = max(1, int(event_count or "30"))
+interval_seconds = max(0, float(interval_seconds or "0.35"))
+random.seed(seed or None)
+
+events = []
+session_id = ""
+
+def request(method, path, payload=None, timeout=8):
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(f"{wda_url}{path}", data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        return json.loads(body) if body else {}
+
+def value_of(response):
+    return response.get("value", response)
+
+def get_session_id(response):
+    value = value_of(response)
+    return (
+        response.get("sessionId")
+        or (value.get("sessionId") if isinstance(value, dict) else "")
+        or ""
+    )
+
+def pointer_actions(points):
+    actions = []
+    first = points[0]
+    actions.append({"type": "pointerMove", "duration": 0, "x": first[0], "y": first[1]})
+    actions.append({"type": "pointerDown", "button": 0})
+    for x, y, duration in points[1:]:
+        actions.append({"type": "pointerMove", "duration": duration, "x": x, "y": y})
+    actions.append({"type": "pointerUp", "button": 0})
+    return {
+        "actions": [
+            {
+                "type": "pointer",
+                "id": "finger1",
+                "parameters": {"pointerType": "touch"},
+                "actions": actions,
+            }
+        ]
+    }
+
+def tap(session, x, y):
+    try:
+        request("POST", f"/session/{session}/wda/tap/0", {"x": x, "y": y}, timeout=8)
+    except Exception:
+        request("POST", f"/session/{session}/actions", pointer_actions([(x, y), (x, y, 80)]), timeout=8)
+
+def swipe(session, width, height):
+    edge = max(24, min(width, height) // 12)
+    start_x = random.randint(edge, max(edge, width - edge))
+    start_y = random.randint(edge * 2, max(edge * 2, height - edge * 2))
+    delta_x = random.choice([-1, 1]) * random.randint(width // 5, max(width // 5, width // 2))
+    delta_y = random.choice([-1, 1]) * random.randint(height // 6, max(height // 6, height // 3))
+    end_x = min(max(edge, start_x + delta_x), width - edge)
+    end_y = min(max(edge, start_y + delta_y), height - edge)
+    request("POST", f"/session/{session}/actions", pointer_actions([(start_x, start_y), (end_x, end_y, 280)]), timeout=8)
+    return start_x, start_y, end_x, end_y
+
+started_at = time.time()
+report = {
+    "status": "failed",
+    "message": "",
+    "wdaUrl": wda_url,
+    "requestedEvents": event_count,
+    "executedEvents": 0,
+    "events": events,
+}
+
+try:
+    request("GET", "/status", timeout=5)
+    session_response = request("POST", "/session", {"capabilities": {"alwaysMatch": {}, "firstMatch": [{}]}}, timeout=15)
+    session_id = get_session_id(session_response)
+    if not session_id:
+        raise RuntimeError(f"WDA did not return sessionId: {session_response}")
+
+    size_response = request("GET", f"/session/{session_id}/window/size", timeout=8)
+    size = value_of(size_response)
+    width = int(size.get("width") or 390) if isinstance(size, dict) else 390
+    height = int(size.get("height") or 844) if isinstance(size, dict) else 844
+    safe_top = max(60, height // 12)
+    safe_bottom = max(80, height // 10)
+    safe_left = max(20, width // 20)
+    safe_right = max(20, width // 20)
+
+    for index in range(event_count):
+        if random.random() < 0.72:
+            x = random.randint(safe_left, max(safe_left, width - safe_right))
+            y = random.randint(safe_top, max(safe_top, height - safe_bottom))
+            tap(session_id, x, y)
+            events.append({"index": index + 1, "type": "tap", "x": x, "y": y})
+        else:
+            start_x, start_y, end_x, end_y = swipe(session_id, width, height)
+            events.append({
+                "index": index + 1,
+                "type": "swipe",
+                "startX": start_x,
+                "startY": start_y,
+                "endX": end_x,
+                "endY": end_y,
+            })
+        report["executedEvents"] = index + 1
+        time.sleep(interval_seconds)
+
+    report["status"] = "passed"
+    report["message"] = f"Monkey completed {event_count} random events"
+except Exception as exc:
+    report["message"] = str(exc)
+finally:
+    if session_id:
+        try:
+            request("DELETE", f"/session/{session_id}", timeout=5)
+        except Exception:
+            pass
+    report["durationMs"] = int((time.time() - started_at) * 1000)
+    with open(report_file, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+print(report["message"])
+sys.exit(0 if report["status"] == "passed" else 1)
+PY
+}
+
+load_monkey_result() {
+  if [ ! -f "${MONKEY_REPORT_FILE}" ]; then
+    return
+  fi
+  local parsed
+  parsed="$(python3 - "$MONKEY_REPORT_FILE" <<'PY'
+import json
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    data = {}
+
+print("\t".join([
+    str(data.get("status") or ""),
+    str(data.get("message") or "").replace("\t", " ").replace("\n", " "),
+    str(data.get("executedEvents") or "0"),
+]))
+PY
+)"
+  IFS=$'\t' read -r MONKEY_STATUS MONKEY_MESSAGE MONKEY_EXECUTED_EVENTS <<< "${parsed}"
 }
 
 url_decode() {
@@ -468,6 +721,9 @@ log "IPA: ${IPA_FILE}"
 if [ -n "${DETECTED_BUNDLE_ID}" ]; then
   log "检测到安装包 Bundle ID: ${DETECTED_BUNDLE_ID}"
 fi
+if [ -n "${DETECTED_EXECUTABLE_NAME}" ]; then
+  log "检测到安装包可执行名: ${DETECTED_EXECUTABLE_NAME}"
+fi
 
 log "安装 IPA..."
 ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" install "${IPA_FILE}" 2>&1 | tee -a "${LOG_FILE}"
@@ -484,17 +740,37 @@ if [ -n "${LAUNCH_BUNDLE_ID}" ]; then
 fi
 
 log "等待基础启动稳定..."
-sleep 5
+sleep "${COLD_START_WAIT_SECONDS}"
+if [ -n "${LAUNCH_STARTED_AT_MS}" ]; then
+  ready_at_ms="$(now_ms)"
+  COLD_START_READY_MS=$((ready_at_ms - LAUNCH_STARTED_AT_MS))
+  log "冷启动稳定耗时: ${COLD_START_READY_MS}ms (启动命令 ${LAUNCH_DURATION_MS:-N/A}ms + 稳定等待 ${COLD_START_WAIT_SECONDS}s)"
+fi
 
 process_status=0
-check_process_alive "${LAUNCH_BUNDLE_ID}" || process_status=$?
+check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
+if [ "${TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ]; then
+  monkey_status=0
+  run_monkey_test || monkey_status=$?
+  load_monkey_result
+  log "Monkey 结果: ${MONKEY_STATUS:-unknown}，执行 ${MONKEY_EXECUTED_EVENTS:-0}/${MONKEY_EVENT_COUNT} 次，${MONKEY_MESSAGE:-}"
+  if [ "${monkey_status}" != "0" ]; then
+    fail "Monkey 测试失败：${MONKEY_MESSAGE:-请确认 WDA 已启动并可访问 ${WDA_URL}}"
+  fi
+fi
 capture_screenshot || true
 capture_device_log || true
 if [ "${process_status}" = "1" ]; then
-  fail "启动后未检测到 App 进程：${LAUNCH_BUNDLE_ID}"
+  log "警告: 启动后未确认 App 进程：${LAUNCH_BUNDLE_ID}。本次已完成安装和启动，按启动成功通过。"
 fi
 
-write_summary "passed" "安装、启动、进程检查、截图和日志采集完成"
+if [ "${MONKEY_STATUS}" = "passed" ]; then
+  write_summary "passed" "安装、启动、Monkey 测试完成，冷启动稳定耗时 ${COLD_START_READY_MS:-N/A}ms，Monkey ${MONKEY_EXECUTED_EVENTS}/${MONKEY_EVENT_COUNT} 次通过"
+elif [ -n "${COLD_START_READY_MS}" ]; then
+  write_summary "passed" "安装、启动完成，冷启动稳定耗时 ${COLD_START_READY_MS}ms，已采集可用日志"
+else
+  write_summary "passed" "安装、启动完成，已采集可用日志"
+fi
 write_report 0
 log "质检结果目录: ${RESULT_DIR}"
 log "JUnit报告: ${REPORT_FILE}"

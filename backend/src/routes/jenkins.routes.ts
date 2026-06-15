@@ -15,7 +15,7 @@ const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
-const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'full']);
+const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
@@ -385,6 +385,11 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
 
 function parseQualityConsoleSummary(consoleText: string) {
   const plain = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  const toNumber = (value?: string) => {
+    if (!value) return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
   const sourceBuildNumber = plain.match(/源构建:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const branch = plain.match(/分支:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const commitHash = plain.match(/Commit:\s*([0-9a-f]{7,40})/i)?.[1]?.trim() || '';
@@ -392,6 +397,10 @@ function parseQualityConsoleSummary(consoleText: string) {
   const testSuite = plain.match(/测试套件:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const devicePoolMatch = plain.match(/设备池:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const deviceUdid = plain.match(/使用设备:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const launchDurationMs = toNumber(plain.match(/启动命令耗时:\s*(\d+)ms/i)?.[1]);
+  const coldStartReadyMs = toNumber(plain.match(/冷启动稳定耗时:\s*(\d+)ms/i)?.[1]);
+  const coldStartWaitSeconds = toNumber(plain.match(/稳定等待\s*(\d+)s/i)?.[1]);
+  const monkeyMatch = plain.match(/Monkey 结果:\s*([^，,\n\r]+)[，,]\s*执行\s*(\d+)\/(\d+)\s*次[，,]?\s*([^\n\r]*)/i);
   const bundleId = (
     plain.match(/启动 App:\s*([^\n\r]+)/)?.[1]?.trim() ||
     plain.match(/Launched application with\s+([^\s]+)\s+bundle identifier/i)?.[1]?.trim() ||
@@ -417,6 +426,13 @@ function parseQualityConsoleSummary(consoleText: string) {
     deviceUdid,
     bundleId,
     launchMethod: /Launched application with/i.test(plain) ? 'devicectl' : '',
+    launchDurationMs,
+    coldStartReadyMs,
+    coldStartWaitSeconds,
+    monkeyStatus: monkeyMatch?.[1]?.trim() || '',
+    monkeyExecutedEvents: toNumber(monkeyMatch?.[2]),
+    monkeyEventCount: toNumber(monkeyMatch?.[3]),
+    monkeyMessage: monkeyMatch?.[4]?.trim() || '',
   };
 }
 
@@ -463,6 +479,7 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           screenshotUrl: artifactUrl(summary.artifacts?.screenshot || 'screenshot.png'),
           deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
+          monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
           junitUrl: artifactUrl(summary.artifacts?.junit || 'junit.xml'),
           qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog || 'quality.log'),
         },
@@ -1082,6 +1099,9 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       QUALITY_RUNNER: 'local-ios-device',
       QA_RUNNER_MODE: 'local-usb',
       APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
+      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://127.0.0.1:8100',
+      MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
+      MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
