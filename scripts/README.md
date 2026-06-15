@@ -49,7 +49,7 @@ bash scripts/sonic/ios-quality.sh
 | `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`monkey`、`full` |
 | `REQUESTED_TEST_SUITE` | 平台原始选择的质检套件，空值时使用 `TEST_SUITE` |
 | `RUN_MONKEY` | 设为 `1` 时执行 Monkey 随机测试 |
-| `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://127.0.0.1:8100` |
+| `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://10.1.3.177:8100` |
 | `MONKEY_EVENT_COUNT` | Monkey 随机事件次数，默认 `30` |
 | `MONKEY_INTERVAL_SECONDS` | Monkey 事件间隔，默认 `0.35` |
 

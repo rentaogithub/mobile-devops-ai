@@ -50,7 +50,7 @@ LAUNCH_FINISHED_AT_MS=""
 LAUNCH_DURATION_MS=""
 COLD_START_READY_MS=""
 COLD_START_WAIT_SECONDS="${COLD_START_WAIT_SECONDS:-5}"
-WDA_URL="${WDA_URL:-http://127.0.0.1:8100}"
+WDA_URL="${WDA_URL:-http://10.1.3.177:8100}"
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
 MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_SEED="${MONKEY_SEED:-}"
@@ -588,7 +588,13 @@ try:
     report["status"] = "passed"
     report["message"] = f"Monkey completed {event_count} random events"
 except Exception as exc:
-    report["message"] = str(exc)
+    message = str(exc)
+    if "Connection refused" in message or "Errno 61" in message or "timed out" in message:
+        message = (
+            f"WDA 不可访问：{wda_url}。请确认打包机已启动 WebDriverAgent，"
+            f"并且 curl {wda_url}/status 可通。原始错误：{message}"
+        )
+    report["message"] = message
 finally:
     if session_id:
         try:

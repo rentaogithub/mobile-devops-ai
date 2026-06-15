@@ -1118,7 +1118,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : 'local-ios-device',
       QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : 'local-usb',
       APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
-      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://127.0.0.1:8100',
+      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://10.1.3.177:8100',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
       MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
