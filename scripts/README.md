@@ -50,6 +50,27 @@ bash scripts/sonic/ios-quality.sh
 
 当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 
+如果 `devicectl` 报 `The device must be paired before it can be connected`，说明 Jenkins 运行用户还没有完成 Xcode/CoreDevice 配对。脚本会自动执行一次：
+
+```bash
+xcrun devicectl manage pair --device <UDID>
+```
+
+此时需要保持 iPhone 解锁，并在设备上确认信任/配对。若 Jenkins 环境仍失败，可登录打包机同一个 macOS 用户后手动执行上面的命令，再重新触发质检。
+
+也可以直接使用仓库脚本完成配对和启动：
+
+```bash
+sh scripts/sonic/sonic.sh ios-pair
+```
+
+指定设备或 Bundle ID：
+
+```bash
+sh scripts/sonic/sonic.sh ios-pair 00008101-0015192E0178001E
+sh scripts/sonic/sonic.sh ios-pair 00008101-0015192E0178001E com.nndev.im
+```
+
 ### 同步 Jenkins Job
 
 仓库里的 `scripts/jenkins/nn-auto-quality-config.xml` 是 `nn-auto-quality` 的标准配置。修改模板后，需要同步到 Jenkins 实例：

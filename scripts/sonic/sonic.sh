@@ -25,6 +25,7 @@ Usage:
   sh scripts/sonic/sonic.sh prepare   准备/下载/解压 Sonic Agent，生成 start.sh
   sh scripts/sonic/sonic.sh stack     仅启动 Sonic Server/Web
   sh scripts/sonic/sonic.sh agent     仅启动 Sonic Agent
+  sh scripts/sonic/sonic.sh ios-pair  配对 USB iPhone 并启动蒲公英包 com.nndev.im
 
 Recommended:
   日常只用 start / check / stop。
@@ -107,6 +108,10 @@ case "$command_name" in
     ;;
   agent)
     /bin/bash "$PROJECT_ROOT/scripts/sonic/start-agent.sh"
+    ;;
+  ios-pair|pair-ios|pair)
+    shift || true
+    /bin/bash "$PROJECT_ROOT/scripts/sonic/pair-and-launch-ios.sh" "$@"
     ;;
   help|-h|--help)
     usage

@@ -215,8 +215,18 @@ launch_app() {
   if grep -q 'DeveloperImage not found\|InvalidService' "${launch_output}" 2>/dev/null; then
     log "tidevice 启动失败，尝试使用 Xcode devicectl 启动 iOS 17+ 设备。"
     if command -v xcrun >/dev/null 2>&1 && xcrun devicectl --help >/dev/null 2>&1; then
-      if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee -a "${LOG_FILE}"; then
+      local devicectl_output="${RESULT_DIR}/devicectl-launch-${bundle_id}.log"
+      if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee "${devicectl_output}" | tee -a "${LOG_FILE}"; then
         return 0
+      fi
+      if grep -q 'must be paired\|RemotePairingError' "${devicectl_output}" 2>/dev/null; then
+        log "devicectl 提示设备未配对，尝试执行 CoreDevice 配对。请保持 iPhone 解锁，并在设备上确认信任。"
+        xcrun devicectl manage pair --device "${SELECTED_DEVICE}" 2>&1 | tee -a "${LOG_FILE}" || true
+        log "重新尝试使用 devicectl 启动 App。"
+        if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee -a "${LOG_FILE}"; then
+          return 0
+        fi
+        log "devicectl 仍无法连接设备。请在打包机 Jenkins 用户环境执行：xcrun devicectl manage pair --device ${SELECTED_DEVICE}"
       fi
     else
       log "未找到 xcrun devicectl，无法自动绕过 tidevice DeveloperImage 限制。"
