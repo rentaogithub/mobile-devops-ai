@@ -60,6 +60,20 @@ function getSonicConfig() {
   };
 }
 
+function getPlatformRootDir() {
+  const configured = String(getRuntimeEnv('NN_IOS_PLATFORM_DIR') || '').trim();
+  if (configured) return configured;
+
+  const candidates = [
+    process.cwd(),
+    path.resolve(process.cwd(), '..'),
+  ];
+  const matched = candidates.find((candidate) => (
+    fs.existsSync(path.join(candidate, 'scripts/sonic/ios-quality.sh'))
+  ));
+  return matched || process.cwd();
+}
+
 function getConnectionErrorMessage(error: any) {
   const code = error?.code ? ` ${error.code}` : '';
   return error?.message ? `${error.message}${code}` : '连接失败';
@@ -936,6 +950,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       QUALITY_RUNNER: 'local-ios-device',
       QA_RUNNER_MODE: 'local-usb',
       APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nnhuyu.im',
+      NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
       SONIC_API_BASE: sonicConfig.apiBase,

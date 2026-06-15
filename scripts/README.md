@@ -15,6 +15,27 @@ sh scripts/sonic/ios-quality.sh
 3. 下载 IPA，安装到指定设备或第一台可用设备。
 4. 启动 `APP_BUNDLE_ID`，生成 `quality-results/**` 日志和 JUnit 报告。
 
+Jenkins `nn-auto-quality` 的 `Execute shell` 不写死平台目录。平台触发质检时会自动传入 `NN_IOS_PLATFORM_DIR`；手动点 `Build with Parameters` 时才需要填写该参数：
+
+```bash
+set -e
+PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
+if [ -z "$PLATFORM_DIR" ] && [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE/scripts/sonic/ios-quality.sh" ]; then
+  PLATFORM_DIR="$WORKSPACE"
+fi
+if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh" ]; then
+  echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
+  echo "Expected file: $NN_IOS_PLATFORM_DIR/scripts/sonic/ios-quality.sh"
+  echo "When triggered by nn-ios-platform, this parameter is passed automatically."
+  echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
+  exit 2
+fi
+cd "$PLATFORM_DIR"
+sh scripts/sonic/ios-quality.sh
+```
+
+如果平台部署目录变化，不需要改 Jenkins Job；重启/重新启动平台服务后，平台会按当前服务实际目录重新传参。
+
 常用 Jenkins 参数：
 
 | 参数 | 说明 |

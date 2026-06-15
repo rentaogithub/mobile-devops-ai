@@ -84,6 +84,12 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>NN_IOS_PLATFORM_DIR</name>
+          <defaultValue></defaultValue>
+          <description>nn-ios-platform 在 Jenkins 打包机上的实际目录。平台触发质检时会自动传入，手动构建时可填写。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>SONIC_API_BASE</name>
           <defaultValue>http://10.1.3.177:5173/sonic-api</defaultValue>
           <trim>true</trim>
@@ -115,7 +121,17 @@
   <builders>
     <hudson.tasks.Shell>
       <command>set -e
-PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-/Users/renyang/工作/code/nncode/nn-ios-platform}"
+PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
+if [ -z "$PLATFORM_DIR" ] &amp;&amp; [ -n "${WORKSPACE:-}" ] &amp;&amp; [ -f "$WORKSPACE/scripts/sonic/ios-quality.sh" ]; then
+  PLATFORM_DIR="$WORKSPACE"
+fi
+if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh" ]; then
+  echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
+  echo "Expected file: \$NN_IOS_PLATFORM_DIR/scripts/sonic/ios-quality.sh"
+  echo "When triggered by nn-ios-platform, this parameter is passed automatically."
+  echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
+  exit 2
+fi
 cd "$PLATFORM_DIR"
 sh scripts/sonic/ios-quality.sh</command>
     </hudson.tasks.Shell>
