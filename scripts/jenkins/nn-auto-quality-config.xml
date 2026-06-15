@@ -133,7 +133,7 @@ if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh"
   exit 2
 fi
 cd "$PLATFORM_DIR"
-sh scripts/sonic/ios-quality.sh</command>
+bash scripts/sonic/ios-quality.sh</command>
     </hudson.tasks.Shell>
   </builders>
   <publishers>

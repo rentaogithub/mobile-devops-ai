@@ -31,7 +31,7 @@ if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh"
   exit 2
 fi
 cd "$PLATFORM_DIR"
-sh scripts/sonic/ios-quality.sh
+bash scripts/sonic/ios-quality.sh
 ```
 
 如果平台部署目录变化，不需要改 Jenkins Job；重启/重新启动平台服务后，平台会按当前服务实际目录重新传参。

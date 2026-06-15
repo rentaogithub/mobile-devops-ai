@@ -19,6 +19,8 @@ DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nnhuyu.im}"
 
+export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 WORKSPACE_DIR="${WORKSPACE:-$(pwd)}"
 RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${TEST_SUITE}"
 REPORT_FILE="${RESULT_DIR}/junit.xml"
@@ -78,6 +80,20 @@ find_tidevice() {
     command -v tidevice
     return
   fi
+  local candidate
+  for candidate in \
+    "$HOME/.local/bin/tidevice" \
+    "$HOME/Library/Python/3.9/bin/tidevice" \
+    "$HOME/Library/Python/3.10/bin/tidevice" \
+    "$HOME/Library/Python/3.11/bin/tidevice" \
+    "$HOME/Library/Python/3.12/bin/tidevice" \
+    "$HOME/Library/Python/3.13/bin/tidevice" \
+    "$HOME/Library/Python/3.14/bin/tidevice"; do
+    if [ -x "$candidate" ]; then
+      echo "$candidate"
+      return
+    fi
+  done
   if command -v python3 >/dev/null 2>&1 && python3 -m tidevice version >/dev/null 2>&1; then
     echo "python3 -m tidevice"
     return
@@ -152,7 +168,7 @@ log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
 
 TIDEVICE_CMD="$(find_tidevice)"
 if [ -z "${TIDEVICE_CMD}" ]; then
-  fail "未找到 tidevice。请在打包机安装：python3 -m pipx install tidevice 或 python3 -m pip install --user tidevice"
+  fail "未找到 tidevice。请在打包机 Jenkins 用户下安装：python3 -m pipx install tidevice，或 python3 -m pip install --user tidevice。若已安装，请确认 Jenkins 用户 PATH 包含 \$HOME/.local/bin。当前 PATH=${PATH}"
 fi
 
 log "tidevice: ${TIDEVICE_CMD}"
