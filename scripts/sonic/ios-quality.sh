@@ -108,8 +108,11 @@ select_device() {
     return
   fi
 
-  # tidevice list output is usually: UDID DeviceName
-  ${tidevice_cmd} list 2>/dev/null | awk 'NF >= 1 {print $1; exit}'
+  # tidevice list can print a table header. Pick the first real iOS UDID.
+  ${tidevice_cmd} list 2>/dev/null | awk '
+    NR == 1 && ($1 == "UDID" || $1 == "SerialNumber") { next }
+    $1 ~ /^[0-9A-Fa-f-]{25,}$/ { print $1; exit }
+  '
 }
 
 download_ipa() {
@@ -130,7 +133,11 @@ download_ipa() {
       return 1
       ;;
   esac
-  [ -s "${IPA_FILE}" ]
+  [ -s "${IPA_FILE}" ] || return 1
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -l "${IPA_FILE}" 'Payload/*.app/*' >/dev/null 2>&1 || return 2
+  fi
+  return 0
 }
 
 [[ -n "${SOURCE_BUILD_NUMBER}" ]] || fail "SOURCE_BUILD_NUMBER is required"
@@ -181,7 +188,12 @@ if [ -z "${SELECTED_DEVICE}" ]; then
 fi
 log "使用设备: ${SELECTED_DEVICE}"
 
-if ! download_ipa; then
+download_status=0
+download_ipa || download_status=$?
+if [ "${download_status}" = "2" ]; then
+  file_desc="$(file "${IPA_FILE}" 2>/dev/null || true)"
+  fail "下载到的文件不是有效 IPA，可能 PACKAGE_URL 是蒲公英页面短链而不是直接下载地址。PACKAGE_URL=${PACKAGE_URL:-N/A} 文件信息=${file_desc:-N/A}"
+elif [ "${download_status}" != "0" ]; then
   fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
 fi
 log "IPA: ${IPA_FILE}"
