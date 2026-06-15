@@ -21,6 +21,46 @@ check_http() {
   [ "$code" != "000" ] && [ -n "$code" ]
 }
 
+wait_http() {
+  local url="$1"
+  local attempts="${2:-10}"
+  local index
+  for index in $(seq 1 "$attempts"); do
+    if check_http "$url"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+print_sonic_server_diagnostics() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
+    echo "nn-sonic-server 容器未运行。"
+    return
+  fi
+
+  echo
+  echo "nn-sonic-server 最近日志:"
+  docker logs --tail 80 nn-sonic-server 2>&1 | sed 's/^/  /' || true
+
+  echo
+  echo "nn-sonic-server 容器内探测:"
+  docker exec nn-sonic-server sh -lc '
+    if command -v curl >/dev/null 2>&1; then
+      curl -s -o /dev/null -w "  container localhost:8094 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:8094 || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -S -O /dev/null http://127.0.0.1:8094 2>&1 | head -n 5 | sed "s/^/  /" || true
+    else
+      echo "  curl/wget 不存在，跳过容器内 HTTP 探测"
+    fi
+  ' 2>&1 || true
+}
+
 echo "🚀 Bootstrap Sonic for nn-ios-platform"
 echo "====================================="
 echo "Project: $PROJECT_ROOT"
@@ -44,16 +84,17 @@ echo "4. 启动 Sonic Agent..."
 echo
 
 echo "5. 检查 Sonic 服务摘要..."
-if check_http "http://127.0.0.1:$SONIC_WEB_PORT"; then
+if wait_http "http://127.0.0.1:$SONIC_WEB_PORT" 5; then
   echo "✅ Sonic Web 可访问: http://$PLATFORM_HOST:$SONIC_WEB_PORT"
 else
   echo "⚠️  Sonic Web HTTP 不通: $SONIC_WEB_PORT"
 fi
 
-if check_http "http://127.0.0.1:$SONIC_API_PORT"; then
+if wait_http "http://127.0.0.1:$SONIC_API_PORT" 10; then
   echo "✅ Sonic API 可访问: http://$PLATFORM_HOST:$SONIC_API_PORT"
 else
   echo "⚠️  Sonic API HTTP 不通: $SONIC_API_PORT"
+  print_sonic_server_diagnostics
 fi
 
 echo "完整诊断: sh scripts/sonic/sonic.sh check"

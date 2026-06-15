@@ -39,6 +39,41 @@ check_http() {
   fi
 }
 
+print_container_logs() {
+  local container_name="$1"
+  local title="$2"
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+    echo "skip $title logs: $container_name is not running"
+    return
+  fi
+
+  section "$title Logs"
+  docker logs --tail 100 "$container_name" 2>&1 | sed 's/^/  /'
+}
+
+check_sonic_server_inside_container() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
+    return
+  fi
+
+  section "Sonic Server Container HTTP"
+  docker exec nn-sonic-server sh -lc '
+    if command -v curl >/dev/null 2>&1; then
+      curl -s -o /dev/null -w "container localhost:8094 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:8094 || true
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -S -O /dev/null http://127.0.0.1:8094 2>&1 | head -n 8 || true
+    else
+      echo "curl/wget not found in nn-sonic-server"
+    fi
+  ' 2>&1 || true
+}
+
 compose_cmd() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     echo "docker compose"
@@ -106,6 +141,9 @@ check_http "http://127.0.0.1:5173/sonic-admin" "Platform Sonic Admin Proxy"
 check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy"
 check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-admin" "External Platform Sonic Admin Proxy"
 check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-api" "External Platform Sonic API Proxy"
+
+check_sonic_server_inside_container
+print_container_logs "nn-sonic-server" "Sonic Server"
 
 section "Hint"
 echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"
