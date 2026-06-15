@@ -11,6 +11,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 AGENT_DIR="${SONIC_AGENT_DIR:-/Users/a1/工作/sonic-agent}"
 PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+SONIC_WEB_PORT="${SONIC_WEB_PORT:-3002}"
+SONIC_API_PORT="${SONIC_API_PORT:-8094}"
+
+check_http() {
+  local url="$1"
+  curl -fsS --connect-timeout 2 "$url" >/dev/null 2>&1
+}
 
 echo "🚀 Bootstrap Sonic for nn-ios-platform"
 echo "====================================="
@@ -34,8 +41,20 @@ echo "4. 启动 Sonic Agent..."
 /bin/bash "$PROJECT_ROOT/scripts/sonic/start-agent.sh"
 echo
 
-echo "5. 检查 Sonic 服务..."
-/bin/bash "$PROJECT_ROOT/scripts/sonic/check.sh" || true
+echo "5. 检查 Sonic 服务摘要..."
+if check_http "http://127.0.0.1:$SONIC_WEB_PORT"; then
+  echo "✅ Sonic Web reachable: http://$PLATFORM_HOST:$SONIC_WEB_PORT"
+else
+  echo "⚠️  Sonic Web not reachable on port $SONIC_WEB_PORT"
+fi
+
+if check_http "http://127.0.0.1:$SONIC_API_PORT"; then
+  echo "✅ Sonic API reachable: http://$PLATFORM_HOST:$SONIC_API_PORT"
+else
+  echo "⚠️  Sonic API not reachable on port $SONIC_API_PORT"
+fi
+
+echo "完整诊断: sh scripts/sonic/sonic.sh check"
 echo
 
 echo "6. 检查 Agent 安装结果..."

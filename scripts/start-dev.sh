@@ -28,6 +28,11 @@ PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
 BACKEND_PID=""
 FRONTEND_PID=""
 
+function check_http() {
+    local url="$1"
+    curl -fsS --connect-timeout 2 "$url" >/dev/null 2>&1
+}
+
 echo "🚀 启动 iOS 崩溃日志符号化系统开发环境"
 echo "========================================"
 
@@ -42,12 +47,16 @@ fi
 # 2. 启动 Sonic Server/Web + Agent
 echo "🔄 启动 Sonic 相关服务..."
 cd "$PROJECT_ROOT"
-run_npm run start:sonic | tee "$PROJECT_ROOT/sonic-dev.log" || true
+if run_npm run start:sonic > "$PROJECT_ROOT/sonic-dev.log" 2>&1; then
+    echo "✅ Sonic 启动流程已执行"
+else
+    echo "⚠️  Sonic 启动流程未完全成功，平台服务会继续启动"
+fi
 
 echo "🔍 Sonic 服务状态:"
 if command -v docker >/dev/null 2>&1; then
     if docker ps >/dev/null 2>&1; then
-        docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}' | sed 's/^/   /'
+        docker ps --format '{{.Names}}\t{{.Status}}' | grep '^nn-sonic-' | sed 's/^/   /' || echo "   未发现 Sonic 容器"
     else
         echo "   Docker 当前不可用或未启动"
     fi
@@ -55,20 +64,16 @@ else
     echo "   Docker 未安装"
 fi
 
-if lsof -ti:3002 > /dev/null 2>&1; then
+if check_http "http://127.0.0.1:3002"; then
     echo "   ✅ Sonic Web: http://$PLATFORM_HOST:3002"
 else
-    echo "   ⚠️  Sonic Web 未监听 3002"
-    if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-web$'; then
-        echo "   nn-sonic-web 最近日志:"
-        docker logs --tail 40 nn-sonic-web 2>&1 | sed 's/^/      /' || true
-    fi
+    echo "   ⚠️  Sonic Web HTTP 不通，详情查看: $PROJECT_ROOT/sonic-dev.log"
 fi
 
-if lsof -ti:8094 > /dev/null 2>&1; then
+if check_http "http://127.0.0.1:8094"; then
     echo "   ✅ Sonic API: http://$PLATFORM_HOST:8094"
 else
-    echo "   ⚠️  Sonic API 未监听 8094"
+    echo "   ⚠️  Sonic API HTTP 不通，详情查看: $PROJECT_ROOT/sonic-dev.log"
 fi
 
 if [ -f "$PROJECT_ROOT/nn-ios-platform-data/sonic-agent.pid" ]; then
@@ -78,15 +83,11 @@ if [ -f "$PROJECT_ROOT/nn-ios-platform-data/sonic-agent.pid" ]; then
     else
         echo "   ⚠️  Sonic Agent PID 文件存在，但进程未运行"
     fi
+elif pgrep -f "sonic.*agent" >/dev/null 2>&1; then
+    echo "   ✅ Sonic Agent 已运行: $(pgrep -f "sonic.*agent" | head -n 1)"
 else
     echo "   ⚠️  Sonic Agent 未配置或未启动"
-    if [ -f "$PROJECT_ROOT/sonic-agent.log" ]; then
-        echo "   sonic-agent 最近日志:"
-        tail -n 40 "$PROJECT_ROOT/sonic-agent.log" 2>/dev/null | sed 's/^/      /' || true
-    else
-        echo "   配置方式: 在 backend/.env 设置 SONIC_AGENT_DIR 或 SONIC_AGENT_CMD"
-        echo "   初始化/下载 Agent: sh scripts/sonic/sonic.sh prepare"
-    fi
+    echo "   Agent 日志: $PROJECT_ROOT/sonic-agent.log"
 fi
 echo "   详细诊断: sh scripts/sonic/sonic.sh check"
 

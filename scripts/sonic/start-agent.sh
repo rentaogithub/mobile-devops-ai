@@ -57,8 +57,10 @@ if [ -f "$PID_FILE" ]; then
   fi
 fi
 
-if pgrep -f "sonic.*agent" 2>/dev/null | grep -v "^$$$" >/dev/null 2>&1; then
-  echo "Sonic Agent appears to be running already."
+EXISTING_AGENT_PID="$(pgrep -f "sonic.*agent" 2>/dev/null | grep -v "^$$$" | head -n 1 || true)"
+if [ -n "$EXISTING_AGENT_PID" ]; then
+  echo "$EXISTING_AGENT_PID" > "$PID_FILE"
+  echo "Sonic Agent appears to be running already: $EXISTING_AGENT_PID"
   exit 0
 fi
 
