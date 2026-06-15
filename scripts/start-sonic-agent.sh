@@ -65,6 +65,36 @@ fi
 AGENT_DIR="${SONIC_AGENT_DIR:-}"
 AGENT_CMD="${SONIC_AGENT_CMD:-}"
 
+detect_agent_dir() {
+  local candidates=(
+    "/Users/a1/工作/sonic-agent"
+    "$PROJECT_ROOT/deploy/sonic-agent"
+    "$PROJECT_ROOT/sonic-agent"
+    "$HOME/sonic-agent"
+    "$HOME/Downloads/sonic-agent"
+    "/opt/sonic-agent"
+    "/usr/local/sonic-agent"
+    "/Users/a1/sonic-agent"
+  )
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [ -x "$candidate/start.sh" ] || ls "$candidate"/sonic-agent*.jar >/dev/null 2>&1; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if [ -z "$AGENT_DIR" ] && [ -z "$AGENT_CMD" ]; then
+  AGENT_DIR="$(detect_agent_dir || true)"
+  if [ -n "$AGENT_DIR" ]; then
+    echo "Detected Sonic Agent dir: $AGENT_DIR"
+  fi
+fi
+
 if [ -n "$AGENT_CMD" ]; then
   echo "Starting Sonic Agent by SONIC_AGENT_CMD..."
   nohup /bin/bash -lc "$AGENT_CMD" > "$LOG_FILE" 2>&1 &
@@ -81,7 +111,11 @@ elif [ -n "$AGENT_DIR" ] && ls "$AGENT_DIR"/sonic-agent*.jar >/dev/null 2>&1; th
   nohup java -jar "$AGENT_JAR" --server.host="$API_BASE" > "$LOG_FILE" 2>&1 &
   popd >/dev/null
 else
-  echo "Sonic Agent not configured. Set SONIC_AGENT_DIR or SONIC_AGENT_CMD in backend/.env."
+  echo "Sonic Agent not configured or not found."
+  echo "Set one of the following in backend/.env:"
+  echo "  SONIC_AGENT_DIR=/path/to/sonic-agent"
+  echo "  SONIC_AGENT_CMD='cd /path/to/sonic-agent && sh start.sh'"
+  echo "Sonic Agent log will be written to: $LOG_FILE"
   exit 0
 fi
 

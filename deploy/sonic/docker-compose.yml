@@ -59,6 +59,10 @@ services:
       - "${SONIC_API_PORT:-8094}:8094"
     volumes:
       - sonic-server-data:/data
+    networks:
+      default:
+        aliases:
+          - sonic-server-gateway
 
   sonic-web:
     image: ${SONIC_WEB_IMAGE}

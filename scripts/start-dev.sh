@@ -80,6 +80,12 @@ if [ -f "$PROJECT_ROOT/nn-ios-platform-data/sonic-agent.pid" ]; then
     fi
 else
     echo "   ⚠️  Sonic Agent 未配置或未启动"
+    if [ -f "$PROJECT_ROOT/sonic-agent.log" ]; then
+        echo "   sonic-agent 最近日志:"
+        tail -n 40 "$PROJECT_ROOT/sonic-agent.log" 2>/dev/null | sed 's/^/      /' || true
+    else
+        echo "   配置方式: 在 backend/.env 设置 SONIC_AGENT_DIR 或 SONIC_AGENT_CMD"
+    fi
 fi
 echo "   详细诊断: sh scripts/check-sonic-stack.sh"
 

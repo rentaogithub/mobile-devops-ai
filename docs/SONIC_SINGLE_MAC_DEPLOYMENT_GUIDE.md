@@ -231,11 +231,20 @@ http://10.1.3.177:5173/sonic-admin
 
 ### 随 nn-ios-platform 自动启动 Agent
 
+建议把 Sonic Agent 放在 `nn-ios-platform` 同级的独立目录，代码、平台运行数据和 Agent 程序分开维护：
+
+```text
+/Users/a1/工作/
+  nn-ios-platform/
+  nn-ios-platform-data/
+  sonic-agent/
+```
+
 平台启动脚本已经支持自动拉起 Sonic Agent。先在 `backend/.env` 中配置其中一种方式：
 
 ```bash
 SONIC_AGENT_AUTO_START=true
-SONIC_AGENT_DIR=/opt/sonic-agent
+SONIC_AGENT_DIR=/Users/a1/工作/sonic-agent
 SONIC_AGENT_API_BASE=http://127.0.0.1:8094
 ```
 
@@ -243,7 +252,7 @@ SONIC_AGENT_API_BASE=http://127.0.0.1:8094
 
 ```bash
 SONIC_AGENT_AUTO_START=true
-SONIC_AGENT_CMD='cd /opt/sonic-agent && sh start.sh'
+SONIC_AGENT_CMD='cd /Users/a1/工作/sonic-agent && sh start.sh'
 ```
 
 之后启动平台即可：
