@@ -19,11 +19,12 @@ XCARCHIVE_PATH="${XCARCHIVE_PATH:-}"
 ARCHIVE_URL="${ARCHIVE_URL:-}"
 TEST_SUITE="${TEST_SUITE:-smoke}"
 REQUESTED_TEST_SUITE="${REQUESTED_TEST_SUITE:-${TEST_SUITE}}"
-if [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
-  REQUESTED_TEST_SUITE="monkey"
-fi
 DEVICE_POOL="${DEVICE_POOL:-ios-default}"
 DEVICE_POOL_LABEL="${DEVICE_POOL_LABEL:-${DEVICE_POOL}}"
+if [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]] || [[ "${DEVICE_POOL_LABEL}" == *"suite:monkey"* ]]; then
+  REQUESTED_TEST_SUITE="monkey"
+fi
+DEVICE_POOL_LABEL_DISPLAY="${DEVICE_POOL_LABEL// \[suite:monkey\]/}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
@@ -124,7 +125,7 @@ write_summary() {
   local message="${2:-}"
   python3 - "$SUMMARY_FILE" \
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
-    "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL:-}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
+    "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL_DISPLAY:-${DEVICE_POOL_LABEL:-}}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
     "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${WDA_URL:-}" \
     "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" <<'PY'
@@ -667,7 +668,7 @@ cat > "${META_FILE}" <<JSON
   "archiveUrl": "${ARCHIVE_URL}",
   "testSuite": "${REQUESTED_TEST_SUITE}",
   "devicePool": "${DEVICE_POOL}",
-  "devicePoolLabel": "${DEVICE_POOL_LABEL}",
+  "devicePoolLabel": "${DEVICE_POOL_LABEL_DISPLAY}",
   "deviceUdid": "${DEVICE_UDID}",
   "deviceCloud": "${DEVICE_CLOUD}",
   "runner": "local-ios-device"
@@ -686,7 +687,7 @@ if [ "${REQUESTED_TEST_SUITE}" != "${TEST_SUITE}" ]; then
   log "Jenkins TEST_SUITE: ${TEST_SUITE}"
 fi
 log "执行模式: QUALITY_RUNNER=${QUALITY_RUNNER:-N/A}, QA_RUNNER_MODE=${QA_RUNNER_MODE:-N/A}, RUN_MONKEY=${RUN_MONKEY:-0}"
-log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
+log "设备池: ${DEVICE_POOL_LABEL_DISPLAY} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
 log "xcarchive: ${XCARCHIVE_PATH:-N/A}"

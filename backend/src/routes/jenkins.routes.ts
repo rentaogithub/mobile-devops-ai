@@ -1094,6 +1094,9 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       return;
     }
 
+    const devicePoolLabel = testSuite === 'monkey'
+      ? `${selectedDevicePool.label} [suite:monkey]`
+      : selectedDevicePool.label;
     const crumb = await getCrumb();
     const params = new URLSearchParams({
       SOURCE_JOB: DEFAULT_JOB_NAME,
@@ -1108,7 +1111,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       REQUESTED_TEST_SUITE: testSuite,
       RUN_MONKEY: testSuite === 'monkey' ? '1' : '0',
       DEVICE_POOL: devicePool,
-      DEVICE_POOL_LABEL: selectedDevicePool.label,
+      DEVICE_POOL_LABEL: devicePoolLabel,
       DEVICE_UDID: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
       DEVICE_SELECTOR: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
       DEVICE_CLOUD: 'LocalMac',
