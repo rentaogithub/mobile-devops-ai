@@ -115,7 +115,8 @@ else
   if [ -n "$AGENT_DIR" ]; then
     echo "Configured SONIC_AGENT_DIR: $AGENT_DIR"
     if [ -d "$AGENT_DIR" ]; then
-      echo "Directory exists, but no executable start.sh or sonic-agent*.jar was found."
+      echo "Directory exists, but the real Sonic Agent package is not installed."
+      echo "No executable start.sh or sonic-agent*.jar was found."
     else
       echo "Directory does not exist."
     fi

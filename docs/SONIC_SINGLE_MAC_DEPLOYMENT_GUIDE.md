@@ -247,11 +247,34 @@ cd /Users/a1/工作/nn-ios-platform
 sh scripts/prepare-sonic-agent.sh
 ```
 
-这个脚本只创建目录和检查结构，不会自动下载 Sonic Agent 发行包。后续需要把 Sonic Agent 的真实运行包放到 `/Users/a1/工作/sonic-agent`，并保证目录下存在以下任意一种启动入口：
+这个脚本会创建目录并检查结构。后续只需要把 Sonic Agent 的真实运行包放到 `/Users/a1/工作/sonic-agent`。如果目录中存在 `sonic-agent*.zip`、`sonic-agent*.tar.gz`、`sonic-agent*.tgz` 或 `sonic-agent*.jar`，脚本会自动解压或识别。
+
+如果解压后存在 `sonic-agent*.jar`，且目录中还没有 `start.sh`，脚本会自动生成可执行的 `start.sh`：
+
+```bash
+java -jar sonic-agent*.jar --server.host=http://127.0.0.1:8094
+```
+
+最终需要保证目录下存在以下任意一种启动入口：
 
 ```text
 /Users/a1/工作/sonic-agent/start.sh
 /Users/a1/工作/sonic-agent/sonic-agent*.jar
+```
+
+脚本会同时生成：
+
+```text
+/Users/a1/工作/sonic-agent/INSTALL_PACKAGE_HERE.txt
+/Users/a1/工作/sonic-agent/start.sh.template
+```
+
+它们只是提示和模板，不代表 Agent 已经安装完成。不要直接把 `start.sh.template` 当作可用 Agent 启动脚本；需要按真实 Sonic Agent 包的启动方式改成 `start.sh`。
+
+也可以显式指定本地包路径：
+
+```bash
+sh scripts/prepare-sonic-agent.sh /Users/a1/工作/sonic-agent/sonic-agent.zip
 ```
 
 平台启动脚本已经支持自动拉起 Sonic Agent。先在 `backend/.env` 中配置其中一种方式：
