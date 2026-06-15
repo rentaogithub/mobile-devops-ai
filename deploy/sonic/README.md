@@ -30,7 +30,7 @@ sh scripts/install-docker-colima.sh
 在项目根目录初始化 Sonic 配置：
 
 ```bash
-sh scripts/init-sonic-stack-env.sh
+sh scripts/sonic/sonic.sh stack
 ```
 
 ```bash

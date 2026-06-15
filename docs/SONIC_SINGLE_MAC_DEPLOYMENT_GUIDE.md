@@ -134,7 +134,7 @@ Sonic Agent 控制 iOS 真机时通常需要 WebDriverAgent。
 平台已经提供 Sonic 子服务部署模板：
 
 ```bash
-sh scripts/init-sonic-stack-env.sh
+sh scripts/sonic/sonic.sh stack
 ```
 
 脚本会自动生成 `deploy/sonic/.env`：
@@ -240,50 +240,87 @@ http://10.1.3.177:5173/sonic-admin
   sonic-agent/
 ```
 
-如果固定电脑上还没有 `sonic-agent/` 目录，先在平台工程下初始化标准目录和说明文件：
+## Sonic 脚本使用
+
+日常只需要记住一个入口：
 
 ```bash
 cd /Users/a1/工作/nn-ios-platform
-sh scripts/prepare-sonic-agent.sh
+sh scripts/sonic/sonic.sh start
 ```
 
-如果希望一次性完成 Sonic Server/Web、Agent 准备、Agent 启动和诊断，直接执行：
+常用命令：
 
 ```bash
-cd /Users/a1/工作/nn-ios-platform
-sh scripts/bootstrap-sonic.sh
+sh scripts/sonic/sonic.sh start   # 一键启动 Sonic Server/Web + Agent，并输出诊断
+sh scripts/sonic/sonic.sh check   # 检查 Sonic Server/Web、平台代理、Agent 线索
+sh scripts/sonic/sonic.sh stop    # 停止 Sonic Agent 和 Sonic Server/Web 容器
 ```
 
-如果真实 Agent 包还没放到 `/Users/a1/工作/sonic-agent`，这个脚本会明确以“缺少 Sonic Agent runtime package”结束；这时不是 `.env` 配置问题，而是还缺实际 Agent 程序。
+辅助命令：
 
-这个脚本会创建目录并检查结构。后续只需要把 Sonic Agent 的真实运行包放到 `/Users/a1/工作/sonic-agent`。如果目录中存在 `sonic-agent*.zip`、`sonic-agent*.tar.gz`、`sonic-agent*.tgz` 或 `sonic-agent*.jar`，脚本会自动解压或识别。
+```bash
+sh scripts/sonic/sonic.sh prepare # 准备/下载/解压 Sonic Agent，生成 start.sh
+sh scripts/sonic/sonic.sh stack   # 仅启动 Sonic Server/Web
+sh scripts/sonic/sonic.sh agent   # 仅启动 Sonic Agent
+```
 
-如果解压后存在 `sonic-agent*.jar`，且目录中还没有 `start.sh`，脚本会自动生成可执行的 `start.sh`：
+`npm run dev` / `npm start` 会自动调用 `npm run start:sonic`，等价于：
+
+```bash
+sh scripts/sonic/sonic.sh start
+```
+
+`scripts/sonic/bootstrap.sh`、`scripts/sonic/prepare-agent.sh`、`scripts/sonic/start-stack.sh`、`scripts/sonic/start-agent.sh`、`scripts/sonic/check.sh` 是内部子脚本。除非需要单独排查某一层，平时不用直接执行它们。
+
+默认情况下，`sonic.sh start` 会访问 Sonic Agent 官方 GitHub Release，自动选择当前 Mac 架构对应的包：
+
+```text
+https://github.com/SonicCloudOrg/sonic-agent/releases
+```
+
+Apple Silicon 会选择 `macosx_arm64` 包，Intel Mac 会选择 `macosx_x86_64` 包。
+
+如果固定电脑不能访问 GitHub，或者希望使用内部缓存包，可以在 `backend/.env` 中设置：
+
+```bash
+SONIC_AGENT_PACKAGE_URL=http://your-internal-host/sonic-agent.zip
+```
+
+如果关闭自动下载，且真实 Agent 包还没放到 `/Users/a1/工作/sonic-agent`，脚本会明确以“缺少 Sonic Agent runtime package”结束；这时不是 `.env` 配置问题，而是还缺实际 Agent 程序。
+
+Agent 默认目录为：
+
+```text
+/Users/a1/工作/sonic-agent
+```
+
+如果目录中存在 `sonic-agent*.zip`、`sonic-agent*.tar.gz`、`sonic-agent*.tgz` 或 `sonic-agent*.jar`，脚本会自动解压或识别。如果解压后存在 `sonic-agent*.jar`，且目录中还没有 `start.sh`，脚本会自动生成可执行的 `start.sh`：
 
 ```bash
 java -jar sonic-agent*.jar --server.host=http://127.0.0.1:8094
 ```
 
-最终需要保证目录下存在以下任意一种启动入口：
+最终目录下需要有以下任意一种启动入口：
 
 ```text
 /Users/a1/工作/sonic-agent/start.sh
 /Users/a1/工作/sonic-agent/sonic-agent*.jar
 ```
 
-脚本会同时生成：
+`prepare` 会同时生成：
 
 ```text
 /Users/a1/工作/sonic-agent/INSTALL_PACKAGE_HERE.txt
 /Users/a1/工作/sonic-agent/start.sh.template
 ```
 
-它们只是提示和模板，不代表 Agent 已经安装完成。不要直接把 `start.sh.template` 当作可用 Agent 启动脚本；需要按真实 Sonic Agent 包的启动方式改成 `start.sh`。
+它们只是提示和模板，不代表 Agent 已经安装完成。不要直接把 `start.sh.template` 当作可用 Agent 启动脚本。
 
 也可以显式指定本地包路径：
 
 ```bash
-sh scripts/prepare-sonic-agent.sh /Users/a1/工作/sonic-agent/sonic-agent.zip
+sh scripts/sonic/sonic.sh prepare /Users/a1/工作/sonic-agent/sonic-agent.zip
 ```
 
 平台启动脚本已经支持自动拉起 Sonic Agent。先在 `backend/.env` 中配置其中一种方式：
@@ -291,6 +328,7 @@ sh scripts/prepare-sonic-agent.sh /Users/a1/工作/sonic-agent/sonic-agent.zip
 ```bash
 SONIC_AGENT_AUTO_START=true
 SONIC_AGENT_DIR=/Users/a1/工作/sonic-agent
+SONIC_AGENT_AUTO_DOWNLOAD=true
 SONIC_AGENT_API_BASE=http://127.0.0.1:8094
 ```
 
@@ -394,7 +432,7 @@ Job 需要支持参数化构建：
 Shell 步骤：
 
 ```bash
-sh scripts/quality/sonic-ios-quality.sh
+sh scripts/sonic/ios-quality.sh
 ```
 
 构建后操作建议：
@@ -493,7 +531,7 @@ curl -I http://127.0.0.1:3002
 
 - `SONIC_API_BASE` 是否为 `http://10.1.3.177:5173/sonic-api`
 - `SONIC_TOKEN` 是否在 Jenkins 中配置
-- Sonic API 实际路径是否与 `scripts/quality/sonic-ios-quality.sh` 中一致
+- Sonic API 实际路径是否与 `scripts/sonic/ios-quality.sh` 中一致
 
 ### Sonic 看不到 iPhone
 

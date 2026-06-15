@@ -10,8 +10,111 @@ set -e
 AGENT_DIR="${SONIC_AGENT_DIR:-/Users/a1/工作/sonic-agent}"
 API_BASE="${SONIC_AGENT_API_BASE:-http://127.0.0.1:8094}"
 PACKAGE_PATH="${1:-${SONIC_AGENT_PACKAGE:-}}"
+PACKAGE_URL="${SONIC_AGENT_PACKAGE_URL:-}"
+GITHUB_LATEST_API="${SONIC_AGENT_GITHUB_LATEST_API:-https://api.github.com/repos/SonicCloudOrg/sonic-agent/releases/latest}"
+AUTO_DOWNLOAD="${SONIC_AGENT_AUTO_DOWNLOAD:-true}"
 
 mkdir -p "$AGENT_DIR"
+
+resolve_github_latest_package_url() {
+  if [ -n "$PACKAGE_URL" ] || [ "$AUTO_DOWNLOAD" = "false" ]; then
+    return 0
+  fi
+
+  if find "$AGENT_DIR" -maxdepth 4 -type f \( -name 'sonic-agent*.zip' -o -name 'sonic-agent*.tar.gz' -o -name 'sonic-agent*.tgz' -o -name 'sonic-agent*.jar' \) | head -n 1 | grep -q .; then
+    return 0
+  fi
+
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local arch pattern release_json resolved_url
+  arch="$(uname -m)"
+  case "$arch" in
+    arm64|aarch64)
+      pattern='macosx_arm64'
+      ;;
+    x86_64|amd64)
+      pattern='macosx_x86_64'
+      ;;
+    *)
+      echo "WARN: unsupported macOS arch for Sonic Agent auto download: $arch"
+      return 0
+      ;;
+  esac
+
+  release_json="$(mktemp /tmp/sonic-agent-release.XXXXXX.json)"
+  if ! curl -fL --connect-timeout 10 --retry 2 "$GITHUB_LATEST_API" -o "$release_json"; then
+    echo "WARN: failed to query Sonic Agent GitHub release: $GITHUB_LATEST_API"
+    rm -f "$release_json"
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    resolved_url="$(python3 - "$release_json" "$pattern" <<'PY'
+import json
+import sys
+
+path, pattern = sys.argv[1], sys.argv[2]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+for asset in data.get("assets", []):
+    name = asset.get("name", "")
+    url = asset.get("browser_download_url", "")
+    if pattern in name and name.endswith(".zip") and url:
+        print(url)
+        break
+PY
+)"
+  else
+    resolved_url="$(grep -o "https://github.com/SonicCloudOrg/sonic-agent/releases/download/[^\"]*${pattern}[^\"]*\\.zip" "$release_json" | head -n 1)"
+  fi
+
+  rm -f "$release_json"
+
+  if [ -n "$resolved_url" ]; then
+    PACKAGE_URL="$resolved_url"
+    echo "Resolved Sonic Agent package for $arch: $PACKAGE_URL"
+  else
+    echo "WARN: no Sonic Agent macOS package found for $arch in latest GitHub release."
+  fi
+}
+
+download_package_if_configured() {
+  if [ -z "$PACKAGE_URL" ]; then
+    return 0
+  fi
+
+  local filename
+  filename="$(basename "${PACKAGE_URL%%\?*}")"
+  if [ -z "$filename" ] || [ "$filename" = "/" ] || [ "$filename" = "." ]; then
+    filename="sonic-agent-package"
+  fi
+
+  local target="$AGENT_DIR/$filename"
+  if [ -f "$target" ]; then
+    echo "Sonic Agent package already exists: $target"
+    PACKAGE_PATH="$target"
+    return 0
+  fi
+
+  echo "Downloading Sonic Agent package:"
+  echo "  $PACKAGE_URL"
+  echo "  -> $target"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 2 --connect-timeout 10 "$PACKAGE_URL" -o "$target"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$target" "$PACKAGE_URL"
+  else
+    echo "ERROR: curl or wget is required to download SONIC_AGENT_PACKAGE_URL." >&2
+    exit 2
+  fi
+
+  PACKAGE_PATH="$target"
+}
 
 install_package_if_present() {
   local package="$PACKAGE_PATH"
@@ -81,6 +184,8 @@ EOF
   echo "Generated Sonic Agent start script: $AGENT_DIR/start.sh"
 }
 
+resolve_github_latest_package_url
+download_package_if_configured
 install_package_if_present
 write_start_script_if_possible
 
@@ -130,6 +235,9 @@ Recommended backend/.env:
 \`\`\`env
 SONIC_AGENT_AUTO_START=true
 SONIC_AGENT_DIR=$AGENT_DIR
+SONIC_AGENT_AUTO_DOWNLOAD=true
+SONIC_AGENT_GITHUB_LATEST_API=$GITHUB_LATEST_API
+SONIC_AGENT_PACKAGE_URL=
 SONIC_AGENT_CMD=
 SONIC_AGENT_API_BASE=$API_BASE
 \`\`\`
@@ -139,6 +247,9 @@ to the nested directory that contains \`start.sh\` or \`sonic-agent*.jar\`.
 EOF
 
 echo "Sonic Agent directory prepared: $AGENT_DIR"
+if [ -n "$PACKAGE_URL" ]; then
+  echo "Sonic Agent package URL: $PACKAGE_URL"
+fi
 echo "If a sonic-agent zip/tar/jar is placed in this directory, this script installs or detects it automatically."
 echo "If sonic-agent*.jar exists and start.sh is missing, this script generates start.sh automatically."
 echo
@@ -157,5 +268,5 @@ elif find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 
 else
   echo "MISSING: no executable start.sh or sonic-agent*.jar found yet."
   echo "Put the real Sonic Agent release package into this directory, then run:"
-  echo "  sh scripts/start-sonic-agent.sh"
+  echo "  sh scripts/sonic/sonic.sh agent"
 fi

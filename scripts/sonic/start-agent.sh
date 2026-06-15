@@ -7,7 +7,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${SONIC_AGENT_ENV_FILE:-$PROJECT_ROOT/backend/.env}"
 DATA_DIR="${SONIC_AGENT_DATA_DIR:-$PROJECT_ROOT/nn-ios-platform-data}"
 LOG_FILE="${SONIC_AGENT_LOG_FILE:-$PROJECT_ROOT/sonic-agent.log}"
@@ -66,7 +66,7 @@ AGENT_DIR="${SONIC_AGENT_DIR:-}"
 AGENT_CMD="${SONIC_AGENT_CMD:-}"
 
 prepare_agent_dir() {
-  local prepare_script="$PROJECT_ROOT/scripts/prepare-sonic-agent.sh"
+  local prepare_script="$PROJECT_ROOT/scripts/sonic/prepare-agent.sh"
   if [ -x "$prepare_script" ]; then
     "$prepare_script" >/dev/null 2>&1 || true
   elif [ -f "$prepare_script" ]; then
@@ -132,7 +132,7 @@ else
     fi
   fi
   echo "If the standard Agent directory has not been created yet, run:"
-  echo "  sh scripts/prepare-sonic-agent.sh"
+  echo "  sh scripts/sonic/sonic.sh prepare"
   echo "Set one of the following in backend/.env:"
   echo "  SONIC_AGENT_DIR=/path/to/sonic-agent"
   echo "  SONIC_AGENT_CMD='cd /path/to/sonic-agent && sh start.sh'"

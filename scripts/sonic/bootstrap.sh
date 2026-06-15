@@ -7,7 +7,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 AGENT_DIR="${SONIC_AGENT_DIR:-/Users/a1/工作/sonic-agent}"
 PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
@@ -19,23 +19,23 @@ echo "Agent:   $AGENT_DIR"
 echo
 
 echo "1. 初始化 Sonic Server/Web 配置..."
-/bin/bash "$PROJECT_ROOT/scripts/init-sonic-stack-env.sh"
+/bin/bash "$PROJECT_ROOT/scripts/sonic/init-stack-env.sh"
 echo
 
 echo "2. 启动 Sonic Server/Web..."
-/bin/bash "$PROJECT_ROOT/scripts/start-sonic-stack.sh"
+/bin/bash "$PROJECT_ROOT/scripts/sonic/start-stack.sh"
 echo
 
 echo "3. 准备 Sonic Agent 目录和启动入口..."
-/bin/bash "$PROJECT_ROOT/scripts/prepare-sonic-agent.sh"
+/bin/bash "$PROJECT_ROOT/scripts/sonic/prepare-agent.sh"
 echo
 
 echo "4. 启动 Sonic Agent..."
-/bin/bash "$PROJECT_ROOT/scripts/start-sonic-agent.sh"
+/bin/bash "$PROJECT_ROOT/scripts/sonic/start-agent.sh"
 echo
 
 echo "5. 检查 Sonic 服务..."
-/bin/bash "$PROJECT_ROOT/scripts/check-sonic-stack.sh" || true
+/bin/bash "$PROJECT_ROOT/scripts/sonic/check.sh" || true
 echo
 
 echo "6. 检查 Agent 安装结果..."
@@ -57,7 +57,7 @@ else
   echo
   echo "然后重新执行:"
   echo "  cd $PROJECT_ROOT"
-  echo "  sh scripts/bootstrap-sonic.sh"
+  echo "  sh scripts/sonic/sonic.sh start"
   exit 2
 fi
 

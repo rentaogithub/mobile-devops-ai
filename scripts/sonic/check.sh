@@ -5,7 +5,7 @@
 set +e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
 SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
 PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
@@ -108,4 +108,4 @@ check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-api" "External Platfo
 section "Hint"
 echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"
 echo "如果 8094 不通：Sonic Server/API 容器未启动或启动失败。"
-echo "如果 .env 缺失或仍是占位配置，执行 sh scripts/init-sonic-stack-env.sh 自动初始化。"
+echo "如果 .env 缺失或仍是占位配置，执行 sh scripts/sonic/sonic.sh stack 自动初始化。"

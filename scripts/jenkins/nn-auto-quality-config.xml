@@ -107,7 +107,7 @@
       <command>set -e
 PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-/Users/renyang/工作/code/nncode/nn-ios-platform}"
 cd "$PLATFORM_DIR"
-sh scripts/quality/sonic-ios-quality.sh</command>
+sh scripts/sonic/ios-quality.sh</command>
     </hudson.tasks.Shell>
   </builders>
   <publishers>

@@ -7,12 +7,12 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BACKEND_ENV_FILE="${SONIC_PLATFORM_ENV_FILE:-$PROJECT_ROOT/backend/.env}"
 SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
 SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
 SONIC_ENV_EXAMPLE="$SONIC_DIR/.env.example"
-SONIC_ENV_INIT_SCRIPT="$PROJECT_ROOT/scripts/init-sonic-stack-env.sh"
+SONIC_ENV_INIT_SCRIPT="$PROJECT_ROOT/scripts/sonic/init-stack-env.sh"
 
 load_platform_env() {
   if [ ! -f "$BACKEND_ENV_FILE" ]; then

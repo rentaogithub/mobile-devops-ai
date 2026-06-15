@@ -42,10 +42,10 @@ JENKINS_NN_QA_JOB=nn-auto-quality
 在 Jenkins Job 的 Shell 步骤中执行：
 
 ```bash
-sh scripts/quality/sonic-ios-quality.sh
+sh scripts/sonic/ios-quality.sh
 ```
 
-如果 Jenkins workspace 不是本仓库，可先拉取平台仓库，或把 `scripts/quality/sonic-ios-quality.sh` 复制到 Jenkins 共享脚本目录。
+如果 Jenkins workspace 不是本仓库，可先拉取平台仓库，或把 `scripts/sonic/ios-quality.sh` 复制到 Jenkins 共享脚本目录。
 
 ## Sonic 配置
 
