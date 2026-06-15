@@ -46,52 +46,19 @@ if [ ! -d "$BACKEND_DIR/node_modules" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]
     run_npm install
 fi
 
-# 2. 启动 Sonic Server/Web + Agent
-echo "🔄 启动 Sonic 相关服务..."
-cd "$PROJECT_ROOT"
-if run_npm run start:sonic > "$PROJECT_ROOT/sonic-dev.log" 2>&1; then
-    echo "✅ Sonic 启动流程已执行"
-else
-    echo "⚠️  Sonic 启动流程未完全成功，平台服务会继续启动"
-fi
-
-echo "🔍 Sonic 服务状态:"
-if command -v docker >/dev/null 2>&1; then
-    if docker ps >/dev/null 2>&1; then
-        docker ps --format '{{.Names}}\t{{.Status}}' | grep '^nn-sonic-' | sed 's/^/   /' || echo "   未发现 Sonic 容器"
+# 2. Sonic 作为可选外部能力，不阻塞平台启动。
+if [ "${START_SONIC:-false}" = "true" ]; then
+    echo "🔄 START_SONIC=true，启动 Sonic 相关服务..."
+    cd "$PROJECT_ROOT"
+    if run_npm run start:sonic > "$PROJECT_ROOT/sonic-dev.log" 2>&1; then
+        echo "✅ Sonic 启动流程已执行"
     else
-        echo "   Docker 当前不可用或未启动"
+        echo "⚠️  Sonic 启动流程未完全成功，平台服务会继续启动"
+        echo "   详情查看: $PROJECT_ROOT/sonic-dev.log"
     fi
 else
-    echo "   Docker 未安装"
+    echo "ℹ️  Sonic 默认不随平台启动。需要诊断时执行: npm run sonic -- check"
 fi
-
-if check_http "http://127.0.0.1:3002"; then
-    echo "   ✅ Sonic Web: http://$PLATFORM_HOST:3002"
-else
-    echo "   ⚠️  Sonic Web HTTP 不通，详情查看: $PROJECT_ROOT/sonic-dev.log"
-fi
-
-if check_http "http://127.0.0.1:8094"; then
-    echo "   ✅ Sonic API: http://$PLATFORM_HOST:8094"
-else
-    echo "   ⚠️  Sonic API HTTP 不通，详情查看: $PROJECT_ROOT/sonic-dev.log"
-fi
-
-if [ -f "$PROJECT_ROOT/nn-ios-platform-data/sonic-agent.pid" ]; then
-    SONIC_AGENT_PID="$(cat "$PROJECT_ROOT/nn-ios-platform-data/sonic-agent.pid" 2>/dev/null || true)"
-    if [ -n "$SONIC_AGENT_PID" ] && kill -0 "$SONIC_AGENT_PID" >/dev/null 2>&1; then
-        echo "   ✅ Sonic Agent PID: $SONIC_AGENT_PID"
-    else
-        echo "   ⚠️  Sonic Agent PID 文件存在，但进程未运行"
-    fi
-elif pgrep -f "sonic.*agent" >/dev/null 2>&1; then
-    echo "   ✅ Sonic Agent 已运行: $(pgrep -f "sonic.*agent" | head -n 1)"
-else
-    echo "   ⚠️  Sonic Agent 未配置或未启动"
-    echo "   Agent 日志: $PROJECT_ROOT/sonic-agent.log"
-fi
-echo "   详细诊断: sh scripts/sonic/sonic.sh check"
 
 # 3. 启动后端
 echo "🔄 启动后端服务..."

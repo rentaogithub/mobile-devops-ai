@@ -13,7 +13,7 @@ import {
   PlusOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, SonicQualityStatus, jenkinsApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, jenkinsApi } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
@@ -116,9 +116,7 @@ export default function CICDPage() {
   const [error, setError] = useState('');
   const [qualityError, setQualityError] = useState('');
   const [qualityData, setQualityData] = useState<JenkinsQualityListResult | null>(null);
-  const [sonicStatus, setSonicStatus] = useState<SonicQualityStatus | null>(null);
   const [sonicDevicePools, setSonicDevicePools] = useState<SonicDevicePool[]>([]);
-  const [sonicStatusLoading, setSonicStatusLoading] = useState(false);
   const [devicePoolModalOpen, setDevicePoolModalOpen] = useState(false);
   const [devicePoolSaving, setDevicePoolSaving] = useState(false);
   const [devicePoolDrafts, setDevicePoolDrafts] = useState<SonicDevicePool[]>([]);
@@ -173,18 +171,6 @@ export default function CICDPage() {
     }
   };
 
-  const loadSonicStatus = async () => {
-    setSonicStatusLoading(true);
-    try {
-      const response = await jenkinsApi.getSonicQualityStatus();
-      setSonicStatus(response.data || null);
-    } catch (err: any) {
-      message.warning(err?.error || err?.message || '检测 Sonic 配置失败');
-    } finally {
-      setSonicStatusLoading(false);
-    }
-  };
-
   const loadSonicDevicePools = async () => {
     try {
       const response = await jenkinsApi.listSonicDevicePools();
@@ -194,7 +180,7 @@ export default function CICDPage() {
         setQualityDevicePool(pools[0].value);
       }
     } catch (err: any) {
-      message.warning(err?.error || err?.message || '加载 Sonic 设备池失败');
+      message.warning(err?.error || err?.message || '加载质检设备池失败');
     }
   };
 
@@ -215,8 +201,8 @@ export default function CICDPage() {
       {
         label: '新设备池',
         value: `ios-pool-${items.length + 1}`,
-        groupId: '',
-        description: '用于 Sonic iOS 真机调度。',
+        deviceId: '',
+        description: '用于打包机本机 iOS 真机质检调度。',
       },
     ]);
   };
@@ -229,6 +215,7 @@ export default function CICDPage() {
     const normalized = devicePoolDrafts.map((pool) => ({
       label: pool.label.trim(),
       value: pool.value.trim(),
+      deviceId: pool.deviceId?.trim() || undefined,
       groupId: pool.groupId?.trim() || undefined,
       description: pool.description.trim(),
     }));
@@ -249,7 +236,7 @@ export default function CICDPage() {
       setDevicePoolModalOpen(false);
       message.success('设备池配置已保存');
     } catch (err: any) {
-      message.error(err?.error || err?.message || '保存 Sonic 设备池失败');
+      message.error(err?.error || err?.message || '保存质检设备池失败');
     } finally {
       setDevicePoolSaving(false);
     }
@@ -422,7 +409,6 @@ export default function CICDPage() {
     setActiveSection(nextSection);
     if (nextSection === 'quality') {
       loadQualityBuilds();
-      loadSonicStatus();
       loadSonicDevicePools();
     } else {
       setQualityError('');
@@ -454,9 +440,9 @@ export default function CICDPage() {
   );
   const pageTitle = activeSection === 'quality' ? '自动质检' : '发布管理';
   const pageDescription = activeSection === 'quality'
-    ? '基于 Sonic 云真机执行 iOS 自动化质检，覆盖安装、启动、用例、截图和报告采集。'
+    ? '基于打包机本机 USB 真机执行 iOS 自动化质检，覆盖安装、启动、用例、截图和报告采集。'
     : 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。';
-  const sonicOpenUrl = sonicStatus?.webUrl || `${window.location.origin}/sonic-admin`;
+  const sonicOpenUrl = `${window.location.origin}/sonic-admin`;
 
   return (
     <div>
@@ -488,10 +474,13 @@ export default function CICDPage() {
               icon={<ExportOutlined />}
               onClick={() => window.open(sonicOpenUrl, '_blank', 'noopener,noreferrer')}
             >
-              打开 Sonic
+              打开 Sonic（可选）
             </Button>
             <Button icon={<ExportOutlined />} onClick={() => window.open(qualityData?.job.url || 'http://10.1.3.177:8080/job/nn-auto-quality/', '_blank', 'noopener,noreferrer')}>
               打开质检 Jenkins
+            </Button>
+            <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
+              设备池
             </Button>
             <Button icon={<ReloadOutlined />} onClick={loadQualityBuilds} loading={qualityLoading}>
               刷新
@@ -727,53 +716,10 @@ export default function CICDPage() {
                 <Alert
                   type="info"
                   showIcon
-                  message="Sonic 云真机自动质检"
-                  description="构建包由 Jenkins 产出，质检任务由独立 Jenkins Job 编排，底层调度 Sonic iOS 真机设备池执行安装、启动、用例、截图和报告采集。"
+                  message="本机真机自动质检"
+                  description="构建包由 Jenkins 产出，质检任务由独立 Jenkins Job 编排，底层优先使用打包机 USB 连接的 iPhone 执行安装、启动、用例、截图和报告采集。Sonic 可作为后续扩展入口，不再作为平台启动依赖。"
                   style={{ marginBottom: 16 }}
                 />
-                <Card
-                  size="small"
-                  title="Sonic 配置状态"
-                  style={{ marginBottom: 16 }}
-                  extra={(
-                    <Space>
-                      <Button size="small" icon={<ExportOutlined />} onClick={() => window.open(sonicOpenUrl, '_blank', 'noopener,noreferrer')}>
-                        打开 Sonic
-                      </Button>
-                      <Button size="small" icon={<SettingOutlined />} onClick={openDevicePoolModal}>
-                        设备池管理
-                      </Button>
-                      <Button size="small" icon={<ReloadOutlined />} loading={sonicStatusLoading} onClick={loadSonicStatus}>
-                        检测 Sonic
-                      </Button>
-                    </Space>
-                  )}
-                >
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Space wrap>
-                      <Tag color={sonicStatus?.configured ? 'green' : 'orange'}>
-                        {sonicStatus?.configured ? '已配置' : '未配置'}
-                      </Tag>
-                      <Tag color={sonicStatus?.reachable ? 'green' : 'default'}>
-                        {sonicStatus?.reachable ? '可访问' : '未连通'}
-                      </Tag>
-                      <Tag color={sonicStatus?.tokenConfigured ? 'green' : 'orange'}>
-                        Token {sonicStatus?.tokenConfigured ? '已配置' : '未配置'}
-                      </Tag>
-                    </Space>
-                    <Space wrap>
-                      <Text type="secondary">API：</Text>
-                      <Text code>{sonicStatus?.apiBase || 'SONIC_API_BASE 未配置'}</Text>
-                      <Text type="secondary">后台：</Text>
-                      <Text code>{sonicStatus?.webUrl || 'SONIC_WEB_URL 未配置'}</Text>
-                      <Text type="secondary">项目：</Text>
-                      <Tag>{sonicStatus?.projectId || '-'}</Tag>
-                      <Text type="secondary">测试计划：</Text>
-                      <Tag>{sonicStatus?.testPlanId || '-'}</Tag>
-                    </Space>
-                    <Text type="secondary">{sonicStatus?.message || '等待检测 Sonic 配置'}</Text>
-                  </Space>
-                </Card>
                 <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
                   {[
                     { label: '质检任务数', value: qualityData?.stats.total || 0, color: '#1677ff' },
@@ -796,7 +742,7 @@ export default function CICDPage() {
                         <Space direction="vertical" size={8}>
                           <Space wrap>
                             <Tag color="blue">{pool.value}</Tag>
-                            {pool.groupId && <Tag color="purple">Group {pool.groupId}</Tag>}
+                            {(pool.deviceId || pool.groupId) && <Tag color="purple">设备 {pool.deviceId || pool.groupId}</Tag>}
                           </Space>
                           <Text type="secondary">{pool.description}</Text>
                         </Space>
@@ -805,7 +751,7 @@ export default function CICDPage() {
                   ))}
                   {sonicDevicePools.length === 0 && (
                     <Col span={24}>
-                      <Alert type="warning" showIcon message="暂无 Sonic 设备池配置" />
+                      <Alert type="warning" showIcon message="暂无质检设备池配置" />
                     </Col>
                   )}
                 </Row>
@@ -864,7 +810,7 @@ export default function CICDPage() {
                         dataIndex: 'description',
                         key: 'description',
                         ellipsis: true,
-                        render: (value?: string | null) => value || <Text type="secondary">Sonic 自动质检</Text>,
+                        render: (value?: string | null) => value || <Text type="secondary">本机真机自动质检</Text>,
                       },
                       {
                         title: '操作',
@@ -973,8 +919,8 @@ export default function CICDPage() {
           <Alert
             type="info"
             showIcon
-            message="基于 Sonic 云真机执行 iOS 自动化质检"
-            description="平台会把构建信息传给 Jenkins 质检 Job，由 Jenkins 调度 Sonic 设备池安装 IPA 并执行自动化测试。"
+            message="基于本机 USB 真机执行 iOS 自动化质检"
+            description="平台会把构建信息传给 Jenkins 质检 Job，由 Jenkins 在打包机上选择设备池安装 IPA 并执行自动化测试。"
           />
           <div>
             <Text strong>质检构建</Text>
@@ -1016,7 +962,7 @@ export default function CICDPage() {
             <Select
               value={qualityDevicePool}
               options={sonicDevicePools.map((pool) => ({
-                label: pool.groupId ? `${pool.label}（Group ${pool.groupId}）` : pool.label,
+                label: (pool.deviceId || pool.groupId) ? `${pool.label}（${pool.deviceId || pool.groupId}）` : pool.label,
                 value: pool.value,
               }))}
               onChange={setQualityDevicePool}
@@ -1027,7 +973,7 @@ export default function CICDPage() {
       </Modal>
 
       <Modal
-        title="Sonic 设备池管理"
+        title="质检设备池管理"
         open={devicePoolModalOpen}
         okText="保存"
         cancelText="取消"
@@ -1041,7 +987,7 @@ export default function CICDPage() {
             type="info"
             showIcon
             message="设备池由平台维护"
-            description="value 会作为 DEVICE_POOL 传给 Jenkins，Group ID 会作为 SONIC_DEVICE_GROUP_ID 传给自动质检 Job。"
+            description="value 会作为 DEVICE_POOL 传给 Jenkins，设备 UDID/选择器会作为 DEVICE_UDID 和 DEVICE_SELECTOR 传给自动质检 Job；留空时由脚本选择第一台可用 USB iPhone。"
           />
           {devicePoolDrafts.map((pool, index) => (
             <Card size="small" key={`${pool.value}-${index}`}>
@@ -1062,9 +1008,9 @@ export default function CICDPage() {
                 </Col>
                 <Col xs={24} sm={4}>
                   <Input
-                    value={pool.groupId}
-                    placeholder="Group ID"
-                    onChange={(event) => updateDevicePoolDraft(index, { groupId: event.target.value })}
+                    value={pool.deviceId || pool.groupId}
+                    placeholder="设备 UDID/选择器"
+                    onChange={(event) => updateDevicePoolDraft(index, { deviceId: event.target.value, groupId: undefined })}
                   />
                 </Col>
                 <Col xs={24} sm={6}>

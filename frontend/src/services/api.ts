@@ -1202,6 +1202,7 @@ export interface SonicDevicePool {
   label: string;
   value: string;
   description: string;
+  deviceId?: string;
   groupId?: string;
 }
 

@@ -48,13 +48,19 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Shanghai
+      SERVER_PORT: 8094
       MYSQL_HOST: sonic-mysql
       MYSQL_PORT: 3306
       MYSQL_DATABASE: ${SONIC_MYSQL_DATABASE:-sonic}
       MYSQL_USERNAME: ${SONIC_MYSQL_USER:-sonic}
       MYSQL_PASSWORD: ${SONIC_MYSQL_PASSWORD}
+      SPRING_DATASOURCE_URL: jdbc:mysql://sonic-mysql:3306/${SONIC_MYSQL_DATABASE:-sonic}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: ${SONIC_MYSQL_USER:-sonic}
+      SPRING_DATASOURCE_PASSWORD: ${SONIC_MYSQL_PASSWORD}
       REDIS_HOST: sonic-redis
       REDIS_PORT: 6379
+      SPRING_REDIS_HOST: sonic-redis
+      SPRING_REDIS_PORT: 6379
     ports:
       - "${SONIC_API_PORT:-8094}:8094"
     volumes:

@@ -102,6 +102,63 @@ compose_cmd() {
   echo ""
 }
 
+check_http() {
+  local url="$1"
+  local code
+  code="$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$url" 2>/dev/null || true)"
+  [ "$code" != "000" ] && [ -n "$code" ]
+}
+
+wait_http() {
+  local url="$1"
+  local attempts="${2:-10}"
+  local index
+  for index in $(seq 1 "$attempts"); do
+    if check_http "$url"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+sync_mysql_credentials() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-mysql$'; then
+    return
+  fi
+
+  local database user password root_password
+  database="$(read_env_value SONIC_MYSQL_DATABASE "$SONIC_ENV_FILE")"
+  user="$(read_env_value SONIC_MYSQL_USER "$SONIC_ENV_FILE")"
+  password="$(read_env_value SONIC_MYSQL_PASSWORD "$SONIC_ENV_FILE")"
+  root_password="$(read_env_value SONIC_MYSQL_ROOT_PASSWORD "$SONIC_ENV_FILE")"
+
+  database="${database:-sonic}"
+  user="${user:-sonic}"
+
+  if [ -z "$password" ] || [ -z "$root_password" ]; then
+    echo "Skip Sonic MySQL credential sync: missing password in $SONIC_ENV_FILE."
+    return
+  fi
+
+  echo "Syncing Sonic MySQL user credentials..."
+  docker exec \
+    -e SONIC_MYSQL_DATABASE="$database" \
+    -e SONIC_MYSQL_USER="$user" \
+    -e SONIC_MYSQL_PASSWORD="$password" \
+    nn-sonic-mysql \
+    sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" <<SQL
+CREATE DATABASE IF NOT EXISTS \`$SONIC_MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS "$SONIC_MYSQL_USER"@"%" IDENTIFIED BY "$SONIC_MYSQL_PASSWORD";
+ALTER USER "$SONIC_MYSQL_USER"@"%" IDENTIFIED BY "$SONIC_MYSQL_PASSWORD";
+GRANT ALL PRIVILEGES ON \`$SONIC_MYSQL_DATABASE\`.* TO "$SONIC_MYSQL_USER"@"%";
+FLUSH PRIVILEGES;
+SQL' >/dev/null 2>&1 || echo "WARN: failed to sync Sonic MySQL user credentials."
+}
+
 load_platform_env
 
 if [ "${SONIC_STACK_AUTO_START:-true}" = "false" ]; then
@@ -143,6 +200,16 @@ fi
 
 echo "Starting Sonic Server/Web by docker compose..."
 $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d
+sync_mysql_credentials
+
+if ! wait_http "http://127.0.0.1:${SONIC_API_PORT:-8094}" 12; then
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
+    if docker logs --tail 120 nn-sonic-server 2>&1 | grep -q 'HikariPool-1 - Starting'; then
+      echo "Sonic Server appears stuck while opening datasource. Recreating sonic-server and sonic-web..."
+      $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server sonic-web
+    fi
+  fi
+fi
 
 if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-web$'; then
   if docker logs --tail 80 nn-sonic-web 2>&1 | grep -q 'sonic-server-gateway'; then

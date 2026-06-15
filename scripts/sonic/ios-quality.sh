@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # Jenkins nn-auto-quality job entry script.
-# It validates build metadata from nn-ios-platform, prepares report artifacts,
-# and optionally calls a Sonic cloud-device API when SONIC_API_BASE is provided.
+# The stable default path is local Mac + USB iPhone. Sonic remains optional and
+# can be integrated by a downstream script later, but platform startup and QA no
+# longer depend on a Sonic Server/Web stack.
 
 SOURCE_BUILD_NUMBER="${SOURCE_BUILD_NUMBER:-}"
 BRANCH="${BRANCH:-}"
@@ -14,42 +15,111 @@ ARCHIVE_URL="${ARCHIVE_URL:-}"
 TEST_SUITE="${TEST_SUITE:-smoke}"
 DEVICE_POOL="${DEVICE_POOL:-ios-default}"
 DEVICE_POOL_LABEL="${DEVICE_POOL_LABEL:-${DEVICE_POOL}}"
-SONIC_DEVICE_GROUP_ID="${SONIC_DEVICE_GROUP_ID:-}"
-DEVICE_CLOUD="${DEVICE_CLOUD:-Sonic}"
-
-SONIC_API_BASE="${SONIC_API_BASE:-}"
-SONIC_TOKEN="${SONIC_TOKEN:-}"
-SONIC_PROJECT_ID="${SONIC_PROJECT_ID:-}"
-SONIC_TEST_PLAN_ID="${SONIC_TEST_PLAN_ID:-}"
+DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
+DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
+APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nnhuyu.im}"
 
 WORKSPACE_DIR="${WORKSPACE:-$(pwd)}"
 RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${TEST_SUITE}"
 REPORT_FILE="${RESULT_DIR}/junit.xml"
 META_FILE="${RESULT_DIR}/metadata.json"
+LOG_FILE="${RESULT_DIR}/quality.log"
+IPA_FILE="${RESULT_DIR}/app.ipa"
 
 mkdir -p "${RESULT_DIR}"
 
-fail() {
-  local message="$1"
+log() {
+  echo "$@" | tee -a "${LOG_FILE}"
+}
+
+xml_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+
+write_report() {
+  local failures="$1"
+  local message="${2:-}"
+  if [ "${failures}" = "0" ]; then
+    cat > "${REPORT_FILE}" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="local-ios-quality" tests="1" failures="0" errors="0" skipped="0">
+  <testcase classname="quality.${TEST_SUITE}" name="Local iOS quality gate"/>
+</testsuite>
+XML
+    return
+  fi
+
+  local escaped
+  escaped="$(xml_escape "${message}")"
   cat > "${REPORT_FILE}" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="sonic-ios-quality" tests="1" failures="1" errors="0" skipped="0">
-  <testcase classname="quality.preflight" name="validate parameters">
-    <failure message="${message}">${message}</failure>
+<testsuite name="local-ios-quality" tests="1" failures="1" errors="0" skipped="0">
+  <testcase classname="quality.preflight" name="Local iOS quality gate">
+    <failure message="${escaped}">${escaped}</failure>
   </testcase>
 </testsuite>
 XML
-  echo "ERROR: ${message}" >&2
+}
+
+fail() {
+  local message="$1"
+  log "ERROR: ${message}"
+  write_report 1 "${message}"
   exit 1
+}
+
+find_tidevice() {
+  if command -v tidevice >/dev/null 2>&1; then
+    command -v tidevice
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1 && python3 -m tidevice version >/dev/null 2>&1; then
+    echo "python3 -m tidevice"
+    return
+  fi
+  echo ""
+}
+
+select_device() {
+  local tidevice_cmd="$1"
+  if [ -n "${DEVICE_UDID}" ]; then
+    echo "${DEVICE_UDID}"
+    return
+  fi
+
+  # tidevice list output is usually: UDID DeviceName
+  ${tidevice_cmd} list 2>/dev/null | awk 'NF >= 1 {print $1; exit}'
+}
+
+download_ipa() {
+  if [ -z "${PACKAGE_URL}" ]; then
+    return 1
+  fi
+  case "${PACKAGE_URL}" in
+    http://*|https://*)
+      curl -L --fail --connect-timeout 15 --max-time 600 -o "${IPA_FILE}" "${PACKAGE_URL}"
+      ;;
+    file://*)
+      cp "${PACKAGE_URL#file://}" "${IPA_FILE}"
+      ;;
+    /*)
+      cp "${PACKAGE_URL}" "${IPA_FILE}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  [ -s "${IPA_FILE}" ]
 }
 
 [[ -n "${SOURCE_BUILD_NUMBER}" ]] || fail "SOURCE_BUILD_NUMBER is required"
 [[ -n "${TEST_SUITE}" ]] || fail "TEST_SUITE is required"
 [[ -n "${DEVICE_POOL}" ]] || fail "DEVICE_POOL is required"
-
-if [[ -z "${PACKAGE_URL}" && -z "${ARCHIVE_URL}" ]]; then
-  fail "PACKAGE_URL or ARCHIVE_URL is required"
-fi
 
 cat > "${META_FILE}" <<JSON
 {
@@ -62,64 +132,57 @@ cat > "${META_FILE}" <<JSON
   "testSuite": "${TEST_SUITE}",
   "devicePool": "${DEVICE_POOL}",
   "devicePoolLabel": "${DEVICE_POOL_LABEL}",
-  "sonicDeviceGroupId": "${SONIC_DEVICE_GROUP_ID}",
-  "deviceCloud": "${DEVICE_CLOUD}"
+  "deviceUdid": "${DEVICE_UDID}",
+  "deviceCloud": "${DEVICE_CLOUD}",
+  "runner": "local-ios-device"
 }
 JSON
 
-echo "========================================"
-echo "Sonic iOS 自动质检"
-echo "========================================"
-echo "构建号: ${SOURCE_BUILD_NUMBER}"
-echo "分支: ${BRANCH:-N/A}"
-echo "Commit: ${COMMIT_HASH:-N/A}"
-echo "APP版本: ${APP_VERSION:-N/A}"
-echo "测试套件: ${TEST_SUITE}"
-echo "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
-echo "Sonic Group ID: ${SONIC_DEVICE_GROUP_ID:-N/A}"
-echo "包地址: ${PACKAGE_URL:-${ARCHIVE_URL}}"
+log "========================================"
+log "本机 iOS 真机自动质检"
+log "========================================"
+log "源构建: ${SOURCE_BUILD_NUMBER}"
+log "分支: ${BRANCH:-N/A}"
+log "Commit: ${COMMIT_HASH:-N/A}"
+log "APP版本: ${APP_VERSION:-N/A}"
+log "测试套件: ${TEST_SUITE}"
+log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
+log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
+log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
 
-if [[ -n "${SONIC_API_BASE}" && -n "${SONIC_TOKEN}" ]]; then
-  echo "调用 Sonic API: ${SONIC_API_BASE}"
-  payload="$(cat <<JSON
-{
-  "projectId": "${SONIC_PROJECT_ID}",
-  "testPlanId": "${SONIC_TEST_PLAN_ID}",
-  "sourceBuildNumber": "${SOURCE_BUILD_NUMBER}",
-  "branch": "${BRANCH}",
-  "commitHash": "${COMMIT_HASH}",
-  "appVersion": "${APP_VERSION}",
-  "packageUrl": "${PACKAGE_URL}",
-  "archiveUrl": "${ARCHIVE_URL}",
-  "testSuite": "${TEST_SUITE}",
-  "devicePool": "${DEVICE_POOL}",
-  "devicePoolLabel": "${DEVICE_POOL_LABEL}",
-  "deviceGroupId": "${SONIC_DEVICE_GROUP_ID}",
-  "platform": "iOS"
-}
-JSON
-)"
-  response_file="${RESULT_DIR}/sonic-response.json"
-  http_code="$(
-    curl -sS -o "${response_file}" -w "%{http_code}" \
-      -X POST "${SONIC_API_BASE%/}/api/quality/ios/run" \
-      -H "Authorization: Bearer ${SONIC_TOKEN}" \
-      -H "Content-Type: application/json" \
-      --data "${payload}"
-  )"
-  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
-    fail "Sonic API failed with HTTP ${http_code}: $(cat "${response_file}")"
-  fi
-else
-  echo "SONIC_API_BASE 或 SONIC_TOKEN 未配置，当前仅生成 Jenkins 质检占位报告。"
+TIDEVICE_CMD="$(find_tidevice)"
+if [ -z "${TIDEVICE_CMD}" ]; then
+  fail "未找到 tidevice。请在打包机安装：python3 -m pipx install tidevice 或 python3 -m pip install --user tidevice"
 fi
 
-cat > "${REPORT_FILE}" <<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="sonic-ios-quality" tests="1" failures="0" errors="0" skipped="0">
-  <testcase classname="quality.${TEST_SUITE}" name="Sonic iOS quality gate"/>
-</testsuite>
-XML
+log "tidevice: ${TIDEVICE_CMD}"
+log "当前连接设备:"
+${TIDEVICE_CMD} list | tee -a "${LOG_FILE}" || true
 
-echo "质检结果目录: ${RESULT_DIR}"
-echo "JUnit报告: ${REPORT_FILE}"
+SELECTED_DEVICE="$(select_device "${TIDEVICE_CMD}")"
+if [ -z "${SELECTED_DEVICE}" ]; then
+  fail "未发现 USB 连接的 iPhone。请确认真机已连接打包机并完成信任。"
+fi
+log "使用设备: ${SELECTED_DEVICE}"
+
+if ! download_ipa; then
+  fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
+fi
+log "IPA: ${IPA_FILE}"
+
+log "安装 IPA..."
+${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" install "${IPA_FILE}" 2>&1 | tee -a "${LOG_FILE}"
+
+if [ -n "${APP_BUNDLE_ID}" ]; then
+  log "启动 App: ${APP_BUNDLE_ID}"
+  ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" launch "${APP_BUNDLE_ID}" 2>&1 | tee -a "${LOG_FILE}" || {
+    fail "安装成功但启动失败：${APP_BUNDLE_ID}"
+  }
+fi
+
+log "等待基础启动稳定..."
+sleep 5
+
+write_report 0
+log "质检结果目录: ${RESULT_DIR}"
+log "JUnit报告: ${REPORT_FILE}"

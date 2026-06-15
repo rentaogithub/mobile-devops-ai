@@ -17,7 +17,8 @@ const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.t
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'full']);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
-const SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
+const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -64,23 +65,24 @@ function getConnectionErrorMessage(error: any) {
   return error?.message ? `${error.message}${code}` : '连接失败';
 }
 
-interface SonicDevicePool {
+interface QualityDevicePool {
   label: string;
   value: string;
   description: string;
+  deviceId?: string;
   groupId?: string;
 }
 
-const DEFAULT_SONIC_DEVICE_POOLS: SonicDevicePool[] = [
+const DEFAULT_QUALITY_DEVICE_POOLS: QualityDevicePool[] = [
   {
     label: 'iOS 默认设备池',
     value: 'ios-default',
-    description: '默认可用 iOS 真机设备，适合日常冒烟质检。',
+    description: '打包机当前可用 USB iOS 真机，适合日常冒烟质检。',
   },
   {
     label: 'iPhone 新系统池',
     value: 'ios-latest',
-    description: '较新 iOS 系统设备，适合新系统兼容性检查。',
+    description: '较新 iOS 系统真机，适合新系统兼容性检查。',
   },
   {
     label: 'iPhone 兼容性池',
@@ -103,25 +105,29 @@ function encodeJobPath(jobName: string) {
     .join('/');
 }
 
-function normalizeSonicDevicePool(pool: any): SonicDevicePool | null {
+function normalizeQualityDevicePool(pool: any): QualityDevicePool | null {
   const label = String(pool?.label || '').trim();
   const value = String(pool?.value || '').trim();
   if (!label || !value) return null;
   return {
     label,
     value,
-    description: String(pool?.description || '用于 Sonic iOS 真机调度。').trim(),
+    description: String(pool?.description || '用于打包机本机 iOS 真机质检调度。').trim(),
+    deviceId: pool?.deviceId ? String(pool.deviceId).trim() : undefined,
     groupId: pool?.groupId ? String(pool.groupId).trim() : undefined,
   };
 }
 
-function getSonicDevicePools() {
+function getQualityDevicePools() {
   try {
-    if (fs.existsSync(SONIC_DEVICE_POOLS_CONFIG_PATH)) {
-      const config = JSON.parse(fs.readFileSync(SONIC_DEVICE_POOLS_CONFIG_PATH, 'utf-8'));
+    const configPath = fs.existsSync(QUALITY_DEVICE_POOLS_CONFIG_PATH)
+      ? QUALITY_DEVICE_POOLS_CONFIG_PATH
+      : LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH;
+    if (fs.existsSync(configPath)) {
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       const savedPools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
-        .map(normalizeSonicDevicePool)
-        .filter(Boolean) as SonicDevicePool[];
+        .map(normalizeQualityDevicePool)
+        .filter(Boolean) as QualityDevicePool[];
       if (savedPools.length > 0) {
         return savedPools;
       }
@@ -131,32 +137,28 @@ function getSonicDevicePools() {
   }
 
   const raw = String(process.env.SONIC_DEVICE_POOLS_JSON || '').trim();
-  if (!raw) return DEFAULT_SONIC_DEVICE_POOLS;
+  if (!raw) return DEFAULT_QUALITY_DEVICE_POOLS;
 
   try {
     const parsed = JSON.parse(raw);
     const pools = (Array.isArray(parsed) ? parsed : [])
-      .map(normalizeSonicDevicePool)
-      .filter(Boolean) as SonicDevicePool[];
-    return pools.length > 0 ? pools : DEFAULT_SONIC_DEVICE_POOLS;
+      .map(normalizeQualityDevicePool)
+      .filter(Boolean) as QualityDevicePool[];
+    return pools.length > 0 ? pools : DEFAULT_QUALITY_DEVICE_POOLS;
   } catch {
-    return DEFAULT_SONIC_DEVICE_POOLS;
+    return DEFAULT_QUALITY_DEVICE_POOLS;
   }
 }
 
-function isValidSonicDevicePool(value: string) {
-  return getSonicDevicePools().some((pool) => pool.value === value);
+function findQualityDevicePool(value: string) {
+  return getQualityDevicePools().find((pool) => pool.value === value);
 }
 
-function findSonicDevicePool(value: string) {
-  return getSonicDevicePools().find((pool) => pool.value === value);
-}
-
-function saveSonicDevicePools(pools: SonicDevicePool[]) {
+function saveQualityDevicePools(pools: QualityDevicePool[]) {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  fs.writeFileSync(SONIC_DEVICE_POOLS_CONFIG_PATH, JSON.stringify({
+  fs.writeFileSync(QUALITY_DEVICE_POOLS_CONFIG_PATH, JSON.stringify({
     devicePools: pools,
     updatedAt: new Date().toISOString(),
   }, null, 2));
@@ -731,20 +733,20 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
 router.get('/nn/quality/sonic/device-pools', async (_req: Request, res: Response) => {
   res.json({
     success: true,
-    data: getSonicDevicePools(),
+    data: getQualityDevicePools(),
   });
 });
 
 router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response) => {
   try {
     const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
-      .map(normalizeSonicDevicePool)
-      .filter(Boolean) as SonicDevicePool[];
+      .map(normalizeQualityDevicePool)
+      .filter(Boolean) as QualityDevicePool[];
 
     if (pools.length === 0) {
       res.status(400).json({
         success: false,
-        error: '至少需要配置一个 Sonic 设备池',
+        error: '至少需要配置一个质检设备池',
       });
       return;
     }
@@ -761,7 +763,7 @@ router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response)
       values.add(pool.value);
     }
 
-    saveSonicDevicePools(pools);
+    saveQualityDevicePools(pools);
 
     res.json({
       success: true,
@@ -770,7 +772,7 @@ router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response)
   } catch (error: any) {
     res.status(500).json({
       success: false,
-      error: error.message || '保存 Sonic 设备池失败',
+      error: error.message || '保存质检设备池失败',
     });
   }
 });
@@ -907,11 +909,11 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       });
       return;
     }
-    const selectedDevicePool = findSonicDevicePool(devicePool);
+    const selectedDevicePool = findQualityDevicePool(devicePool);
     if (!selectedDevicePool) {
       res.status(400).json({
         success: false,
-        error: '设备池无效，请在平台 Sonic 设备池配置中选择',
+        error: '设备池无效，请在平台质检设备池配置中选择',
       });
       return;
     }
@@ -928,8 +930,14 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       TEST_SUITE: testSuite,
       DEVICE_POOL: devicePool,
       DEVICE_POOL_LABEL: selectedDevicePool.label,
+      DEVICE_UDID: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
+      DEVICE_SELECTOR: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
+      DEVICE_CLOUD: 'LocalMac',
+      QUALITY_RUNNER: 'local-ios-device',
+      QA_RUNNER_MODE: 'local-usb',
+      APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nnhuyu.im',
+      // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
-      DEVICE_CLOUD: 'Sonic',
       SONIC_API_BASE: sonicConfig.apiBase,
       SONIC_PROJECT_ID: sonicConfig.projectId,
       SONIC_TEST_PLAN_ID: sonicConfig.testPlanId,

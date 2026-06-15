@@ -1,7 +1,7 @@
 <?xml version='1.1' encoding='UTF-8'?>
 <project>
   <actions/>
-  <description>nn-ios Sonic automatic quality job. Triggered by nn-ios-platform.</description>
+  <description>nn-ios local iPhone automatic quality job. Triggered by nn-ios-platform.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -64,13 +64,23 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
-          <name>SONIC_DEVICE_GROUP_ID</name>
-          <defaultValue>1</defaultValue>
+          <name>DEVICE_UDID</name>
+          <defaultValue></defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>DEVICE_CLOUD</name>
-          <defaultValue>Sonic</defaultValue>
+          <defaultValue>LocalMac</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APP_BUNDLE_ID</name>
+          <defaultValue>com.nnhuyu.im</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>QUALITY_RUNNER</name>
+          <defaultValue>local-ios-device</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
