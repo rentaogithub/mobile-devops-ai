@@ -47,18 +47,24 @@
           <description>打包机本地 .xcarchive 路径，用于从 Products/Applications 生成临时 IPA 进行真机安装。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>TEST_SUITE</name>
-          <choices class="java.util.Arrays$ArrayList">
-            <a class="string-array">
-              <string>smoke</string>
-              <string>login</string>
-              <string>im</string>
-              <string>rtc</string>
-              <string>full</string>
-            </a>
-          </choices>
-        </hudson.model.ChoiceParameterDefinition>
+          <defaultValue>smoke</defaultValue>
+          <description>质检套件：smoke、login、im、rtc、monkey、full。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REQUESTED_TEST_SUITE</name>
+          <defaultValue></defaultValue>
+          <description>平台原始选择的质检套件。为空时使用 TEST_SUITE。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>RUN_MONKEY</name>
+          <defaultValue>0</defaultValue>
+          <description>设为 1 时执行 Monkey 随机测试。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>DEVICE_POOL</name>
           <defaultValue>ios-default</defaultValue>
@@ -87,6 +93,27 @@
         <hudson.model.StringParameterDefinition>
           <name>QUALITY_RUNNER</name>
           <defaultValue>local-ios-device</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>QA_RUNNER_MODE</name>
+          <defaultValue>local-usb</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>WDA_URL</name>
+          <defaultValue>http://127.0.0.1:8100</defaultValue>
+          <description>Monkey 测试使用的 WebDriverAgent 地址。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_EVENT_COUNT</name>
+          <defaultValue>30</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_INTERVAL_SECONDS</name>
+          <defaultValue>0.35</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>

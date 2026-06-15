@@ -15,6 +15,9 @@ XCARCHIVE_PATH="${XCARCHIVE_PATH:-}"
 ARCHIVE_URL="${ARCHIVE_URL:-}"
 TEST_SUITE="${TEST_SUITE:-smoke}"
 REQUESTED_TEST_SUITE="${REQUESTED_TEST_SUITE:-${TEST_SUITE}}"
+if [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
+  REQUESTED_TEST_SUITE="monkey"
+fi
 DEVICE_POOL="${DEVICE_POOL:-ios-default}"
 DEVICE_POOL_LABEL="${DEVICE_POOL_LABEL:-${DEVICE_POOL}}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
@@ -753,7 +756,7 @@ fi
 
 process_status=0
 check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
-if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ]; then
+if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
   monkey_status=0
   run_monkey_test || monkey_status=$?
   load_monkey_result

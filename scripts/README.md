@@ -46,7 +46,12 @@ bash scripts/sonic/ios-quality.sh
 | `DEVICE_POOL` | 平台设备池 value |
 | `DEVICE_UDID` | 指定真机 UDID，留空自动选择第一台 |
 | `APP_BUNDLE_ID` | 启动校验的 Bundle ID，蒲公英渠道默认 `com.nndev.im` |
-| `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`full` |
+| `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`monkey`、`full` |
+| `REQUESTED_TEST_SUITE` | 平台原始选择的质检套件，空值时使用 `TEST_SUITE` |
+| `RUN_MONKEY` | 设为 `1` 时执行 Monkey 随机测试 |
+| `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://127.0.0.1:8100` |
+| `MONKEY_EVENT_COUNT` | Monkey 随机事件次数，默认 `30` |
+| `MONKEY_INTERVAL_SECONDS` | Monkey 事件间隔，默认 `0.35` |
 
 当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 

@@ -218,7 +218,7 @@ export default function CICDPage() {
   };
 
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
-    const delays = [0, 1500, 1500, 2000, 3000, 4000, 4000, 4000];
+    const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000];
     setQualityLoading(true);
     try {
       for (const delay of delays) {
@@ -227,13 +227,11 @@ export default function CICDPage() {
         }
         const nextData = await loadQualityBuilds({ silent: true });
         const latest = nextData?.builds?.[0]?.number;
-        if (latest && previousLatest && Number(latest) > Number(previousLatest)) {
-          return;
-        }
-        if (nextData?.builds?.some((build) => build.building)) {
+        if (latest && (!previousLatest || Number(latest) > Number(previousLatest))) {
           return;
         }
       }
+      await loadQualityBuilds({ silent: true });
     } finally {
       setQualityLoading(false);
     }
