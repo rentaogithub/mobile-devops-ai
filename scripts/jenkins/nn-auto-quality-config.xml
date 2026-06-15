@@ -41,6 +41,12 @@
           <defaultValue></defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>XCARCHIVE_PATH</name>
+          <defaultValue></defaultValue>
+          <description>打包机本地 .xcarchive 路径，用于从 Products/Applications 生成临时 IPA 进行真机安装。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>
           <name>TEST_SUITE</name>
           <choices class="java.util.Arrays$ArrayList">

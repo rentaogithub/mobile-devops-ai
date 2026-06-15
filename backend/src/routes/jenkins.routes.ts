@@ -291,30 +291,38 @@ function getGitCredentials() {
 }
 
 function parseConsoleMetadata(consoleText: string) {
+  const plainConsoleText = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   const appVersion =
-    consoleText.match(/ASC_VERSION\s*=\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
-    consoleText.match(/版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
-    consoleText.match(/显示版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
-    consoleText.match(/MARKETING_VERSION:\s*[^→\n]*→\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
+    plainConsoleText.match(/ASC_VERSION\s*=\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
+    plainConsoleText.match(/版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
+    plainConsoleText.match(/显示版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
+    plainConsoleText.match(/MARKETING_VERSION:\s*[^→\n]*→\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     '';
   const publishChannel = normalizeDeployTarget(
-    consoleText.match(/发布渠道[:：]\s*([^\n\r]+)/)?.[1],
+    plainConsoleText.match(/发布渠道[:：]\s*([^\n\r]+)/)?.[1],
   );
   const packageUrl =
-    consoleText.match(/蒲公英链接[:：]\s*(https?:\/\/\S+)/)?.[1] ||
-    consoleText.match(/蒲公英版本[:：].*?\((https?:\/\/[^)\s]+)/)?.[1] ||
-    consoleText.match(/build\s*\[[0-9]+\]\((https?:\/\/[^)\s]+)\)/i)?.[1] ||
+    plainConsoleText.match(/蒲公英链接[:：]\s*(https?:\/\/\S+)/)?.[1] ||
+    plainConsoleText.match(/蒲公英版本[:：].*?\((https?:\/\/[^)\s]+)/)?.[1] ||
+    plainConsoleText.match(/build\s*\[[0-9]+\]\((https?:\/\/[^)\s]+)\)/i)?.[1] ||
     '';
+  const installPackageUrl = (
+    plainConsoleText.match(/IPA\s*构建成功[:：]\s*(\/[^\r\n]+?\.ipa)\b/i)?.[1] ||
+    plainConsoleText.match(/Successfully exported and signed the ipa file:\s*\r?\n\s*(\/[^\r\n]+?\.ipa)\b/i)?.[1] ||
+    plainConsoleText.match(/发现IPA文件[:：]\s*([^\r\n]+?\.ipa)\b/i)?.[1] ||
+    plainConsoleText.match(/IPA文件[:：]\s*([^\r\n]+?\.ipa)\b/i)?.[1] ||
+    ''
+  ).trim();
   const buildNumber =
-    consoleText.match(/CHANNEL_BUILD_NUMBER\s*=\s*([0-9]+)/)?.[1] ||
-    consoleText.match(/渠道构建号[:：]\s*([0-9]+)/)?.[1] ||
-    consoleText.match(/(?:蒲公英|Pgyer|TestFlight|AppStore|苹果商店)\s*构建号[:：]\s*([0-9]+)/i)?.[1] ||
-    consoleText.match(/CURRENT_PROJECT_VERSION:\s*[^→\n]*→\s*([0-9]+)/)?.[1] ||
-    (packageUrl ? consoleText.match(/build\s*\[([0-9]+)\]\((https?:\/\/[^)\s]+)\)/i)?.[1] : '') ||
+    plainConsoleText.match(/CHANNEL_BUILD_NUMBER\s*=\s*([0-9]+)/)?.[1] ||
+    plainConsoleText.match(/渠道构建号[:：]\s*([0-9]+)/)?.[1] ||
+    plainConsoleText.match(/(?:蒲公英|Pgyer|TestFlight|AppStore|苹果商店)\s*构建号[:：]\s*([0-9]+)/i)?.[1] ||
+    plainConsoleText.match(/CURRENT_PROJECT_VERSION:\s*[^→\n]*→\s*([0-9]+)/)?.[1] ||
+    (packageUrl ? plainConsoleText.match(/build\s*\[([0-9]+)\]\((https?:\/\/[^)\s]+)\)/i)?.[1] : '') ||
     '';
   const archivePath = (
-    consoleText.match(/-archivePath\s+(.+?\.xcarchive)/)?.[1] ||
-    consoleText.match(/archivePath\s+(.+?\.xcarchive)/)?.[1] ||
+    plainConsoleText.match(/-archivePath\s+(.+?\.xcarchive)/)?.[1] ||
+    plainConsoleText.match(/archivePath\s+(.+?\.xcarchive)/)?.[1] ||
     ''
   ).replace(/\\/g, '').trim();
   const archiveRelativePath = archivePath.match(/\/Archives\/(.+)$/)?.[1] || '';
@@ -328,7 +336,9 @@ function parseConsoleMetadata(consoleText: string) {
     commitHash: parseCheckoutRevision(consoleText),
     buildNumber,
     packageUrl,
+    installPackageUrl,
     channelQrUrl: publishChannel === 'Pgyer' ? packageUrl : '',
+    xcarchivePath: archivePath,
     archiveUrl,
   };
 }
@@ -356,7 +366,9 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
       commitHash: '',
       buildNumber: '',
       packageUrl: '',
+      installPackageUrl: '',
       channelQrUrl: '',
+      xcarchivePath: '',
       archiveUrl: '',
     };
   }
@@ -532,7 +544,9 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         buildNumber,
         appVersion,
         packageUrl: consoleMetadata.packageUrl,
+        installPackageUrl: consoleMetadata.installPackageUrl,
         channelQrUrl: consoleMetadata.channelQrUrl,
+        xcarchivePath: consoleMetadata.xcarchivePath,
         archiveUrl: consoleMetadata.archiveUrl,
       };
     }));
@@ -905,6 +919,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const commitHash = String(req.body?.commitHash || '').trim();
     const appVersion = String(req.body?.appVersion || '').trim();
     const packageUrl = String(req.body?.packageUrl || '').trim();
+    const xcarchivePath = String(req.body?.xcarchivePath || '').trim();
     const archiveUrl = String(req.body?.archiveUrl || '').trim();
     const testSuite = String(req.body?.testSuite || 'smoke').trim();
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
@@ -940,6 +955,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       COMMIT_HASH: commitHash,
       APP_VERSION: appVersion,
       PACKAGE_URL: packageUrl,
+      XCARCHIVE_PATH: xcarchivePath,
       ARCHIVE_URL: archiveUrl,
       TEST_SUITE: testSuite,
       DEVICE_POOL: devicePool,

@@ -11,6 +11,7 @@ BRANCH="${BRANCH:-}"
 COMMIT_HASH="${COMMIT_HASH:-}"
 APP_VERSION="${APP_VERSION:-}"
 PACKAGE_URL="${PACKAGE_URL:-}"
+XCARCHIVE_PATH="${XCARCHIVE_PATH:-}"
 ARCHIVE_URL="${ARCHIVE_URL:-}"
 TEST_SUITE="${TEST_SUITE:-smoke}"
 DEVICE_POOL="${DEVICE_POOL:-ios-default}"
@@ -116,18 +117,19 @@ select_device() {
 }
 
 download_ipa() {
-  if [ -z "${PACKAGE_URL}" ]; then
+  local source_url="$1"
+  if [ -z "${source_url}" ]; then
     return 1
   fi
-  case "${PACKAGE_URL}" in
+  case "${source_url}" in
     http://*|https://*)
-      curl -L --fail --connect-timeout 15 --max-time 600 -o "${IPA_FILE}" "${PACKAGE_URL}"
+      curl -L --fail --connect-timeout 15 --max-time 600 -o "${IPA_FILE}" "${source_url}"
       ;;
     file://*)
-      cp "${PACKAGE_URL#file://}" "${IPA_FILE}"
+      cp "${source_url#file://}" "${IPA_FILE}"
       ;;
     /*)
-      cp "${PACKAGE_URL}" "${IPA_FILE}"
+      cp "${source_url}" "${IPA_FILE}"
       ;;
     *)
       return 1
@@ -138,6 +140,29 @@ download_ipa() {
     unzip -l "${IPA_FILE}" 'Payload/*.app/*' >/dev/null 2>&1 || return 2
   fi
   return 0
+}
+
+package_ipa_from_xcarchive() {
+  local archive_path="$1"
+  if [ -z "${archive_path}" ] || [ ! -d "${archive_path}" ]; then
+    return 1
+  fi
+
+  local app_path
+  app_path="$(find "${archive_path}/Products/Applications" -maxdepth 1 -type d -name '*.app' 2>/dev/null | head -n 1)"
+  if [ -z "${app_path}" ] || [ ! -d "${app_path}" ]; then
+    return 1
+  fi
+
+  local payload_dir="${RESULT_DIR}/Payload"
+  rm -rf "${payload_dir}" "${IPA_FILE}"
+  mkdir -p "${payload_dir}"
+  cp -R "${app_path}" "${payload_dir}/"
+  (
+    cd "${RESULT_DIR}"
+    zip -qry "${IPA_FILE}" Payload
+  )
+  [ -s "${IPA_FILE}" ]
 }
 
 [[ -n "${SOURCE_BUILD_NUMBER}" ]] || fail "SOURCE_BUILD_NUMBER is required"
@@ -151,6 +176,7 @@ cat > "${META_FILE}" <<JSON
   "commitHash": "${COMMIT_HASH}",
   "appVersion": "${APP_VERSION}",
   "packageUrl": "${PACKAGE_URL}",
+  "xcarchivePath": "${XCARCHIVE_PATH}",
   "archiveUrl": "${ARCHIVE_URL}",
   "testSuite": "${TEST_SUITE}",
   "devicePool": "${DEVICE_POOL}",
@@ -172,6 +198,7 @@ log "测试套件: ${TEST_SUITE}"
 log "设备池: ${DEVICE_POOL_LABEL} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
+log "xcarchive: ${XCARCHIVE_PATH:-N/A}"
 
 TIDEVICE_CMD="$(find_tidevice)"
 if [ -z "${TIDEVICE_CMD}" ]; then
@@ -189,10 +216,20 @@ fi
 log "使用设备: ${SELECTED_DEVICE}"
 
 download_status=0
-download_ipa || download_status=$?
+download_ipa "${PACKAGE_URL}" || download_status=$?
+if [ "${download_status}" != "0" ] && [ -n "${XCARCHIVE_PATH}" ]; then
+  log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${XCARCHIVE_PATH}"
+  download_status=0
+  package_ipa_from_xcarchive "${XCARCHIVE_PATH}" || download_status=$?
+fi
+if [ "${download_status}" != "0" ] && [ -n "${ARCHIVE_URL}" ] && [ "${ARCHIVE_URL}" != "${PACKAGE_URL}" ]; then
+  log "PACKAGE_URL 不可用，尝试 ARCHIVE_URL: ${ARCHIVE_URL}"
+  download_status=0
+  download_ipa "${ARCHIVE_URL}" || download_status=$?
+fi
 if [ "${download_status}" = "2" ]; then
   file_desc="$(file "${IPA_FILE}" 2>/dev/null || true)"
-  fail "下载到的文件不是有效 IPA，可能 PACKAGE_URL 是蒲公英页面短链而不是直接下载地址。PACKAGE_URL=${PACKAGE_URL:-N/A} 文件信息=${file_desc:-N/A}"
+  fail "下载到的文件不是有效 IPA，可能 PACKAGE_URL 是蒲公英页面短链而不是直接下载地址。PACKAGE_URL=${PACKAGE_URL:-N/A} ARCHIVE_URL=${ARCHIVE_URL:-N/A} 文件信息=${file_desc:-N/A}"
 elif [ "${download_status}" != "0" ]; then
   fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
 fi

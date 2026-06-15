@@ -1117,7 +1117,9 @@ export interface JenkinsBuild {
   buildNumber?: string;
   appVersion?: string;
   packageUrl?: string;
+  installPackageUrl?: string;
   channelQrUrl?: string;
+  xcarchivePath?: string;
   archiveUrl?: string;
 }
 
@@ -1266,6 +1268,7 @@ export const jenkinsApi = {
     commitHash?: string;
     appVersion?: string;
     packageUrl?: string;
+    xcarchivePath?: string;
     archiveUrl?: string;
     testSuite: JenkinsQualitySuite;
     devicePool: string;

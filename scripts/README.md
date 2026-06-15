@@ -12,7 +12,7 @@ sh scripts/sonic/ios-quality.sh
 
 1. 读取平台传入的构建号、分支、Commit、APP 版本和 IPA 地址。
 2. 使用 `tidevice` 识别打包机 USB 连接的 iPhone。
-3. 下载 IPA，安装到指定设备或第一台可用设备。
+3. 获取安装包：优先使用 Jenkins 本地 IPA，其次从 `XCARCHIVE_PATH/Products/Applications/*.app` 生成临时 IPA，最后才尝试外部 URL。
 4. 启动 `APP_BUNDLE_ID`，生成 `quality-results/**` 日志和 JUnit 报告。
 
 Jenkins `nn-auto-quality` 的 `Execute shell` 不写死平台目录。平台触发质检时会自动传入 `NN_IOS_PLATFORM_DIR`；手动点 `Build with Parameters` 时才需要填写该参数：
@@ -42,6 +42,7 @@ bash scripts/sonic/ios-quality.sh
 | --- | --- |
 | `SOURCE_BUILD_NUMBER` | 来源发布构建号 |
 | `PACKAGE_URL` | 可下载的 IPA 地址 |
+| `XCARCHIVE_PATH` | 打包机本地 `.xcarchive` 路径，可从 `Products/Applications/*.app` 生成临时 IPA |
 | `DEVICE_POOL` | 平台设备池 value |
 | `DEVICE_UDID` | 指定真机 UDID，留空自动选择第一台 |
 | `APP_BUNDLE_ID` | 启动校验的 Bundle ID，默认 `com.nnhuyu.im` |
