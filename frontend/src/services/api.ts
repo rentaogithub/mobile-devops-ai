@@ -1168,6 +1168,29 @@ export interface JenkinsQualityBuild {
   building: boolean;
   url: string;
   description?: string | null;
+  qualitySummary?: {
+    status?: 'passed' | 'failed' | string;
+    message?: string;
+    sourceBuildNumber?: string;
+    branch?: string;
+    commitHash?: string;
+    appVersion?: string;
+    testSuite?: string;
+    devicePool?: string;
+    devicePoolLabel?: string;
+    deviceUdid?: string;
+    bundleId?: string;
+    detectedBundleId?: string;
+    launchMethod?: string;
+    artifacts?: {
+      summaryUrl?: string;
+      screenshotUrl?: string;
+      deviceLogUrl?: string;
+      processesUrl?: string;
+      junitUrl?: string;
+      qualityLogUrl?: string;
+    };
+  };
 }
 
 export interface JenkinsQualityListResult {

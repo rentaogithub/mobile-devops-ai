@@ -774,6 +774,8 @@ export default function CICDPage() {
                     rowKey="number"
                     loading={qualityLoading}
                     dataSource={qualityData?.builds || []}
+                    tableLayout="fixed"
+                    scroll={{ x: 1280 }}
                     pagination={{ pageSize: 10, showSizeChanger: false }}
                     columns={[
                       {
@@ -786,6 +788,47 @@ export default function CICDPage() {
                             #{number}
                           </Button>
                         ),
+                      },
+                      {
+                        title: '来源构建',
+                        key: 'sourceBuildNumber',
+                        width: 110,
+                        render: (_, record) => record.qualitySummary?.sourceBuildNumber ? (
+                          <Tag color="blue">#{record.qualitySummary.sourceBuildNumber}</Tag>
+                        ) : <Text type="secondary">-</Text>,
+                      },
+                      {
+                        title: 'APP版本',
+                        key: 'appVersion',
+                        width: 110,
+                        render: (_, record) => record.qualitySummary?.appVersion ? (
+                          <Tag color="purple">{record.qualitySummary.appVersion}</Tag>
+                        ) : <Text type="secondary">-</Text>,
+                      },
+                      {
+                        title: '设备',
+                        key: 'device',
+                        width: 180,
+                        ellipsis: true,
+                        render: (_, record) => (
+                          <Space direction="vertical" size={0}>
+                            <Text>{record.qualitySummary?.devicePoolLabel || record.qualitySummary?.devicePool || '-'}</Text>
+                            {record.qualitySummary?.deviceUdid && (
+                              <Text type="secondary" style={{ fontSize: 12 }} title={record.qualitySummary.deviceUdid}>
+                                {record.qualitySummary.deviceUdid.slice(0, 12)}...
+                              </Text>
+                            )}
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: 'Bundle',
+                        key: 'bundleId',
+                        width: 150,
+                        ellipsis: true,
+                        render: (_, record) => record.qualitySummary?.bundleId ? (
+                          <Text code title={record.qualitySummary.bundleId}>{record.qualitySummary.bundleId}</Text>
+                        ) : <Text type="secondary">-</Text>,
                       },
                       {
                         title: '状态',
@@ -808,19 +851,55 @@ export default function CICDPage() {
                       },
                       {
                         title: '说明',
-                        dataIndex: 'description',
                         key: 'description',
+                        width: 260,
                         ellipsis: true,
-                        render: (value?: string | null) => value || <Text type="secondary">本机真机自动质检</Text>,
+                        render: (_, record) => (
+                          <Space direction="vertical" size={0}>
+                            <Text ellipsis title={record.qualitySummary?.message || record.description || ''}>
+                              {record.qualitySummary?.message || record.description || '本机真机自动质检'}
+                            </Text>
+                            {record.qualitySummary?.launchMethod && (
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                启动方式 {record.qualitySummary.launchMethod}
+                              </Text>
+                            )}
+                          </Space>
+                        ),
                       },
                       {
                         title: '操作',
                         key: 'action',
-                        width: 120,
+                        width: 280,
                         render: (_, record) => (
-                          <Button size="small" icon={<ExportOutlined />} onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
-                            报告
-                          </Button>
+                          <Space size={8}>
+                            <Button size="small" icon={<ExportOutlined />} onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
+                              Jenkins
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={<FileTextOutlined />}
+                              disabled={!record.qualitySummary?.artifacts?.qualityLogUrl}
+                              onClick={() => record.qualitySummary?.artifacts?.qualityLogUrl && window.open(record.qualitySummary.artifacts.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                              日志
+                            </Button>
+                            <Button
+                              size="small"
+                              icon={<DownloadOutlined />}
+                              disabled={!record.qualitySummary?.artifacts?.screenshotUrl}
+                              onClick={() => record.qualitySummary?.artifacts?.screenshotUrl && window.open(record.qualitySummary.artifacts.screenshotUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                              截图
+                            </Button>
+                            <Button
+                              size="small"
+                              disabled={!record.qualitySummary?.artifacts?.junitUrl}
+                              onClick={() => record.qualitySummary?.artifacts?.junitUrl && window.open(record.qualitySummary.artifacts.junitUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                              JUnit
+                            </Button>
+                          </Space>
                         ),
                       },
                     ]}

@@ -229,6 +229,15 @@ function normalizeJenkinsUrl(url?: string) {
   }
 }
 
+function buildJenkinsArtifactUrl(jobPath: string, buildNumber: number, relativePath: string) {
+  const encodedPath = relativePath
+    .split('/')
+    .filter(Boolean)
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+  return `${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/artifact/${encodedPath}`;
+}
+
 function parseBuildDescription(description?: string | null) {
   const text = (description || '').trim();
   const match = text.match(/^([^,，]+)[,，]\s*(.+)$/);
@@ -370,6 +379,91 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
       channelQrUrl: '',
       xcarchivePath: '',
       archiveUrl: '',
+    };
+  }
+}
+
+function parseQualityConsoleSummary(consoleText: string) {
+  const plain = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+  const sourceBuildNumber = plain.match(/源构建:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const appVersion = plain.match(/APP版本:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const testSuite = plain.match(/测试套件:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const devicePoolMatch = plain.match(/设备池:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const deviceUdid = plain.match(/使用设备:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const bundleId = (
+    plain.match(/启动 App:\s*([^\n\r]+)/)?.[1]?.trim() ||
+    plain.match(/Launched application with\s+([^\s]+)\s+bundle identifier/i)?.[1]?.trim() ||
+    ''
+  );
+  const message = plain.match(/ERROR:\s*([^\n\r]+)/)?.[1]?.trim() || (
+    /Finished:\s+SUCCESS/.test(plain) ? '安装和启动成功' : ''
+  );
+  const status = /Finished:\s+SUCCESS/.test(plain)
+    ? 'passed'
+    : (/Finished:\s+FAILURE|ERROR:/i.test(plain) ? 'failed' : '');
+
+  return {
+    status,
+    message,
+    sourceBuildNumber,
+    appVersion,
+    testSuite,
+    devicePool: '',
+    devicePoolLabel: devicePoolMatch.replace(/\s*\([^)]+\)\s*$/, ''),
+    deviceUdid,
+    bundleId,
+    launchMethod: /Launched application with/i.test(plain) ? 'devicectl' : '',
+  };
+}
+
+async function fetchQualitySummary(jobPath: string, build: any) {
+  const buildNumber = Number(build.number);
+  const artifacts = Array.isArray(build.artifacts) ? build.artifacts : [];
+  const summaryArtifact = artifacts.find((artifact: any) => String(artifact?.relativePath || '').endsWith('/summary.json'));
+
+  if (summaryArtifact?.relativePath) {
+    const summaryUrl = buildJenkinsArtifactUrl(jobPath, buildNumber, summaryArtifact.relativePath);
+    try {
+      const response = await axios.get(summaryUrl, {
+        timeout: 10000,
+        responseType: 'json',
+        ...buildAuthConfig(),
+      });
+      const summary = response.data || {};
+      const summaryDir = path.posix.dirname(summaryArtifact.relativePath);
+      const artifactRel = (name?: string) => (name ? path.posix.join(summaryDir, name) : '');
+      const artifactUrl = (name?: string) => (name ? buildJenkinsArtifactUrl(jobPath, buildNumber, artifactRel(name)) : '');
+      return {
+        ...summary,
+        artifacts: {
+          summaryUrl,
+          screenshotUrl: artifactUrl(summary.artifacts?.screenshot),
+          deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog),
+          processesUrl: artifactUrl(summary.artifacts?.processes),
+          junitUrl: artifactUrl(summary.artifacts?.junit),
+          qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog),
+        },
+      };
+    } catch {
+      // summary artifact 读取失败时继续走 console 兜底。
+    }
+  }
+
+  try {
+    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+      timeout: 10000,
+      responseType: 'text',
+      ...buildAuthConfig(),
+    });
+    return {
+      ...parseQualityConsoleSummary(String(response.data || '')),
+      artifacts: {},
+    };
+  } catch {
+    return {
+      status: build.result === 'SUCCESS' ? 'passed' : (build.result === 'FAILURE' ? 'failed' : ''),
+      message: build.result === 'SUCCESS' ? '质检成功' : '',
+      artifacts: {},
     };
   }
 }
@@ -647,13 +741,17 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
       'buildable',
       'color',
       'lastBuild[number,result,timestamp,duration,building,url,description]',
-      'builds[number,result,timestamp,duration,building,url,description]{0,20}',
+      'builds[number,result,timestamp,duration,building,url,description,artifacts[fileName,relativePath]]{0,20}',
     ].join(',');
     const response = await fetchJenkinsJobJson(jobPath, tree);
     const job = response.data || {};
-    const builds = (Array.isArray(job.builds) ? job.builds : []).map((build: any) => ({
-      ...build,
-      url: normalizeJenkinsUrl(build.url),
+    const builds = await Promise.all((Array.isArray(job.builds) ? job.builds : []).map(async (build: any) => {
+      const qualitySummary = await fetchQualitySummary(jobPath, build);
+      return {
+        ...build,
+        url: normalizeJenkinsUrl(build.url),
+        qualitySummary,
+      };
     }));
     const running = builds.filter((build: any) => build.building).length;
     const success = builds.filter((build: any) => build.result === 'SUCCESS').length;

@@ -27,8 +27,13 @@ WORKSPACE_DIR="${WORKSPACE:-$(pwd)}"
 RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${TEST_SUITE}"
 REPORT_FILE="${RESULT_DIR}/junit.xml"
 META_FILE="${RESULT_DIR}/metadata.json"
+SUMMARY_FILE="${RESULT_DIR}/summary.json"
 LOG_FILE="${RESULT_DIR}/quality.log"
 IPA_FILE="${RESULT_DIR}/app.ipa"
+SCREENSHOT_FILE="${RESULT_DIR}/screenshot.png"
+DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
+PROCESS_FILE="${RESULT_DIR}/processes.json"
+LAUNCH_METHOD=""
 
 mkdir -p "${RESULT_DIR}"
 
@@ -73,8 +78,76 @@ XML
 fail() {
   local message="$1"
   log "ERROR: ${message}"
+  write_summary "failed" "${message}" || true
   write_report 1 "${message}"
   exit 1
+}
+
+write_summary() {
+  local status="$1"
+  local message="${2:-}"
+  python3 - "$SUMMARY_FILE" \
+    "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
+    "${TEST_SUITE:-}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL:-}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
+    "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" <<'PY'
+import json
+import os
+import sys
+
+summary_path = sys.argv[1]
+(
+    status,
+    message,
+    source_build_number,
+    branch,
+    commit_hash,
+    app_version,
+    test_suite,
+    device_pool,
+    device_pool_label,
+    device_udid,
+    launch_bundle_id,
+    detected_bundle_id,
+    launch_method,
+    result_dir,
+    screenshot_file,
+    device_log_file,
+    process_file,
+) = sys.argv[2:19]
+
+def rel(path):
+    if not path:
+        return ""
+    try:
+        return os.path.relpath(path, result_dir)
+    except Exception:
+        return path
+
+data = {
+    "status": status,
+    "message": message,
+    "sourceBuildNumber": source_build_number,
+    "branch": branch,
+    "commitHash": commit_hash,
+    "appVersion": app_version,
+    "testSuite": test_suite,
+    "devicePool": device_pool,
+    "devicePoolLabel": device_pool_label,
+    "deviceUdid": device_udid,
+    "bundleId": launch_bundle_id,
+    "detectedBundleId": detected_bundle_id,
+    "launchMethod": launch_method,
+    "artifacts": {
+        "screenshot": rel(screenshot_file) if os.path.exists(screenshot_file) else "",
+        "deviceLog": rel(device_log_file) if os.path.exists(device_log_file) else "",
+        "processes": rel(process_file) if os.path.exists(process_file) else "",
+        "junit": "junit.xml",
+        "qualityLog": "quality.log",
+    },
+}
+with open(summary_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+PY
 }
 
 find_tidevice() {
@@ -209,6 +282,7 @@ launch_app() {
 
   log "启动 App: ${bundle_id}"
   if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" launch "${bundle_id}" 2>&1 | tee "${launch_output}" | tee -a "${LOG_FILE}"; then
+    LAUNCH_METHOD="tidevice"
     return 0
   fi
 
@@ -217,6 +291,7 @@ launch_app() {
     if command -v xcrun >/dev/null 2>&1 && xcrun devicectl --help >/dev/null 2>&1; then
       local devicectl_output="${RESULT_DIR}/devicectl-launch-${bundle_id}.log"
       if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee "${devicectl_output}" | tee -a "${LOG_FILE}"; then
+        LAUNCH_METHOD="devicectl"
         return 0
       fi
       if grep -q 'must be paired\|RemotePairingError' "${devicectl_output}" 2>/dev/null; then
@@ -224,6 +299,7 @@ launch_app() {
         xcrun devicectl manage pair --device "${SELECTED_DEVICE}" 2>&1 | tee -a "${LOG_FILE}" || true
         log "重新尝试使用 devicectl 启动 App。"
         if xcrun devicectl device process launch --device "${SELECTED_DEVICE}" "${bundle_id}" 2>&1 | tee -a "${LOG_FILE}"; then
+          LAUNCH_METHOD="devicectl"
           return 0
         fi
         log "devicectl 仍无法连接设备。请在打包机 Jenkins 用户环境执行：xcrun devicectl manage pair --device ${SELECTED_DEVICE}"
@@ -233,6 +309,60 @@ launch_app() {
     fi
   fi
 
+  return 1
+}
+
+capture_screenshot() {
+  log "采集启动截图..."
+  if ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" screenshot "${SCREENSHOT_FILE}" >/dev/null 2>&1; then
+    log "截图: ${SCREENSHOT_FILE}"
+    return 0
+  fi
+  log "截图采集失败，跳过。"
+  return 1
+}
+
+capture_device_log() {
+  log "采集设备日志..."
+  : > "${DEVICE_LOG_FILE}"
+  if ! ${TIDEVICE_CMD} --udid "${SELECTED_DEVICE}" syslog > "${DEVICE_LOG_FILE}" 2>&1 &
+  then
+    log "设备日志采集启动失败，跳过。"
+    return 1
+  fi
+  local syslog_pid=$!
+  sleep 8
+  kill "${syslog_pid}" >/dev/null 2>&1 || true
+  wait "${syslog_pid}" >/dev/null 2>&1 || true
+  if [ -s "${DEVICE_LOG_FILE}" ]; then
+    log "设备日志: ${DEVICE_LOG_FILE}"
+    return 0
+  fi
+  log "设备日志为空，跳过。"
+  return 1
+}
+
+check_process_alive() {
+  local bundle_id="$1"
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun devicectl --help >/dev/null 2>&1; then
+    log "未找到 devicectl，跳过进程存活检查。"
+    return 2
+  fi
+
+  log "检查 App 进程存活..."
+  rm -f "${PROCESS_FILE}"
+  if ! xcrun devicectl device info processes --device "${SELECTED_DEVICE}" --json-output "${PROCESS_FILE}" >/dev/null 2>&1; then
+    log "进程列表采集失败，跳过进程存活检查。"
+    return 2
+  fi
+  if grep -q "${bundle_id}" "${PROCESS_FILE}" 2>/dev/null; then
+    log "进程存活: ${bundle_id}"
+    return 0
+  fi
+  if grep -q '"name"[[:space:]]*:[[:space:]]*"im"\|"executableName"[[:space:]]*:[[:space:]]*"im"' "${PROCESS_FILE}" 2>/dev/null; then
+    log "进程存活: im"
+    return 0
+  fi
   return 1
 }
 
@@ -356,6 +486,16 @@ fi
 log "等待基础启动稳定..."
 sleep 5
 
+process_status=0
+check_process_alive "${LAUNCH_BUNDLE_ID}" || process_status=$?
+capture_screenshot || true
+capture_device_log || true
+if [ "${process_status}" = "1" ]; then
+  fail "启动后未检测到 App 进程：${LAUNCH_BUNDLE_ID}"
+fi
+
+write_summary "passed" "安装、启动、进程检查、截图和日志采集完成"
 write_report 0
 log "质检结果目录: ${RESULT_DIR}"
 log "JUnit报告: ${REPORT_FILE}"
+log "质检摘要: ${SUMMARY_FILE}"
