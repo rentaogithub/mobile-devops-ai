@@ -47,6 +47,18 @@ function getRuntimeEnv(key: string): string {
   return process.env[key] || readEnvFileValue(key);
 }
 
+function normalizeQualitySuite(value?: string) {
+  const text = String(value || 'smoke').trim();
+  const lower = text.toLowerCase();
+  if (/monkey|随机|猴子/i.test(text)) return 'monkey';
+  if (/冒烟|smoke/i.test(text)) return 'smoke';
+  if (/登录|login/i.test(text)) return 'login';
+  if (/^im$|im\s*基础/i.test(text)) return 'im';
+  if (/^rtc$|rtc\s*基础/i.test(text)) return 'rtc';
+  if (/全量|full/i.test(text)) return 'full';
+  return lower;
+}
+
 function getSonicConfig() {
   const apiBase = (getRuntimeEnv('SONIC_API_BASE') || 'http://10.1.3.177:5173/sonic-api').replace(/\/$/, '');
   return {
@@ -1054,7 +1066,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const packageUrl = String(req.body?.packageUrl || '').trim();
     const xcarchivePath = String(req.body?.xcarchivePath || '').trim();
     const archiveUrl = String(req.body?.archiveUrl || '').trim();
-    const testSuite = String(req.body?.testSuite || 'smoke').trim();
+    const rawTestSuite = String(req.body?.testSuite || 'smoke').trim();
+    const testSuite = normalizeQualitySuite(rawTestSuite);
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
 
     if (!buildNumber) {
@@ -1067,7 +1080,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     if (!QA_TEST_SUITES.has(testSuite)) {
       res.status(400).json({
         success: false,
-        error: '质检套件无效',
+        error: `质检套件无效：${rawTestSuite || '-'}，可选值：${Array.from(QA_TEST_SUITES).join(', ')}`,
       });
       return;
     }
