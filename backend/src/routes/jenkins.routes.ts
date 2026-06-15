@@ -386,6 +386,8 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
 function parseQualityConsoleSummary(consoleText: string) {
   const plain = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   const sourceBuildNumber = plain.match(/源构建:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const branch = plain.match(/分支:\s*([^\n\r]+)/)?.[1]?.trim() || '';
+  const commitHash = plain.match(/Commit:\s*([0-9a-f]{7,40})/i)?.[1]?.trim() || '';
   const appVersion = plain.match(/APP版本:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const testSuite = plain.match(/测试套件:\s*([^\n\r]+)/)?.[1]?.trim() || '';
   const devicePoolMatch = plain.match(/设备池:\s*([^\n\r]+)/)?.[1]?.trim() || '';
@@ -406,6 +408,8 @@ function parseQualityConsoleSummary(consoleText: string) {
     status,
     message,
     sourceBuildNumber,
+    branch,
+    commitHash,
     appVersion,
     testSuite,
     devicePool: '',
@@ -416,14 +420,29 @@ function parseQualityConsoleSummary(consoleText: string) {
   };
 }
 
+async function fetchQualityConsoleSummary(jobPath: string, buildNumber: number) {
+  const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+    timeout: 10000,
+    responseType: 'text',
+    ...buildAuthConfig(),
+  });
+  return parseQualityConsoleSummary(String(response.data || ''));
+}
+
 async function fetchQualitySummary(jobPath: string, build: any) {
   const buildNumber = Number(build.number);
   const artifacts = Array.isArray(build.artifacts) ? build.artifacts : [];
   const summaryArtifact = artifacts.find((artifact: any) => String(artifact?.relativePath || '').endsWith('/summary.json'));
+  let consoleSummary: any | null = null;
 
   if (summaryArtifact?.relativePath) {
     const summaryUrl = buildJenkinsArtifactUrl(jobPath, buildNumber, summaryArtifact.relativePath);
     try {
+      try {
+        consoleSummary = await fetchQualityConsoleSummary(jobPath, buildNumber);
+      } catch {
+        consoleSummary = null;
+      }
       const response = await axios.get(summaryUrl, {
         timeout: 10000,
         responseType: 'json',
@@ -433,15 +452,19 @@ async function fetchQualitySummary(jobPath: string, build: any) {
       const summaryDir = path.posix.dirname(summaryArtifact.relativePath);
       const artifactRel = (name?: string) => (name ? path.posix.join(summaryDir, name) : '');
       const artifactUrl = (name?: string) => (name ? buildJenkinsArtifactUrl(jobPath, buildNumber, artifactRel(name)) : '');
-      return {
+      const mergedSummary = {
+        ...(consoleSummary || {}),
         ...summary,
+      };
+      return {
+        ...mergedSummary,
         artifacts: {
           summaryUrl,
-          screenshotUrl: artifactUrl(summary.artifacts?.screenshot),
-          deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog),
-          processesUrl: artifactUrl(summary.artifacts?.processes),
-          junitUrl: artifactUrl(summary.artifacts?.junit),
-          qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog),
+          screenshotUrl: artifactUrl(summary.artifacts?.screenshot || 'screenshot.png'),
+          deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
+          processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
+          junitUrl: artifactUrl(summary.artifacts?.junit || 'junit.xml'),
+          qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog || 'quality.log'),
         },
       };
     } catch {
@@ -450,13 +473,8 @@ async function fetchQualitySummary(jobPath: string, build: any) {
   }
 
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
-      timeout: 10000,
-      responseType: 'text',
-      ...buildAuthConfig(),
-    });
     return {
-      ...parseQualityConsoleSummary(String(response.data || '')),
+      ...(consoleSummary || await fetchQualityConsoleSummary(jobPath, buildNumber)),
       artifacts: {},
     };
   } catch {

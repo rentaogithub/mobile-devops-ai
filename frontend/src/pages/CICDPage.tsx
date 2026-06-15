@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs } from 'antd';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -127,6 +127,7 @@ export default function CICDPage() {
   const [qualityModalOpen, setQualityModalOpen] = useState(false);
   const [qualitySubmitting, setQualitySubmitting] = useState(false);
   const [qualityBuild, setQualityBuild] = useState<JenkinsBuild | null>(null);
+  const [qualityReportBuild, setQualityReportBuild] = useState<JenkinsQualityBuild | null>(null);
   const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('smoke');
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
@@ -333,7 +334,7 @@ export default function CICDPage() {
     }
     setQualitySubmitting(true);
     try {
-      const response = await jenkinsApi.triggerQuality({
+      await jenkinsApi.triggerQuality({
         buildNumber: qualityBuild.number,
         branch: qualityBuild.branchName,
         commitHash: qualityBuild.commitHash,
@@ -349,9 +350,6 @@ export default function CICDPage() {
       await loadQualityBuilds();
       setTimeout(() => loadQualityBuilds(), 1500);
       setTimeout(() => loadQualityBuilds(), 5000);
-      if (response.data?.url) {
-        window.open(response.data.url, '_blank', 'noopener,noreferrer');
-      }
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发自动质检失败');
     } finally {
@@ -822,15 +820,6 @@ export default function CICDPage() {
                         ),
                       },
                       {
-                        title: 'Bundle',
-                        key: 'bundleId',
-                        width: 150,
-                        ellipsis: true,
-                        render: (_, record) => record.qualitySummary?.bundleId ? (
-                          <Text code title={record.qualitySummary.bundleId}>{record.qualitySummary.bundleId}</Text>
-                        ) : <Text type="secondary">-</Text>,
-                      },
-                      {
                         title: '状态',
                         key: 'result',
                         width: 120,
@@ -850,54 +839,17 @@ export default function CICDPage() {
                         render: (_, record) => formatDuration(record.duration, record.building),
                       },
                       {
-                        title: '说明',
-                        key: 'description',
-                        width: 260,
-                        ellipsis: true,
-                        render: (_, record) => (
-                          <Space direction="vertical" size={0}>
-                            <Text ellipsis title={record.qualitySummary?.message || record.description || ''}>
-                              {record.qualitySummary?.message || record.description || '本机真机自动质检'}
-                            </Text>
-                            {record.qualitySummary?.launchMethod && (
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                启动方式 {record.qualitySummary.launchMethod}
-                              </Text>
-                            )}
-                          </Space>
-                        ),
-                      },
-                      {
                         title: '操作',
                         key: 'action',
-                        width: 280,
+                        width: 100,
                         render: (_, record) => (
                           <Space size={8}>
-                            <Button size="small" icon={<ExportOutlined />} onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
-                              Jenkins
-                            </Button>
                             <Button
                               size="small"
                               icon={<FileTextOutlined />}
-                              disabled={!record.qualitySummary?.artifacts?.qualityLogUrl}
-                              onClick={() => record.qualitySummary?.artifacts?.qualityLogUrl && window.open(record.qualitySummary.artifacts.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+                              onClick={() => setQualityReportBuild(record)}
                             >
-                              日志
-                            </Button>
-                            <Button
-                              size="small"
-                              icon={<DownloadOutlined />}
-                              disabled={!record.qualitySummary?.artifacts?.screenshotUrl}
-                              onClick={() => record.qualitySummary?.artifacts?.screenshotUrl && window.open(record.qualitySummary.artifacts.screenshotUrl, '_blank', 'noopener,noreferrer')}
-                            >
-                              截图
-                            </Button>
-                            <Button
-                              size="small"
-                              disabled={!record.qualitySummary?.artifacts?.junitUrl}
-                              onClick={() => record.qualitySummary?.artifacts?.junitUrl && window.open(record.qualitySummary.artifacts.junitUrl, '_blank', 'noopener,noreferrer')}
-                            >
-                              JUnit
+                              报告
                             </Button>
                           </Space>
                         ),
@@ -1050,6 +1002,141 @@ export default function CICDPage() {
             />
           </div>
         </Space>
+      </Modal>
+
+      <Modal
+        title={qualityReportBuild ? `质检报告 - #${qualityReportBuild.number}` : '质检报告'}
+        open={!!qualityReportBuild}
+        width="78vw"
+        footer={(
+          <Space>
+            {qualityReportBuild?.qualitySummary?.artifacts?.qualityLogUrl && (
+              <Button
+                icon={<DownloadOutlined />}
+                onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+              >
+                下载日志
+              </Button>
+            )}
+            {qualityReportBuild?.qualitySummary?.artifacts?.junitUrl && (
+              <Button
+                onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.junitUrl, '_blank', 'noopener,noreferrer')}
+              >
+                下载 JUnit
+              </Button>
+            )}
+            <Button onClick={() => setQualityReportBuild(null)}>关闭</Button>
+          </Space>
+        )}
+        onCancel={() => setQualityReportBuild(null)}
+      >
+        {qualityReportBuild && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type={qualityReportBuild.result === 'SUCCESS' ? 'success' : (qualityReportBuild.result === 'FAILURE' ? 'error' : 'info')}
+              showIcon
+              message={qualityReportBuild.qualitySummary?.message || (qualityReportBuild.result === 'SUCCESS' ? '质检通过' : '质检结果')}
+              description={(
+                <Space wrap>
+                  {qualityReportBuild.qualitySummary?.sourceBuildNumber && <Tag color="blue">来源构建 #{qualityReportBuild.qualitySummary.sourceBuildNumber}</Tag>}
+                  {qualityReportBuild.qualitySummary?.appVersion && <Tag color="purple">APP {qualityReportBuild.qualitySummary.appVersion}</Tag>}
+                  {qualityReportBuild.qualitySummary?.testSuite && <Tag>套件 {qualityReportBuild.qualitySummary.testSuite}</Tag>}
+                  {qualityReportBuild.qualitySummary?.launchMethod && <Tag color="cyan">启动 {qualityReportBuild.qualitySummary.launchMethod}</Tag>}
+                </Space>
+              )}
+            />
+            <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+              <Descriptions.Item label="质检任务">#{qualityReportBuild.number}</Descriptions.Item>
+              <Descriptions.Item label="状态">{resultTag(qualityReportBuild)}</Descriptions.Item>
+              <Descriptions.Item label="耗时">{formatDuration(qualityReportBuild.duration, qualityReportBuild.building)}</Descriptions.Item>
+              <Descriptions.Item label="开始时间">{formatBuildTime(qualityReportBuild.timestamp)}</Descriptions.Item>
+              <Descriptions.Item label="设备池">{qualityReportBuild.qualitySummary?.devicePoolLabel || qualityReportBuild.qualitySummary?.devicePool || '-'}</Descriptions.Item>
+              <Descriptions.Item label="设备 UDID">
+                <Text code copyable={!!qualityReportBuild.qualitySummary?.deviceUdid}>
+                  {qualityReportBuild.qualitySummary?.deviceUdid || '-'}
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Bundle ID">
+                <Text code copyable={!!qualityReportBuild.qualitySummary?.bundleId}>
+                  {qualityReportBuild.qualitySummary?.bundleId || '-'}
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="检测 Bundle">
+                <Text code copyable={!!qualityReportBuild.qualitySummary?.detectedBundleId}>
+                  {qualityReportBuild.qualitySummary?.detectedBundleId || '-'}
+                </Text>
+              </Descriptions.Item>
+              <Descriptions.Item label="Jenkins 任务">
+                <Button type="link" size="small" onClick={() => window.open(qualityReportBuild.url, '_blank', 'noopener,noreferrer')}>
+                  打开 #{qualityReportBuild.number}
+                </Button>
+              </Descriptions.Item>
+            </Descriptions>
+            <Row gutter={[16, 16]}>
+              <Col xs={24} lg={10}>
+                <Card size="small" title="启动截图">
+                  {qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl ? (
+                    <Image
+                      src={qualityReportBuild.qualitySummary.artifacts.screenshotUrl}
+                      alt="质检截图"
+                      style={{ maxHeight: 420, objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务未归档截图" />
+                  )}
+                </Card>
+              </Col>
+              <Col xs={24} lg={14}>
+                <Card
+                  size="small"
+                  title="结果文件"
+                  extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
+                    <Button size="small" type="link" onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.summaryUrl, '_blank', 'noopener,noreferrer')}>
+                      summary.json
+                    </Button>
+                  )}
+                >
+                  <Space wrap>
+                    <Button
+                      icon={<FileTextOutlined />}
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl && window.open(qualityReportBuild.qualitySummary.artifacts.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      质检日志
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl && window.open(qualityReportBuild.qualitySummary.artifacts.deviceLogUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      设备日志
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.processesUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.processesUrl && window.open(qualityReportBuild.qualitySummary.artifacts.processesUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      进程信息
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.junitUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.junitUrl && window.open(qualityReportBuild.qualitySummary.artifacts.junitUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      JUnit
+                    </Button>
+                  </Space>
+                  {!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      style={{ marginTop: 16 }}
+                      message="当前 Jenkins 记录没有归档平台报告文件"
+                      description="旧质检任务可能只记录在 Jenkins 控制台里。重新执行一次质检后，会生成 summary.json、截图、设备日志和质检日志。"
+                    />
+                  )}
+                </Card>
+              </Col>
+            </Row>
+          </Space>
+        )}
       </Modal>
 
       <Modal
