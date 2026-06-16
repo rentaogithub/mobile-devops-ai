@@ -56,7 +56,12 @@ WDA_AUTO_INSTALL="${WDA_AUTO_INSTALL:-1}"
 WDA_BIND_HOST="${WDA_BIND_HOST:-0.0.0.0}"
 WDA_PROJECT_PATH="${WDA_PROJECT_PATH:-${WDA_PROJECT:-}}"
 WDA_SCHEME="${WDA_SCHEME:-WebDriverAgentRunner}"
+WDA_START_TIMEOUT_SECONDS="${WDA_START_TIMEOUT_SECONDS:-300}"
+WDA_DEVELOPMENT_TEAM="${WDA_DEVELOPMENT_TEAM:-}"
+WDA_BUNDLE_ID="${WDA_BUNDLE_ID:-}"
+WDA_XCODEBUILD_EXTRA_ARGS="${WDA_XCODEBUILD_EXTRA_ARGS:-}"
 MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
+WDA_READY_ERROR=""
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
 MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_SEED="${MONKEY_SEED:-}"
@@ -633,6 +638,7 @@ ensure_wda_ready() {
   log "WDA 当前不可访问: ${WDA_URL}"
   if [ "${WDA_AUTO_START}" != "1" ]; then
     log "WDA_AUTO_START=${WDA_AUTO_START}，跳过自动启动 WDA。"
+    WDA_READY_ERROR="WDA 不可访问且已关闭自动启动：${WDA_URL}"
     return 1
   fi
 
@@ -644,19 +650,19 @@ ensure_wda_ready() {
     if [ -z "${wda_project}" ]; then
       log "仍未找到 WebDriverAgent.xcodeproj，无法自动启动 WDA。"
       log "可通过 Jenkins 参数 WDA_PROJECT_PATH 指定 WebDriverAgent.xcodeproj，例如 Appium XCUITest Driver 自带的 WDA 工程。"
+      WDA_READY_ERROR="未找到 WebDriverAgent.xcodeproj，无法自动启动 WDA。请先执行 sh scripts/sonic/sonic.sh monkey-setup，或配置 WDA_PROJECT_PATH。"
       return 1
     fi
   fi
 
   if ! command -v xcodebuild >/dev/null 2>&1; then
     log "未找到 xcodebuild，无法自动启动 WDA。"
+    WDA_READY_ERROR="未找到 xcodebuild，无法自动启动 WDA。请确认 Jenkins 用户可访问 Xcode 命令行工具。"
     return 1
   fi
 
-  local wda_host wda_port local_wda_url wda_log iproxy_log iproxy_pid_file wda_pid_file
-  wda_host="$(wda_url_part host)"
+  local wda_port wda_log iproxy_log iproxy_pid_file wda_pid_file
   wda_port="$(wda_url_part port)"
-  local_wda_url="http://127.0.0.1:${wda_port}"
   wda_log="${RESULT_DIR}/wda-xcodebuild.log"
   iproxy_log="${RESULT_DIR}/wda-iproxy.log"
   iproxy_pid_file="${RESULT_DIR}/wda-iproxy.pid"
@@ -673,12 +679,10 @@ ensure_wda_ready() {
       echo $! > "${iproxy_pid_file}"
       sleep 1
       if ! kill -0 "$(cat "${iproxy_pid_file}")" >/dev/null 2>&1; then
-        log "iproxy 不支持 -l ${WDA_BIND_HOST} 或启动失败，尝试默认监听方式。"
-        (
-          iproxy -u "${SELECTED_DEVICE}" "${wda_port}" 8100 >>"${iproxy_log}" 2>&1
-        ) &
-        echo $! > "${iproxy_pid_file}"
-        MONKEY_RUNTIME_WDA_URL="${local_wda_url}"
+        log "iproxy 不支持 -l ${WDA_BIND_HOST} 或启动失败，无法把 WDA 暴露到 ${WDA_URL}。"
+        log "请在打包机升级 libimobiledevice/iproxy，确保支持：iproxy -u <UDID> -l 0.0.0.0 ${wda_port} 8100"
+        WDA_READY_ERROR="iproxy 不支持 -l ${WDA_BIND_HOST} 或启动失败，无法监听 ${WDA_URL}。请升级打包机 libimobiledevice/iproxy。"
+        return 1
       fi
     else
       log "检测到已有 iproxy 监听 ${wda_port}，复用。"
@@ -689,29 +693,44 @@ ensure_wda_ready() {
 
   if ! pgrep -f "xcodebuild.*${WDA_SCHEME}.*${SELECTED_DEVICE}" >/dev/null 2>&1; then
     log "启动 WebDriverAgentRunner..."
+    local xcodebuild_args=(
+      -project "${wda_project}"
+      -scheme "${WDA_SCHEME}"
+      -destination "id=${SELECTED_DEVICE}"
+      -allowProvisioningUpdates
+    )
+    local xcodebuild_settings=()
+    if [ -n "${WDA_DEVELOPMENT_TEAM}" ]; then
+      xcodebuild_settings+=("DEVELOPMENT_TEAM=${WDA_DEVELOPMENT_TEAM}" "CODE_SIGN_STYLE=Automatic")
+    fi
+    if [ -n "${WDA_BUNDLE_ID}" ]; then
+      xcodebuild_settings+=("PRODUCT_BUNDLE_IDENTIFIER=${WDA_BUNDLE_ID}")
+    fi
+    if [ -n "${WDA_XCODEBUILD_EXTRA_ARGS}" ]; then
+      log "WDA 额外 xcodebuild 参数: ${WDA_XCODEBUILD_EXTRA_ARGS}"
+    fi
     (
-      xcodebuild \
-        -project "${wda_project}" \
-        -scheme "${WDA_SCHEME}" \
-        -destination "id=${SELECTED_DEVICE}" \
-        test >>"${wda_log}" 2>&1
+      # shellcheck disable=SC2086
+      xcodebuild "${xcodebuild_args[@]}" "${xcodebuild_settings[@]}" ${WDA_XCODEBUILD_EXTRA_ARGS} test >>"${wda_log}" 2>&1
     ) &
     echo $! > "${wda_pid_file}"
   else
     log "检测到已有 WebDriverAgentRunner xcodebuild 进程，复用。"
   fi
 
-  local attempt
-  for attempt in {1..60}; do
+  local attempt max_attempts xcodebuild_pid
+  max_attempts=$((WDA_START_TIMEOUT_SECONDS / 2))
+  if [ "${max_attempts}" -lt 1 ]; then
+    max_attempts=1
+  fi
+  for attempt in $(seq 1 "${max_attempts}"); do
     if check_wda_ready "${WDA_URL}"; then
       MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
       log "WDA 启动成功: ${MONKEY_RUNTIME_WDA_URL}"
       return 0
     fi
-    if [ "${WDA_URL}" != "${local_wda_url}" ] && check_wda_ready "${local_wda_url}"; then
-      MONKEY_RUNTIME_WDA_URL="${local_wda_url}"
-      log "WDA 本机地址已可访问: ${MONKEY_RUNTIME_WDA_URL}"
-      return 0
+    if [ $((attempt % 15)) -eq 0 ]; then
+      log "等待 WDA 启动中... ${attempt}/${max_attempts}"
     fi
     sleep 2
   done
@@ -719,6 +738,23 @@ ensure_wda_ready() {
   log "WDA 自动启动后仍不可访问: ${WDA_URL}"
   log "WDA xcodebuild 日志: ${wda_log}"
   log "WDA iproxy 日志: ${iproxy_log}"
+  if [ -f "${wda_pid_file}" ]; then
+    xcodebuild_pid="$(cat "${wda_pid_file}" 2>/dev/null || true)"
+    if [ -n "${xcodebuild_pid}" ] && kill -0 "${xcodebuild_pid}" >/dev/null 2>&1; then
+      log "WDA xcodebuild 仍在运行，可能首次编译较慢。可通过 WDA_START_TIMEOUT_SECONDS 增大等待时间。"
+    fi
+  fi
+  if [ -f "${wda_log}" ]; then
+    log "---- WDA xcodebuild 日志尾部 ----"
+    tail -80 "${wda_log}" | tee -a "${LOG_FILE}" || true
+    log "---- WDA xcodebuild 日志尾部结束 ----"
+  fi
+  if [ -f "${iproxy_log}" ]; then
+    log "---- WDA iproxy 日志尾部 ----"
+    tail -40 "${iproxy_log}" | tee -a "${LOG_FILE}" || true
+    log "---- WDA iproxy 日志尾部结束 ----"
+  fi
+  WDA_READY_ERROR="WDA 启动后仍不可访问：${WDA_URL}。请查看 Jenkins 控制台中的 WDA xcodebuild / iproxy 日志尾部。常见原因是 WDA 签名/Team 配置失败、设备未信任开发者、首次编译超时或 iproxy 未正确监听 0.0.0.0:${wda_port}。"
   return 1
 }
 
@@ -726,7 +762,7 @@ run_monkey_test() {
   log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
   if ! ensure_wda_ready; then
     local message
-    message="WDA 准备失败：打包机 Jenkins 用户没有可用的 WebDriverAgent.xcodeproj，且未找到 appium/npm/npx 自动准备 WDA。请在 10.1.3.177 上执行：sh scripts/sonic/sonic.sh monkey-setup，或在 Jenkins 参数 WDA_PROJECT_PATH 填入 WebDriverAgent.xcodeproj 路径。"
+    message="${WDA_READY_ERROR:-WDA 准备失败：${WDA_URL} 不可访问。}"
     python3 - "$MONKEY_REPORT_FILE" "$WDA_URL" "$MONKEY_EVENT_COUNT" "$message" <<'PY'
 import json
 import sys

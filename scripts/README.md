@@ -53,6 +53,10 @@ bash scripts/sonic/ios-quality.sh
 | `WDA_AUTO_START` | Monkey 测试前自动启动 WebDriverAgent，默认 `1` |
 | `WDA_AUTO_INSTALL` | 找不到 WebDriverAgent.xcodeproj 时自动安装/检测 Appium XCUITest Driver，默认 `1` |
 | `WDA_PROJECT_PATH` | 可选：WebDriverAgent.xcodeproj 路径，留空时自动查找 Sonic Agent / Appium 常见目录 |
+| `WDA_START_TIMEOUT_SECONDS` | 等待 WebDriverAgent 启动的最长秒数，默认 `300` |
+| `WDA_DEVELOPMENT_TEAM` | 可选：WebDriverAgentRunner 签名 Team ID，留空使用 WDA 工程默认配置 |
+| `WDA_BUNDLE_ID` | 可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID |
+| `WDA_XCODEBUILD_EXTRA_ARGS` | 可选：追加给 WDA xcodebuild 的额外参数 |
 | `MONKEY_EVENT_COUNT` | Monkey 随机事件次数，默认 `30` |
 | `MONKEY_INTERVAL_SECONDS` | Monkey 事件间隔，默认 `0.35` |
 

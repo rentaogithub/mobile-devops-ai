@@ -125,6 +125,30 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>WDA_START_TIMEOUT_SECONDS</name>
+          <defaultValue>300</defaultValue>
+          <description>等待 WebDriverAgent 启动的最长秒数。首次编译较慢时可调大。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>WDA_DEVELOPMENT_TEAM</name>
+          <defaultValue></defaultValue>
+          <description>可选：WebDriverAgentRunner 签名 Team ID，留空时使用 WDA 工程默认配置。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>WDA_BUNDLE_ID</name>
+          <defaultValue></defaultValue>
+          <description>可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>WDA_XCODEBUILD_EXTRA_ARGS</name>
+          <defaultValue></defaultValue>
+          <description>可选：追加给 WDA xcodebuild 的额外参数。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>MONKEY_EVENT_COUNT</name>
           <defaultValue>30</defaultValue>
           <trim>true</trim>
