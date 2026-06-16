@@ -70,6 +70,10 @@ log() {
   echo "$@" | tee -a "${LOG_FILE}"
 }
 
+log_return_func() {
+  echo "$@" | tee -a "${LOG_FILE}" >&2
+}
+
 xml_escape() {
   printf '%s' "$1" | sed \
     -e 's/&/\&amp;/g' \
@@ -563,16 +567,25 @@ find_wda_project() {
 
 prepare_wda_project() {
   if [ "${WDA_AUTO_INSTALL}" != "1" ]; then
-    log "WDA_AUTO_INSTALL=${WDA_AUTO_INSTALL}，跳过自动准备 WDA。"
+    log_return_func "WDA_AUTO_INSTALL=${WDA_AUTO_INSTALL}，跳过自动准备 WDA。"
     return 1
   fi
 
-  log "尝试自动准备 WebDriverAgent：安装/检测 Appium XCUITest Driver。"
+  if [ -s "${HOME}/.nvm/nvm.sh" ]; then
+    # Jenkins 非交互 shell 通常不会加载 nvm，这里只在需要 Appium 时补一次。
+    # shellcheck disable=SC1090
+    . "${HOME}/.nvm/nvm.sh" >/dev/null 2>&1 || true
+    nvm use --lts >/dev/null 2>&1 || nvm use default >/dev/null 2>&1 || true
+  fi
+
+  export PATH="/opt/homebrew/bin:/usr/local/bin:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
+
+  log_return_func "尝试自动准备 WebDriverAgent：安装/检测 Appium XCUITest Driver。"
   if ! command -v appium >/dev/null 2>&1; then
     if command -v npx >/dev/null 2>&1; then
-      log "未找到 appium，尝试通过 npx 安装 XCUITest Driver。"
+      log_return_func "未找到 appium，尝试通过 npx 安装 XCUITest Driver。"
       if ! npx -y appium driver install xcuitest >>"${LOG_FILE}" 2>&1; then
-        log "npx 安装 XCUITest Driver 失败，继续尝试 npm install -g appium。"
+        log_return_func "npx 安装 XCUITest Driver 失败，继续尝试 npm install -g appium。"
       fi
       local prepared
       prepared="$(find_wda_project)"
@@ -582,23 +595,23 @@ prepare_wda_project() {
       fi
     fi
     if ! command -v npm >/dev/null 2>&1; then
-      log "未找到 appium 或 npm，无法自动安装 Appium XCUITest Driver。"
+      log_return_func "未找到 appium 或 npm，无法自动安装 Appium XCUITest Driver。"
       return 1
     fi
-    log "未找到 appium，尝试 npm install -g appium。"
+    log_return_func "未找到 appium，尝试 npm install -g appium。"
     if ! npm install -g appium >>"${LOG_FILE}" 2>&1; then
-      log "安装 appium 失败，请在打包机 Jenkins 用户下手动执行：npm install -g appium"
+      log_return_func "安装 appium 失败，请在打包机 Jenkins 用户下手动执行：npm install -g appium"
       return 1
     fi
   fi
 
   if command -v appium >/dev/null 2>&1; then
-    log "检查 Appium XCUITest Driver..."
+    log_return_func "检查 Appium XCUITest Driver..."
     appium driver list --installed >>"${LOG_FILE}" 2>&1 || true
     if ! appium driver list --installed 2>/dev/null | grep -qi "xcuitest"; then
-      log "未检测到 XCUITest Driver，尝试 appium driver install xcuitest。"
+      log_return_func "未检测到 XCUITest Driver，尝试 appium driver install xcuitest。"
       if ! appium driver install xcuitest >>"${LOG_FILE}" 2>&1; then
-        log "安装 XCUITest Driver 失败，请在打包机 Jenkins 用户下手动执行：appium driver install xcuitest"
+        log_return_func "安装 XCUITest Driver 失败，请在打包机 Jenkins 用户下手动执行：appium driver install xcuitest"
         return 1
       fi
     fi
