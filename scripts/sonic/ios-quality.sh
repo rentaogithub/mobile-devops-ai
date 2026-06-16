@@ -533,8 +533,11 @@ find_wda_project() {
     "${HOME}/工作/sonic-agent/plugins/WebDriverAgent/WebDriverAgent.xcodeproj"
     "${HOME}/工作/sonic-agent/plugins/sonic-ios-webdriveragent/WebDriverAgent.xcodeproj"
     "${HOME}/sonic-agent/WebDriverAgent/WebDriverAgent.xcodeproj"
+    "${HOME}/.appium/node_modules/appium-xcuitest-driver/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
     "${HOME}/.appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
+    "/opt/homebrew/lib/node_modules/appium/node_modules/appium-xcuitest-driver/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
     "/opt/homebrew/lib/node_modules/appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
+    "/usr/local/lib/node_modules/appium/node_modules/appium-xcuitest-driver/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
     "/usr/local/lib/node_modules/appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
   )
   local candidate
@@ -721,7 +724,25 @@ ensure_wda_ready() {
 
 run_monkey_test() {
   log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
-  ensure_wda_ready || true
+  if ! ensure_wda_ready; then
+    local message
+    message="WDA 准备失败：打包机 Jenkins 用户没有可用的 WebDriverAgent.xcodeproj，且未找到 appium/npm/npx 自动准备 WDA。请在 10.1.3.177 上执行：sh scripts/sonic/sonic.sh monkey-setup，或在 Jenkins 参数 WDA_PROJECT_PATH 填入 WebDriverAgent.xcodeproj 路径。"
+    python3 - "$MONKEY_REPORT_FILE" "$WDA_URL" "$MONKEY_EVENT_COUNT" "$message" <<'PY'
+import json
+import sys
+report_file, wda_url, event_count, message = sys.argv[1:5]
+with open(report_file, "w", encoding="utf-8") as f:
+    json.dump({
+        "status": "failed",
+        "message": message,
+        "wdaUrl": wda_url,
+        "requestedEvents": int(event_count or "30"),
+        "executedEvents": 0,
+        "events": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    return 1
+  fi
   python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" <<'PY'
 import json
 import random

@@ -26,6 +26,7 @@ Usage:
   sh scripts/sonic/sonic.sh stack     仅启动 Sonic Server/Web
   sh scripts/sonic/sonic.sh agent     仅启动 Sonic Agent
   sh scripts/sonic/sonic.sh ios-pair  配对 USB iPhone 并启动蒲公英包 com.nndev.im
+  sh scripts/sonic/sonic.sh monkey-setup 准备 Monkey 测试所需 Node/Appium/WDA
 
 Recommended:
   日常只用 start / check / stop。
@@ -112,6 +113,9 @@ case "$command_name" in
   ios-pair|pair-ios|pair)
     shift || true
     /bin/bash "$PROJECT_ROOT/scripts/sonic/pair-and-launch-ios.sh" "$@"
+    ;;
+  monkey-setup|setup-monkey)
+    /bin/bash "$PROJECT_ROOT/scripts/sonic/setup-monkey-runtime.sh"
     ;;
   help|-h|--help)
     usage
