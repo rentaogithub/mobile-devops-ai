@@ -107,6 +107,18 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>WDA_AUTO_START</name>
+          <defaultValue>1</defaultValue>
+          <description>Monkey 测试前自动启动 WebDriverAgent。1=启用，0=跳过。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>WDA_PROJECT_PATH</name>
+          <defaultValue></defaultValue>
+          <description>可选：WebDriverAgent.xcodeproj 路径。留空时自动查找 Sonic Agent / Appium 常见目录。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>MONKEY_EVENT_COUNT</name>
           <defaultValue>30</defaultValue>
           <trim>true</trim>

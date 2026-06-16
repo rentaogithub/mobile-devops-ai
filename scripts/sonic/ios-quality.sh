@@ -51,6 +51,10 @@ LAUNCH_DURATION_MS=""
 COLD_START_READY_MS=""
 COLD_START_WAIT_SECONDS="${COLD_START_WAIT_SECONDS:-5}"
 WDA_URL="${WDA_URL:-http://10.1.3.177:8100}"
+WDA_AUTO_START="${WDA_AUTO_START:-1}"
+WDA_BIND_HOST="${WDA_BIND_HOST:-0.0.0.0}"
+WDA_PROJECT_PATH="${WDA_PROJECT_PATH:-${WDA_PROJECT:-}}"
+WDA_SCHEME="${WDA_SCHEME:-WebDriverAgentRunner}"
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
 MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_SEED="${MONKEY_SEED:-}"
@@ -464,8 +468,181 @@ check_process_alive() {
   return 1
 }
 
+wda_url_part() {
+  local part="$1"
+  python3 - "$WDA_URL" "$part" <<'PY'
+import sys
+from urllib.parse import urlparse
+
+parsed = urlparse(sys.argv[1])
+part = sys.argv[2]
+if part == "host":
+    print(parsed.hostname or "127.0.0.1")
+elif part == "port":
+    if parsed.port:
+        print(parsed.port)
+    elif parsed.scheme == "https":
+        print(443)
+    else:
+        print(80)
+PY
+}
+
+check_wda_ready() {
+  python3 - "$WDA_URL" <<'PY'
+import json
+import sys
+import urllib.request
+
+url = sys.argv[1].rstrip("/")
+try:
+    with urllib.request.urlopen(f"{url}/status", timeout=3) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        if 200 <= resp.status < 500:
+            try:
+                json.loads(body or "{}")
+            except Exception:
+                pass
+            sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+}
+
+find_wda_project() {
+  if [ -n "${WDA_PROJECT_PATH}" ] && [ -d "${WDA_PROJECT_PATH}" ]; then
+    printf '%s\n' "${WDA_PROJECT_PATH}"
+    return
+  fi
+
+  local candidates=(
+    "${HOME}/工作/sonic-agent/WebDriverAgent/WebDriverAgent.xcodeproj"
+    "${HOME}/工作/sonic-agent/sonic-ios-webdriveragent/WebDriverAgent.xcodeproj"
+    "${HOME}/工作/sonic-agent/plugins/WebDriverAgent/WebDriverAgent.xcodeproj"
+    "${HOME}/工作/sonic-agent/plugins/sonic-ios-webdriveragent/WebDriverAgent.xcodeproj"
+    "${HOME}/sonic-agent/WebDriverAgent/WebDriverAgent.xcodeproj"
+    "${HOME}/.appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
+    "/opt/homebrew/lib/node_modules/appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
+    "/usr/local/lib/node_modules/appium/node_modules/appium-webdriveragent/WebDriverAgent.xcodeproj"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [ -d "${candidate}" ]; then
+      printf '%s\n' "${candidate}"
+      return
+    fi
+  done
+
+  local roots=(
+    "${HOME}/工作/sonic-agent"
+    "${HOME}/sonic-agent"
+    "${HOME}/.appium"
+    "/opt/homebrew/lib/node_modules/appium"
+    "/usr/local/lib/node_modules/appium"
+  )
+  local root found
+  for root in "${roots[@]}"; do
+    if [ ! -d "${root}" ]; then
+      continue
+    fi
+    found="$(find "${root}" -type d -name WebDriverAgent.xcodeproj -print -quit 2>/dev/null || true)"
+    if [ -n "${found}" ]; then
+      printf '%s\n' "${found}"
+      return
+    fi
+  done
+}
+
+ensure_wda_ready() {
+  if check_wda_ready; then
+    log "WDA 已可访问: ${WDA_URL}"
+    return 0
+  fi
+
+  log "WDA 当前不可访问: ${WDA_URL}"
+  if [ "${WDA_AUTO_START}" != "1" ]; then
+    log "WDA_AUTO_START=${WDA_AUTO_START}，跳过自动启动 WDA。"
+    return 1
+  fi
+
+  local wda_project
+  wda_project="$(find_wda_project)"
+  if [ -z "${wda_project}" ]; then
+    log "未找到 WebDriverAgent.xcodeproj，无法自动启动 WDA。"
+    log "可通过 Jenkins 参数 WDA_PROJECT_PATH 指定 WebDriverAgent.xcodeproj，例如 Sonic Agent 或 Appium 自带的 WDA 工程。"
+    return 1
+  fi
+
+  if ! command -v xcodebuild >/dev/null 2>&1; then
+    log "未找到 xcodebuild，无法自动启动 WDA。"
+    return 1
+  fi
+
+  local wda_host wda_port wda_log iproxy_log iproxy_pid_file wda_pid_file
+  wda_host="$(wda_url_part host)"
+  wda_port="$(wda_url_part port)"
+  wda_log="${RESULT_DIR}/wda-xcodebuild.log"
+  iproxy_log="${RESULT_DIR}/wda-iproxy.log"
+  iproxy_pid_file="${RESULT_DIR}/wda-iproxy.pid"
+  wda_pid_file="${RESULT_DIR}/wda-xcodebuild.pid"
+
+  log "准备启动 WDA: project=${wda_project}, scheme=${WDA_SCHEME}, device=${SELECTED_DEVICE}, url=${WDA_URL}"
+
+  if command -v iproxy >/dev/null 2>&1; then
+    if ! pgrep -f "iproxy.*${wda_port}.*8100" >/dev/null 2>&1; then
+      log "启动 iproxy: ${WDA_BIND_HOST}:${wda_port} -> device:8100"
+      (
+        iproxy -u "${SELECTED_DEVICE}" -l "${WDA_BIND_HOST}" "${wda_port}" 8100 >>"${iproxy_log}" 2>&1
+      ) &
+      echo $! > "${iproxy_pid_file}"
+      sleep 1
+      if ! kill -0 "$(cat "${iproxy_pid_file}")" >/dev/null 2>&1; then
+        log "iproxy 不支持 -l ${WDA_BIND_HOST} 或启动失败，尝试默认监听方式。"
+        (
+          iproxy -u "${SELECTED_DEVICE}" "${wda_port}" 8100 >>"${iproxy_log}" 2>&1
+        ) &
+        echo $! > "${iproxy_pid_file}"
+      fi
+    else
+      log "检测到已有 iproxy 监听 ${wda_port}，复用。"
+    fi
+  else
+    log "未找到 iproxy，将依赖 WDA_URL 本身可访问。建议安装 libimobiledevice：brew install libimobiledevice。"
+  fi
+
+  if ! pgrep -f "xcodebuild.*${WDA_SCHEME}.*${SELECTED_DEVICE}" >/dev/null 2>&1; then
+    log "启动 WebDriverAgentRunner..."
+    (
+      xcodebuild \
+        -project "${wda_project}" \
+        -scheme "${WDA_SCHEME}" \
+        -destination "id=${SELECTED_DEVICE}" \
+        test >>"${wda_log}" 2>&1
+    ) &
+    echo $! > "${wda_pid_file}"
+  else
+    log "检测到已有 WebDriverAgentRunner xcodebuild 进程，复用。"
+  fi
+
+  local attempt
+  for attempt in {1..60}; do
+    if check_wda_ready; then
+      log "WDA 启动成功: ${WDA_URL}"
+      return 0
+    fi
+    sleep 2
+  done
+
+  log "WDA 自动启动后仍不可访问: ${WDA_URL}"
+  log "WDA xcodebuild 日志: ${wda_log}"
+  log "WDA iproxy 日志: ${iproxy_log}"
+  return 1
+}
+
 run_monkey_test() {
   log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
+  ensure_wda_ready || true
   python3 - "$WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" <<'PY'
 import json
 import random
