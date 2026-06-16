@@ -1190,12 +1190,81 @@ export interface JenkinsQualityBuild {
     monkeyExecutedEvents?: number;
     monkeyEventCount?: number;
     wdaUrl?: string;
+    progress?: {
+      status?: string;
+      phase?: string;
+      message?: string;
+      updatedAt?: number;
+      elapsedSeconds?: number;
+      remainingSeconds?: number | null;
+      executedEvents?: number;
+      requestedEvents?: number;
+      requestedDurationSeconds?: number;
+      progressPercent?: number;
+      lastAction?: Record<string, unknown> | null;
+      recentPerformance?: {
+        sampleCount?: number;
+        cpu?: number | null;
+        memoryMB?: number | null;
+        fps?: number | null;
+      };
+    };
+    exceptionAnalysis?: {
+      severity?: 'passed' | 'warning' | 'failed' | string;
+      crashCount?: number;
+      exceptionCount?: number;
+      watchdogCount?: number;
+      memoryIssueCount?: number;
+      errorCount?: number;
+      samples?: Array<{
+        type?: string;
+        message?: string;
+      }>;
+      crashReports?: {
+        count?: number;
+        files?: string[];
+        samples?: Array<{
+          file?: string;
+          process?: string;
+          exception?: string;
+          reason?: string;
+          crashedThread?: string;
+        }>;
+      };
+    };
+    performanceAnalysis?: {
+      launchDurationMs?: number;
+      coldStartReadyMs?: number;
+      coldStartGrade?: 'good' | 'warning' | 'slow' | 'unknown' | string;
+      monkeyDurationMs?: number;
+      monkeyExecutedEvents?: number;
+      monkeyEventsPerMinute?: number;
+      monkeyStatus?: string;
+      samples?: {
+        sampleCount?: number;
+        cpu?: { avg?: number | null; max?: number | null; min?: number | null };
+        memoryMB?: { avg?: number | null; max?: number | null; min?: number | null };
+        fps?: { avg?: number | null; max?: number | null; min?: number | null };
+      };
+      thresholds?: Record<string, number>;
+      conclusion?: {
+        severity?: 'passed' | 'warning' | 'failed' | string;
+        issues?: Array<{
+          severity?: string;
+          metric?: string;
+          message?: string;
+        }>;
+      };
+    };
     artifacts?: {
       summaryUrl?: string;
       screenshotUrl?: string;
       deviceLogUrl?: string;
       processesUrl?: string;
       monkeyReportUrl?: string;
+      performanceSamplesUrl?: string;
+      performanceTraceUrl?: string;
+      crashReportsUrl?: string;
       junitUrl?: string;
       qualityLogUrl?: string;
     };
@@ -1217,6 +1286,14 @@ export interface JenkinsQualityListResult {
     successRate: string;
   };
   builds: JenkinsQualityBuild[];
+}
+
+export interface JenkinsQualityArtifactPreview {
+  url: string;
+  content: string;
+  contentType?: string;
+  format?: 'text' | 'json' | 'xml' | string;
+  truncated?: boolean;
 }
 
 export interface SonicQualityStatus {
@@ -1281,6 +1358,14 @@ export const jenkinsApi = {
 
   stopQualityBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
     const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/quality/builds/${buildNumber}/stop`);
+    return response.data;
+  },
+
+  previewQualityArtifact: async (url: string): Promise<ApiResponse<JenkinsQualityArtifactPreview>> => {
+    const response = await api.get<ApiResponse<JenkinsQualityArtifactPreview>>('/jenkins/nn/quality/artifact-preview', {
+      params: { url },
+      timeout: 30000,
+    });
     return response.data;
   },
 

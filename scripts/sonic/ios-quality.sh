@@ -34,14 +34,20 @@ DETECTED_SHORT_VERSION=""
 DETECTED_BUNDLE_VERSION=""
 IPA_SHA256=""
 IPA_MD5=""
+DEVICE_IOS_VERSION=""
 
 export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 WORKSPACE_DIR="${WORKSPACE:-$(pwd)}"
-RESULT_DIR="${WORKSPACE_DIR}/quality-results/${SOURCE_BUILD_NUMBER:-unknown}-${REQUESTED_TEST_SUITE}"
+RESULT_NAME="${SOURCE_BUILD_NUMBER:-unknown}-${REQUESTED_TEST_SUITE}"
+if [ -n "${BUILD_NUMBER:-}" ]; then
+  RESULT_NAME="qa-${BUILD_NUMBER}-${RESULT_NAME}"
+fi
+RESULT_DIR="${WORKSPACE_DIR}/quality-results/${RESULT_NAME}"
 REPORT_FILE="${RESULT_DIR}/junit.xml"
 META_FILE="${RESULT_DIR}/metadata.json"
 SUMMARY_FILE="${RESULT_DIR}/summary.json"
+PROGRESS_FILE="${RESULT_DIR}/quality-progress.json"
 LOG_FILE="${RESULT_DIR}/quality.log"
 IPA_FILE="${RESULT_DIR}/app.ipa"
 INSTALL_CACHE_DIR="${WORKSPACE_DIR}/quality-cache/install"
@@ -49,6 +55,9 @@ SCREENSHOT_FILE="${RESULT_DIR}/screenshot.png"
 DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
 PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
+PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
+PERFORMANCE_TRACE_FILE="${RESULT_DIR}/performance.trace"
+CRASH_REPORT_DIR="${RESULT_DIR}/crash-reports"
 LAUNCH_METHOD=""
 LAUNCH_STARTED_AT_MS=""
 LAUNCH_FINISHED_AT_MS=""
@@ -80,11 +89,13 @@ MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_MAX_REPORTED_EVENTS="${MONKEY_MAX_REPORTED_EVENTS:-1000}"
 MONKEY_BACK_INTERVAL_EVENTS="${MONKEY_BACK_INTERVAL_EVENTS:-25}"
 MONKEY_STUCK_EVENTS="${MONKEY_STUCK_EVENTS:-18}"
-MONKEY_STUCK_CHECK_INTERVAL_EVENTS="${MONKEY_STUCK_CHECK_INTERVAL_EVENTS:-5}"
+MONKEY_STUCK_CHECK_INTERVAL_EVENTS="${MONKEY_STUCK_CHECK_INTERVAL_EVENTS:-10}"
 MONKEY_BACK_ACTION_PROBABILITY="${MONKEY_BACK_ACTION_PROBABILITY:-0.12}"
 MONKEY_BACK_TAP_PROBABILITY="${MONKEY_BACK_TAP_PROBABILITY:-0.35}"
 MONKEY_AVOID_TOP_BAR="${MONKEY_AVOID_TOP_BAR:-1}"
 MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-60}"
+MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-5}"
+MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-3}"
 MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn}"
 MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow}"
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
@@ -93,13 +104,23 @@ MONKEY_SEED="${MONKEY_SEED:-}"
 MONKEY_STATUS="skipped"
 MONKEY_MESSAGE=""
 MONKEY_EXECUTED_EVENTS="0"
+PERFORMANCE_SAMPLING="${PERFORMANCE_SAMPLING:-1}"
+PERFORMANCE_SAMPLER="${PERFORMANCE_SAMPLER:-auto}"
+PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory,fps}"
+PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_XCTRACE_TEMPLATE:-Activity Monitor}"
+PERF_COLD_START_WARN_MS="${PERF_COLD_START_WARN_MS:-8000}"
+PERF_COLD_START_SLOW_MS="${PERF_COLD_START_SLOW_MS:-15000}"
+PERF_CPU_AVG_WARN="${PERF_CPU_AVG_WARN:-80}"
+PERF_MEMORY_PEAK_WARN_MB="${PERF_MEMORY_PEAK_WARN_MB:-1500}"
+PERF_FPS_AVG_WARN="${PERF_FPS_AVG_WARN:-45}"
+PERF_FPS_MIN_WARN="${PERF_FPS_MIN_WARN:-20}"
 
 mkdir -p "${RESULT_DIR}"
-rm -f "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid"
+rm -f "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid"
 
 cleanup_started_processes() {
   local pid_file pid
-  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid"; do
+  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid"; do
     if [ ! -f "${pid_file}" ]; then
       continue
     fi
@@ -120,6 +141,87 @@ log() {
 
 log_return_func() {
   echo "$@" | tee -a "${LOG_FILE}" >&2
+}
+
+write_quality_progress() {
+  local status="$1"
+  local phase="${2:-}"
+  local message="${3:-}"
+  local percent="${4:-0}"
+  local executed="${5:-${MONKEY_EXECUTED_EVENTS:-0}}"
+  local elapsed="${6:-0}"
+  local remaining="${7:-}"
+  python3 - "$PROGRESS_FILE" "$status" "$phase" "$message" "$percent" "$executed" "$elapsed" "$remaining" \
+    "${MONKEY_EVENT_COUNT:-30}" "${MONKEY_DURATION_SECONDS:-0}" <<'PY' || true
+import json
+import os
+import sys
+import time
+
+(
+    progress_file,
+    status,
+    phase,
+    message,
+    percent,
+    executed,
+    elapsed,
+    remaining,
+    requested_events,
+    requested_duration,
+) = sys.argv[1:11]
+
+def to_int(value, default=0):
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+def to_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+def optional_int(value):
+    if value == "":
+        return None
+    return to_int(value, 0)
+
+data = {}
+if os.path.exists(progress_file):
+    try:
+        with open(progress_file, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+next_percent = round(max(0.0, min(100.0, to_float(percent, 0.0))), 2)
+current_percent = to_float(data.get("progressPercent"), 0.0)
+if status == "running":
+    next_percent = max(current_percent, next_percent)
+
+data.update({
+    "status": status,
+    "phase": phase,
+    "message": message,
+    "updatedAt": int(time.time() * 1000),
+    "elapsedSeconds": to_int(elapsed, to_int(data.get("elapsedSeconds"), 0)),
+    "remainingSeconds": optional_int(remaining),
+    "executedEvents": to_int(executed, to_int(data.get("executedEvents"), 0)),
+    "requestedEvents": to_int(requested_events, 30),
+    "requestedDurationSeconds": to_int(requested_duration, 0),
+    "progressPercent": next_percent,
+    "lastAction": data.get("lastAction"),
+    "recentPerformance": data.get("recentPerformance") or {"sampleCount": 0, "cpu": None, "memoryMB": None, "fps": None},
+})
+
+tmp_path = f"{progress_file}.tmp"
+os.makedirs(os.path.dirname(progress_file), exist_ok=True)
+with open(tmp_path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+os.replace(tmp_path, progress_file)
+PY
 }
 
 xml_escape() {
@@ -214,6 +316,10 @@ XML
 fail() {
   local message="$1"
   log "ERROR: ${message}"
+  if type stop_performance_sampling >/dev/null 2>&1; then
+    stop_performance_sampling || true
+  fi
+  write_quality_progress "failed" "failed" "${message}" 100 "${MONKEY_EXECUTED_EVENTS:-0}" 0 0
   write_summary "failed" "${message}" || true
   write_report 1 "${message}"
   exit 1
@@ -263,10 +369,12 @@ install_with_devicectl() {
 
 install_ipa() {
   if should_skip_install; then
+    write_quality_progress "running" "install" "检测到相同 IPA 指纹，跳过重复安装" 12
     return 0
   fi
 
   log "安装 IPA..."
+  write_quality_progress "running" "install" "安装 IPA..." 10
   local install_status=0
   run_with_timeout "${INSTALL_TIMEOUT_SECONDS}" "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" install "${IPA_FILE}" 2>&1 | tee -a "${LOG_FILE}" || install_status=${PIPESTATUS[0]}
   if [ "${install_status}" = "0" ]; then
@@ -293,10 +401,12 @@ write_summary() {
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
     "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL_DISPLAY:-${DEVICE_POOL_LABEL:-}}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
-    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
-    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" <<'PY'
+	    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
+	    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
+	    "${PERF_COLD_START_WARN_MS:-8000}" "${PERF_COLD_START_SLOW_MS:-15000}" "${PERF_CPU_AVG_WARN:-80}" "${PERF_MEMORY_PEAK_WARN_MB:-1500}" "${PERF_FPS_AVG_WARN:-45}" "${PERF_FPS_MIN_WARN:-20}" <<'PY'
 import json
 import os
+import re
 import sys
 
 summary_path = sys.argv[1]
@@ -327,7 +437,16 @@ summary_path = sys.argv[1]
     device_log_file,
     process_file,
     monkey_report_file,
-) = sys.argv[2:28]
+    performance_sample_file,
+    performance_trace_file,
+    crash_report_dir,
+    cold_start_warn_ms,
+    cold_start_slow_ms,
+    cpu_avg_warn,
+    memory_peak_warn_mb,
+    fps_avg_warn,
+    fps_min_warn,
+) = sys.argv[2:37]
 
 def to_int(value):
     try:
@@ -342,6 +461,240 @@ def rel(path):
         return os.path.relpath(path, result_dir)
     except Exception:
         return path
+
+def read_text(path, limit_bytes=2 * 1024 * 1024):
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > limit_bytes:
+                f.seek(max(0, size - limit_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+def analyze_exceptions(device_log_path, quality_log_path, bundle_id):
+    patterns = [
+        ("crash", re.compile(r"\b(crash|crashed|fatal signal|segmentation fault|SIGABRT|SIGSEGV)\b", re.I)),
+        ("exception", re.compile(r"\b(NSException|uncaught exception|terminating app|Fatal error|Assertion failed)\b", re.I)),
+        ("watchdog", re.compile(r"\b(watchdog|0x8badf00d|main thread.*hang|hang detected)\b", re.I)),
+        ("memory", re.compile(r"\b(jetsam|out of memory|memory pressure|EXC_RESOURCE|OOM)\b", re.I)),
+        ("error", re.compile(r"\b(error|ERROR|failed|Failed)\b")),
+    ]
+    text = "\n".join([read_text(device_log_path), read_text(quality_log_path)])
+    bundle_id = bundle_id or ""
+    counts = {name: 0 for name, _pattern in patterns}
+    samples = []
+    seen = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if bundle_id and bundle_id not in line and not any(token in line for token in ("NNIM", "SpringBoard", "ReportCrash", "JetsamEvent")):
+            continue
+        matched = []
+        for name, pattern in patterns:
+            if pattern.search(line):
+                counts[name] += 1
+                matched.append(name)
+        if matched:
+            compact = re.sub(r"\s+", " ", line)[:500]
+            if compact not in seen and len(samples) < 8:
+                samples.append({"type": matched[0], "message": compact})
+                seen.add(compact)
+    severity = "passed"
+    if counts["crash"] or counts["exception"] or counts["watchdog"] or counts["memory"]:
+        severity = "failed"
+    elif counts["error"]:
+        severity = "warning"
+    return {
+        "severity": severity,
+        "crashCount": counts["crash"],
+        "exceptionCount": counts["exception"],
+        "watchdogCount": counts["watchdog"],
+        "memoryIssueCount": counts["memory"],
+        "errorCount": counts["error"],
+        "samples": samples,
+    }
+
+def analyze_crash_reports(crash_dir, bundle_id):
+    files = []
+    samples = []
+    if not crash_dir or not os.path.isdir(crash_dir):
+        return {
+            "count": 0,
+            "files": files,
+            "samples": samples,
+        }
+
+    bundle_id = bundle_id or ""
+    for root, _dirs, names in os.walk(crash_dir):
+        for name in names:
+            if not re.search(r"\.(ips|crash|log)$", name, re.I):
+                continue
+            full_path = os.path.join(root, name)
+            text = read_text(full_path, limit_bytes=512 * 1024)
+            if bundle_id and bundle_id not in text and bundle_id not in name:
+                continue
+            rel_path = rel(full_path)
+            files.append(rel_path)
+            if len(samples) >= 5:
+                continue
+            proc = re.search(r"^(?:Process|procName):\s*(.+)$", text, re.M)
+            exception = re.search(r"^(?:Exception Type|exception):\s*(.+)$", text, re.M)
+            reason = re.search(r"^(?:Exception Reason|Termination Reason|reason):\s*(.+)$", text, re.M)
+            crashed_thread = re.search(r"^(?:Crashed Thread|crashedThread):\s*(.+)$", text, re.M)
+            samples.append({
+                "file": rel_path,
+                "process": proc.group(1).strip()[:160] if proc else "",
+                "exception": exception.group(1).strip()[:160] if exception else "",
+                "reason": reason.group(1).strip()[:240] if reason else "",
+                "crashedThread": crashed_thread.group(1).strip()[:80] if crashed_thread else "",
+            })
+    files.sort()
+    return {
+        "count": len(files),
+        "files": files[:20],
+        "samples": samples,
+    }
+
+def to_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+def analyze_performance(launch_ms, cold_ms, monkey_report_path, thresholds):
+    def grade_start(value):
+        if value is None:
+            return "unknown"
+        if value <= thresholds["coldStartWarnMs"]:
+            return "good"
+        if value <= thresholds["coldStartSlowMs"]:
+            return "warning"
+        return "slow"
+
+    monkey_duration_ms = None
+    monkey_events = None
+    monkey_events_per_minute = None
+    monkey_status = ""
+    if monkey_report_path and os.path.exists(monkey_report_path):
+        try:
+            report = json.load(open(monkey_report_path, encoding="utf-8"))
+            monkey_duration_ms = report.get("durationMs")
+            monkey_events = report.get("executedEvents")
+            monkey_status = str(report.get("status") or "")
+            if monkey_duration_ms and monkey_events is not None:
+                minutes = max(float(monkey_duration_ms) / 60000.0, 0.001)
+                monkey_events_per_minute = round(float(monkey_events) / minutes, 2)
+        except Exception:
+            pass
+
+    return {
+        "launchDurationMs": launch_ms,
+        "coldStartReadyMs": cold_ms,
+        "coldStartGrade": grade_start(cold_ms),
+        "monkeyDurationMs": monkey_duration_ms,
+        "monkeyExecutedEvents": monkey_events,
+        "monkeyEventsPerMinute": monkey_events_per_minute,
+        "monkeyStatus": monkey_status,
+    }
+
+def build_performance_conclusions(performance, samples, thresholds):
+    issues = []
+    cold_ms = performance.get("coldStartReadyMs")
+    if cold_ms is not None:
+        if cold_ms > thresholds["coldStartSlowMs"]:
+            issues.append({"severity": "failed", "metric": "coldStartReadyMs", "message": f"首屏耗时 {cold_ms}ms，超过慢启动阈值 {thresholds['coldStartSlowMs']}ms"})
+        elif cold_ms > thresholds["coldStartWarnMs"]:
+            issues.append({"severity": "warning", "metric": "coldStartReadyMs", "message": f"首屏耗时 {cold_ms}ms，超过预警阈值 {thresholds['coldStartWarnMs']}ms"})
+
+    cpu_avg = ((samples or {}).get("cpu") or {}).get("avg")
+    if cpu_avg is not None and cpu_avg > thresholds["cpuAvgWarn"]:
+        issues.append({"severity": "warning", "metric": "cpu.avg", "message": f"CPU 平均 {cpu_avg}%，超过阈值 {thresholds['cpuAvgWarn']}%"})
+
+    mem_max = ((samples or {}).get("memoryMB") or {}).get("max")
+    if mem_max is not None and mem_max > thresholds["memoryPeakWarnMB"]:
+        issues.append({"severity": "warning", "metric": "memory.max", "message": f"内存峰值 {mem_max}MB，超过阈值 {thresholds['memoryPeakWarnMB']}MB"})
+
+    fps_avg = ((samples or {}).get("fps") or {}).get("avg")
+    if fps_avg is not None and fps_avg < thresholds["fpsAvgWarn"]:
+        issues.append({"severity": "warning", "metric": "fps.avg", "message": f"FPS 平均 {fps_avg}，低于阈值 {thresholds['fpsAvgWarn']}"})
+
+    fps_min = ((samples or {}).get("fps") or {}).get("min")
+    if fps_min is not None and fps_min < thresholds["fpsMinWarn"]:
+        issues.append({"severity": "warning", "metric": "fps.min", "message": f"FPS 最低 {fps_min}，低于阈值 {thresholds['fpsMinWarn']}"})
+
+    severity = "passed"
+    if any(item["severity"] == "failed" for item in issues):
+        severity = "failed"
+    elif issues:
+        severity = "warning"
+    return {
+        "severity": severity,
+        "issues": issues,
+    }
+
+def collect_numbers(value, path=""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from collect_numbers(child, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from collect_numbers(child, f"{path}.{index}" if path else str(index))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield path.lower(), float(value)
+
+def summarize_series(values):
+    if not values:
+        return {"avg": None, "max": None, "min": None}
+    return {
+        "avg": round(sum(values) / len(values), 2),
+        "max": round(max(values), 2),
+        "min": round(min(values), 2),
+    }
+
+def analyze_performance_samples(path):
+    cpu_values = []
+    memory_values = []
+    fps_values = []
+    sample_count = 0
+    if not path or not os.path.exists(path):
+        return {
+            "sampleCount": 0,
+            "cpu": summarize_series(cpu_values),
+            "memoryMB": summarize_series(memory_values),
+            "fps": summarize_series(fps_values),
+        }
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                sample_count += 1
+                for key_path, number in collect_numbers(item):
+                    if "cpu" in key_path and 0 <= number <= 1000:
+                        cpu_values.append(number)
+                    elif "fps" in key_path and 0 <= number <= 240:
+                        fps_values.append(number)
+                    elif any(token in key_path for token in ("memory", "mem", "resident", "rss")) and number > 0:
+                        memory_values.append(number / 1024 / 1024 if number > 1024 * 1024 else number)
+    except Exception:
+        pass
+    return {
+        "sampleCount": sample_count,
+        "cpu": summarize_series(cpu_values),
+        "memoryMB": summarize_series(memory_values),
+        "fps": summarize_series(fps_values),
+    }
 
 data = {
     "status": status,
@@ -368,12 +721,41 @@ data = {
     "artifacts": {
         "screenshot": rel(screenshot_file) if os.path.exists(screenshot_file) else "",
         "deviceLog": rel(device_log_file) if os.path.exists(device_log_file) else "",
-        "processes": rel(process_file) if os.path.exists(process_file) else "",
+	        "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
-        "junit": "junit.xml",
+        "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
+        "performanceTrace": rel(performance_trace_file) if os.path.exists(performance_trace_file) else "",
+        "crashReports": rel(crash_report_dir) if os.path.isdir(crash_report_dir) else "",
+	        "junit": "junit.xml",
         "qualityLog": "quality.log",
     },
 }
+thresholds = {
+    "coldStartWarnMs": to_float(cold_start_warn_ms, 8000),
+    "coldStartSlowMs": to_float(cold_start_slow_ms, 15000),
+    "cpuAvgWarn": to_float(cpu_avg_warn, 80),
+    "memoryPeakWarnMB": to_float(memory_peak_warn_mb, 1500),
+    "fpsAvgWarn": to_float(fps_avg_warn, 45),
+    "fpsMinWarn": to_float(fps_min_warn, 20),
+}
+data["exceptionAnalysis"] = analyze_exceptions(device_log_file, os.path.join(result_dir, "quality.log"), launch_bundle_id or detected_bundle_id)
+data["exceptionAnalysis"]["crashReports"] = analyze_crash_reports(crash_report_dir, launch_bundle_id or detected_bundle_id)
+if data["exceptionAnalysis"]["crashReports"].get("count", 0) > 0:
+    data["exceptionAnalysis"]["severity"] = "failed"
+    data["exceptionAnalysis"]["crashCount"] = max(data["exceptionAnalysis"].get("crashCount") or 0, data["exceptionAnalysis"]["crashReports"]["count"])
+data["performanceAnalysis"] = analyze_performance(
+    data.get("launchDurationMs"),
+    data.get("coldStartReadyMs"),
+    monkey_report_file,
+    thresholds,
+)
+data["performanceAnalysis"]["samples"] = analyze_performance_samples(performance_sample_file)
+data["performanceAnalysis"]["thresholds"] = thresholds
+data["performanceAnalysis"]["conclusion"] = build_performance_conclusions(
+    data["performanceAnalysis"],
+    data["performanceAnalysis"].get("samples"),
+    thresholds,
+)
 with open(summary_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PY
@@ -417,6 +799,30 @@ select_device() {
     NR == 1 && ($1 == "UDID" || $1 == "SerialNumber") { next }
     $1 ~ /^[0-9A-Fa-f-]{25,}$/ { print $1; exit }
   '
+}
+
+detect_device_ios_version() {
+  local tidevice_cmd="$1"
+  local udid="$2"
+  if [ -z "${udid}" ]; then
+    return 1
+  fi
+  "${tidevice_cmd}" list 2>/dev/null | awk -v udid="${udid}" '
+    NR == 1 && ($1 == "UDID" || $1 == "SerialNumber") { next }
+    $1 == udid && NF >= 2 { print $(NF - 1); exit }
+  '
+}
+
+ios_major_version() {
+  local version="$1"
+  case "${version}" in
+    [0-9]*)
+      printf '%s\n' "${version%%.*}"
+      ;;
+    *)
+      printf '0\n'
+      ;;
+  esac
 }
 
 download_ipa() {
@@ -1071,6 +1477,206 @@ capture_device_log() {
   return 1
 }
 
+start_performance_sampling() {
+  if [ "${PERFORMANCE_SAMPLING}" != "1" ]; then
+    log "性能采样已关闭。"
+    return 0
+  fi
+  if [ -z "${LAUNCH_BUNDLE_ID:-}" ]; then
+    log "未确定 Bundle ID，跳过性能采样。"
+    return 0
+  fi
+  local sampler ios_major
+  sampler="${PERFORMANCE_SAMPLER}"
+  ios_major="$(ios_major_version "${DEVICE_IOS_VERSION}")"
+  if [ "${sampler}" = "auto" ]; then
+    if [ "${ios_major}" -ge 17 ] 2>/dev/null; then
+      sampler="xctrace"
+    else
+      sampler="tidevice"
+    fi
+  fi
+  log "性能采样器: ${sampler} (配置=${PERFORMANCE_SAMPLER}, iOS=${DEVICE_IOS_VERSION:-unknown})"
+
+  case "${sampler}" in
+    xctrace)
+      if start_xctrace_sampling; then
+        return 0
+      fi
+      log "xctrace 性能采样启动失败，尝试 tidevice perf 兜底。"
+      start_tidevice_performance_sampling || true
+      return 0
+      ;;
+    tidevice)
+      if start_tidevice_performance_sampling; then
+        return 0
+      fi
+      log "tidevice perf 性能采样启动失败，尝试 xctrace 兜底。"
+      start_xctrace_sampling || true
+      return 0
+      ;;
+    *)
+      log "未知 PERFORMANCE_SAMPLER=${PERFORMANCE_SAMPLER}，按 auto 策略使用 xctrace。"
+      start_xctrace_sampling || true
+      return 0
+      ;;
+  esac
+}
+
+start_tidevice_performance_sampling() {
+  if [ -z "${TIDEVICE_CMD:-}" ] || [ ! -x "${TIDEVICE_CMD}" ]; then
+    log "未找到 tidevice，无法使用 tidevice perf。"
+    return 1
+  fi
+
+  local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
+  : > "${PERFORMANCE_SAMPLE_FILE}"
+  log "启动性能采样: ${PERFORMANCE_SAMPLE_TYPES} -> ${PERFORMANCE_SAMPLE_FILE}"
+  (
+    "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" perf -B "${LAUNCH_BUNDLE_ID}" -o "${PERFORMANCE_SAMPLE_TYPES}" --json >>"${PERFORMANCE_SAMPLE_FILE}" 2>>"${LOG_FILE}"
+  ) &
+  echo $! > "${perf_pid_file}"
+  sleep 1
+  if ! kill -0 "$(cat "${perf_pid_file}")" >/dev/null 2>&1; then
+    log "tidevice 性能采样启动失败。"
+    rm -f "${perf_pid_file}"
+    return 1
+  fi
+  return 0
+}
+
+resolve_app_pid_with_devicectl() {
+  if ! command -v xcrun >/dev/null 2>&1; then
+    return 1
+  fi
+  local processes_json
+  processes_json="${RESULT_DIR}/devicectl-processes.json"
+  if ! xcrun devicectl device info processes --device "${SELECTED_DEVICE}" --json-output "${processes_json}" --quiet >>"${LOG_FILE}" 2>&1; then
+    return 1
+  fi
+  python3 - "$processes_json" "${DETECTED_EXECUTABLE_NAME:-}" "${LAUNCH_BUNDLE_ID:-}" <<'PY'
+import json
+import sys
+
+path, executable_name, bundle_id = sys.argv[1:4]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    data = {}
+items = data.get("result", {}).get("runningProcesses", [])
+matches = []
+for item in items:
+    exe = str(item.get("executable") or "")
+    pid = item.get("processIdentifier")
+    if not pid:
+        continue
+    if executable_name and f"/{executable_name}.app/{executable_name}" in exe:
+        matches.append((pid, exe))
+    elif executable_name and exe.endswith(f"/{executable_name}"):
+        matches.append((pid, exe))
+    elif bundle_id and bundle_id in exe:
+        matches.append((pid, exe))
+if matches:
+    print(matches[-1][0])
+PY
+}
+
+start_xctrace_sampling() {
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find xctrace >/dev/null 2>&1; then
+    log "未找到 xctrace，跳过 xctrace 性能采样。"
+    return 1
+  fi
+  local app_pid xctrace_pid_file xctrace_log
+  app_pid="$(resolve_app_pid_with_devicectl || true)"
+  if [ -z "${app_pid}" ]; then
+    log "未能通过 devicectl 获取 App PID，跳过 xctrace 性能采样。"
+    return 1
+  fi
+  xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
+  xctrace_log="${RESULT_DIR}/performance-xctrace.log"
+  rm -rf "${PERFORMANCE_TRACE_FILE}"
+  : > "${xctrace_log}"
+  log "启动 xctrace 性能采样: template=${PERFORMANCE_XCTRACE_TEMPLATE}, pid=${app_pid} -> ${PERFORMANCE_TRACE_FILE}"
+  if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
+    (
+      xcrun xctrace record --template "${PERFORMANCE_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --time-limit "${MONKEY_DURATION_SECONDS}s" --output "${PERFORMANCE_TRACE_FILE}" --no-prompt >>"${xctrace_log}" 2>&1
+    ) &
+  else
+    (
+      xcrun xctrace record --template "${PERFORMANCE_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --output "${PERFORMANCE_TRACE_FILE}" --no-prompt >>"${xctrace_log}" 2>&1
+    ) &
+  fi
+  echo $! > "${xctrace_pid_file}"
+  sleep 2
+  if ! kill -0 "$(cat "${xctrace_pid_file}")" >/dev/null 2>&1 && [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    log "xctrace 性能采样启动失败，详情见 ${xctrace_log}。"
+    rm -f "${xctrace_pid_file}"
+    return 1
+  fi
+  return 0
+}
+
+stop_performance_sampling() {
+  local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
+  if [ ! -f "${perf_pid_file}" ]; then
+    stop_xctrace_sampling || true
+    return 0
+  fi
+  local pid
+  pid="$(cat "${perf_pid_file}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${perf_pid_file}"
+  if [ -s "${PERFORMANCE_SAMPLE_FILE}" ]; then
+    log "性能采样: ${PERFORMANCE_SAMPLE_FILE}"
+  else
+    log "性能采样为空，可能设备不支持 tidevice perf 或采样时间过短。"
+  fi
+  stop_xctrace_sampling || true
+}
+
+stop_xctrace_sampling() {
+  local xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
+  if [ ! -f "${xctrace_pid_file}" ]; then
+    return 0
+  fi
+  local pid
+  pid="$(cat "${xctrace_pid_file}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill -INT "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${xctrace_pid_file}"
+  if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    log "xctrace 性能采样: ${PERFORMANCE_TRACE_FILE}"
+  else
+    log "xctrace 性能采样未生成 trace。"
+  fi
+}
+
+collect_crash_reports() {
+  mkdir -p "${CRASH_REPORT_DIR}"
+  log "采集崩溃报告..."
+  local crash_log="${RESULT_DIR}/crashreport-collect.log"
+  : > "${crash_log}"
+  local status=1
+  if "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" crashreport -o "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
+    status=0
+  elif "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" crashreport "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
+    status=0
+  fi
+  if [ "${status}" != "0" ]; then
+    log "崩溃报告采集失败或当前 tidevice 不支持 crashreport，已记录到 ${crash_log}。"
+    return 1
+  fi
+  local count
+  count="$(find "${CRASH_REPORT_DIR}" -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.log' \) 2>/dev/null | wc -l | tr -d ' ')"
+  log "崩溃报告: ${CRASH_REPORT_DIR} (${count:-0} 个文件)"
+  return 0
+}
+
 check_process_alive() {
   local bundle_id="$1"
   local executable_name="${2:-}"
@@ -1330,10 +1936,12 @@ ensure_wda_ready() {
   if check_wda_ready "${WDA_URL}"; then
     MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
     log "WDA 已可访问: ${MONKEY_RUNTIME_WDA_URL}"
+    write_quality_progress "running" "wda" "WDA 已可访问" 1.4
     return 0
   fi
 
   log "WDA 当前不可访问: ${WDA_URL}"
+  write_quality_progress "running" "wda" "WDA 当前不可访问，准备自动启动" 1.1
   if [ "${WDA_AUTO_START}" != "1" ]; then
     log "WDA_AUTO_START=${WDA_AUTO_START}，跳过自动启动 WDA。"
     WDA_READY_ERROR="WDA 不可访问且已关闭自动启动：${WDA_URL}"
@@ -1369,6 +1977,7 @@ ensure_wda_ready() {
   : > "${iproxy_log}"
 
   log "准备启动 WDA: project=${wda_project}, scheme=${WDA_SCHEME}, device=${SELECTED_DEVICE}, url=${WDA_URL}"
+  write_quality_progress "running" "wda" "准备启动 WebDriverAgentRunner" 1.2
 
   if command -v iproxy >/dev/null 2>&1; then
     if ! pgrep -f "iproxy.*${wda_port}.*8100" >/dev/null 2>&1; then
@@ -1426,6 +2035,7 @@ ensure_wda_ready() {
     if check_wda_ready "${WDA_URL}"; then
       MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
       log "WDA 启动成功: ${MONKEY_RUNTIME_WDA_URL}"
+      write_quality_progress "running" "wda" "WDA 启动成功" 1.4
       return 0
     fi
     if [ -f "${wda_pid_file}" ]; then
@@ -1465,11 +2075,13 @@ ensure_wda_ready() {
 }
 
 run_monkey_test() {
+  rm -f "${MONKEY_REPORT_FILE}"
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
     log "开始 Monkey 测试: 持续 ${MONKEY_DURATION_SECONDS} 秒，WDA=${WDA_URL}"
   else
     log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
   fi
+  write_quality_progress "running" "monkey" "准备 Monkey 测试环境" 1.5
   if ! ensure_wda_ready; then
     local message
     message="${WDA_READY_ERROR:-WDA 准备失败：${WDA_URL} 不可访问。}"
@@ -1490,17 +2102,19 @@ with open(report_file, "w", encoding="utf-8") as f:
 PY
     return 1
   fi
-  python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_DURATION_SECONDS" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" "$MONKEY_MAX_REPORTED_EVENTS" "$MONKEY_BACK_INTERVAL_EVENTS" "$MONKEY_STUCK_EVENTS" "$MONKEY_STUCK_CHECK_INTERVAL_EVENTS" "$MONKEY_BACK_ACTION_PROBABILITY" "$MONKEY_BACK_TAP_PROBABILITY" "$MONKEY_AVOID_TOP_BAR" "$MONKEY_HEARTBEAT_INTERVAL_SECONDS" "$MONKEY_FORBIDDEN_TEXTS" "$MONKEY_FORBIDDEN_PAGE_TEXTS" "$MONKEY_FORBIDDEN_REGION_RATIO" "$MONKEY_FORBIDDEN_PADDING" <<'PY'
+  python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_DURATION_SECONDS" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" "$MONKEY_MAX_REPORTED_EVENTS" "$MONKEY_BACK_INTERVAL_EVENTS" "$MONKEY_STUCK_EVENTS" "$MONKEY_STUCK_CHECK_INTERVAL_EVENTS" "$MONKEY_BACK_ACTION_PROBABILITY" "$MONKEY_BACK_TAP_PROBABILITY" "$MONKEY_AVOID_TOP_BAR" "$MONKEY_HEARTBEAT_INTERVAL_SECONDS" "$MONKEY_FORBIDDEN_TEXTS" "$MONKEY_FORBIDDEN_PAGE_TEXTS" "$MONKEY_FORBIDDEN_REGION_RATIO" "$MONKEY_FORBIDDEN_PADDING" "$PROGRESS_FILE" "$PERFORMANCE_SAMPLE_FILE" <<'PY'
 import hashlib
 import json
+import os
 import random
 import re
+import socket
 import sys
 import time
 import urllib.error
 import urllib.request
 
-wda_url, event_count, duration_seconds, interval_seconds, seed, report_file, max_reported_events, back_interval_events, stuck_events, stuck_check_interval_events, back_action_probability, back_tap_probability, avoid_top_bar, heartbeat_interval_seconds, forbidden_texts, forbidden_page_texts, forbidden_region_ratio, forbidden_padding = sys.argv[1:19]
+wda_url, event_count, duration_seconds, interval_seconds, seed, report_file, max_reported_events, back_interval_events, stuck_events, stuck_check_interval_events, back_action_probability, back_tap_probability, avoid_top_bar, heartbeat_interval_seconds, forbidden_texts, forbidden_page_texts, forbidden_region_ratio, forbidden_padding, progress_file, performance_sample_file = sys.argv[1:21]
 wda_url = wda_url.rstrip("/")
 event_count = max(1, int(event_count or "30"))
 duration_seconds = max(0.0, float(duration_seconds or "0"))
@@ -1519,9 +2133,18 @@ forbidden_page_terms = [item.strip() for item in (forbidden_page_texts or "").sp
 forbidden_page_terms_lower = [item.lower() for item in forbidden_page_terms]
 forbidden_padding = max(0, int(float(forbidden_padding or "16")))
 random.seed(seed or None)
+max_wda_recoveries = max(0, int(float(os.environ.get("MONKEY_WDA_MAX_RECOVERIES", "5"))))
+recovery_sleep_seconds = max(0.0, float(os.environ.get("MONKEY_WDA_RECOVERY_SLEEP_SECONDS", "3")))
 
 events = []
 session_id = ""
+width = 390
+height = 844
+safe_top = 96
+tap_safe_top = 96
+safe_bottom = 80
+safe_left = 20
+safe_right = 20
 
 def request(method, path, payload=None, timeout=8):
     data = None
@@ -1533,6 +2156,16 @@ def request(method, path, payload=None, timeout=8):
         body = resp.read().decode("utf-8", errors="replace")
         return json.loads(body) if body else {}
 
+def is_recoverable_wda_error(exc):
+    message = str(exc)
+    if isinstance(exc, (TimeoutError, socket.timeout, urllib.error.URLError)):
+        return True
+    if "timed out" in message or "Connection refused" in message or "Errno 61" in message:
+        return True
+    if isinstance(exc, urllib.error.HTTPError) and exc.code >= 500:
+        return True
+    return False
+
 def value_of(response):
     return response.get("value", response)
 
@@ -1543,6 +2176,52 @@ def get_session_id(response):
         or (value.get("sessionId") if isinstance(value, dict) else "")
         or ""
     )
+
+def create_session():
+    session_response = request("POST", "/session", {"capabilities": {"alwaysMatch": {}, "firstMatch": [{}]}}, timeout=15)
+    next_session_id = get_session_id(session_response)
+    if not next_session_id:
+        raise RuntimeError(f"WDA did not return sessionId: {session_response}")
+    try:
+        request("POST", f"/session/{next_session_id}/appium/settings", {"settings": {"waitForIdleTimeout": 1}}, timeout=5)
+    except Exception:
+        pass
+    return next_session_id
+
+def refresh_window_metrics(session):
+    global width, height, safe_top, tap_safe_top, safe_bottom, safe_left, safe_right
+    size_response = request("GET", f"/session/{session}/window/size", timeout=8)
+    size = value_of(size_response)
+    width = int(size.get("width") or 390) if isinstance(size, dict) else 390
+    height = int(size.get("height") or 844) if isinstance(size, dict) else 844
+    safe_top = max(60, height // 12)
+    tap_safe_top = max(safe_top, 96) if avoid_top_bar else safe_top
+    safe_bottom = max(80, height // 10)
+    safe_left = max(20, width // 20)
+    safe_right = max(20, width // 20)
+
+def recover_wda_session(reason, recovery_index):
+    global session_id
+    event = {
+        "index": report.get("executedEvents", 0) + 1,
+        "type": "wdaRecover",
+        "reason": str(reason)[:300],
+        "recoveryIndex": recovery_index,
+    }
+    events.append(event)
+    print(f"Monkey WDA recovery {recovery_index}/{max_wda_recoveries}: {event['reason']}", flush=True)
+    write_progress("running", f"WDA 短暂超时，正在恢复 {recovery_index}/{max_wda_recoveries}", event)
+    if recovery_sleep_seconds:
+        time.sleep(recovery_sleep_seconds)
+    try:
+        if session_id:
+            request("DELETE", f"/session/{session_id}", timeout=3)
+    except Exception:
+        pass
+    request("GET", "/status", timeout=8)
+    session_id = create_session()
+    refresh_window_metrics(session_id)
+    return session_id
 
 def pointer_actions(points):
     actions = []
@@ -1630,7 +2309,7 @@ def forbidden_regions_from_source(source, width, height):
 
 def get_source(session):
     try:
-        return str(value_of(request("GET", f"/session/{session}/source", timeout=8)) or "")
+        return str(value_of(request("GET", f"/session/{session}/source", timeout=6)) or "")
     except Exception:
         return ""
 
@@ -1639,6 +2318,11 @@ def get_forbidden_regions(session, width, height):
     regions = parse_ratio_regions(width, height)
     regions.extend(forbidden_regions_from_source(source, width, height))
     return regions, source
+
+def get_forbidden_regions_from_source(source, width, height):
+    regions = parse_ratio_regions(width, height)
+    regions.extend(forbidden_regions_from_source(source, width, height))
+    return regions
 
 def is_forbidden_page(source):
     if not source or not forbidden_page_terms_lower:
@@ -1680,11 +2364,114 @@ def tap_back_region(session, width, safe_top):
     tap(session, x, y)
     return x, y
 
+def is_system_permission_alert(source):
+    if not source:
+        return False
+    source_lower = source.lower()
+    return (
+        "xcuielementtypealert" in source_lower
+        or "想访问你的" in source
+        or "would like to access" in source_lower
+        or "would like to send you notifications" in source_lower
+    )
+
+def dismiss_system_alert(session, width, height):
+    try:
+        request("POST", f"/session/{session}/alert/dismiss", {}, timeout=5)
+        return {"method": "alertDismiss"}
+    except Exception:
+        pass
+    # iOS 权限弹窗的拒绝按钮通常在左侧，兜底点击弹窗左按钮区域。
+    x = max(40, int(width * 0.28))
+    y = max(120, int(height * 0.62))
+    tap(session, x, y)
+    return {"method": "tapApprox", "x": x, "y": y}
+
 def ui_fingerprint(session):
     source = get_source(session)
     if not source:
         return ""
     return hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest()
+
+def collect_numbers(value, path=""):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from collect_numbers(child, f"{path}.{key}" if path else str(key))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            yield from collect_numbers(child, f"{path}.{index}" if path else str(index))
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield path.lower(), float(value)
+
+def summarize_recent_performance(path, max_lines=200):
+    result = {"sampleCount": 0, "cpu": None, "memoryMB": None, "fps": None}
+    if not path or not os.path.exists(path):
+        return result
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-max_lines:]
+    except Exception:
+        return result
+    cpu_values = []
+    memory_values = []
+    fps_values = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except Exception:
+            continue
+        result["sampleCount"] += 1
+        for key_path, number in collect_numbers(item):
+            if "cpu" in key_path and 0 <= number <= 1000:
+                cpu_values.append(number)
+            elif "fps" in key_path and 0 <= number <= 240:
+                fps_values.append(number)
+            elif any(token in key_path for token in ("memory", "mem", "resident", "rss")) and number > 0:
+                memory_values.append(number / 1024 / 1024 if number > 1024 * 1024 else number)
+    if cpu_values:
+        result["cpu"] = round(sum(cpu_values) / len(cpu_values), 2)
+    if memory_values:
+        result["memoryMB"] = round(max(memory_values), 2)
+    if fps_values:
+        result["fps"] = round(sum(fps_values) / len(fps_values), 2)
+    return result
+
+def write_progress(status, message="", last_action=None):
+    if not progress_file:
+        return
+    now = time.time()
+    elapsed = int(now - started_at)
+    remaining = max(0, int(deadline - now)) if deadline is not None else None
+    if duration_seconds > 0:
+        percent = round(min(100, max(0, (elapsed / duration_seconds) * 100)), 2)
+        if status == "running":
+            percent = max(0.1, percent)
+    else:
+        percent = round(min(100, (report.get("executedEvents", 0) / max(event_count, 1)) * 100), 2)
+    payload = {
+        "status": status,
+        "phase": "monkey",
+        "message": message,
+        "updatedAt": int(now * 1000),
+        "elapsedSeconds": elapsed,
+        "remainingSeconds": remaining,
+        "executedEvents": report.get("executedEvents", 0),
+        "requestedEvents": event_count,
+        "requestedDurationSeconds": int(duration_seconds),
+        "progressPercent": percent,
+        "lastAction": last_action or (events[-1] if events else None),
+        "recentPerformance": summarize_recent_performance(performance_sample_file),
+    }
+    tmp_path = f"{progress_file}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, progress_file)
+    except Exception:
+        pass
 
 started_at = time.time()
 deadline = started_at + duration_seconds if duration_seconds > 0 else None
@@ -1709,28 +2496,18 @@ report = {
     "executedEvents": 0,
     "events": events,
 }
+write_progress("running", "Monkey 测试初始化")
 
 try:
     request("GET", "/status", timeout=5)
-    session_response = request("POST", "/session", {"capabilities": {"alwaysMatch": {}, "firstMatch": [{}]}}, timeout=15)
-    session_id = get_session_id(session_response)
-    if not session_id:
-        raise RuntimeError(f"WDA did not return sessionId: {session_response}")
-
-    size_response = request("GET", f"/session/{session_id}/window/size", timeout=8)
-    size = value_of(size_response)
-    width = int(size.get("width") or 390) if isinstance(size, dict) else 390
-    height = int(size.get("height") or 844) if isinstance(size, dict) else 844
-    safe_top = max(60, height // 12)
-    tap_safe_top = max(safe_top, 96) if avoid_top_bar else safe_top
-    safe_bottom = max(80, height // 10)
-    safe_left = max(20, width // 20)
-    safe_right = max(20, width // 20)
+    session_id = create_session()
+    refresh_window_metrics(session_id)
     last_fingerprint = ""
     same_page_events = 0
     last_heartbeat_at = time.time()
     forbidden_regions = parse_ratio_regions(width, height)
     last_forbidden_refresh_index = -999
+    wda_recoveries = 0
 
     index = 0
     while True:
@@ -1740,122 +2517,147 @@ try:
         elif index >= event_count:
             break
 
-        fingerprint = ui_fingerprint(session_id) if stuck_events and index % stuck_check_interval_events == 0 else ""
-        if fingerprint:
-            if fingerprint == last_fingerprint:
-                same_page_events += stuck_check_interval_events
-            else:
-                same_page_events = 0
-                last_fingerprint = fingerprint
-
-        reason = "random"
-        action = ""
-        if index - last_forbidden_refresh_index >= stuck_check_interval_events:
-            forbidden_regions, current_source = get_forbidden_regions(session_id, width, height)
-            last_forbidden_refresh_index = index
-        else:
+        try:
             current_source = ""
+            should_refresh_source = index - last_forbidden_refresh_index >= stuck_check_interval_events
+            if should_refresh_source:
+                current_source = get_source(session_id)
+                forbidden_regions = get_forbidden_regions_from_source(current_source, width, height)
+                last_forbidden_refresh_index = index
+            if stuck_events and current_source:
+                fingerprint = hashlib.sha1(current_source.encode("utf-8", errors="ignore")).hexdigest()
+                if fingerprint == last_fingerprint:
+                    same_page_events += stuck_check_interval_events
+                else:
+                    same_page_events = 0
+                    last_fingerprint = fingerprint
 
-        if is_forbidden_page(current_source):
-            reason = "forbiddenPage"
-            start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
-            action = "edgeBack"
-            events.append({
-                "index": index + 1,
-                "type": action,
-                "reason": reason,
-                "startX": start_x,
-                "startY": start_y,
-                "endX": end_x,
-                "endY": end_y,
-            })
+            reason = "random"
+            action = ""
+
+            if is_system_permission_alert(current_source):
+                reason = "systemPermissionAlert"
+                detail = dismiss_system_alert(session_id, width, height)
+                events.append({
+                    "index": index + 1,
+                    "type": "dismissAlert",
+                    "reason": reason,
+                    **detail,
+                })
+                same_page_events = 0
+                last_fingerprint = ""
+            elif is_forbidden_page(current_source):
+                reason = "forbiddenPage"
+                start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                action = "edgeBack"
+                events.append({
+                    "index": index + 1,
+                    "type": action,
+                    "reason": reason,
+                    "startX": start_x,
+                    "startY": start_y,
+                    "endX": end_x,
+                    "endY": end_y,
+                })
+                same_page_events = 0
+                last_fingerprint = ""
+            elif stuck_events and same_page_events >= stuck_events:
+                reason = f"stuck:{same_page_events}"
+                if random.random() < 0.65:
+                    start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                    action = "edgeBack"
+                    events.append({
+                        "index": index + 1,
+                        "type": action,
+                        "reason": reason,
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                    })
+                else:
+                    x, y = tap_back_region(session_id, width, safe_top)
+                    action = "tapBack"
+                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                same_page_events = 0
+                last_fingerprint = ""
+            elif back_interval_events and index > 0 and index % back_interval_events == 0:
+                reason = f"interval:{back_interval_events}"
+                if random.random() < back_tap_probability:
+                    x, y = tap_back_region(session_id, width, safe_top)
+                    action = "tapBack"
+                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                else:
+                    start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                    action = "edgeBack"
+                    events.append({
+                        "index": index + 1,
+                        "type": action,
+                        "reason": reason,
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                    })
+            elif random.random() < back_action_probability:
+                reason = "probability"
+                if random.random() < back_tap_probability:
+                    x, y = tap_back_region(session_id, width, safe_top)
+                    action = "tapBack"
+                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                else:
+                    start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                    action = "edgeBack"
+                    events.append({
+                        "index": index + 1,
+                        "type": action,
+                        "reason": reason,
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                    })
+            elif random.random() < 0.72:
+                x, y, fallback = safe_random_point(
+                    safe_left,
+                    tap_safe_top,
+                    max(safe_left, width - safe_right),
+                    max(tap_safe_top, height - safe_bottom),
+                    forbidden_regions,
+                )
+                tap(session_id, x, y)
+                events.append({
+                    "index": index + 1,
+                    "type": "tap",
+                    "x": x,
+                    "y": y,
+                    "forbiddenRegions": len(forbidden_regions),
+                    "usedFallbackPoint": fallback,
+                })
+            else:
+                start_x, start_y, end_x, end_y, fallback = swipe(session_id, width, height, forbidden_regions)
+                events.append({
+                    "index": index + 1,
+                    "type": "swipe",
+                    "startX": start_x,
+                    "startY": start_y,
+                    "endX": end_x,
+                    "endY": end_y,
+                    "forbiddenRegions": len(forbidden_regions),
+                    "usedFallbackPoint": fallback,
+                })
+            wda_recoveries = 0
+        except Exception as exc:
+            if not is_recoverable_wda_error(exc):
+                raise
+            wda_recoveries += 1
+            if wda_recoveries > max_wda_recoveries:
+                raise RuntimeError(f"WDA 连续 {max_wda_recoveries} 次恢复失败，最后错误：{exc}") from exc
+            recover_wda_session(exc, wda_recoveries)
             same_page_events = 0
             last_fingerprint = ""
-        elif stuck_events and same_page_events >= stuck_events:
-            reason = f"stuck:{same_page_events}"
-            if random.random() < 0.65:
-                start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
-                action = "edgeBack"
-                events.append({
-                    "index": index + 1,
-                    "type": action,
-                    "reason": reason,
-                    "startX": start_x,
-                    "startY": start_y,
-                    "endX": end_x,
-                    "endY": end_y,
-                })
-            else:
-                x, y = tap_back_region(session_id, width, safe_top)
-                action = "tapBack"
-                events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
-            same_page_events = 0
-            last_fingerprint = ""
-        elif back_interval_events and index > 0 and index % back_interval_events == 0:
-            reason = f"interval:{back_interval_events}"
-            if random.random() < back_tap_probability:
-                x, y = tap_back_region(session_id, width, safe_top)
-                action = "tapBack"
-                events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
-            else:
-                start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
-                action = "edgeBack"
-                events.append({
-                    "index": index + 1,
-                    "type": action,
-                    "reason": reason,
-                    "startX": start_x,
-                    "startY": start_y,
-                    "endX": end_x,
-                    "endY": end_y,
-                })
-        elif random.random() < back_action_probability:
-            reason = "probability"
-            if random.random() < back_tap_probability:
-                x, y = tap_back_region(session_id, width, safe_top)
-                action = "tapBack"
-                events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
-            else:
-                start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
-                action = "edgeBack"
-                events.append({
-                    "index": index + 1,
-                    "type": action,
-                    "reason": reason,
-                    "startX": start_x,
-                    "startY": start_y,
-                    "endX": end_x,
-                    "endY": end_y,
-                })
-        elif random.random() < 0.72:
-            x, y, fallback = safe_random_point(
-                safe_left,
-                tap_safe_top,
-                max(safe_left, width - safe_right),
-                max(tap_safe_top, height - safe_bottom),
-                forbidden_regions,
-            )
-            tap(session_id, x, y)
-            events.append({
-                "index": index + 1,
-                "type": "tap",
-                "x": x,
-                "y": y,
-                "forbiddenRegions": len(forbidden_regions),
-                "usedFallbackPoint": fallback,
-            })
-        else:
-            start_x, start_y, end_x, end_y, fallback = swipe(session_id, width, height, forbidden_regions)
-            events.append({
-                "index": index + 1,
-                "type": "swipe",
-                "startX": start_x,
-                "startY": start_y,
-                "endX": end_x,
-                "endY": end_y,
-                "forbiddenRegions": len(forbidden_regions),
-                "usedFallbackPoint": fallback,
-            })
+            last_forbidden_refresh_index = -999
+            continue
         report["executedEvents"] = index + 1
         now = time.time()
         if heartbeat_interval_seconds and now - last_heartbeat_at >= heartbeat_interval_seconds:
@@ -1864,6 +2666,7 @@ try:
             if deadline is not None:
                 remaining_text = f", remaining={max(0, int(deadline - now))}s"
             print(f"Monkey heartbeat: executed={report['executedEvents']}, elapsed={elapsed}s{remaining_text}", flush=True)
+            write_progress("running", "Monkey 测试运行中")
             last_heartbeat_at = now
         if max_reported_events and len(events) > max_reported_events:
             del events[:len(events) - max_reported_events]
@@ -1881,6 +2684,7 @@ try:
         report["message"] = f"Monkey completed {report['executedEvents']} random events in {int(duration_seconds)} seconds"
     else:
         report["message"] = f"Monkey completed {event_count} random events"
+    write_progress("passed", report["message"])
 except Exception as exc:
     message = str(exc)
     if "Connection refused" in message or "Errno 61" in message or "timed out" in message:
@@ -1889,6 +2693,7 @@ except Exception as exc:
             f"并且 curl {wda_url}/status 可通。原始错误：{message}"
         )
     report["message"] = message
+    write_progress("failed", message)
 finally:
     if session_id:
         try:
@@ -1991,6 +2796,7 @@ log "设备池: ${DEVICE_POOL_LABEL_DISPLAY} (${DEVICE_POOL})"
 log "指定设备: ${DEVICE_UDID:-自动选择第一台 USB iPhone}"
 log "包地址: ${PACKAGE_URL:-${ARCHIVE_URL:-N/A}}"
 log "xcarchive: ${XCARCHIVE_PATH:-N/A}"
+write_quality_progress "running" "prepare" "准备质检任务" 0.1
 RESOLVED_XCARCHIVE_PATH="$(resolve_xcarchive_path)"
 if [ -n "${RESOLVED_XCARCHIVE_PATH}" ] && [ "${RESOLVED_XCARCHIVE_PATH}" != "${XCARCHIVE_PATH}" ]; then
   log "解析到本地 xcarchive: ${RESOLVED_XCARCHIVE_PATH}"
@@ -2004,13 +2810,18 @@ fi
 log "tidevice: ${TIDEVICE_CMD}"
 log "当前连接设备:"
 ${TIDEVICE_CMD} list | tee -a "${LOG_FILE}" || true
+write_quality_progress "running" "device" "检测 USB 真机" 0.2
 
 SELECTED_DEVICE="$(select_device "${TIDEVICE_CMD}")"
 if [ -z "${SELECTED_DEVICE}" ]; then
   fail "未发现 USB 连接的 iPhone。请确认真机已连接打包机并完成信任。"
 fi
 log "使用设备: ${SELECTED_DEVICE}"
+DEVICE_IOS_VERSION="$(detect_device_ios_version "${TIDEVICE_CMD}" "${SELECTED_DEVICE}" || true)"
+log "设备 iOS 版本: ${DEVICE_IOS_VERSION:-unknown}"
+write_quality_progress "running" "device" "已选择设备 ${SELECTED_DEVICE}" 0.3
 
+write_quality_progress "running" "package" "获取 IPA 包" 0.4
 download_status=0
 download_ipa "${PACKAGE_URL}" || download_status=$?
 if [ "${download_status}" != "0" ] && [ -n "${RESOLVED_XCARCHIVE_PATH}" ]; then
@@ -2042,10 +2853,12 @@ if [ -n "${DETECTED_SHORT_VERSION}" ] || [ -n "${DETECTED_BUNDLE_VERSION}" ]; th
   log "检测到安装包版本: ${DETECTED_SHORT_VERSION:-N/A} (${DETECTED_BUNDLE_VERSION:-N/A})"
 fi
 log "检测到安装包指纹: sha256=${IPA_SHA256}, md5=${IPA_MD5}"
+write_quality_progress "running" "package" "IPA 包已就绪" 0.8
 
 if ! install_ipa; then
   fail "安装 IPA 失败：tidevice 未能完成安装，devicectl 兜底安装也失败。请确认 iPhone 已解锁、已信任此电脑、USB 连接稳定，并查看 ${LOG_FILE}。"
 fi
+write_quality_progress "running" "install" "IPA 安装完成" 1.0
 
 LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID:-${DETECTED_BUNDLE_ID}}"
 if [ -n "${APP_BUNDLE_ID}" ] && [ -n "${DETECTED_BUNDLE_ID}" ] && [ "${APP_BUNDLE_ID}" != "${DETECTED_BUNDLE_ID}" ]; then
@@ -2054,18 +2867,24 @@ fi
 
 if [ "${COLD_START_DETECT_SCREEN}" = "1" ]; then
   log "预热 WDA，用于冷启动首屏内容检测..."
+  write_quality_progress "running" "wda" "预热 WDA，用于冷启动检测" 1.1
   if ! ensure_wda_ready; then
     log "WDA 预热失败，冷启动耗时将退回固定等待兜底：${WDA_READY_ERROR:-unknown}"
   fi
 fi
 
 if [ -n "${LAUNCH_BUNDLE_ID}" ]; then
+  write_quality_progress "running" "launch" "启动 App" 1.5
   if ! launch_app "${LAUNCH_BUNDLE_ID}"; then
     fail "安装成功但启动失败：${LAUNCH_BUNDLE_ID}。如果日志包含 DeveloperImage not found，请在打包机安装匹配当前 iOS 版本的 Xcode，或确认 xcrun devicectl 可用。"
   fi
 fi
 
+write_quality_progress "running" "coldStart" "等待首屏内容稳定" 1.6
 wait_cold_start_ready || true
+write_quality_progress "running" "coldStart" "首屏内容已稳定" 1.8
+write_quality_progress "running" "performance" "启动性能采样" 1.9
+start_performance_sampling || true
 
 process_status=0
 check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
@@ -2082,8 +2901,10 @@ if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[
     fail "Monkey 测试失败：${MONKEY_MESSAGE:-请确认 WDA 已启动并可访问 ${WDA_URL}}"
   fi
 fi
+stop_performance_sampling || true
 capture_screenshot || true
 capture_device_log || true
+collect_crash_reports || true
 if [ "${process_status}" = "1" ]; then
   log "警告: 启动后未确认 App 进程：${LAUNCH_BUNDLE_ID}。本次已完成安装和启动，按启动成功通过。"
 fi
@@ -2098,6 +2919,9 @@ elif [ -n "${COLD_START_READY_MS}" ]; then
   write_summary "passed" "安装、启动完成，冷启动首屏耗时 ${COLD_START_READY_MS}ms，已采集可用日志"
 else
   write_summary "passed" "安装、启动完成，已采集可用日志"
+fi
+if [ "${MONKEY_STATUS}" != "passed" ]; then
+  write_quality_progress "passed" "complete" "质检完成" 100 "${MONKEY_EXECUTED_EVENTS:-0}" 0 0
 fi
 write_report 0
 log "质检结果目录: ${RESULT_DIR}"

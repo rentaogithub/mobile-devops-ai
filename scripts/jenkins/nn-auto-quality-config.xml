@@ -257,6 +257,66 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>PERFORMANCE_SAMPLING</name>
+          <defaultValue>1</defaultValue>
+          <description>Monkey 运行期间采集性能指标。1=启用，0=关闭。依赖 tidevice perf。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERFORMANCE_SAMPLER</name>
+          <defaultValue>auto</defaultValue>
+          <description>性能采样器：auto/tidevice/xctrace。auto 下 iOS 17/18 优先 xctrace，低版本优先 tidevice perf。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERFORMANCE_SAMPLE_TYPES</name>
+          <defaultValue>cpu,memory,fps</defaultValue>
+          <description>性能采样类型，传给 tidevice perf -o，默认 cpu,memory,fps。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERFORMANCE_XCTRACE_TEMPLATE</name>
+          <defaultValue>Activity Monitor</defaultValue>
+          <description>tidevice perf 不可用时的 xctrace 兜底模板。Activity Monitor 可录 CPU/内存原始 trace；如需图形/FPS 可改为 Game Performance 试运行。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_COLD_START_WARN_MS</name>
+          <defaultValue>8000</defaultValue>
+          <description>首屏冷启动预警阈值，单位 ms。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_COLD_START_SLOW_MS</name>
+          <defaultValue>15000</defaultValue>
+          <description>首屏冷启动慢启动阈值，单位 ms。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_CPU_AVG_WARN</name>
+          <defaultValue>80</defaultValue>
+          <description>CPU 平均值预警阈值，单位百分比。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_MEMORY_PEAK_WARN_MB</name>
+          <defaultValue>1500</defaultValue>
+          <description>内存峰值预警阈值，单位 MB。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_FPS_AVG_WARN</name>
+          <defaultValue>45</defaultValue>
+          <description>FPS 平均值低于该值时预警。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERF_FPS_MIN_WARN</name>
+          <defaultValue>20</defaultValue>
+          <description>FPS 最低值低于该值时预警。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>NN_IOS_PLATFORM_DIR</name>
           <defaultValue></defaultValue>
           <description>nn-ios-platform 在 Jenkins 打包机上的实际目录。平台触发质检时会自动传入，手动构建时可填写。</description>

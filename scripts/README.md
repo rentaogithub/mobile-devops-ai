@@ -76,6 +76,16 @@ bash scripts/sonic/ios-quality.sh
 | `MONKEY_FORBIDDEN_PAGE_TEXTS` | 如果已误入这些页面/控件关键词，Monkey 会优先返回恢复，默认 `DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow` |
 | `MONKEY_FORBIDDEN_REGION_RATIO` | 无法从 UI source 识别调试悬浮框时的兜底禁点区域，默认 `0.78,0.18,1.0,0.72`；多个区域用分号分隔 |
 | `MONKEY_FORBIDDEN_PADDING` | 禁点区域向外扩展像素，默认 `16` |
+| `PERFORMANCE_SAMPLING` | Monkey 运行期间是否采集性能指标，默认 `1`；依赖 `tidevice perf` |
+| `PERFORMANCE_SAMPLER` | 性能采样器，默认 `auto`；可选 `auto`/`tidevice`/`xctrace`，`auto` 下 iOS 17/18 优先 `xctrace`，低版本优先 `tidevice perf` |
+| `PERFORMANCE_SAMPLE_TYPES` | 性能采样类型，传给 `tidevice perf -o`，默认 `cpu,memory,fps` |
+| `PERFORMANCE_XCTRACE_TEMPLATE` | `tidevice perf` 不可用时的 `xctrace` 兜底模板，默认 `Activity Monitor`；如需图形/FPS 可试 `Game Performance` |
+| `PERF_COLD_START_WARN_MS` | 首屏冷启动预警阈值，默认 `8000` |
+| `PERF_COLD_START_SLOW_MS` | 首屏冷启动慢启动阈值，默认 `15000` |
+| `PERF_CPU_AVG_WARN` | CPU 平均值预警阈值，默认 `80` |
+| `PERF_MEMORY_PEAK_WARN_MB` | 内存峰值预警阈值，默认 `1500` |
+| `PERF_FPS_AVG_WARN` | FPS 平均值预警阈值，默认 `45` |
+| `PERF_FPS_MIN_WARN` | FPS 最低值预警阈值，默认 `20` |
 
 当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 

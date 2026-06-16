@@ -265,6 +265,52 @@ function localJenkinsJobDir(jobName: string) {
   return jobDir;
 }
 
+function localJenkinsWorkspaceDir(jobName: string) {
+  const jenkinsHome = process.env.JENKINS_HOME || path.join(process.env.HOME || '', '.jenkins');
+  const leafName = jobName.split('/').filter(Boolean).pop() || jobName;
+  return path.join(jenkinsHome, 'workspace', leafName);
+}
+
+function readJsonFile(filePath: string): any | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function findLatestQualityFile(jobName: string, fileName: string, buildTimestamp?: number, buildNumber?: number) {
+  const workspaceDir = localJenkinsWorkspaceDir(jobName);
+  const resultsDir = path.join(workspaceDir, 'quality-results');
+  if (!fs.existsSync(resultsDir)) return '';
+  const normalizedBuildNumber = buildNumber ? String(buildNumber) : '';
+  const minMtime = Number(buildTimestamp || 0) - 5 * 60 * 1000;
+  let latest = { filePath: '', mtimeMs: 0 };
+  for (const entry of fs.readdirSync(resultsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (normalizedBuildNumber && !entry.name.startsWith(`qa-${normalizedBuildNumber}-`)) continue;
+    const candidate = path.join(resultsDir, entry.name, fileName);
+    if (!fs.existsSync(candidate)) continue;
+    const stat = fs.statSync(candidate);
+    if (minMtime > 0 && stat.mtimeMs < minMtime) continue;
+    if (stat.mtimeMs > latest.mtimeMs) {
+      latest = { filePath: candidate, mtimeMs: stat.mtimeMs };
+    }
+  }
+  return latest.filePath;
+}
+
+function readLocalQualityProgress(jobName: string, build: any) {
+  const progressFile = findLatestQualityFile(jobName, 'quality-progress.json', Number(build?.timestamp || 0), Number(build?.number || 0));
+  return progressFile ? readJsonFile(progressFile) : null;
+}
+
+function readLocalQualitySummary(jobName: string, build: any) {
+  const summaryFile = findLatestQualityFile(jobName, 'summary.json', Number(build?.timestamp || 0), Number(build?.number || 0));
+  return summaryFile ? readJsonFile(summaryFile) : null;
+}
+
 async function hasActiveQualityScriptProcess() {
   try {
     await execFileAsync('pgrep', ['-f', 'scripts/sonic/ios-quality.sh'], { timeout: 1500 });
@@ -272,6 +318,22 @@ async function hasActiveQualityScriptProcess() {
   } catch {
     return false;
   }
+}
+
+async function buildCompletedOverride(jobName: string, build: any, localSummary?: any | null) {
+  if (!build?.building || !localSummary?.status) return null;
+  const status = String(localSummary.status || '').toLowerCase();
+  if (status !== 'passed' && status !== 'failed') return null;
+  const buildNumber = Number(build.number);
+  if (!Number.isFinite(buildNumber)) return null;
+  const result = status === 'passed' ? 'SUCCESS' : 'FAILURE';
+  return {
+    building: false,
+    result,
+    duration: build.duration || Math.max(0, Date.now() - Number(build.timestamp || Date.now())),
+    description: [build.description, '本机检测到质检 summary 已生成，Jenkins 构建状态未及时刷新，已按本地报告纠偏。'].filter(Boolean).join('\n'),
+    completedMessage: localSummary.message || (result === 'SUCCESS' ? '质检完成' : '质检失败'),
+  };
 }
 
 async function buildInterruptedOverride(jobName: string, build: any) {
@@ -317,6 +379,7 @@ async function cleanupLocalQualityProcesses() {
     'WebDriverAgentRunner',
     'xcodebuild.*WebDriverAgentRunner',
     'iproxy.*8100',
+    'tidevice.*perf',
   ];
   await Promise.all(patterns.map(async (pattern) => {
     try {
@@ -490,6 +553,7 @@ function parseQualityConsoleSummary(consoleText: string) {
   const coldStartReadyMs = toNumber(plain.match(/冷启动稳定耗时:\s*(\d+)ms/i)?.[1]);
   const coldStartWaitSeconds = toNumber(plain.match(/稳定等待\s*(\d+)s/i)?.[1]);
   const monkeyMatch = plain.match(/Monkey 结果:\s*([^，,\n\r]+)[，,]\s*执行\s*(\d+)\/(\d+)\s*次[，,]?\s*([^\n\r]*)/i);
+  const resultDirName = plain.match(/质检结果目录:\s*.*\/quality-results\/([^/\s]+)/)?.[1]?.trim() || '';
   const bundleId = (
     plain.match(/启动 App:\s*([^\n\r]+)/)?.[1]?.trim() ||
     plain.match(/Launched application with\s+([^\s]+)\s+bundle identifier/i)?.[1]?.trim() ||
@@ -522,6 +586,7 @@ function parseQualityConsoleSummary(consoleText: string) {
     monkeyExecutedEvents: toNumber(monkeyMatch?.[2]),
     monkeyEventCount: toNumber(monkeyMatch?.[3]),
     monkeyMessage: monkeyMatch?.[4]?.trim() || '',
+    resultDirName,
   };
 }
 
@@ -537,17 +602,23 @@ async function fetchQualityConsoleSummary(jobPath: string, buildNumber: number) 
 async function fetchQualitySummary(jobPath: string, build: any) {
   const buildNumber = Number(build.number);
   const artifacts = Array.isArray(build.artifacts) ? build.artifacts : [];
-  const summaryArtifact = artifacts.find((artifact: any) => String(artifact?.relativePath || '').endsWith('/summary.json'));
   let consoleSummary: any | null = null;
+  try {
+    consoleSummary = await fetchQualityConsoleSummary(jobPath, buildNumber);
+  } catch {
+    consoleSummary = null;
+  }
+  const summaryArtifacts = artifacts.filter((artifact: any) => String(artifact?.relativePath || '').endsWith('/summary.json'));
+  const summaryArtifact = (
+    summaryArtifacts.find((artifact: any) => String(artifact?.relativePath || '').includes(`/qa-${buildNumber}-`)) ||
+    summaryArtifacts.find((artifact: any) => String(artifact?.relativePath || '').startsWith(`quality-results/qa-${buildNumber}-`)) ||
+    summaryArtifacts.find((artifact: any) => consoleSummary?.resultDirName && String(artifact?.relativePath || '') === `quality-results/${consoleSummary.resultDirName}/summary.json`) ||
+    summaryArtifacts[summaryArtifacts.length - 1]
+  );
 
   if (summaryArtifact?.relativePath) {
     const summaryUrl = buildJenkinsArtifactUrl(jobPath, buildNumber, summaryArtifact.relativePath);
     try {
-      try {
-        consoleSummary = await fetchQualityConsoleSummary(jobPath, buildNumber);
-      } catch {
-        consoleSummary = null;
-      }
       const response = await axios.get(summaryUrl, {
         timeout: 10000,
         responseType: 'json',
@@ -561,6 +632,10 @@ async function fetchQualitySummary(jobPath: string, build: any) {
         ...(consoleSummary || {}),
         ...summary,
       };
+      if (build.result === 'FAILURE' && consoleSummary?.status === 'failed') {
+        mergedSummary.status = 'failed';
+        mergedSummary.message = consoleSummary.message || mergedSummary.message;
+      }
       return {
         ...mergedSummary,
         artifacts: {
@@ -569,6 +644,9 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
           monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
+          performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples),
+          performanceTraceUrl: artifactUrl(summary.artifacts?.performanceTrace),
+          crashReportsUrl: artifactUrl(summary.artifacts?.crashReports),
           junitUrl: artifactUrl(summary.artifacts?.junit || 'junit.xml'),
           qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog || 'quality.log'),
         },
@@ -590,6 +668,51 @@ async function fetchQualitySummary(jobPath: string, build: any) {
       artifacts: {},
     };
   }
+}
+
+async function fetchJenkinsTextArtifact(url: string, limitBytes = 1024 * 1024) {
+  const response = await axios.get(url, {
+    timeout: 15000,
+    responseType: 'stream',
+    ...buildAuthConfig(),
+  });
+
+  return await new Promise<{ content: string; truncated: boolean; contentType: string }>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let truncated = false;
+    const stream = response.data;
+    stream.on('data', (chunk: Buffer) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = limitBytes - total;
+      if (remaining > 0) {
+        chunks.push(buffer.subarray(0, remaining));
+        total += Math.min(buffer.length, remaining);
+      }
+      if (buffer.length > remaining) {
+        truncated = true;
+        stream.destroy();
+      }
+    });
+    stream.on('end', () => {
+      resolve({
+        content: Buffer.concat(chunks).toString('utf-8'),
+        truncated,
+        contentType: String(response.headers['content-type'] || ''),
+      });
+    });
+    stream.on('error', (error: Error) => {
+      if (truncated) {
+        resolve({
+          content: Buffer.concat(chunks).toString('utf-8'),
+          truncated,
+          contentType: String(response.headers['content-type'] || ''),
+        });
+        return;
+      }
+      reject(error);
+    });
+  });
 }
 
 async function fetchThirdSdkDependencies(branch: string, revision?: string): Promise<{
@@ -855,6 +978,56 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) => {
+  try {
+    const artifactUrl = String(req.query.url || '').trim();
+    if (!artifactUrl) {
+      res.status(400).json({ success: false, error: 'url 不能为空' });
+      return;
+    }
+    const parsedUrl = new URL(artifactUrl);
+    const jenkinsUrl = new URL(JENKINS_BASE_URL);
+    if (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/')) {
+      res.status(400).json({ success: false, error: '只允许预览当前 Jenkins 的 artifact 文件' });
+      return;
+    }
+    if (/\.(trace|ipa|png|jpg|jpeg|zip)$/i.test(parsedUrl.pathname)) {
+      res.status(400).json({ success: false, error: '该文件不是文本格式，请使用打开/下载查看' });
+      return;
+    }
+
+    const preview = await fetchJenkinsTextArtifact(artifactUrl);
+    let content = preview.content;
+    let format: 'text' | 'json' | 'xml' = 'text';
+    if (/\.json($|[?#])/i.test(parsedUrl.pathname) || /application\/json/i.test(preview.contentType)) {
+      try {
+        content = JSON.stringify(JSON.parse(content), null, 2);
+        format = 'json';
+      } catch {
+        format = 'text';
+      }
+    } else if (/\.xml($|[?#])/i.test(parsedUrl.pathname) || /xml/i.test(preview.contentType)) {
+      format = 'xml';
+    }
+
+    res.json({
+      success: true,
+      data: {
+        url: artifactUrl,
+        content,
+        contentType: preview.contentType,
+        format,
+        truncated: preview.truncated,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '读取质检结果文件失败'),
+    });
+  }
+});
+
 router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
@@ -870,8 +1043,12 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
     const response = await fetchJenkinsJobJson(jobPath, tree);
     const job = response.data || {};
     const builds = await Promise.all((Array.isArray(job.builds) ? job.builds : []).map(async (build: any) => {
-      const interruptedOverride = await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
-      const normalizedBuild = interruptedOverride ? { ...build, ...interruptedOverride } : build;
+      const localSummary = readLocalQualitySummary(DEFAULT_QA_JOB_NAME, build);
+      const localProgress = readLocalQualityProgress(DEFAULT_QA_JOB_NAME, build);
+      const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary);
+      const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
+      const stateOverride = completedOverride || interruptedOverride;
+      const normalizedBuild = stateOverride ? { ...build, ...stateOverride } : build;
       const qualitySummary = await fetchQualitySummary(jobPath, normalizedBuild);
       const mergedQualitySummary = interruptedOverride
         ? {
@@ -879,11 +1056,22 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
             status: 'failed',
             message: interruptedOverride.interruptedMessage,
           }
-        : qualitySummary;
+        : {
+            ...qualitySummary,
+            ...(localSummary || {}),
+            artifacts: {
+              ...(localSummary?.artifacts || {}),
+              ...(qualitySummary.artifacts || {}),
+            },
+            message: completedOverride?.completedMessage || localSummary?.message || qualitySummary.message,
+          };
       return {
         ...normalizedBuild,
         url: normalizeJenkinsUrl(normalizedBuild.url),
-        qualitySummary: mergedQualitySummary,
+        qualitySummary: {
+          ...mergedQualitySummary,
+          progress: localProgress || mergedQualitySummary.progress,
+        },
       };
     }));
     const running = builds.filter((build: any) => build.building).length;
@@ -1255,6 +1443,16 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       MONKEY_FORBIDDEN_PAGE_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PAGE_TEXTS') || 'DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow',
       MONKEY_FORBIDDEN_REGION_RATIO: getRuntimeEnv('QA_MONKEY_FORBIDDEN_REGION_RATIO') || '0.78,0.18,1.0,0.72',
       MONKEY_FORBIDDEN_PADDING: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PADDING') || '16',
+      PERFORMANCE_SAMPLING: getRuntimeEnv('QA_PERFORMANCE_SAMPLING') || '1',
+      PERFORMANCE_SAMPLER: getRuntimeEnv('QA_PERFORMANCE_SAMPLER') || 'auto',
+      PERFORMANCE_SAMPLE_TYPES: getRuntimeEnv('QA_PERFORMANCE_SAMPLE_TYPES') || 'cpu,memory,fps',
+      PERFORMANCE_XCTRACE_TEMPLATE: getRuntimeEnv('QA_PERFORMANCE_XCTRACE_TEMPLATE') || 'Activity Monitor',
+      PERF_COLD_START_WARN_MS: getRuntimeEnv('QA_PERF_COLD_START_WARN_MS') || '8000',
+      PERF_COLD_START_SLOW_MS: getRuntimeEnv('QA_PERF_COLD_START_SLOW_MS') || '15000',
+      PERF_CPU_AVG_WARN: getRuntimeEnv('QA_PERF_CPU_AVG_WARN') || '80',
+      PERF_MEMORY_PEAK_WARN_MB: getRuntimeEnv('QA_PERF_MEMORY_PEAK_WARN_MB') || '1500',
+      PERF_FPS_AVG_WARN: getRuntimeEnv('QA_PERF_FPS_AVG_WARN') || '45',
+      PERF_FPS_MIN_WARN: getRuntimeEnv('QA_PERF_FPS_MIN_WARN') || '20',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',

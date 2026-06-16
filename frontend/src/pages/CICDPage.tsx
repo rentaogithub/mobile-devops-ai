@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image } from 'antd';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -13,7 +13,7 @@ import {
   PlusOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, jenkinsApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, jenkinsApi } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
@@ -91,6 +91,31 @@ function formatMilliseconds(value?: number | string | null) {
   return `${ms}ms`;
 }
 
+function analysisSeverityColor(severity?: string) {
+  if (severity === 'failed') return 'red';
+  if (severity === 'warning') return 'orange';
+  if (severity === 'passed') return 'green';
+  return 'default';
+}
+
+function performanceGradeColor(grade?: string) {
+  if (grade === 'good') return 'green';
+  if (grade === 'warning') return 'orange';
+  if (grade === 'slow') return 'red';
+  return 'default';
+}
+
+function formatSeconds(value?: number | null) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return '-';
+  const seconds = Math.max(0, Math.floor(Number(value)));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) return `${hours}时${minutes}分`;
+  if (minutes > 0) return `${minutes}分${rest}秒`;
+  return `${rest}秒`;
+}
+
 function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
   if (build.building) {
     return <Tag color="processing">运行中</Tag>;
@@ -140,6 +165,8 @@ export default function CICDPage() {
   const [qualitySubmitting, setQualitySubmitting] = useState(false);
   const [qualityBuild, setQualityBuild] = useState<JenkinsBuild | null>(null);
   const [qualityReportBuild, setQualityReportBuild] = useState<JenkinsQualityBuild | null>(null);
+  const [qualityArtifactPreview, setQualityArtifactPreview] = useState<(JenkinsQualityArtifactPreview & { title: string }) | null>(null);
+  const [qualityArtifactPreviewLoading, setQualityArtifactPreviewLoading] = useState(false);
   const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('monkey');
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
@@ -394,6 +421,22 @@ export default function CICDPage() {
     }
   };
 
+  const previewQualityArtifact = async (title: string, url?: string) => {
+    if (!url) return;
+    setQualityArtifactPreviewLoading(true);
+    try {
+      const response = await jenkinsApi.previewQualityArtifact(url);
+      setQualityArtifactPreview({
+        ...(response.data || { url, content: '' }),
+        title,
+      });
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '读取结果文件失败');
+    } finally {
+      setQualityArtifactPreviewLoading(false);
+    }
+  };
+
   const openPgyerPublish = (build: JenkinsBuild) => {
     setDeployTarget('Pgyer');
     setVerificationPassword('');
@@ -520,6 +563,20 @@ export default function CICDPage() {
     latestBuild: '-',
     successRate: '-',
   }, [data]);
+  const hasRunningQualityBuild = useMemo(
+    () => (qualityData?.builds || []).some((build) => build.building),
+    [qualityData],
+  );
+
+  useEffect(() => {
+    if (activeSection !== 'quality' || !hasRunningQualityBuild) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      loadQualityBuilds({ silent: true });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, hasRunningQualityBuild]);
 
   const publishBranchOptions = useMemo(
     () => branches.map((branch) => ({ value: branch, label: branch })),
@@ -850,7 +907,7 @@ export default function CICDPage() {
                     loading={qualityLoading}
                     dataSource={qualityData?.builds || []}
                     tableLayout="fixed"
-                    scroll={{ x: 1280 }}
+                    scroll={{ x: 1480 }}
                     pagination={{ pageSize: 10, showSizeChanger: false }}
                     columns={[
                       {
@@ -901,6 +958,40 @@ export default function CICDPage() {
                         key: 'result',
                         width: 120,
                         render: (_, record) => resultTag(record),
+                      },
+                      {
+                        title: '进度',
+                        key: 'progress',
+                        width: 230,
+                        render: (_, record) => {
+                          const progress = record.qualitySummary?.progress;
+                          if (!record.building && !progress) {
+                            return <Text type="secondary">-</Text>;
+                          }
+                          const percent = Math.min(100, Math.max(0, Math.round(progress?.progressPercent || 0)));
+                          const perf = progress?.recentPerformance;
+                          return (
+                            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                              <Progress percent={percent} size="small" status={record.building ? 'active' : 'success'} />
+                              {progress?.message && (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {progress.message}
+                                </Text>
+                              )}
+                              <Text type="secondary" style={{ fontSize: 12 }}>
+                                {progress?.executedEvents || 0} 次 / 已运行 {formatSeconds(progress?.elapsedSeconds)}
+                                {progress?.remainingSeconds !== null && progress?.remainingSeconds !== undefined ? ` / 剩余 ${formatSeconds(progress.remainingSeconds)}` : ''}
+                              </Text>
+                              {(perf?.cpu !== null && perf?.cpu !== undefined) || (perf?.memoryMB !== null && perf?.memoryMB !== undefined) || (perf?.fps !== null && perf?.fps !== undefined) ? (
+                                <Space size={4} wrap>
+                                  {perf?.cpu !== null && perf?.cpu !== undefined && <Tag>CPU {perf.cpu}%</Tag>}
+                                  {perf?.memoryMB !== null && perf?.memoryMB !== undefined && <Tag>内存 {perf.memoryMB}MB</Tag>}
+                                  {perf?.fps !== null && perf?.fps !== undefined && <Tag>FPS {perf.fps}</Tag>}
+                                </Space>
+                              ) : null}
+                            </Space>
+                          );
+                        },
                       },
                       {
                         title: '开始时间',
@@ -1121,10 +1212,16 @@ export default function CICDPage() {
                 下载 JUnit
               </Button>
             )}
-            <Button onClick={() => setQualityReportBuild(null)}>关闭</Button>
+            <Button onClick={() => {
+              setQualityReportBuild(null);
+              setQualityArtifactPreview(null);
+            }}>关闭</Button>
           </Space>
         )}
-        onCancel={() => setQualityReportBuild(null)}
+        onCancel={() => {
+          setQualityReportBuild(null);
+          setQualityArtifactPreview(null);
+        }}
       >
         {qualityReportBuild && (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -1149,6 +1246,40 @@ export default function CICDPage() {
                 </Space>
               )}
             />
+            {qualityReportBuild.qualitySummary?.progress && (
+              <Alert
+                showIcon
+                type={qualityReportBuild.building ? 'info' : 'success'}
+                message="运行进度"
+                description={(
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Progress
+                      percent={Math.min(100, Math.max(0, Math.round(qualityReportBuild.qualitySummary.progress.progressPercent || 0)))}
+                      status={qualityReportBuild.building ? 'active' : 'success'}
+                    />
+                    <Space wrap>
+                      {qualityReportBuild.qualitySummary.progress.message && (
+                        <Tag color="blue">{qualityReportBuild.qualitySummary.progress.message}</Tag>
+                      )}
+                      <Tag>已执行 {qualityReportBuild.qualitySummary.progress.executedEvents || 0} 次</Tag>
+                      <Tag>已运行 {formatSeconds(qualityReportBuild.qualitySummary.progress.elapsedSeconds)}</Tag>
+                      {qualityReportBuild.qualitySummary.progress.remainingSeconds !== null && qualityReportBuild.qualitySummary.progress.remainingSeconds !== undefined && (
+                        <Tag>剩余 {formatSeconds(qualityReportBuild.qualitySummary.progress.remainingSeconds)}</Tag>
+                      )}
+                      {qualityReportBuild.qualitySummary.progress.recentPerformance?.cpu !== null && qualityReportBuild.qualitySummary.progress.recentPerformance?.cpu !== undefined && (
+                        <Tag>CPU {qualityReportBuild.qualitySummary.progress.recentPerformance.cpu}%</Tag>
+                      )}
+                      {qualityReportBuild.qualitySummary.progress.recentPerformance?.memoryMB !== null && qualityReportBuild.qualitySummary.progress.recentPerformance?.memoryMB !== undefined && (
+                        <Tag>内存 {qualityReportBuild.qualitySummary.progress.recentPerformance.memoryMB}MB</Tag>
+                      )}
+                      {qualityReportBuild.qualitySummary.progress.recentPerformance?.fps !== null && qualityReportBuild.qualitySummary.progress.recentPerformance?.fps !== undefined && (
+                        <Tag>FPS {qualityReportBuild.qualitySummary.progress.recentPerformance.fps}</Tag>
+                      )}
+                    </Space>
+                  </Space>
+                )}
+              />
+            )}
             <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
               <Descriptions.Item label="质检任务">#{qualityReportBuild.number}</Descriptions.Item>
               <Descriptions.Item label="状态">{resultTag(qualityReportBuild)}</Descriptions.Item>
@@ -1193,6 +1324,99 @@ export default function CICDPage() {
                 </Button>
               </Descriptions.Item>
             </Descriptions>
+
+            {qualityReportBuild.qualitySummary?.exceptionAnalysis && (
+              <Alert
+                showIcon
+                type={qualityReportBuild.qualitySummary.exceptionAnalysis.severity === 'failed' ? 'error' : (qualityReportBuild.qualitySummary.exceptionAnalysis.severity === 'warning' ? 'warning' : 'success')}
+                message="异常与崩溃问题"
+                description={(
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Tag color={analysisSeverityColor(qualityReportBuild.qualitySummary.exceptionAnalysis.severity)}>
+                        {qualityReportBuild.qualitySummary.exceptionAnalysis.severity || 'unknown'}
+                      </Tag>
+                      <Tag>崩溃 {qualityReportBuild.qualitySummary.exceptionAnalysis.crashCount || 0}</Tag>
+                      <Tag>异常 {qualityReportBuild.qualitySummary.exceptionAnalysis.exceptionCount || 0}</Tag>
+                      <Tag>卡死/Watchdog {qualityReportBuild.qualitySummary.exceptionAnalysis.watchdogCount || 0}</Tag>
+                      <Tag>内存问题 {qualityReportBuild.qualitySummary.exceptionAnalysis.memoryIssueCount || 0}</Tag>
+                      <Tag>错误日志 {qualityReportBuild.qualitySummary.exceptionAnalysis.errorCount || 0}</Tag>
+                    </Space>
+                    {(qualityReportBuild.qualitySummary.exceptionAnalysis.samples || []).slice(0, 3).map((sample, index) => (
+                      <Text key={`${sample.type || 'sample'}-${index}`} type="secondary" style={{ fontSize: 12 }}>
+                        [{sample.type || 'log'}] {sample.message}
+                      </Text>
+                    ))}
+                    {(qualityReportBuild.qualitySummary.exceptionAnalysis.crashReports?.samples || []).slice(0, 3).map((sample, index) => (
+                      <Text key={`${sample.file || 'crash'}-${index}`} type="secondary" style={{ fontSize: 12 }}>
+                        [crash] {sample.file}{sample.exception ? ` / ${sample.exception}` : ''}{sample.reason ? ` / ${sample.reason}` : ''}
+                      </Text>
+                    ))}
+                  </Space>
+                )}
+              />
+            )}
+
+            {qualityReportBuild.qualitySummary?.performanceAnalysis && (
+              <Alert
+                showIcon
+                type={qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade === 'slow' ? 'warning' : 'info'}
+                message="性能指标分析"
+                description={(
+                  <Space wrap>
+                    <Tag color={performanceGradeColor(qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade)}>
+                      冷启动 {qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade || 'unknown'}
+                    </Tag>
+                    <Tag>启动命令 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.launchDurationMs)}</Tag>
+                    <Tag>首屏 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.coldStartReadyMs)}</Tag>
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyExecutedEvents !== undefined && (
+                      <Tag>Monkey {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyExecutedEvents} 次</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyEventsPerMinute !== undefined && (
+                      <Tag>速率 {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyEventsPerMinute} 次/分钟</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyDurationMs !== undefined && (
+                      <Tag>Monkey 耗时 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.monkeyDurationMs)}</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.sampleCount !== undefined && (
+                      <Tag>采样 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.sampleCount} 条</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.cpu?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.avg !== null && (
+                      <Tag>CPU 平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.avg}% / 峰值 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.max ?? '-'}%</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.memoryMB?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.avg !== null && (
+                      <Tag>内存平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.avg}MB / 峰值 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.max ?? '-'}MB</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.fps?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.avg !== null && (
+                      <Tag>FPS 平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.avg} / 最低 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.min ?? '-'}</Tag>
+                    )}
+                    {qualityReportBuild.qualitySummary.performanceAnalysis.conclusion?.severity && (
+                      <Tag color={analysisSeverityColor(qualityReportBuild.qualitySummary.performanceAnalysis.conclusion.severity)}>
+                        结论 {qualityReportBuild.qualitySummary.performanceAnalysis.conclusion.severity}
+                      </Tag>
+                    )}
+                  </Space>
+                )}
+              />
+            )}
+
+            {(qualityReportBuild.qualitySummary?.performanceAnalysis?.conclusion?.issues || []).length > 0 && (
+              <Alert
+                showIcon
+                type="warning"
+                message="性能风险"
+                description={(
+                  <Space direction="vertical" size={4}>
+                    {(qualityReportBuild.qualitySummary?.performanceAnalysis?.conclusion?.issues || []).map((issue, index) => (
+                      <Text key={`${issue.metric || 'metric'}-${index}`} type="secondary">
+                        {issue.message || issue.metric}
+                      </Text>
+                    ))}
+                  </Space>
+                )}
+              />
+            )}
+
             <Row gutter={[16, 16]}>
               <Col xs={24} lg={10}>
                 <Card size="small" title="启动截图">
@@ -1212,7 +1436,7 @@ export default function CICDPage() {
                   size="small"
                   title="结果文件"
                   extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
-                    <Button size="small" type="link" onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.summaryUrl, '_blank', 'noopener,noreferrer')}>
+                    <Button size="small" type="link" onClick={() => previewQualityArtifact('summary.json', qualityReportBuild.qualitySummary?.artifacts?.summaryUrl)}>
                       summary.json
                     </Button>
                   )}
@@ -1221,35 +1445,100 @@ export default function CICDPage() {
                     <Button
                       icon={<FileTextOutlined />}
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl && window.open(qualityReportBuild.qualitySummary.artifacts.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '质检日志'}
+                      onClick={() => previewQualityArtifact('质检日志', qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl)}
                     >
                       质检日志
                     </Button>
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl && window.open(qualityReportBuild.qualitySummary.artifacts.deviceLogUrl, '_blank', 'noopener,noreferrer')}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '设备日志'}
+                      onClick={() => previewQualityArtifact('设备日志', qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl)}
                     >
                       设备日志
                     </Button>
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.processesUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.processesUrl && window.open(qualityReportBuild.qualitySummary.artifacts.processesUrl, '_blank', 'noopener,noreferrer')}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '进程信息'}
+                      onClick={() => previewQualityArtifact('进程信息', qualityReportBuild.qualitySummary?.artifacts?.processesUrl)}
                     >
                       进程信息
                     </Button>
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl && window.open(qualityReportBuild.qualitySummary.artifacts.monkeyReportUrl, '_blank', 'noopener,noreferrer')}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'Monkey 报告'}
+                      onClick={() => previewQualityArtifact('Monkey 报告', qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl)}
                     >
                       Monkey 报告
                     </Button>
                     <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '性能采样'}
+                      onClick={() => previewQualityArtifact('性能采样', qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl)}
+                    >
+                      性能采样
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl && window.open(qualityReportBuild.qualitySummary.artifacts.performanceTraceUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      性能 Trace
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl}
+                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl && window.open(qualityReportBuild.qualitySummary.artifacts.crashReportsUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                      崩溃报告
+                    </Button>
+                    <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.junitUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.junitUrl && window.open(qualityReportBuild.qualitySummary.artifacts.junitUrl, '_blank', 'noopener,noreferrer')}
+                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'JUnit'}
+                      onClick={() => previewQualityArtifact('JUnit', qualityReportBuild.qualitySummary?.artifacts?.junitUrl)}
                     >
                       JUnit
                     </Button>
                   </Space>
+                  {qualityArtifactPreview && (
+                    <Card
+                      size="small"
+                      title={(
+                        <Space>
+                          <Text>{qualityArtifactPreview.title}</Text>
+                          {qualityArtifactPreview.format && <Tag>{qualityArtifactPreview.format}</Tag>}
+                          {qualityArtifactPreview.truncated && <Tag color="orange">已截断</Tag>}
+                        </Space>
+                      )}
+                      extra={(
+                        <Space>
+                          <Button size="small" type="link" onClick={() => window.open(qualityArtifactPreview.url, '_blank', 'noopener,noreferrer')}>
+                            打开原文件
+                          </Button>
+                          <Button size="small" type="text" onClick={() => setQualityArtifactPreview(null)}>
+                            收起
+                          </Button>
+                        </Space>
+                      )}
+                      style={{ marginTop: 16 }}
+                    >
+                      <pre
+                        style={{
+                          margin: 0,
+                          maxHeight: 420,
+                          overflow: 'auto',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontSize: 12,
+                          lineHeight: 1.5,
+                          background: '#fafafa',
+                          padding: 12,
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 4,
+                        }}
+                      >
+                        {qualityArtifactPreview.content || '文件内容为空'}
+                      </pre>
+                    </Card>
+                  )}
                   {!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl && (
                     <Alert
                       type="warning"
