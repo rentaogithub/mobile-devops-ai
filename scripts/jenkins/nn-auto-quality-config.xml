@@ -113,6 +113,12 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>WDA_AUTO_INSTALL</name>
+          <defaultValue>1</defaultValue>
+          <description>找不到 WebDriverAgent.xcodeproj 时自动安装/检测 Appium XCUITest Driver。1=启用，0=跳过。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>WDA_PROJECT_PATH</name>
           <defaultValue></defaultValue>
           <description>可选：WebDriverAgent.xcodeproj 路径。留空时自动查找 Sonic Agent / Appium 常见目录。</description>

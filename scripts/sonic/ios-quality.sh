@@ -52,9 +52,11 @@ COLD_START_READY_MS=""
 COLD_START_WAIT_SECONDS="${COLD_START_WAIT_SECONDS:-5}"
 WDA_URL="${WDA_URL:-http://10.1.3.177:8100}"
 WDA_AUTO_START="${WDA_AUTO_START:-1}"
+WDA_AUTO_INSTALL="${WDA_AUTO_INSTALL:-1}"
 WDA_BIND_HOST="${WDA_BIND_HOST:-0.0.0.0}"
 WDA_PROJECT_PATH="${WDA_PROJECT_PATH:-${WDA_PROJECT:-}}"
 WDA_SCHEME="${WDA_SCHEME:-WebDriverAgentRunner}"
+MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
 MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_SEED="${MONKEY_SEED:-}"
@@ -131,7 +133,7 @@ write_summary() {
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
     "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL_DISPLAY:-${DEVICE_POOL_LABEL:-}}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
-    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${WDA_URL:-}" \
+    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
     "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" <<'PY'
 import json
 import os
@@ -488,8 +490,9 @@ elif part == "port":
 PY
 }
 
-check_wda_ready() {
-  python3 - "$WDA_URL" <<'PY'
+check_wda_ready_url() {
+  local url_to_check="${1:-${WDA_URL}}"
+  python3 - "$url_to_check" <<'PY'
 import json
 import sys
 import urllib.request
@@ -508,6 +511,10 @@ except Exception:
     pass
 sys.exit(1)
 PY
+}
+
+check_wda_ready() {
+  check_wda_ready_url "${1:-${WDA_URL}}"
 }
 
 find_wda_project() {
@@ -554,9 +561,56 @@ find_wda_project() {
   done
 }
 
+prepare_wda_project() {
+  if [ "${WDA_AUTO_INSTALL}" != "1" ]; then
+    log "WDA_AUTO_INSTALL=${WDA_AUTO_INSTALL}，跳过自动准备 WDA。"
+    return 1
+  fi
+
+  log "尝试自动准备 WebDriverAgent：安装/检测 Appium XCUITest Driver。"
+  if ! command -v appium >/dev/null 2>&1; then
+    if command -v npx >/dev/null 2>&1; then
+      log "未找到 appium，尝试通过 npx 安装 XCUITest Driver。"
+      if ! npx -y appium driver install xcuitest >>"${LOG_FILE}" 2>&1; then
+        log "npx 安装 XCUITest Driver 失败，继续尝试 npm install -g appium。"
+      fi
+      local prepared
+      prepared="$(find_wda_project)"
+      if [ -n "${prepared}" ]; then
+        printf '%s\n' "${prepared}"
+        return 0
+      fi
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+      log "未找到 appium 或 npm，无法自动安装 Appium XCUITest Driver。"
+      return 1
+    fi
+    log "未找到 appium，尝试 npm install -g appium。"
+    if ! npm install -g appium >>"${LOG_FILE}" 2>&1; then
+      log "安装 appium 失败，请在打包机 Jenkins 用户下手动执行：npm install -g appium"
+      return 1
+    fi
+  fi
+
+  if command -v appium >/dev/null 2>&1; then
+    log "检查 Appium XCUITest Driver..."
+    appium driver list --installed >>"${LOG_FILE}" 2>&1 || true
+    if ! appium driver list --installed 2>/dev/null | grep -qi "xcuitest"; then
+      log "未检测到 XCUITest Driver，尝试 appium driver install xcuitest。"
+      if ! appium driver install xcuitest >>"${LOG_FILE}" 2>&1; then
+        log "安装 XCUITest Driver 失败，请在打包机 Jenkins 用户下手动执行：appium driver install xcuitest"
+        return 1
+      fi
+    fi
+  fi
+
+  find_wda_project
+}
+
 ensure_wda_ready() {
-  if check_wda_ready; then
-    log "WDA 已可访问: ${WDA_URL}"
+  if check_wda_ready "${WDA_URL}"; then
+    MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
+    log "WDA 已可访问: ${MONKEY_RUNTIME_WDA_URL}"
     return 0
   fi
 
@@ -569,9 +623,13 @@ ensure_wda_ready() {
   local wda_project
   wda_project="$(find_wda_project)"
   if [ -z "${wda_project}" ]; then
-    log "未找到 WebDriverAgent.xcodeproj，无法自动启动 WDA。"
-    log "可通过 Jenkins 参数 WDA_PROJECT_PATH 指定 WebDriverAgent.xcodeproj，例如 Sonic Agent 或 Appium 自带的 WDA 工程。"
-    return 1
+    log "未找到 WebDriverAgent.xcodeproj，开始自动准备 WDA。"
+    wda_project="$(prepare_wda_project || true)"
+    if [ -z "${wda_project}" ]; then
+      log "仍未找到 WebDriverAgent.xcodeproj，无法自动启动 WDA。"
+      log "可通过 Jenkins 参数 WDA_PROJECT_PATH 指定 WebDriverAgent.xcodeproj，例如 Appium XCUITest Driver 自带的 WDA 工程。"
+      return 1
+    fi
   fi
 
   if ! command -v xcodebuild >/dev/null 2>&1; then
@@ -579,9 +637,10 @@ ensure_wda_ready() {
     return 1
   fi
 
-  local wda_host wda_port wda_log iproxy_log iproxy_pid_file wda_pid_file
+  local wda_host wda_port local_wda_url wda_log iproxy_log iproxy_pid_file wda_pid_file
   wda_host="$(wda_url_part host)"
   wda_port="$(wda_url_part port)"
+  local_wda_url="http://127.0.0.1:${wda_port}"
   wda_log="${RESULT_DIR}/wda-xcodebuild.log"
   iproxy_log="${RESULT_DIR}/wda-iproxy.log"
   iproxy_pid_file="${RESULT_DIR}/wda-iproxy.pid"
@@ -603,6 +662,7 @@ ensure_wda_ready() {
           iproxy -u "${SELECTED_DEVICE}" "${wda_port}" 8100 >>"${iproxy_log}" 2>&1
         ) &
         echo $! > "${iproxy_pid_file}"
+        MONKEY_RUNTIME_WDA_URL="${local_wda_url}"
       fi
     else
       log "检测到已有 iproxy 监听 ${wda_port}，复用。"
@@ -627,8 +687,14 @@ ensure_wda_ready() {
 
   local attempt
   for attempt in {1..60}; do
-    if check_wda_ready; then
-      log "WDA 启动成功: ${WDA_URL}"
+    if check_wda_ready "${WDA_URL}"; then
+      MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
+      log "WDA 启动成功: ${MONKEY_RUNTIME_WDA_URL}"
+      return 0
+    fi
+    if [ "${WDA_URL}" != "${local_wda_url}" ] && check_wda_ready "${local_wda_url}"; then
+      MONKEY_RUNTIME_WDA_URL="${local_wda_url}"
+      log "WDA 本机地址已可访问: ${MONKEY_RUNTIME_WDA_URL}"
       return 0
     fi
     sleep 2
@@ -643,7 +709,7 @@ ensure_wda_ready() {
 run_monkey_test() {
   log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
   ensure_wda_ready || true
-  python3 - "$WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" <<'PY'
+  python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" <<'PY'
 import json
 import random
 import sys

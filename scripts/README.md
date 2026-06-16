@@ -51,6 +51,7 @@ bash scripts/sonic/ios-quality.sh
 | `RUN_MONKEY` | 设为 `1` 时执行 Monkey 随机测试 |
 | `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://10.1.3.177:8100` |
 | `WDA_AUTO_START` | Monkey 测试前自动启动 WebDriverAgent，默认 `1` |
+| `WDA_AUTO_INSTALL` | 找不到 WebDriverAgent.xcodeproj 时自动安装/检测 Appium XCUITest Driver，默认 `1` |
 | `WDA_PROJECT_PATH` | 可选：WebDriverAgent.xcodeproj 路径，留空时自动查找 Sonic Agent / Appium 常见目录 |
 | `MONKEY_EVENT_COUNT` | Monkey 随机事件次数，默认 `30` |
 | `MONKEY_INTERVAL_SECONDS` | Monkey 事件间隔，默认 `0.35` |

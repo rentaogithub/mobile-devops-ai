@@ -1120,6 +1120,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
       WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://10.1.3.177:8100',
       WDA_AUTO_START: getRuntimeEnv('QA_WDA_AUTO_START') || '1',
+      WDA_AUTO_INSTALL: getRuntimeEnv('QA_WDA_AUTO_INSTALL') || '1',
       WDA_PROJECT_PATH: getRuntimeEnv('QA_WDA_PROJECT_PATH') || '',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
       MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
