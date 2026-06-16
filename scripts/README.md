@@ -49,7 +49,11 @@ bash scripts/sonic/ios-quality.sh
 | `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`monkey`、`full` |
 | `REQUESTED_TEST_SUITE` | 平台原始选择的质检套件，空值时使用 `TEST_SUITE` |
 | `RUN_MONKEY` | 设为 `1` 时执行 Monkey 随机测试 |
-| `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://10.1.3.177:8100` |
+| `SKIP_INSTALL_IF_SAME` | 设备已安装相同 Bundle ID、版本号、Build 号，且本机安装指纹缓存中的 IPA SHA256/MD5 一致时跳过安装，默认 `1`；设为 `0` 强制重装 |
+| `COLD_START_DETECT_SCREEN` | 启动 App 后检测首屏 UI 内容耗时，默认 `1`；设为 `0` 时退回固定等待 |
+| `COLD_START_READY_TIMEOUT_SECONDS` | 等待首屏 UI 内容出现的最长秒数，默认 `45` |
+| `COLD_START_READY_TEXT` | 可选：指定首页文案或控件文本，出现后才判定冷启动完成；留空时使用通用 UI 内容检测 |
+| `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://127.0.0.1:8100` |
 | `WDA_AUTO_START` | Monkey 测试前自动启动 WebDriverAgent，默认 `1` |
 | `WDA_AUTO_INSTALL` | 找不到 WebDriverAgent.xcodeproj 时自动安装/检测 Appium XCUITest Driver，默认 `1` |
 | `WDA_PROJECT_PATH` | 可选：WebDriverAgent.xcodeproj 路径，留空时自动查找 Sonic Agent / Appium 常见目录 |
@@ -57,8 +61,21 @@ bash scripts/sonic/ios-quality.sh
 | `WDA_DEVELOPMENT_TEAM` | 可选：WebDriverAgentRunner 签名 Team ID，留空使用 WDA 工程默认配置 |
 | `WDA_BUNDLE_ID` | 可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID |
 | `WDA_XCODEBUILD_EXTRA_ARGS` | 可选：追加给 WDA xcodebuild 的额外参数 |
-| `MONKEY_EVENT_COUNT` | Monkey 随机事件次数，默认 `30` |
+| `MONKEY_EVENT_COUNT` | `MONKEY_DURATION_SECONDS=0` 时使用的 Monkey 随机事件次数，默认 `30` |
+| `MONKEY_DURATION_SECONDS` | Monkey 持续运行秒数，默认 `28800`（8 小时）；设为 `0` 时按 `MONKEY_EVENT_COUNT` 次数执行 |
 | `MONKEY_INTERVAL_SECONDS` | Monkey 事件间隔，默认 `0.35` |
+| `MONKEY_MAX_REPORTED_EVENTS` | 长时间 Monkey 时 `monkey-report.json` 最多保留的事件明细数量，默认 `1000`；执行总数仍完整统计 |
+| `MONKEY_BACK_INTERVAL_EVENTS` | 每隔多少次事件主动执行一次返回动作，默认 `25`；设为 `0` 关闭定期返回 |
+| `MONKEY_STUCK_EVENTS` | UI 指纹连续约多少次事件不变时判定停留过久并返回恢复，默认 `18`；设为 `0` 关闭停留检测 |
+| `MONKEY_STUCK_CHECK_INTERVAL_EVENTS` | 每隔多少次事件采集一次 UI source 指纹，默认 `5` |
+| `MONKEY_BACK_ACTION_PROBABILITY` | 随机探索中主动返回动作概率，默认 `0.12` |
+| `MONKEY_BACK_TAP_PROBABILITY` | 返回动作中点击左上返回区的概率，默认 `0.35`；其余使用左缘侧滑返回 |
+| `MONKEY_AVOID_TOP_BAR` | 普通随机点击避开顶部导航栏，默认 `1`；规则返回动作仍可点击返回区 |
+| `MONKEY_HEARTBEAT_INTERVAL_SECONDS` | 长时间 Monkey 写入 Jenkins 日志的心跳间隔秒数，默认 `60`；设为 `0` 关闭 |
+| `MONKEY_FORBIDDEN_TEXTS` | 禁止点击的 UI 文案/控件关键词，逗号分隔，大小写不敏感；默认覆盖 debug/调试/日志/控制台/FLEX/DoraemonKit/DoraemonEntryWindow/DoKit 等调试工具 |
+| `MONKEY_FORBIDDEN_PAGE_TEXTS` | 如果已误入这些页面/控件关键词，Monkey 会优先返回恢复，默认 `DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow` |
+| `MONKEY_FORBIDDEN_REGION_RATIO` | 无法从 UI source 识别调试悬浮框时的兜底禁点区域，默认 `0.78,0.18,1.0,0.72`；多个区域用分号分隔 |
+| `MONKEY_FORBIDDEN_PADDING` | 禁点区域向外扩展像素，默认 `16` |
 
 当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 

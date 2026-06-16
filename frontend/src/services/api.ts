@@ -1279,6 +1279,11 @@ export const jenkinsApi = {
     return response.data;
   },
 
+  stopQualityBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/quality/builds/${buildNumber}/stop`);
+    return response.data;
+  },
+
   getSonicQualityStatus: async (): Promise<ApiResponse<SonicQualityStatus>> => {
     const response = await api.get<ApiResponse<SonicQualityStatus>>('/jenkins/nn/quality/sonic/status');
     return response.data;

@@ -24,7 +24,18 @@ if [ -f "$BACKEND_DIR/.env" ]; then
 fi
 BACKEND_PORT="${BACKEND_PORT:-${ENV_BACKEND_PORT:-3000}}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
-PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
+detect_host_ip() {
+    local ip
+    ip="$(ipconfig getifaddr en0 2>/dev/null || true)"
+    if [ -z "$ip" ]; then
+        ip="$(ipconfig getifaddr en1 2>/dev/null || true)"
+    fi
+    if [ -z "$ip" ]; then
+        ip="$(ifconfig 2>/dev/null | awk '/inet / && $2 !~ /^127\\./ && $2 !~ /^169\\.254\\./ { print $2; exit }')"
+    fi
+    echo "${ip:-127.0.0.1}"
+}
+PLATFORM_HOST="${PLATFORM_HOST:-$(detect_host_ip)}"
 BACKEND_PID=""
 FRONTEND_PID=""
 

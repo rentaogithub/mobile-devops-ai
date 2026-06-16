@@ -59,17 +59,7 @@ npm -v || true
 if command -v appium >/dev/null 2>&1; then
   echo "appium: $(command -v appium)"
 else
-  echo "appium 未安装，优先使用 npx 临时安装 driver。"
-fi
-
-echo "安装/检查 Appium XCUITest Driver..."
-if command -v appium >/dev/null 2>&1; then
-  appium driver list --installed || true
-  if ! appium driver list --installed 2>/dev/null | grep -qi "xcuitest"; then
-    appium driver install xcuitest
-  fi
-else
-  npx -y appium driver install xcuitest
+  echo "appium 未安装；若本地找不到 WDA，再使用 npx 临时安装 driver。"
 fi
 
 find_wda() {
@@ -93,6 +83,29 @@ find_wda() {
 }
 
 wda_project="$(find_wda)"
+if [ -n "$wda_project" ]; then
+  echo "OK: WebDriverAgent.xcodeproj=$wda_project"
+  echo
+  echo "Jenkins 可选参数："
+  echo "  WDA_PROJECT_PATH=$wda_project"
+  echo "  WDA_URL=http://127.0.0.1:8100"
+  echo
+  echo "验证 WDA 状态："
+  echo "  curl http://127.0.0.1:8100/status"
+  exit 0
+fi
+
+echo "安装/检查 Appium XCUITest Driver..."
+if command -v appium >/dev/null 2>&1; then
+  appium driver list --installed || true
+  if ! appium driver list --installed 2>/dev/null | grep -qi "xcuitest"; then
+    appium driver install xcuitest
+  fi
+else
+  npx -y appium driver install xcuitest
+fi
+
+wda_project="$(find_wda)"
 if [ -z "$wda_project" ]; then
   echo "ERROR: XCUITest Driver 已尝试安装，但仍未找到 WebDriverAgent.xcodeproj。"
   exit 3
@@ -102,7 +115,7 @@ echo "OK: WebDriverAgent.xcodeproj=$wda_project"
 echo
 echo "Jenkins 可选参数："
 echo "  WDA_PROJECT_PATH=$wda_project"
-echo "  WDA_URL=http://10.1.3.177:8100"
+echo "  WDA_URL=http://127.0.0.1:8100"
 echo
 echo "验证 WDA 状态："
-echo "  curl http://10.1.3.177:8100/status"
+echo "  curl http://127.0.0.1:8100/status"

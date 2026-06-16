@@ -10,12 +10,16 @@ import podDepsResolver from '../services/PodDependencyResolver';
 const router = Router();
 const execFileAsync = promisify(execFile);
 
-const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://10.1.3.177:8080').replace(/\/$/, '');
+const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
+const RELEASE_BUILD_LIST_LIMIT = Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 8);
+const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
+const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
+const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 3 * 60 * 1000);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
@@ -60,10 +64,10 @@ function normalizeQualitySuite(value?: string) {
 }
 
 function getSonicConfig() {
-  const apiBase = (getRuntimeEnv('SONIC_API_BASE') || 'http://10.1.3.177:5173/sonic-api').replace(/\/$/, '');
+  const apiBase = (getRuntimeEnv('SONIC_API_BASE') || 'http://127.0.0.1:5173/sonic-api').replace(/\/$/, '');
   return {
     apiBase,
-    webUrl: (getRuntimeEnv('SONIC_WEB_URL') || 'http://10.1.3.177:5173/sonic-admin').replace(/\/$/, ''),
+    webUrl: (getRuntimeEnv('SONIC_WEB_URL') || 'http://127.0.0.1:5173/sonic-admin').replace(/\/$/, ''),
     apiProxyTarget: (getRuntimeEnv('SONIC_API_PROXY_TARGET') || 'http://127.0.0.1:8094').replace(/\/$/, ''),
     webProxyTarget: (getRuntimeEnv('SONIC_WEB_PROXY_TARGET') || 'http://127.0.0.1:3002').replace(/\/$/, ''),
     token: getRuntimeEnv('SONIC_TOKEN') || '',
@@ -250,6 +254,79 @@ function buildJenkinsArtifactUrl(jobPath: string, buildNumber: number, relativeP
   return `${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/artifact/${encodedPath}`;
 }
 
+function localJenkinsJobDir(jobName: string) {
+  const jenkinsHome = process.env.JENKINS_HOME || path.join(process.env.HOME || '', '.jenkins');
+  const parts = jobName.split('/').filter(Boolean);
+  if (parts.length === 0) return '';
+  let jobDir = path.join(jenkinsHome, 'jobs', parts[0]);
+  for (const part of parts.slice(1)) {
+    jobDir = path.join(jobDir, 'jobs', part);
+  }
+  return jobDir;
+}
+
+async function hasActiveQualityScriptProcess() {
+  try {
+    await execFileAsync('pgrep', ['-f', 'scripts/sonic/ios-quality.sh'], { timeout: 1500 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildInterruptedOverride(jobName: string, build: any) {
+  if (!build?.building) return null;
+  const buildNumber = Number(build.number);
+  if (!Number.isFinite(buildNumber)) return null;
+
+  const buildDir = path.join(localJenkinsJobDir(jobName), 'builds', String(buildNumber));
+  const logFile = path.join(buildDir, 'log');
+  const buildXml = path.join(buildDir, 'build.xml');
+  if (!fs.existsSync(logFile) || fs.existsSync(buildXml)) return null;
+
+  const stat = fs.statSync(logFile);
+  const staleMs = Date.now() - stat.mtimeMs;
+  if (staleMs < JENKINS_ORPHAN_BUILD_STALE_MS) return null;
+  if (await hasActiveQualityScriptProcess()) return null;
+
+  return {
+    building: false,
+    result: 'FAILURE',
+    duration: build.duration || Math.max(0, Date.now() - Number(build.timestamp || stat.mtimeMs)),
+    description: [build.description, '本机检测到质检执行进程已退出，Jenkins 构建记录未正常收尾。'].filter(Boolean).join('\n'),
+    interruptedMessage: '质检执行进程已退出，Jenkins 构建记录未正常收尾，已按中断处理。',
+  };
+}
+
+async function stopJenkinsBuild(jobName: string, buildNumber: number) {
+  const jobPath = encodeJobPath(jobName);
+  const crumb = await getCrumb();
+  await axios.post(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/stop`, null, {
+    timeout: 30000,
+    headers: {
+      ...crumb.headers,
+    },
+    ...buildAuthConfig(),
+  });
+  return jobPath;
+}
+
+async function cleanupLocalQualityProcesses() {
+  const patterns = [
+    'scripts/sonic/ios-quality.sh',
+    'WebDriverAgentRunner',
+    'xcodebuild.*WebDriverAgentRunner',
+    'iproxy.*8100',
+  ];
+  await Promise.all(patterns.map(async (pattern) => {
+    try {
+      await execFileAsync('pkill', ['-f', pattern], { timeout: 1500 });
+    } catch {
+      // 没有匹配进程时 pkill 会返回非 0，忽略即可。
+    }
+  }));
+}
+
 function parseBuildDescription(description?: string | null) {
   const text = (description || '').trim();
   const match = text.match(/^([^,，]+)[,，]\s*(.+)$/);
@@ -348,7 +425,7 @@ function parseConsoleMetadata(consoleText: string) {
   ).replace(/\\/g, '').trim();
   const archiveRelativePath = archivePath.match(/\/Archives\/(.+)$/)?.[1] || '';
   const archiveUrl = archiveRelativePath
-    ? `smb://10.1.3.177/Archives/${encodeURI(archiveRelativePath)}`
+    ? `smb://127.0.0.1/Archives/${encodeURI(archiveRelativePath)}`
     : '';
 
   return {
@@ -376,7 +453,7 @@ function parseCheckoutRevision(consoleText: string) {
 async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
   try {
     const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
-      timeout: 15000,
+      timeout: JENKINS_BUILD_METADATA_TIMEOUT_MS,
       ...buildAuthConfig(),
     });
     return parseConsoleMetadata(String(response.data || ''));
@@ -554,7 +631,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
 async function fetchBuildParameters(jobPath: string, buildNumber: number) {
   try {
     const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/api/json`, {
-      timeout: 10000,
+      timeout: JENKINS_BUILD_METADATA_TIMEOUT_MS,
       params: {
         tree: 'actions[parameters[name,value]]',
       },
@@ -595,14 +672,14 @@ async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
   if (tree) {
     try {
       return await axios.get(url, {
-        timeout: 30000,
+        timeout: JENKINS_LIST_TIMEOUT_MS,
         params: { tree },
         ...buildAuthConfig(),
       });
     } catch (error: any) {
-      if (!error.response || error.response.status >= 500 || error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+      if (error.response?.status >= 500) {
         return axios.get(url, {
-          timeout: 30000,
+          timeout: JENKINS_LIST_TIMEOUT_MS,
           ...buildAuthConfig(),
         });
       }
@@ -610,7 +687,7 @@ async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
     }
   }
   return axios.get(url, {
-    timeout: 30000,
+    timeout: JENKINS_LIST_TIMEOUT_MS,
     ...buildAuthConfig(),
   });
 }
@@ -657,12 +734,12 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
       'buildable',
       'color',
       'lastBuild[number,result,timestamp,duration,building,url,description]',
-      'builds[number,result,timestamp,duration,building,url,description]{0,30}',
+      `builds[number,result,timestamp,duration,building,url,description]{0,${RELEASE_BUILD_LIST_LIMIT}}`,
     ].join(',');
     const response = await fetchJenkinsJobJson(jobPath, tree);
 
     const job = response.data || {};
-    const rawBuilds = Array.isArray(job.builds) ? job.builds : [];
+    const rawBuilds = Array.isArray(job.builds) ? job.builds.slice(0, RELEASE_BUILD_LIST_LIMIT) : [];
     const buildsWithMetadata = await Promise.all(rawBuilds.map(async (build: any) => {
       const descriptionMetadata = parseBuildDescription(build.description);
       const [consoleMetadata, buildParameters] = await Promise.all([
@@ -793,11 +870,20 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
     const response = await fetchJenkinsJobJson(jobPath, tree);
     const job = response.data || {};
     const builds = await Promise.all((Array.isArray(job.builds) ? job.builds : []).map(async (build: any) => {
-      const qualitySummary = await fetchQualitySummary(jobPath, build);
+      const interruptedOverride = await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
+      const normalizedBuild = interruptedOverride ? { ...build, ...interruptedOverride } : build;
+      const qualitySummary = await fetchQualitySummary(jobPath, normalizedBuild);
+      const mergedQualitySummary = interruptedOverride
+        ? {
+            ...qualitySummary,
+            status: 'failed',
+            message: interruptedOverride.interruptedMessage,
+          }
+        : qualitySummary;
       return {
-        ...build,
-        url: normalizeJenkinsUrl(build.url),
-        qualitySummary,
+        ...normalizedBuild,
+        url: normalizeJenkinsUrl(normalizedBuild.url),
+        qualitySummary: mergedQualitySummary,
       };
     }));
     const running = builds.filter((build: any) => build.building).length;
@@ -1020,7 +1106,6 @@ router.post('/nn/build', async (req: Request, res: Response) => {
 
 router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
       res.status(400).json({
@@ -1030,14 +1115,7 @@ router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
       return;
     }
 
-    const crumb = await getCrumb();
-    await axios.post(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/stop`, null, {
-      timeout: 30000,
-      headers: {
-        ...crumb.headers,
-      },
-      ...buildAuthConfig(),
-    });
+    await stopJenkinsBuild(DEFAULT_JOB_NAME, buildNumber);
 
     res.json({
       success: true,
@@ -1050,6 +1128,39 @@ router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
     res.status(502).json({
       success: false,
       error: extractErrorMessage(error, '取消 Jenkins 构建失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
+router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Response) => {
+  try {
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '质检任务号无效',
+      });
+      return;
+    }
+
+    try {
+      await stopJenkinsBuild(DEFAULT_QA_JOB_NAME, buildNumber);
+    } finally {
+      await cleanupLocalQualityProcesses();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        jobName: DEFAULT_QA_JOB_NAME,
+        buildNumber,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '停止自动质检任务失败'),
       status: error.response?.status,
     });
   }
@@ -1118,7 +1229,10 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : 'local-ios-device',
       QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : 'local-usb',
       APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
-      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://10.1.3.177:8100',
+      COLD_START_DETECT_SCREEN: getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1',
+      COLD_START_READY_TIMEOUT_SECONDS: getRuntimeEnv('QA_COLD_START_READY_TIMEOUT_SECONDS') || '45',
+      COLD_START_READY_TEXT: getRuntimeEnv('QA_COLD_START_READY_TEXT') || '',
+      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://127.0.0.1:8100',
       WDA_AUTO_START: getRuntimeEnv('QA_WDA_AUTO_START') || '1',
       WDA_AUTO_INSTALL: getRuntimeEnv('QA_WDA_AUTO_INSTALL') || '1',
       WDA_PROJECT_PATH: getRuntimeEnv('QA_WDA_PROJECT_PATH') || '',
@@ -1127,7 +1241,20 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       WDA_BUNDLE_ID: getRuntimeEnv('QA_WDA_BUNDLE_ID') || '',
       WDA_XCODEBUILD_EXTRA_ARGS: getRuntimeEnv('QA_WDA_XCODEBUILD_EXTRA_ARGS') || '',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
+      MONKEY_DURATION_SECONDS: getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800',
       MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
+      MONKEY_MAX_REPORTED_EVENTS: getRuntimeEnv('QA_MONKEY_MAX_REPORTED_EVENTS') || '1000',
+      MONKEY_BACK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_BACK_INTERVAL_EVENTS') || '25',
+      MONKEY_STUCK_EVENTS: getRuntimeEnv('QA_MONKEY_STUCK_EVENTS') || '18',
+      MONKEY_STUCK_CHECK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_STUCK_CHECK_INTERVAL_EVENTS') || '5',
+      MONKEY_BACK_ACTION_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_ACTION_PROBABILITY') || '0.12',
+      MONKEY_BACK_TAP_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_TAP_PROBABILITY') || '0.35',
+      MONKEY_AVOID_TOP_BAR: getRuntimeEnv('QA_MONKEY_AVOID_TOP_BAR') || '1',
+      MONKEY_HEARTBEAT_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_HEARTBEAT_INTERVAL_SECONDS') || '60',
+      MONKEY_FORBIDDEN_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_TEXTS') || 'debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn',
+      MONKEY_FORBIDDEN_PAGE_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PAGE_TEXTS') || 'DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow',
+      MONKEY_FORBIDDEN_REGION_RATIO: getRuntimeEnv('QA_MONKEY_FORBIDDEN_REGION_RATIO') || '0.78,0.18,1.0,0.72',
+      MONKEY_FORBIDDEN_PADDING: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PADDING') || '16',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',

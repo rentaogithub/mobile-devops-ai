@@ -101,8 +101,26 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>COLD_START_DETECT_SCREEN</name>
+          <defaultValue>1</defaultValue>
+          <description>启动 App 后检测首屏 UI 内容耗时。1=启用，0=退回固定等待 COLD_START_WAIT_SECONDS。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>COLD_START_READY_TIMEOUT_SECONDS</name>
+          <defaultValue>45</defaultValue>
+          <description>等待首屏 UI 内容出现的最长秒数。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>COLD_START_READY_TEXT</name>
+          <defaultValue></defaultValue>
+          <description>可选：指定首页文案或控件文本，出现后才判定冷启动完成；留空时使用通用 UI 内容启发式检测。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>WDA_URL</name>
-          <defaultValue>http://10.1.3.177:8100</defaultValue>
+          <defaultValue>http://127.0.0.1:8100</defaultValue>
           <description>Monkey 测试使用的 WebDriverAgent 地址。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
@@ -132,13 +150,13 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>WDA_DEVELOPMENT_TEAM</name>
-          <defaultValue></defaultValue>
+          <defaultValue>LX4548D2Q6</defaultValue>
           <description>可选：WebDriverAgentRunner 签名 Team ID，留空时使用 WDA 工程默认配置。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>WDA_BUNDLE_ID</name>
-          <defaultValue></defaultValue>
+          <defaultValue>com.nndev.WebDriverAgentRunner</defaultValue>
           <description>可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
@@ -151,11 +169,91 @@
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_EVENT_COUNT</name>
           <defaultValue>30</defaultValue>
+          <description>当 MONKEY_DURATION_SECONDS=0 时使用的 Monkey 随机事件次数。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_DURATION_SECONDS</name>
+          <defaultValue>28800</defaultValue>
+          <description>Monkey 持续运行秒数，默认 28800（8 小时）。设为 0 时按 MONKEY_EVENT_COUNT 次数执行。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_INTERVAL_SECONDS</name>
           <defaultValue>0.35</defaultValue>
+          <description>Monkey 两次随机事件之间的间隔秒数。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_MAX_REPORTED_EVENTS</name>
+          <defaultValue>1000</defaultValue>
+          <description>长时间 Monkey 时 monkey-report.json 最多保留的事件明细数量，执行总数仍完整统计。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_BACK_INTERVAL_EVENTS</name>
+          <defaultValue>25</defaultValue>
+          <description>每隔多少次事件主动执行一次返回动作。0=关闭定期返回。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_STUCK_EVENTS</name>
+          <defaultValue>18</defaultValue>
+          <description>页面 UI 指纹连续约多少次事件不变时判定停留过久，并执行返回恢复。0=关闭停留检测。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_STUCK_CHECK_INTERVAL_EVENTS</name>
+          <defaultValue>5</defaultValue>
+          <description>每隔多少次事件采集一次 UI source 指纹，避免长时间 Monkey 过度拉取页面树。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_BACK_ACTION_PROBABILITY</name>
+          <defaultValue>0.12</defaultValue>
+          <description>随机探索中主动返回动作的概率，范围 0-1。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_BACK_TAP_PROBABILITY</name>
+          <defaultValue>0.35</defaultValue>
+          <description>返回动作中点击左上返回区的概率；其余使用左缘侧滑返回，范围 0-1。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_AVOID_TOP_BAR</name>
+          <defaultValue>1</defaultValue>
+          <description>普通随机点击避开顶部导航栏区域，降低误触返回/关闭；规则返回动作仍可点击返回区。1=启用，0=关闭。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_HEARTBEAT_INTERVAL_SECONDS</name>
+          <defaultValue>60</defaultValue>
+          <description>长时间 Monkey 运行时写入 Jenkins 日志的心跳间隔秒数。0=关闭心跳。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_FORBIDDEN_TEXTS</name>
+          <defaultValue>debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn</defaultValue>
+          <description>Monkey 禁止点击的 UI 文案/控件关键词，逗号分隔，大小写不敏感。命中节点 frame 后会动态避开，用于屏蔽 NN iOS debug/DoraemonEntryWindow 调试悬浮框。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_FORBIDDEN_PAGE_TEXTS</name>
+          <defaultValue>DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow</defaultValue>
+          <description>如果已误入这些页面/控件关键词，Monkey 会优先执行返回恢复，逗号分隔，大小写不敏感。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_FORBIDDEN_REGION_RATIO</name>
+          <defaultValue>0.78,0.18,1.0,0.72</defaultValue>
+          <description>无法从 UI source 识别悬浮框时的兜底禁点区域，格式 left,top,right,bottom；0-1 表示屏幕比例，多个区域用分号分隔。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MONKEY_FORBIDDEN_PADDING</name>
+          <defaultValue>16</defaultValue>
+          <description>禁点区域向外扩展的像素，降低误触调试悬浮框概率。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>

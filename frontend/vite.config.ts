@@ -17,10 +17,8 @@ function getBackendCandidates() {
     explicit,
     'http://127.0.0.1:3001',
     ...addresses.map((address) => `http://${address}:3001`),
-    'http://10.1.3.177:3001',
     'http://127.0.0.1:3000',
     ...addresses.map((address) => `http://${address}:3000`),
-    'http://10.1.3.177:3000',
   ].filter((target): target is string => Boolean(target));
 
   return Array.from(new Set(candidates));
@@ -31,7 +29,7 @@ async function isPlatformBackend(target: string) {
   const timer = setTimeout(() => controller.abort(), 1200);
 
   try {
-    const response = await fetch(`${target}/api/jenkins/nn/builds`, {
+    const response = await fetch(`${target}/health`, {
       signal: controller.signal,
       headers: { Accept: 'application/json' },
     });

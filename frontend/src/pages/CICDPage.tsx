@@ -25,11 +25,11 @@ const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
 ];
 
 const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
+  { label: 'Monkey 测试', value: 'monkey' },
   { label: '冒烟测试', value: 'smoke' },
   { label: '登录测试', value: 'login' },
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
-  { label: 'Monkey 测试', value: 'monkey' },
   { label: '全量回归', value: 'full' },
 ];
 
@@ -124,6 +124,7 @@ export default function CICDPage() {
   const [qualityLoading, setQualityLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [stoppingBuild, setStoppingBuild] = useState<number | null>(null);
+  const [stoppingQualityBuild, setStoppingQualityBuild] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [qualityError, setQualityError] = useState('');
   const [qualityData, setQualityData] = useState<JenkinsQualityListResult | null>(null);
@@ -139,7 +140,7 @@ export default function CICDPage() {
   const [qualitySubmitting, setQualitySubmitting] = useState(false);
   const [qualityBuild, setQualityBuild] = useState<JenkinsBuild | null>(null);
   const [qualityReportBuild, setQualityReportBuild] = useState<JenkinsQualityBuild | null>(null);
-  const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('smoke');
+  const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('monkey');
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
     build: JenkinsBuild;
@@ -221,31 +222,26 @@ export default function CICDPage() {
     const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000];
     const previousNumber = previousLatest ? Number(previousLatest) : 0;
     let targetBuildNumber: number | null = null;
-    setQualityLoading(true);
-    try {
-      for (const delay of delays) {
-        if (delay > 0) {
-          await new Promise((resolve) => setTimeout(resolve, delay));
-        }
-        const nextData = await loadQualityBuilds({ silent: true });
-        const latestBuild = nextData?.builds?.[0];
-        const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
-
-        if (!targetBuildNumber && latestNumber && (!previousNumber || latestNumber > previousNumber)) {
-          targetBuildNumber = latestNumber;
-        }
-
-        const targetBuild = targetBuildNumber
-          ? nextData?.builds?.find((build) => Number(build.number) === targetBuildNumber)
-          : null;
-        if (targetBuild && !targetBuild.building) {
-          return;
-        }
+    for (const delay of delays) {
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
-      await loadQualityBuilds({ silent: true });
-    } finally {
-      setQualityLoading(false);
+      const nextData = await loadQualityBuilds({ silent: true });
+      const latestBuild = nextData?.builds?.[0];
+      const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
+
+      if (!targetBuildNumber && latestNumber && (!previousNumber || latestNumber > previousNumber)) {
+        targetBuildNumber = latestNumber;
+      }
+
+      const targetBuild = targetBuildNumber
+        ? nextData?.builds?.find((build) => Number(build.number) === targetBuildNumber)
+        : null;
+      if (targetBuild && !targetBuild.building) {
+        return;
+      }
     }
+    await loadQualityBuilds({ silent: true });
   };
 
   const loadSonicDevicePools = async () => {
@@ -385,6 +381,19 @@ export default function CICDPage() {
     }
   };
 
+  const stopQualityBuild = async (buildNumber: number) => {
+    setStoppingQualityBuild(buildNumber);
+    try {
+      await jenkinsApi.stopQualityBuild(buildNumber);
+      message.success(`已停止质检任务 #${buildNumber}`);
+      loadQualityBuilds();
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '停止质检任务失败');
+    } finally {
+      setStoppingQualityBuild(null);
+    }
+  };
+
   const openPgyerPublish = (build: JenkinsBuild) => {
     setDeployTarget('Pgyer');
     setVerificationPassword('');
@@ -402,7 +411,7 @@ export default function CICDPage() {
   const openQualityModal = (build?: JenkinsBuild) => {
     const fallbackBuild = build || data?.builds?.find((item) => item.result === 'SUCCESS') || data?.builds?.[0] || null;
     setQualityBuild(fallbackBuild);
-    setQualitySuite('smoke');
+    setQualitySuite('monkey');
     setQualityDevicePool(sonicDevicePools[0]?.value || 'ios-default');
     setQualityModalOpen(true);
   };
@@ -426,9 +435,9 @@ export default function CICDPage() {
         testSuite: qualitySuite,
         devicePool: qualityDevicePool,
       });
-      message.success(`已触发自动质检：#${qualityBuild.number}，正在刷新质检任务列表`);
+      message.success(`已触发自动质检：#${qualityBuild.number}，任务列表将在后台刷新`);
       setQualityModalOpen(false);
-      await refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
+      void refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发自动质检失败');
     } finally {
@@ -520,8 +529,6 @@ export default function CICDPage() {
   const pageDescription = activeSection === 'quality'
     ? '基于打包机本机 USB 真机执行 iOS 自动化质检，覆盖安装、启动、用例、截图和报告采集。'
     : 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。';
-  const sonicOpenUrl = `${window.location.origin}/sonic-admin`;
-
   return (
     <div>
       <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
@@ -536,7 +543,7 @@ export default function CICDPage() {
         </div>
         {activeSection === 'release' ? (
           <Space>
-            <Button icon={<ExportOutlined />} onClick={() => window.open(data?.job.url || 'http://10.1.3.177:8080/job/nn/', '_blank', 'noopener,noreferrer')}>
+            <Button icon={<ExportOutlined />} onClick={() => window.open(data?.job.url || `${window.location.protocol}//${window.location.hostname}:8080/job/nn/`, '_blank', 'noopener,noreferrer')}>
               打开 Jenkins
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => loadBuilds()} loading={loading}>
@@ -548,15 +555,6 @@ export default function CICDPage() {
           </Space>
         ) : (
           <Space>
-            <Button
-              icon={<ExportOutlined />}
-              onClick={() => window.open(sonicOpenUrl, '_blank', 'noopener,noreferrer')}
-            >
-              打开 Sonic（可选）
-            </Button>
-            <Button icon={<ExportOutlined />} onClick={() => window.open(qualityData?.job.url || 'http://10.1.3.177:8080/job/nn-auto-quality/', '_blank', 'noopener,noreferrer')}>
-              打开质检 Jenkins
-            </Button>
             <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
               设备池
             </Button>
@@ -920,7 +918,7 @@ export default function CICDPage() {
                       {
                         title: '操作',
                         key: 'action',
-                        width: 100,
+                        width: 180,
                         render: (_, record) => (
                           <Space size={8}>
                             <Button
@@ -930,6 +928,25 @@ export default function CICDPage() {
                             >
                               报告
                             </Button>
+                            {record.building && (
+                              <Popconfirm
+                                title="停止质检任务？"
+                                description={`确定要停止 #${record.number} 吗？`}
+                                okText="停止"
+                                cancelText="关闭"
+                                okButtonProps={{ danger: true }}
+                                onConfirm={() => stopQualityBuild(record.number)}
+                              >
+                                <Button
+                                  size="small"
+                                  danger
+                                  icon={<StopOutlined />}
+                                  loading={stoppingQualityBuild === record.number}
+                                >
+                                  停止
+                                </Button>
+                              </Popconfirm>
+                            )}
                           </Space>
                         ),
                       },
