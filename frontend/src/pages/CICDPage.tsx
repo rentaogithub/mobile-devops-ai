@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox } from 'antd';
+import * as echarts from 'echarts';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox, Collapse } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -13,10 +14,12 @@ import {
   PlusOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, jenkinsApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import type { DSYMInfo, SymbolicationResult } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
+type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'summary';
 
 const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '蒲公英', value: 'Pgyer' },
@@ -34,6 +37,7 @@ const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
 ];
 
 const MONKEY_DURATION_OPTIONS = [
+  { label: '5 分钟', value: 300 },
   { label: '0.5 小时', value: 1800 },
   { label: '1 小时', value: 3600 },
   { label: '4 小时', value: 14400 },
@@ -124,7 +128,12 @@ function formatSeconds(value?: number | null) {
 }
 
 function progressElapsedSeconds(build: JenkinsQualityBuild) {
-  const progressElapsed = Number(build.qualitySummary?.progress?.elapsedSeconds || 0);
+  const progress = build.qualitySummary?.progress;
+  const progressElapsed = Number(progress?.elapsedSeconds || 0);
+  if (build.building && progress?.updatedAt && progressElapsed >= 0) {
+    const sinceUpdate = Math.max(0, Math.floor((Date.now() - Number(progress.updatedAt)) / 1000));
+    return progressElapsed + sinceUpdate;
+  }
   if (progressElapsed > 0) return progressElapsed;
   if (build.duration > 0) return Math.round(build.duration / 1000);
   return progressElapsed;
@@ -146,10 +155,33 @@ function progressPercent(build: JenkinsQualityBuild) {
   return Math.min(100, Math.max(0, Math.round(progress?.progressPercent || 0)));
 }
 
+function isQualityBuildEffectivelyRunning(build: JenkinsQualityBuild) {
+  const progress = build.qualitySummary?.progress;
+  const status = String(progress?.status || '').toLowerCase();
+  if (['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(status)) return false;
+  if (progressPercent(build) >= 100) return false;
+  return build.building;
+}
+
 function progressStatus(build: JenkinsQualityBuild) {
   if (build.result === 'FAILURE') return 'exception';
-  if (build.building) return 'active';
+  if (isQualityBuildEffectivelyRunning(build)) return 'active';
   return 'success';
+}
+
+function hasQualityReportArtifact(build?: JenkinsQualityBuild | null) {
+  const artifacts = build?.qualitySummary?.artifacts;
+  if (!artifacts) return false;
+  return Boolean(
+    artifacts.qualityLogUrl ||
+    artifacts.summaryUrl ||
+    artifacts.monkeyReportUrl ||
+    artifacts.performanceSamplesUrl ||
+    artifacts.performanceTraceUrl ||
+    artifacts.crashReportsUrl ||
+    artifacts.junitUrl ||
+    artifacts.screenshotUrl
+  );
 }
 
 function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
@@ -170,11 +202,974 @@ function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
   }
 }
 
+function qualityResultTag(build: JenkinsQualityBuild) {
+  if (isQualityBuildEffectivelyRunning(build)) {
+    return <Tag color="processing">运行中</Tag>;
+  }
+  const status = String(build.qualitySummary?.status || build.qualitySummary?.progress?.status || '').toLowerCase();
+  if (['passed', 'success'].includes(status)) {
+    return <Tag color="green">通过</Tag>;
+  }
+  if (['failed', 'failure'].includes(status)) {
+    return <Tag color="red">失败</Tag>;
+  }
+  if (['canceled', 'cancelled', 'aborted'].includes(status)) {
+    return <Tag color="default">已取消</Tag>;
+  }
+  return resultTag(build);
+}
+
 function getChannelBuildNumber(build: JenkinsBuild) {
   const channelBuildNumber = String(build.buildNumber || '').trim();
   if (!channelBuildNumber) return '';
   if (channelBuildNumber === String(build.number)) return '';
   return channelBuildNumber;
+}
+
+function openPerformanceTrace(url?: string) {
+  if (!url) return;
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
+function PerformanceAnalysisSummary({
+  analysis,
+}: {
+  analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
+}) {
+  const issues = analysis?.conclusion?.issues || [];
+  if (!analysis) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有性能报告" />;
+  }
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Space wrap>
+        {analysis?.coldStartGrade && (
+          <Tag color={performanceGradeColor(analysis.coldStartGrade)}>
+            冷启动 {analysis.coldStartGrade}
+          </Tag>
+        )}
+        {analysis?.launchDurationMs !== undefined && <Tag>启动命令 {formatMilliseconds(analysis.launchDurationMs)}</Tag>}
+        {analysis?.coldStartReadyMs !== undefined && <Tag>首屏 {formatMilliseconds(analysis.coldStartReadyMs)}</Tag>}
+        {analysis?.monkeyExecutedEvents !== undefined && <Tag>Monkey {analysis.monkeyExecutedEvents} 次</Tag>}
+        {analysis?.monkeyEventsPerMinute !== undefined && <Tag>速率 {analysis.monkeyEventsPerMinute} 次/分钟</Tag>}
+        {analysis?.monkeyDurationMs !== undefined && <Tag>Monkey 耗时 {formatMilliseconds(analysis.monkeyDurationMs)}</Tag>}
+        {analysis?.samples?.sampleCount !== undefined && <Tag>采样 {analysis.samples.sampleCount} 条</Tag>}
+        {analysis?.samples?.cpu?.avg !== undefined && analysis.samples.cpu.avg !== null && (
+          <Tag>CPU 平均 {analysis.samples.cpu.avg}% / 峰值 {analysis.samples.cpu.max ?? '-'}%</Tag>
+        )}
+        {analysis?.samples?.memoryMB?.avg !== undefined && analysis.samples.memoryMB.avg !== null && (
+          <Tag>内存平均 {analysis.samples.memoryMB.avg}MB / 峰值 {analysis.samples.memoryMB.max ?? '-'}MB</Tag>
+        )}
+        {analysis?.samples?.fps?.avg !== undefined && analysis.samples.fps.avg !== null && (
+          <Tag>FPS 平均 {analysis.samples.fps.avg} / 最低 {analysis.samples.fps.min ?? '-'}</Tag>
+        )}
+        {analysis?.conclusion?.severity && (
+          <Tag color={analysisSeverityColor(analysis.conclusion.severity)}>
+            结论 {analysis.conclusion.severity}
+          </Tag>
+        )}
+      </Space>
+      {issues.length > 0 ? (
+        <Alert
+          showIcon
+          type="warning"
+          message="性能风险"
+          description={(
+            <Space direction="vertical" size={4}>
+              {issues.map((issue, index) => (
+                <Text key={`${issue.metric || 'metric'}-${index}`} type="secondary">
+                  {issue.message || issue.metric}
+                </Text>
+              ))}
+            </Space>
+          )}
+        />
+      ) : (
+        analysis?.conclusion?.severity && <Alert showIcon type="success" message="未发现性能风险" />
+      )}
+    </Space>
+  );
+}
+
+type QualityMonkeyEvent = {
+  index?: number;
+  type?: string;
+  reason?: string;
+  startedAtMs?: number;
+  elapsedSeconds?: number;
+  x?: number;
+  y?: number;
+  startX?: number;
+  startY?: number;
+  endX?: number;
+  endY?: number;
+  usedFallbackPoint?: boolean;
+  page?: {
+    fingerprint?: string;
+    summary?: {
+      text?: string[];
+      nodeTypes?: string[];
+    };
+  };
+};
+
+type QualityMonkeyReport = {
+  status?: string;
+  message?: string;
+  wdaUrl?: string;
+  requestedEvents?: number;
+  requestedDurationSeconds?: number;
+  executedEvents?: number;
+  durationMs?: number;
+  rules?: {
+    backIntervalEvents?: number;
+    stuckEvents?: number;
+    stuckCheckIntervalEvents?: number;
+    backActionProbability?: number;
+    backTapProbability?: number;
+    avoidTopBar?: boolean;
+    heartbeatIntervalSeconds?: number;
+    forbiddenTexts?: string[];
+  };
+  events?: QualityMonkeyEvent[];
+};
+
+function nearestMonkeyEvents(
+  sampleIndex: number | undefined,
+  sampleCount: number,
+  report?: QualityMonkeyReport | null,
+  sampleTimeSeconds?: number,
+  radius = 5
+) {
+  const events = report?.events || [];
+  if (!sampleIndex || !sampleCount || events.length === 0) return [];
+  const timedEvents = events.filter((event) => typeof event.elapsedSeconds === 'number');
+  if (typeof sampleTimeSeconds === 'number' && timedEvents.length > 0) {
+    return timedEvents
+      .map((event) => ({
+        event,
+        distance: Math.abs(Number(event.elapsedSeconds) - sampleTimeSeconds),
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, Math.max(6, radius))
+      .map((item) => item.event)
+      .sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
+  }
+  const estimatedEventIndex = Math.max(1, Math.round((sampleIndex / sampleCount) * events.length));
+  return events.filter((event) => {
+    const index = Number(event.index || 0);
+    return index >= estimatedEventIndex - radius && index <= estimatedEventIndex + radius;
+  });
+}
+
+function formatMonkeyEvent(event: QualityMonkeyEvent) {
+  return `#${event.index} ${eventTypeLabel(event.type)}${event.reason ? `/${event.reason}` : ''}`;
+}
+
+function formatMonkeyPageHint(events: QualityMonkeyEvent[]) {
+  const text = events
+    .flatMap((event) => event.page?.summary?.text || [])
+    .filter(Boolean);
+  const unique = Array.from(new Set(text)).slice(0, 8);
+  return unique.length > 0 ? unique.join('、') : '';
+}
+
+function PerformanceDiagnostics({
+  samples,
+  monkeyPreview,
+  monkeyLoading,
+}: {
+  samples: JenkinsQualityPerformanceSamples | null;
+  monkeyPreview: JenkinsQualityArtifactPreview | null;
+  monkeyLoading: boolean;
+}) {
+  if (!samples?.samples?.length) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无性能采样，无法生成诊断" />;
+  }
+
+  const monkeyReport = parseJsonPreview<QualityMonkeyReport>(monkeyPreview);
+  const validCpuSamples = samples.samples.filter((sample) => sample.cpu !== null);
+  const validMemorySamples = samples.samples.filter((sample) => sample.memoryMB !== null);
+  const validFpsSamples = samples.samples.filter((sample) => sample.fps !== null);
+  const maxCpuSample = validCpuSamples.reduce<typeof validCpuSamples[number] | null>(
+    (max, sample) => (!max || Number(sample.cpu) > Number(max.cpu) ? sample : max),
+    null
+  );
+  const maxMemorySample = validMemorySamples.reduce<typeof validMemorySamples[number] | null>(
+    (max, sample) => (!max || Number(sample.memoryMB) > Number(max.memoryMB) ? sample : max),
+    null
+  );
+  const minFpsSample = validFpsSamples.reduce<typeof validFpsSamples[number] | null>(
+    (min, sample) => (!min || Number(sample.fps) < Number(min.fps) ? sample : min),
+    null
+  );
+  const firstMemory = validMemorySamples[0]?.memoryMB ?? null;
+  const lastMemory = validMemorySamples.at(-1)?.memoryMB ?? null;
+  const memoryDelta = firstMemory !== null && lastMemory !== null ? Number((lastMemory - firstMemory).toFixed(1)) : null;
+  let biggestMemoryJump: { from: number; to: number; delta: number; index: number; timeSeconds: number } | null = null;
+  for (let index = 1; index < validMemorySamples.length; index += 1) {
+    const previous = validMemorySamples[index - 1];
+    const current = validMemorySamples[index];
+    if (previous.memoryMB === null || current.memoryMB === null) continue;
+    const delta = Number((current.memoryMB - previous.memoryMB).toFixed(1));
+    if (!biggestMemoryJump || delta > biggestMemoryJump.delta) {
+      biggestMemoryJump = {
+        from: previous.memoryMB,
+        to: current.memoryMB,
+        delta,
+        index: current.index,
+        timeSeconds: current.timeSeconds,
+      };
+    }
+  }
+  const highCpuSamples = validCpuSamples.filter((sample) => Number(sample.cpu) >= 70);
+  const cpuPeakEvents = nearestMonkeyEvents(
+    maxCpuSample?.index,
+    samples.returnedSampleCount || samples.sampleCount,
+    monkeyReport,
+    maxCpuSample?.timeSeconds
+  );
+  const memoryJumpEvents = nearestMonkeyEvents(
+    biggestMemoryJump?.index,
+    samples.returnedSampleCount || samples.sampleCount,
+    monkeyReport,
+    biggestMemoryJump?.timeSeconds
+  );
+  const cpuPeakPageHint = formatMonkeyPageHint(cpuPeakEvents);
+  const memoryJumpPageHint = formatMonkeyPageHint(memoryJumpEvents);
+  const hasTimedMonkeyEvents = !!monkeyReport?.events?.some((event) => typeof event.elapsedSeconds === 'number');
+  const memoryAttention = memoryDelta !== null && memoryDelta >= 15;
+  const jumpAttention = !!biggestMemoryJump && biggestMemoryJump.delta >= 8;
+  const cpuAttention = !!maxCpuSample && Number(maxCpuSample.cpu) >= 80;
+  const fpsAttention = !!minFpsSample && Number(minFpsSample.fps) > 0 && Number(minFpsSample.fps) < 45;
+  const attentionItems = [
+    memoryAttention ? `内存从 ${firstMemory}MB 增长到 ${lastMemory}MB，净增长 ${memoryDelta}MB，建议确认是否进入高资源页面后未回收。` : '',
+    jumpAttention && biggestMemoryJump ? `#${biggestMemoryJump.index} 附近内存单次上升 ${biggestMemoryJump.delta}MB，是最明显的资源切换点。` : '',
+    cpuAttention && maxCpuSample ? `CPU 在 #${maxCpuSample.index} 达到 ${maxCpuSample.cpu}%，可结合附近动作判断是否触发重渲染、页面初始化或密集计算。` : '',
+    highCpuSamples.length >= 3 ? `CPU >= 70% 的采样有 ${highCpuSamples.length} 条，建议关注是否存在连续高负载。` : '',
+    fpsAttention && minFpsSample ? `FPS 最低 ${minFpsSample.fps}，可检查该采样附近是否有卡顿动作。` : '',
+  ].filter(Boolean);
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      {attentionItems.length > 0 ? (
+        <Alert
+          showIcon
+          type="warning"
+          message="发现可关注的性能变化"
+          description={(
+            <Space direction="vertical" size={4}>
+              {attentionItems.map((item, index) => (
+                <Text key={index} type="secondary">{item}</Text>
+              ))}
+            </Space>
+          )}
+        />
+      ) : (
+        <Alert showIcon type="success" message="未发现明显的性能异常趋势" />
+      )}
+      <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+        <Descriptions.Item label="CPU 峰值">
+          {maxCpuSample ? `${maxCpuSample.cpu}% / #${maxCpuSample.index} / ${Math.round(maxCpuSample.timeSeconds)}s` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="内存峰值">
+          {maxMemorySample ? `${maxMemorySample.memoryMB}MB / #${maxMemorySample.index}` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="内存净增长">
+          {memoryDelta !== null ? `${memoryDelta > 0 ? '+' : ''}${memoryDelta}MB` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="最大内存阶跃">
+          {biggestMemoryJump ? `+${biggestMemoryJump.delta}MB / #${biggestMemoryJump.index}` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="高 CPU 采样">
+          {highCpuSamples.length} 条
+        </Descriptions.Item>
+        <Descriptions.Item label="FPS 低点">
+          {minFpsSample?.fps !== null && minFpsSample?.fps !== undefined ? `${minFpsSample.fps} / #${minFpsSample.index}` : '-'}
+        </Descriptions.Item>
+      </Descriptions>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Text strong>动作关联</Text>
+        {monkeyLoading ? (
+          <Alert showIcon type="info" message="正在加载 Monkey 动作数据..." />
+        ) : monkeyReport?.events?.length ? (
+          <Space direction="vertical" size={4}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              匹配方式：{hasTimedMonkeyEvents ? '按事件时间戳精确匹配' : '按事件序号近似匹配'}
+            </Text>
+            {maxCpuSample && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                CPU 峰值附近：{cpuPeakEvents.length > 0 ? cpuPeakEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
+              </Text>
+            )}
+            {cpuPeakPageHint && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                CPU 峰值页面线索：{cpuPeakPageHint}
+              </Text>
+            )}
+            {biggestMemoryJump && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                内存阶跃附近：{memoryJumpEvents.length > 0 ? memoryJumpEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
+              </Text>
+            )}
+            {memoryJumpPageHint && (
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                内存阶跃页面线索：{memoryJumpPageHint}
+              </Text>
+            )}
+          </Space>
+        ) : (
+          <Alert showIcon type="info" message="未加载到 Monkey 动作数据，暂不能关联动作区间" />
+        )}
+      </Space>
+    </Space>
+  );
+}
+
+function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamples }) {
+  const chartRef = useRef<HTMLDivElement | null>(null);
+  const hasMetric = data.samples.some((sample) => sample.cpu !== null || sample.memoryMB !== null || sample.fps !== null);
+
+  useEffect(() => {
+    if (!chartRef.current || !hasMetric) return;
+    const chart = echarts.init(chartRef.current);
+    const labels = data.samples.map((sample) => `#${sample.index}`);
+    const option: echarts.EChartsOption = {
+      color: ['#1677ff', '#52c41a', '#fa8c16'],
+      tooltip: {
+        trigger: 'axis',
+        valueFormatter: (value) => (value === null || value === undefined ? '-' : String(value)),
+      },
+      legend: {
+        top: 0,
+        data: ['CPU %', '内存 MB', 'FPS'],
+      },
+      grid: {
+        top: 48,
+        left: 48,
+        right: 56,
+        bottom: 40,
+      },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: labels,
+      },
+      yAxis: [
+        {
+          type: 'value',
+          name: 'CPU/FPS',
+          min: 0,
+          axisLabel: { formatter: '{value}' },
+        },
+        {
+          type: 'value',
+          name: '内存 MB',
+          min: 0,
+          position: 'right',
+          axisLabel: { formatter: '{value}' },
+        },
+      ],
+      dataZoom: [
+        { type: 'inside' },
+        { type: 'slider', height: 18, bottom: 8 },
+      ],
+      series: [
+        {
+          name: 'CPU %',
+          type: 'line',
+          showSymbol: false,
+          connectNulls: true,
+          data: data.samples.map((sample) => sample.cpu),
+        },
+        {
+          name: '内存 MB',
+          type: 'line',
+          showSymbol: false,
+          connectNulls: true,
+          yAxisIndex: 1,
+          data: data.samples.map((sample) => sample.memoryMB),
+        },
+        {
+          name: 'FPS',
+          type: 'line',
+          showSymbol: false,
+          connectNulls: true,
+          data: data.samples.map((sample) => sample.fps),
+        },
+      ],
+    };
+    chart.setOption(option);
+    const resize = () => chart.resize();
+    window.addEventListener('resize', resize);
+    return () => {
+      window.removeEventListener('resize', resize);
+      chart.dispose();
+    };
+  }, [data, hasMetric]);
+
+  if (!data.sampleCount || !hasMetric) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />;
+  }
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size={12}>
+      <Space wrap>
+        <Tag>采样 {data.sampleCount} 条</Tag>
+        {data.summary.cpu.avg !== null && <Tag>CPU 平均 {data.summary.cpu.avg}% / 峰值 {data.summary.cpu.max ?? '-'}%</Tag>}
+        {data.summary.memoryMB.avg !== null && <Tag>内存平均 {data.summary.memoryMB.avg}MB / 峰值 {data.summary.memoryMB.max ?? '-'}MB</Tag>}
+        {data.summary.fps.avg !== null && <Tag>FPS 平均 {data.summary.fps.avg} / 最低 {data.summary.fps.min ?? '-'}</Tag>}
+        {(data.truncated || data.sourceTruncated) && <Tag color="orange">已截断</Tag>}
+      </Space>
+      <div ref={chartRef} style={{ width: '100%', height: 360 }} />
+    </Space>
+  );
+}
+
+function tailLines(content: string, maxLines = 80) {
+  const lines = content.split(/\r?\n/).filter((line) => line.trim());
+  return lines.slice(-maxLines).join('\n');
+}
+
+function normalizeUUID(uuid?: string) {
+  return (uuid || '').trim().toUpperCase();
+}
+
+function parseCrashJsonHeader(content: string): Record<string, any> {
+  const firstLine = content.split(/\r?\n/).find((line) => line.trim().startsWith('{'))?.trim();
+  if (!firstLine) return {};
+  try {
+    return JSON.parse(firstLine);
+  } catch {
+    return {};
+  }
+}
+
+function extractCrashField(content: string, label: string) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = content.match(new RegExp(`^${escaped}:\\s*(.+)$`, 'im'));
+  return match?.[1]?.trim();
+}
+
+function extractCrashVersion(content: string) {
+  const header = parseCrashJsonHeader(content);
+  const version = header.app_version || header.bundleVersion || header.bundleShortVersion;
+  if (version) return String(version).trim();
+  const versionLine = extractCrashField(content, 'Version');
+  return versionLine?.match(/^([^\s(]+)/)?.[1]?.trim() || '';
+}
+
+function extractCrashMetadata(content: string) {
+  const header = parseCrashJsonHeader(content);
+  return {
+    appName: String(header.app_name || header.procName || extractCrashField(content, 'Command') || extractCrashField(content, 'Process') || '').trim(),
+    version: extractCrashVersion(content),
+    buildVersion: String(header.build_version || header.bundleShortVersion || '').trim(),
+    bundleId: String(header.bundleID || extractCrashField(content, 'Identifier') || '').trim(),
+    incidentId: String(header.incident_id || header.incidentID || extractCrashField(content, 'Incident Identifier') || '').trim(),
+    sliceUUID: normalizeUUID(header.slice_uuid || header.uuid || ''),
+    exceptionType: extractCrashField(content, 'Exception Type') || '',
+    terminationReason: extractCrashField(content, 'Termination Reason') || '',
+  };
+}
+
+function extractResourceStackBinaries(content: string) {
+  if (!/Heaviest stack for the target process:/i.test(content)) return [];
+  const binaries = new Set<string>();
+  for (const match of content.matchAll(/^\s*\d+\s+\S+\s+\(([^+()]+)\s+\+\s+\d+\)\s+\[0x[0-9a-f]+\]/gim)) {
+    const binaryName = match[1]?.trim();
+    if (binaryName && !['dyld'].includes(binaryName)) {
+      binaries.add(binaryName.toUpperCase());
+    }
+  }
+  return Array.from(binaries);
+}
+
+function selectCrashDsymUUIDs(content: string, dsyms: DSYMInfo[]) {
+  const metadata = extractCrashMetadata(content);
+  const stackBinaries = extractResourceStackBinaries(content);
+  const appearsInResourceStack = (dsym: DSYMInfo) => (
+    stackBinaries.length === 0 || stackBinaries.includes(dsym.appName.replace(/\.app$/i, '').toUpperCase())
+  );
+  const exactUUID = metadata.sliceUUID;
+  const exactMatch = exactUUID ? dsyms.find((dsym) => normalizeUUID(dsym.uuid) === exactUUID) : undefined;
+  if (exactMatch) {
+    return { uuids: [exactMatch.uuid], metadata, matchType: 'uuid' as const };
+  }
+
+  if (!metadata.version) {
+    return { uuids: [] as string[], metadata, matchType: 'none' as const };
+  }
+
+  const mainApp = dsyms.find((dsym) => dsym.appName.toUpperCase() === 'NNIM' && dsym.version.trim() === metadata.version && appearsInResourceStack(dsym));
+  const relatedComponents = dsyms.filter((dsym) => (
+    dsym.appName.toUpperCase() !== 'NNIM' &&
+    dsym.relatedAppVersions?.map((version) => version.trim()).includes(metadata.version) &&
+    appearsInResourceStack(dsym)
+  ));
+  const uuids = [
+    ...(mainApp ? [mainApp.uuid] : []),
+    ...relatedComponents.map((component) => component.uuid),
+  ];
+  return { uuids, metadata, matchType: uuids.length > 0 ? 'version' as const : 'none' as const };
+}
+
+function QualityLogDigest({
+  preview,
+  loading,
+}: {
+  preview: JenkinsQualityArtifactPreview | null;
+  loading: boolean;
+}) {
+  const content = tailLines(preview?.content || '');
+  return (
+    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+      {loading ? (
+        <Alert showIcon type="info" message="正在加载质检日志..." />
+      ) : preview?.content ? (
+        <pre
+          style={{
+            margin: 0,
+            maxHeight: 260,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            fontSize: 12,
+            lineHeight: 1.5,
+            background: '#fafafa',
+            padding: 12,
+            border: '1px solid #f0f0f0',
+            borderRadius: 4,
+          }}
+        >
+          {content || '日志内容为空'}
+        </pre>
+      ) : (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有可展示的质检日志" />
+      )}
+    </Space>
+  );
+}
+
+function parseJsonPreview<T>(preview?: JenkinsQualityArtifactPreview | null): T | null {
+  if (!preview?.content) return null;
+  try {
+    return JSON.parse(preview.content) as T;
+  } catch {
+    return null;
+  }
+}
+
+function eventTypeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    tap: '点击',
+    swipe: '滑动',
+    edgeBack: '边缘返回',
+    tapBack: '点击返回',
+  };
+  return labels[type || ''] || type || '未知';
+}
+
+function MonkeyReportSummary({
+  preview,
+  loading,
+}: {
+  preview: (JenkinsQualityArtifactPreview & { title: string }) | null;
+  loading: boolean;
+}) {
+  type MonkeyEvent = {
+    index?: number;
+    type?: string;
+    reason?: string;
+    x?: number;
+    y?: number;
+    startX?: number;
+    startY?: number;
+    endX?: number;
+    endY?: number;
+    usedFallbackPoint?: boolean;
+  };
+  type MonkeyReport = {
+    status?: string;
+    message?: string;
+    wdaUrl?: string;
+    requestedEvents?: number;
+    requestedDurationSeconds?: number;
+    executedEvents?: number;
+    durationMs?: number;
+    rules?: {
+      backIntervalEvents?: number;
+      stuckEvents?: number;
+      stuckCheckIntervalEvents?: number;
+      backActionProbability?: number;
+      backTapProbability?: number;
+      avoidTopBar?: boolean;
+      heartbeatIntervalSeconds?: number;
+      forbiddenTexts?: string[];
+    };
+    events?: MonkeyEvent[];
+  };
+
+  if (loading) {
+    return <Alert showIcon type="info" message="正在加载 Monkey 报告..." />;
+  }
+
+  const report = parseJsonPreview<MonkeyReport>(preview);
+  if (!report) {
+    return preview?.content ? (
+      <Alert showIcon type="warning" message="Monkey 报告不是可解析的 JSON" />
+    ) : (
+      <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有 Monkey 报告" />
+    );
+  }
+
+  const events = report.events || [];
+  const eventCounts = events.reduce<Record<string, number>>((acc, event) => {
+    const type = event.type || 'unknown';
+    acc[type] = (acc[type] || 0) + 1;
+    return acc;
+  }, {});
+  const backEvents = events.filter((event) => event.type === 'edgeBack' || event.type === 'tapBack');
+  const stuckEvents = events.filter((event) => /stuck/i.test(event.reason || ''));
+  const fallbackEvents = events.filter((event) => event.usedFallbackPoint);
+  const recentEvents = events.slice(-8).reverse();
+  const executedEvents = report.executedEvents ?? events.length;
+  const durationSeconds = report.durationMs ? Math.round(report.durationMs / 1000) : report.requestedDurationSeconds;
+  const isPassed = report.status === 'passed';
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Alert
+        showIcon
+        type={isPassed ? 'success' : 'warning'}
+        message={isPassed ? 'Monkey 执行完成' : 'Monkey 执行异常'}
+        description={report.message || '未提供执行说明'}
+      />
+      <Space wrap>
+        <Tag color={isPassed ? 'green' : 'red'}>{report.status || 'unknown'}</Tag>
+        <Tag>执行 {executedEvents} 次</Tag>
+        {report.requestedEvents !== undefined && <Tag>目标 {report.requestedEvents} 次</Tag>}
+        {durationSeconds !== undefined && <Tag>耗时 {formatSeconds(durationSeconds)}</Tag>}
+        {report.requestedDurationSeconds !== undefined && <Tag>计划 {formatSeconds(report.requestedDurationSeconds)}</Tag>}
+        {report.wdaUrl && <Tag>WDA {report.wdaUrl.replace(/^https?:\/\//, '')}</Tag>}
+      </Space>
+      <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+        <Descriptions.Item label="点击">{eventCounts.tap || 0}</Descriptions.Item>
+        <Descriptions.Item label="滑动">{eventCounts.swipe || 0}</Descriptions.Item>
+        <Descriptions.Item label="返回">{backEvents.length}</Descriptions.Item>
+        <Descriptions.Item label="卡住处理">{stuckEvents.length}</Descriptions.Item>
+        <Descriptions.Item label="兜底点击">{fallbackEvents.length}</Descriptions.Item>
+        <Descriptions.Item label="禁点文案">{report.rules?.forbiddenTexts?.length || 0}</Descriptions.Item>
+      </Descriptions>
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Text strong>执行规则</Text>
+        <Space wrap>
+          {report.rules?.backIntervalEvents !== undefined && <Tag>每 {report.rules.backIntervalEvents} 次尝试返回</Tag>}
+          {report.rules?.stuckEvents !== undefined && <Tag>连续 {report.rules.stuckEvents} 次判定卡住</Tag>}
+          {report.rules?.stuckCheckIntervalEvents !== undefined && <Tag>每 {report.rules.stuckCheckIntervalEvents} 次检测卡住</Tag>}
+          {report.rules?.backActionProbability !== undefined && <Tag>返回概率 {Math.round(report.rules.backActionProbability * 100)}%</Tag>}
+          {report.rules?.backTapProbability !== undefined && <Tag>点击返回概率 {Math.round(report.rules.backTapProbability * 100)}%</Tag>}
+          {report.rules?.avoidTopBar !== undefined && <Tag>{report.rules.avoidTopBar ? '避开顶部区域' : '允许顶部区域'}</Tag>}
+          {report.rules?.heartbeatIntervalSeconds !== undefined && <Tag>心跳 {report.rules.heartbeatIntervalSeconds}s</Tag>}
+        </Space>
+      </Space>
+      {recentEvents.length > 0 && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>最近动作</Text>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            {recentEvents.map((event) => (
+              <Text key={event.index} type="secondary" style={{ fontSize: 12 }}>
+                #{event.index} {eventTypeLabel(event.type)}
+                {event.reason ? ` / ${event.reason}` : ''}
+                {event.x !== undefined && event.y !== undefined ? ` / (${event.x}, ${event.y})` : ''}
+                {event.startX !== undefined && event.endX !== undefined ? ` / (${event.startX}, ${event.startY}) -> (${event.endX}, ${event.endY})` : ''}
+              </Text>
+            ))}
+          </Space>
+        </Space>
+      )}
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: 'raw',
+            label: '查看原始 Monkey 数据',
+            children: (
+              <pre
+                style={{
+                  margin: 0,
+                  maxHeight: 360,
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  background: '#fafafa',
+                  padding: 12,
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 4,
+                }}
+              >
+                {preview?.content || '文件内容为空'}
+              </pre>
+            ),
+          },
+        ]}
+      />
+    </Space>
+  );
+}
+
+type CrashSymbolicationState = {
+  loading?: boolean;
+  error?: string;
+  result?: SymbolicationResult;
+  usedUUIDs?: string[];
+  metadata?: ReturnType<typeof extractCrashMetadata>;
+  matchType?: 'uuid' | 'version' | 'none';
+};
+
+function SymbolicatedCrashAnalysisDigest({
+  analysis,
+}: {
+  analysis?: SymbolicationResult['analysis'] | SymbolicationResult['aiAnalysis'];
+}) {
+  if (!analysis) return null;
+  return (
+    <Alert
+      showIcon
+      type={analysis.severity === 'critical' || analysis.severity === 'high' ? 'error' : 'info'}
+      message={analysis.summary || '崩溃分析结果'}
+      description={(
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Space wrap>
+            {analysis.crashType && <Tag color="red">{analysis.crashType}</Tag>}
+            {analysis.crashModule && <Tag>{analysis.crashModule}</Tag>}
+            {analysis.crashLocation && <Tag color="orange">{analysis.crashLocation}</Tag>}
+            {analysis.appVersion && <Tag color="purple">版本 {analysis.appVersion}</Tag>}
+          </Space>
+          {analysis.possibleCauses?.length > 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              可能原因：{analysis.possibleCauses.slice(0, 3).join('；')}
+            </Text>
+          )}
+          {analysis.suggestions?.length > 0 && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              建议：{analysis.suggestions.slice(0, 3).join('；')}
+            </Text>
+          )}
+        </Space>
+      )}
+    />
+  );
+}
+
+function CrashAnalysisSummary({
+  analysis,
+  crashReportsUrl,
+}: {
+  analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['exceptionAnalysis']>;
+  crashReportsUrl?: string;
+}) {
+  const [symbolicationByFile, setSymbolicationByFile] = useState<Record<string, CrashSymbolicationState>>({});
+  if (!analysis) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有异常分析结果" />;
+  }
+  const logSamples = analysis.samples || [];
+  const crashFileName = (file?: string) => (file || '').split('/').filter(Boolean).at(-1) || '';
+  const crashFileUrl = (file?: string) => {
+    const fileName = crashFileName(file);
+    if (!fileName || !crashReportsUrl) return '';
+    return `${crashReportsUrl.replace(/\/$/, '')}/${encodeURIComponent(fileName)}`;
+  };
+  const crashFiles = Array.from(new Set((analysis.crashReports?.files || []).map(crashFileName).filter(Boolean)));
+  const downloadCrashIps = async (file: string) => {
+    const url = crashFileUrl(file);
+    if (!url) {
+      message.warning('未找到 ips 文件下载地址');
+      return;
+    }
+    const fileName = file.toLowerCase().endsWith('.ips') ? file : `${file}.ips`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error('下载 ips 失败');
+      }
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error: any) {
+      message.error(error?.message || '下载 ips 失败');
+    }
+  };
+  const handleSymbolicateCrash = async (file: string) => {
+    const url = crashFileUrl(file);
+    if (!url) {
+      message.warning('未找到 ips 文件下载地址');
+      return;
+    }
+    setSymbolicationByFile((prev) => ({
+      ...prev,
+      [file]: { ...(prev[file] || {}), loading: true, error: undefined },
+    }));
+    try {
+      const previewResponse = await jenkinsApi.previewQualityArtifact(url);
+      if (!previewResponse.success || !previewResponse.data?.content) {
+        throw new Error(previewResponse.error || '读取 ips 文件失败');
+      }
+
+      const crashLog = previewResponse.data.content;
+      const dsymResponse = await dsymApi.list();
+      if (!dsymResponse.success || !dsymResponse.data) {
+        throw new Error(dsymResponse.error || '读取 dSYM 列表失败');
+      }
+
+      const { uuids, metadata, matchType } = selectCrashDsymUUIDs(crashLog, dsymResponse.data);
+      if (uuids.length === 0) {
+        const versionText = metadata.version ? `版本 ${metadata.version}` : '当前崩溃文件';
+        throw new Error(`未匹配到 ${versionText} 对应的 dSYM，请先上传或关联 dSYM 后再解析`);
+      }
+
+      const symbolicationResponse = await symbolicateApi.symbolicate(crashLog, uuids);
+      if (!symbolicationResponse.success || !symbolicationResponse.data) {
+        throw new Error(symbolicationResponse.error || '符号化解析失败');
+      }
+
+      setSymbolicationByFile((prev) => ({
+        ...prev,
+        [file]: {
+          loading: false,
+          result: symbolicationResponse.data,
+          usedUUIDs: uuids,
+          metadata,
+          matchType,
+        },
+      }));
+      message.success('符号化解析完成');
+    } catch (error: any) {
+      setSymbolicationByFile((prev) => ({
+        ...prev,
+        [file]: {
+          ...(prev[file] || {}),
+          loading: false,
+          error: error?.error || error?.message || '符号化解析失败',
+        },
+      }));
+    }
+  };
+  return (
+    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+      <Space wrap>
+        <Tag color={analysisSeverityColor(analysis.severity)}>{analysis.severity || 'unknown'}</Tag>
+        <Tag>崩溃 {analysis.crashCount || 0}</Tag>
+        <Tag>异常 {analysis.exceptionCount || 0}</Tag>
+        <Tag>卡死/Watchdog {analysis.watchdogCount || 0}</Tag>
+        <Tag>内存问题 {analysis.memoryIssueCount || 0}</Tag>
+        <Tag>错误日志 {analysis.errorCount || 0}</Tag>
+      </Space>
+      {(analysis.crashReports?.count || 0) > 0 ? (
+        <Alert
+          showIcon
+          type="error"
+          message={`发现 ${crashFiles.length || analysis.crashReports?.count || 0} 个崩溃文件`}
+          description={(
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {crashFiles.slice(0, 5).map((file) => (
+                <Space key={file} direction="vertical" size={6} style={{ width: '100%' }}>
+                  <Space size={8} wrap>
+                    <Text type="secondary" style={{ fontSize: 12 }}>{file}</Text>
+                    {crashFileUrl(file) && (
+                      <Button size="small" type="link" onClick={() => downloadCrashIps(file)}>
+                        下载 ips
+                      </Button>
+                    )}
+                    <Button
+                      size="small"
+                      type="link"
+                      disabled={!crashFileUrl(file)}
+                      loading={symbolicationByFile[file]?.loading}
+                      onClick={() => handleSymbolicateCrash(file)}
+                    >
+                      符号化解析
+                    </Button>
+                  </Space>
+                  {symbolicationByFile[file]?.error && (
+                    <Alert showIcon type="warning" message={symbolicationByFile[file]?.error} />
+                  )}
+                  {symbolicationByFile[file]?.result && (
+                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                      <Space wrap>
+                        {symbolicationByFile[file]?.metadata?.appName && <Tag>{symbolicationByFile[file]?.metadata?.appName}</Tag>}
+                        {symbolicationByFile[file]?.metadata?.version && <Tag color="purple">版本 {symbolicationByFile[file]?.metadata?.version}</Tag>}
+                        {symbolicationByFile[file]?.metadata?.bundleId && <Tag>{symbolicationByFile[file]?.metadata?.bundleId}</Tag>}
+                        <Tag color={symbolicationByFile[file]?.matchType === 'uuid' ? 'green' : 'blue'}>
+                          dSYM {symbolicationByFile[file]?.usedUUIDs?.length || 0} 个
+                        </Tag>
+                        {symbolicationByFile[file]?.result?.fromHistory && <Tag color="cyan">历史结果</Tag>}
+                        {symbolicationByFile[file]?.result?.fromCache && <Tag color="cyan">缓存结果</Tag>}
+                      </Space>
+                      {symbolicationByFile[file]?.result?.warning && (
+                        <Alert showIcon type="warning" message={symbolicationByFile[file]?.result?.warning} />
+                      )}
+                      <SymbolicatedCrashAnalysisDigest
+                        analysis={symbolicationByFile[file]?.result?.aiAnalysis || symbolicationByFile[file]?.result?.analysis}
+                      />
+                      <Collapse
+                        size="small"
+                        items={[
+                          {
+                            key: 'symbolicated-log',
+                            label: '查看符号化日志',
+                            children: (
+                              <pre
+                                style={{
+                                  margin: 0,
+                                  maxHeight: 360,
+                                  overflow: 'auto',
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  fontSize: 12,
+                                  lineHeight: 1.5,
+                                  background: '#fafafa',
+                                  padding: 12,
+                                  border: '1px solid #f0f0f0',
+                                  borderRadius: 4,
+                                }}
+                              >
+                                {tailLines(symbolicationByFile[file]?.result?.symbolicatedLog || '', 180)}
+                              </pre>
+                            ),
+                          },
+                        ]}
+                      />
+                    </Space>
+                  )}
+                </Space>
+              ))}
+            </Space>
+          )}
+        />
+      ) : (
+        <Alert showIcon type="success" message="未发现崩溃报告" />
+      )}
+      {logSamples.length > 0 && (
+        <Space direction="vertical" size={4}>
+          {logSamples.slice(0, 5).map((sample, index) => (
+            <Text key={`${sample.type || 'sample'}-${index}`} type="secondary" style={{ fontSize: 12 }}>
+              [{sample.type || 'log'}] {sample.message}
+            </Text>
+          ))}
+        </Space>
+      )}
+    </Space>
+  );
 }
 
 export default function CICDPage() {
@@ -203,12 +1198,21 @@ export default function CICDPage() {
   const [logLoading, setLogLoading] = useState(false);
   const [qualityModalOpen, setQualityModalOpen] = useState(false);
   const [qualitySubmitting, setQualitySubmitting] = useState(false);
+  const [qualitySubmitMessage, setQualitySubmitMessage] = useState('');
   const [qualityBuild, setQualityBuild] = useState<JenkinsBuild | null>(null);
   const [qualityReportBuild, setQualityReportBuild] = useState<JenkinsQualityBuild | null>(null);
+  const [activeQualitySummaryView, setActiveQualitySummaryView] = useState<QualitySummaryView>('log');
   const [qualityArtifactPreview, setQualityArtifactPreview] = useState<(JenkinsQualityArtifactPreview & { title: string }) | null>(null);
   const [qualityArtifactPreviewLoading, setQualityArtifactPreviewLoading] = useState(false);
+  const [qualityLogDigest, setQualityLogDigest] = useState<JenkinsQualityArtifactPreview | null>(null);
+  const [qualityLogDigestLoading, setQualityLogDigestLoading] = useState(false);
+  const [qualityPerformanceReportOpen, setQualityPerformanceReportOpen] = useState(false);
+  const [qualityPerformanceSamples, setQualityPerformanceSamples] = useState<JenkinsQualityPerformanceSamples | null>(null);
+  const [qualityPerformanceLoading, setQualityPerformanceLoading] = useState(false);
+  const [qualityMonkeyReportDigest, setQualityMonkeyReportDigest] = useState<JenkinsQualityArtifactPreview | null>(null);
+  const [qualityMonkeyReportDigestLoading, setQualityMonkeyReportDigestLoading] = useState(false);
   const [qualitySuites, setQualitySuites] = useState<JenkinsQualitySuite[]>(['monkey']);
-  const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(28800);
+  const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(14400);
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [qualityDeviceUdids, setQualityDeviceUdids] = useState<string[]>([]);
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
@@ -298,7 +1302,6 @@ export default function CICDPage() {
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
     const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000];
     const previousNumber = previousLatest ? Number(previousLatest) : 0;
-    let targetBuildNumber: number | null = null;
     for (const delay of delays) {
       if (delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, delay));
@@ -307,14 +1310,10 @@ export default function CICDPage() {
       const latestBuild = nextData?.builds?.[0];
       const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
 
-      if (!targetBuildNumber && latestNumber && (!previousNumber || latestNumber > previousNumber)) {
-        targetBuildNumber = latestNumber;
+      if (latestNumber && (!previousNumber || latestNumber > previousNumber)) {
+        return;
       }
-
-      const targetBuild = targetBuildNumber
-        ? nextData?.builds?.find((build) => Number(build.number) === targetBuildNumber)
-        : null;
-      if (targetBuild && !targetBuild.building) {
+      if (nextData?.builds?.some((build) => isQualityBuildEffectivelyRunning(build))) {
         return;
       }
     }
@@ -586,6 +1585,7 @@ export default function CICDPage() {
     setQualityArtifactPreviewLoading(true);
     try {
       const response = await jenkinsApi.previewQualityArtifact(url);
+      setQualityPerformanceSamples(null);
       setQualityArtifactPreview({
         ...(response.data || { url, content: '' }),
         title,
@@ -594,6 +1594,55 @@ export default function CICDPage() {
       message.error(err?.error || err?.message || '读取结果文件失败');
     } finally {
       setQualityArtifactPreviewLoading(false);
+    }
+  };
+
+  const loadQualityLogDigest = async (url?: string) => {
+    if (!url) {
+      setQualityLogDigest(null);
+      return;
+    }
+    setQualityLogDigestLoading(true);
+    try {
+      const response = await jenkinsApi.previewQualityArtifact(url);
+      setQualityLogDigest(response.data || null);
+    } catch {
+      setQualityLogDigest(null);
+    } finally {
+      setQualityLogDigestLoading(false);
+    }
+  };
+
+  const loadQualityMonkeyReportDigest = async (url?: string) => {
+    if (!url) {
+      setQualityMonkeyReportDigest(null);
+      return;
+    }
+    setQualityMonkeyReportDigestLoading(true);
+    try {
+      const response = await jenkinsApi.previewQualityArtifact(url);
+      setQualityMonkeyReportDigest(response.data || null);
+    } catch {
+      setQualityMonkeyReportDigest(null);
+    } finally {
+      setQualityMonkeyReportDigestLoading(false);
+    }
+  };
+
+  const openQualityPerformanceReport = async (url?: string) => {
+    setQualityPerformanceReportOpen(true);
+    setActiveQualitySummaryView('performance');
+    setQualityArtifactPreview(null);
+    setQualityPerformanceSamples(null);
+    if (!url) return;
+    setQualityPerformanceLoading(true);
+    try {
+      const response = await jenkinsApi.getQualityPerformanceSamples(url);
+      setQualityPerformanceSamples(response.data || null);
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '读取性能采样失败');
+    } finally {
+      setQualityPerformanceLoading(false);
     }
   };
 
@@ -615,9 +1664,10 @@ export default function CICDPage() {
     const fallbackBuild = build || data?.builds?.find((item) => item.result === 'SUCCESS') || data?.builds?.[0] || null;
     const nextSuites: JenkinsQualitySuite[] = ['monkey'];
     const nextPool = sonicDevicePools.find((pool) => (pool.stats?.idle || 0) > 0)?.value || sonicDevicePools[0]?.value || 'ios-default';
+    setQualitySubmitMessage('');
     setQualityBuild(fallbackBuild);
     setQualitySuites(nextSuites);
-    setQualityMonkeyDurationSeconds(28800);
+    setQualityMonkeyDurationSeconds(14400);
     setQualityDevicePool(nextPool);
     setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool, nextSuites));
     setQualityModalOpen(true);
@@ -645,6 +1695,7 @@ export default function CICDPage() {
       return;
     }
     setQualitySubmitting(true);
+    setQualitySubmitMessage('正在提交 Jenkins 质检任务...');
     const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
     try {
       await Promise.all(qualitySuites.map((suite, index) => jenkinsApi.triggerQuality({
@@ -660,11 +1711,14 @@ export default function CICDPage() {
           deviceUdid: qualityDeviceUdids[index],
           monkeyDurationSeconds: suite === 'monkey' ? qualityMonkeyDurationSeconds : undefined,
         })));
-      message.success(`已触发 ${qualitySuites.length} 个自动质检任务：#${qualityBuild.number}，任务列表将在后台刷新`);
+      setQualitySubmitMessage('已提交，正在等待 Jenkins 创建任务并刷新列表...');
+      message.success(`已触发 ${qualitySuites.length} 个自动质检任务：#${qualityBuild.number}`);
       setQualityModalOpen(false);
+      setQualitySubmitMessage('');
       void refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发自动质检失败');
+      setQualitySubmitMessage('');
     } finally {
       setQualitySubmitting(false);
     }
@@ -738,14 +1792,36 @@ export default function CICDPage() {
     }
   }, [deployTarget, branches]);
 
+  useEffect(() => {
+    if (!qualityReportBuild) return;
+    const latestBuild = qualityData?.builds?.find((build) => build.number === qualityReportBuild.number);
+    if (!latestBuild || latestBuild === qualityReportBuild) return;
+    setQualityReportBuild(latestBuild);
+  }, [qualityData, qualityReportBuild]);
+
+  useEffect(() => {
+    if (!qualityReportBuild) {
+      setQualityLogDigest(null);
+      setQualityMonkeyReportDigest(null);
+      return;
+    }
+    loadQualityLogDigest(qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl);
+    loadQualityMonkeyReportDigest(qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
+  }, [
+    qualityReportBuild?.number,
+    qualityReportBuild?.qualitySummary?.artifacts?.qualityLogUrl,
+    qualityReportBuild?.qualitySummary?.artifacts?.monkeyReportUrl,
+  ]);
+
   const stats = useMemo(() => data?.stats || {
     total: 0,
     running: 0,
     latestBuild: '-',
     successRate: '-',
   }, [data]);
+  const previousHasRunningQualityBuildRef = useRef(false);
   const hasRunningQualityBuild = useMemo(
-    () => (qualityData?.builds || []).some((build) => build.building),
+    () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
     [qualityData],
   );
   const availableQualityDevicePools = useMemo(
@@ -777,6 +1853,24 @@ export default function CICDPage() {
       refreshQualitySection({ silent: true });
     }, 5000);
     return () => window.clearInterval(timer);
+  }, [activeSection, hasRunningQualityBuild]);
+
+  useEffect(() => {
+    if (activeSection !== 'quality') {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      loadSonicDevicePools();
+    }, hasRunningQualityBuild ? 5000 : 15000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, hasRunningQualityBuild]);
+
+  useEffect(() => {
+    const previous = previousHasRunningQualityBuildRef.current;
+    previousHasRunningQualityBuildRef.current = hasRunningQualityBuild;
+    if (activeSection === 'quality' && previous && !hasRunningQualityBuild) {
+      loadSonicDevicePools();
+    }
   }, [activeSection, hasRunningQualityBuild]);
 
   useEffect(() => {
@@ -1222,7 +2316,7 @@ export default function CICDPage() {
                         title: '状态',
                         key: 'result',
                         width: 120,
-                        render: (_, record) => resultTag(record),
+                        render: (_, record) => qualityResultTag(record),
                       },
                       {
                         title: '进度',
@@ -1281,11 +2375,18 @@ export default function CICDPage() {
                             <Button
                               size="small"
                               icon={<FileTextOutlined />}
-                              onClick={() => setQualityReportBuild(record)}
+                              onClick={() => {
+                                setQualityReportBuild(record);
+                                setActiveQualitySummaryView('log');
+                                setQualityArtifactPreview(null);
+                                setQualityLogDigest(null);
+                                setQualityPerformanceReportOpen(false);
+                                setQualityPerformanceSamples(null);
+                              }}
                             >
                               报告
                             </Button>
-                            {record.building && (
+                            {isQualityBuildEffectivelyRunning(record) && (
                               <Popconfirm
                                 title="停止质检任务？"
                                 description={`确定要停止 #${record.number} 吗？`}
@@ -1398,9 +2499,24 @@ export default function CICDPage() {
         cancelText="取消"
         confirmLoading={qualitySubmitting}
         onOk={triggerQuality}
-        onCancel={() => setQualityModalOpen(false)}
+        cancelButtonProps={{ disabled: qualitySubmitting }}
+        closable={!qualitySubmitting}
+        maskClosable={!qualitySubmitting}
+        onCancel={() => {
+          if (qualitySubmitting) return;
+          setQualitySubmitMessage('');
+          setQualityModalOpen(false);
+        }}
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {qualitySubmitting && (
+            <Alert
+              type="info"
+              showIcon
+              message={qualitySubmitMessage || '正在提交 Jenkins 质检任务...'}
+              description="Jenkins 创建构建需要一点时间，任务出现在列表后弹窗会自动关闭。"
+            />
+          )}
           <Alert
             type="info"
             showIcon
@@ -1411,6 +2527,7 @@ export default function CICDPage() {
             <Text strong>质检构建</Text>
             <Select
               value={qualityBuild?.number}
+              disabled={qualitySubmitting}
               style={{ marginTop: 8, width: '100%' }}
               placeholder="请选择构建"
               options={(data?.builds || []).map((build) => ({
@@ -1436,6 +2553,7 @@ export default function CICDPage() {
             <Checkbox.Group
               options={QUALITY_SUITE_OPTIONS}
               value={qualitySuites}
+              disabled={qualitySubmitting}
               onChange={(values) => {
                 const nextSuites = values as JenkinsQualitySuite[];
                 setQualitySuites(nextSuites);
@@ -1460,6 +2578,7 @@ export default function CICDPage() {
                 buttonStyle="solid"
                 options={MONKEY_DURATION_OPTIONS}
                 value={qualityMonkeyDurationSeconds}
+                disabled={qualitySubmitting}
                 onChange={(event) => setQualityMonkeyDurationSeconds(event.target.value)}
                 style={{ display: 'block', marginTop: 8 }}
               />
@@ -1480,6 +2599,7 @@ export default function CICDPage() {
             <div>
               <Checkbox.Group
                 value={qualityDeviceUdids}
+                disabled={qualitySubmitting}
                 onChange={(values) => setQualityDeviceUdids(values as string[])}
                 style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}
               >
@@ -1521,13 +2641,21 @@ export default function CICDPage() {
             )}
             <Button onClick={() => {
               setQualityReportBuild(null);
+              setActiveQualitySummaryView('log');
               setQualityArtifactPreview(null);
+              setQualityLogDigest(null);
+              setQualityPerformanceReportOpen(false);
+              setQualityPerformanceSamples(null);
             }}>关闭</Button>
           </Space>
         )}
         onCancel={() => {
           setQualityReportBuild(null);
+          setActiveQualitySummaryView('log');
           setQualityArtifactPreview(null);
+          setQualityLogDigest(null);
+          setQualityPerformanceReportOpen(false);
+          setQualityPerformanceSamples(null);
         }}
       >
         {qualityReportBuild && (
@@ -1556,7 +2684,7 @@ export default function CICDPage() {
             {qualityReportBuild.qualitySummary?.progress && (
               <Alert
                 showIcon
-                type={qualityReportBuild.building ? 'info' : 'success'}
+                type={isQualityBuildEffectivelyRunning(qualityReportBuild) ? 'info' : 'success'}
                 message="运行进度"
                 description={(
                   <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -1589,7 +2717,7 @@ export default function CICDPage() {
             )}
             <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
               <Descriptions.Item label="质检任务">#{qualityReportBuild.number}</Descriptions.Item>
-              <Descriptions.Item label="状态">{resultTag(qualityReportBuild)}</Descriptions.Item>
+              <Descriptions.Item label="状态">{qualityResultTag(qualityReportBuild)}</Descriptions.Item>
               <Descriptions.Item label="耗时">{formatDuration(qualityReportBuild.duration, qualityReportBuild.building)}</Descriptions.Item>
               <Descriptions.Item label="启动命令耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.launchDurationMs)}</Descriptions.Item>
               <Descriptions.Item label="冷启动稳定耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.coldStartReadyMs)}</Descriptions.Item>
@@ -1632,98 +2760,6 @@ export default function CICDPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            {qualityReportBuild.qualitySummary?.exceptionAnalysis && (
-              <Alert
-                showIcon
-                type={qualityReportBuild.qualitySummary.exceptionAnalysis.severity === 'failed' ? 'error' : (qualityReportBuild.qualitySummary.exceptionAnalysis.severity === 'warning' ? 'warning' : 'success')}
-                message="异常与崩溃问题"
-                description={(
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                    <Space wrap>
-                      <Tag color={analysisSeverityColor(qualityReportBuild.qualitySummary.exceptionAnalysis.severity)}>
-                        {qualityReportBuild.qualitySummary.exceptionAnalysis.severity || 'unknown'}
-                      </Tag>
-                      <Tag>崩溃 {qualityReportBuild.qualitySummary.exceptionAnalysis.crashCount || 0}</Tag>
-                      <Tag>异常 {qualityReportBuild.qualitySummary.exceptionAnalysis.exceptionCount || 0}</Tag>
-                      <Tag>卡死/Watchdog {qualityReportBuild.qualitySummary.exceptionAnalysis.watchdogCount || 0}</Tag>
-                      <Tag>内存问题 {qualityReportBuild.qualitySummary.exceptionAnalysis.memoryIssueCount || 0}</Tag>
-                      <Tag>错误日志 {qualityReportBuild.qualitySummary.exceptionAnalysis.errorCount || 0}</Tag>
-                    </Space>
-                    {(qualityReportBuild.qualitySummary.exceptionAnalysis.samples || []).slice(0, 3).map((sample, index) => (
-                      <Text key={`${sample.type || 'sample'}-${index}`} type="secondary" style={{ fontSize: 12 }}>
-                        [{sample.type || 'log'}] {sample.message}
-                      </Text>
-                    ))}
-                    {(qualityReportBuild.qualitySummary.exceptionAnalysis.crashReports?.samples || []).slice(0, 3).map((sample, index) => (
-                      <Text key={`${sample.file || 'crash'}-${index}`} type="secondary" style={{ fontSize: 12 }}>
-                        [crash] {sample.file}{sample.exception ? ` / ${sample.exception}` : ''}{sample.reason ? ` / ${sample.reason}` : ''}
-                      </Text>
-                    ))}
-                  </Space>
-                )}
-              />
-            )}
-
-            {qualityReportBuild.qualitySummary?.performanceAnalysis && (
-              <Alert
-                showIcon
-                type={qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade === 'slow' ? 'warning' : 'info'}
-                message="性能指标分析"
-                description={(
-                  <Space wrap>
-                    <Tag color={performanceGradeColor(qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade)}>
-                      冷启动 {qualityReportBuild.qualitySummary.performanceAnalysis.coldStartGrade || 'unknown'}
-                    </Tag>
-                    <Tag>启动命令 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.launchDurationMs)}</Tag>
-                    <Tag>首屏 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.coldStartReadyMs)}</Tag>
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyExecutedEvents !== undefined && (
-                      <Tag>Monkey {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyExecutedEvents} 次</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyEventsPerMinute !== undefined && (
-                      <Tag>速率 {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyEventsPerMinute} 次/分钟</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.monkeyDurationMs !== undefined && (
-                      <Tag>Monkey 耗时 {formatMilliseconds(qualityReportBuild.qualitySummary.performanceAnalysis.monkeyDurationMs)}</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.sampleCount !== undefined && (
-                      <Tag>采样 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.sampleCount} 条</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.cpu?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.avg !== null && (
-                      <Tag>CPU 平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.avg}% / 峰值 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.cpu.max ?? '-'}%</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.memoryMB?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.avg !== null && (
-                      <Tag>内存平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.avg}MB / 峰值 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.memoryMB.max ?? '-'}MB</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.samples?.fps?.avg !== undefined && qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.avg !== null && (
-                      <Tag>FPS 平均 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.avg} / 最低 {qualityReportBuild.qualitySummary.performanceAnalysis.samples.fps.min ?? '-'}</Tag>
-                    )}
-                    {qualityReportBuild.qualitySummary.performanceAnalysis.conclusion?.severity && (
-                      <Tag color={analysisSeverityColor(qualityReportBuild.qualitySummary.performanceAnalysis.conclusion.severity)}>
-                        结论 {qualityReportBuild.qualitySummary.performanceAnalysis.conclusion.severity}
-                      </Tag>
-                    )}
-                  </Space>
-                )}
-              />
-            )}
-
-            {(qualityReportBuild.qualitySummary?.performanceAnalysis?.conclusion?.issues || []).length > 0 && (
-              <Alert
-                showIcon
-                type="warning"
-                message="性能风险"
-                description={(
-                  <Space direction="vertical" size={4}>
-                    {(qualityReportBuild.qualitySummary?.performanceAnalysis?.conclusion?.issues || []).map((issue, index) => (
-                      <Text key={`${issue.metric || 'metric'}-${index}`} type="secondary">
-                        {issue.message || issue.metric}
-                      </Text>
-                    ))}
-                  </Space>
-                )}
-              />
-            )}
-
             <Row gutter={[16, 16]}>
               <Col xs={24} lg={10}>
                 <Card size="small" title="启动截图">
@@ -1741,9 +2777,17 @@ export default function CICDPage() {
               <Col xs={24} lg={14}>
                 <Card
                   size="small"
-                  title="结果文件"
+                  title="质检汇总"
                   extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
-                    <Button size="small" type="link" onClick={() => previewQualityArtifact('summary.json', qualityReportBuild.qualitySummary?.artifacts?.summaryUrl)}>
+                    <Button
+                      size="small"
+                      type="link"
+                      onClick={() => {
+                        setActiveQualitySummaryView('summary');
+                        setQualityPerformanceReportOpen(false);
+                        previewQualityArtifact('summary.json', qualityReportBuild.qualitySummary?.artifacts?.summaryUrl);
+                      }}
+                    >
                       summary.json
                     </Button>
                   )}
@@ -1752,60 +2796,84 @@ export default function CICDPage() {
                     <Button
                       icon={<FileTextOutlined />}
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '质检日志'}
-                      onClick={() => previewQualityArtifact('质检日志', qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl)}
+                      type={activeQualitySummaryView === 'log' ? 'primary' : 'default'}
+                      onClick={() => {
+                        setActiveQualitySummaryView('log');
+                        setQualityArtifactPreview(null);
+                        setQualityPerformanceReportOpen(false);
+                      }}
                     >
                       质检日志
                     </Button>
                     <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '设备日志'}
-                      onClick={() => previewQualityArtifact('设备日志', qualityReportBuild.qualitySummary?.artifacts?.deviceLogUrl)}
-                    >
-                      设备日志
-                    </Button>
-                    <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.processesUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '进程信息'}
-                      onClick={() => previewQualityArtifact('进程信息', qualityReportBuild.qualitySummary?.artifacts?.processesUrl)}
-                    >
-                      进程信息
-                    </Button>
-                    <Button
                       disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
                       loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'Monkey 报告'}
-                      onClick={() => previewQualityArtifact('Monkey 报告', qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl)}
+                      type={activeQualitySummaryView === 'monkey' ? 'primary' : 'default'}
+                      onClick={() => {
+                        setActiveQualitySummaryView('monkey');
+                        setQualityPerformanceReportOpen(false);
+                        previewQualityArtifact('Monkey 报告', qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
+                      }}
                     >
                       Monkey 报告
                     </Button>
                     <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '性能采样'}
-                      onClick={() => previewQualityArtifact('性能采样', qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl)}
+                      disabled={!qualityReportBuild.qualitySummary?.performanceAnalysis && !qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl && !qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl}
+                      loading={qualityPerformanceLoading}
+                      type={activeQualitySummaryView === 'performance' ? 'primary' : 'default'}
+                      onClick={() => openQualityPerformanceReport(qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl)}
                     >
-                      性能采样
+                      性能报告
                     </Button>
                     <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl && window.open(qualityReportBuild.qualitySummary.artifacts.performanceTraceUrl, '_blank', 'noopener,noreferrer')}
+                      disabled={!qualityReportBuild.qualitySummary?.exceptionAnalysis}
+                      type={activeQualitySummaryView === 'crash' ? 'primary' : 'default'}
+                      onClick={() => {
+                        setActiveQualitySummaryView('crash');
+                        setQualityArtifactPreview(null);
+                        setQualityPerformanceReportOpen(false);
+                      }}
                     >
-                      性能 Trace
-                    </Button>
-                    <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl}
-                      onClick={() => qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl && window.open(qualityReportBuild.qualitySummary.artifacts.crashReportsUrl, '_blank', 'noopener,noreferrer')}
-                    >
-                      崩溃报告
-                    </Button>
-                    <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.junitUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'JUnit'}
-                      onClick={() => previewQualityArtifact('JUnit', qualityReportBuild.qualitySummary?.artifacts?.junitUrl)}
-                    >
-                      JUnit
+                      崩溃分析
                     </Button>
                   </Space>
-                  {qualityArtifactPreview && (
+                  {activeQualitySummaryView === 'log' && (
+                    <Space direction="vertical" size={16} style={{ width: '100%', marginTop: 16 }}>
+                      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                        <Text strong>质检日志</Text>
+                        <QualityLogDigest
+                          preview={qualityLogDigest}
+                          loading={qualityLogDigestLoading}
+                        />
+                      </Space>
+                    </Space>
+                  )}
+                  {activeQualitySummaryView === 'crash' && (
+                    <Card size="small" title="崩溃分析" style={{ marginTop: 16 }}>
+                      <CrashAnalysisSummary
+                        analysis={qualityReportBuild.qualitySummary?.exceptionAnalysis}
+                        crashReportsUrl={qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl}
+                      />
+                    </Card>
+                  )}
+                  {activeQualitySummaryView === 'monkey' && (
+                    <Card
+                      size="small"
+                      title="Monkey 报告"
+                      extra={qualityArtifactPreview?.url && (
+                        <Button size="small" type="link" onClick={() => window.open(qualityArtifactPreview.url, '_blank', 'noopener,noreferrer')}>
+                          打开原文件
+                        </Button>
+                      )}
+                      style={{ marginTop: 16 }}
+                    >
+                      <MonkeyReportSummary
+                        preview={qualityArtifactPreview}
+                        loading={qualityArtifactPreviewLoading}
+                      />
+                    </Card>
+                  )}
+                  {activeQualitySummaryView === 'summary' && qualityArtifactPreview && (
                     <Card
                       size="small"
                       title={(
@@ -1846,13 +2914,72 @@ export default function CICDPage() {
                       </pre>
                     </Card>
                   )}
-                  {!qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl && (
+                  {activeQualitySummaryView === 'performance' && qualityPerformanceReportOpen && (
+                    <Card
+                      size="small"
+                      title={(
+                        <Space>
+                          <Text>性能报告</Text>
+                          {qualityPerformanceSamples && <Tag>jsonl</Tag>}
+                        </Space>
+                      )}
+                      extra={(
+                        <Space>
+                          {qualityPerformanceSamples?.url && (
+                            <Button size="small" type="link" onClick={() => window.open(qualityPerformanceSamples.url, '_blank', 'noopener,noreferrer')}>
+                              采样原文件
+                            </Button>
+                          )}
+                          {qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl && (
+                            <Button size="small" type="link" onClick={() => openPerformanceTrace(qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl)}>
+                              下载 Trace
+                            </Button>
+                          )}
+                          <Button size="small" type="text" onClick={() => {
+                            setQualityPerformanceReportOpen(false);
+                            setQualityPerformanceSamples(null);
+                          }}>
+                            收起
+                          </Button>
+                        </Space>
+                      )}
+                      style={{ marginTop: 16 }}
+                    >
+                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Text strong>分析总结</Text>
+                          <PerformanceAnalysisSummary
+                            analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
+                          />
+                        </Space>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Text strong>性能诊断</Text>
+                          <PerformanceDiagnostics
+                            samples={qualityPerformanceSamples}
+                            monkeyPreview={qualityMonkeyReportDigest}
+                            monkeyLoading={qualityMonkeyReportDigestLoading}
+                          />
+                        </Space>
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Text strong>性能分析图</Text>
+                          {qualityPerformanceLoading ? (
+                            <Alert showIcon type="info" message="正在加载性能采样..." />
+                          ) : qualityPerformanceSamples ? (
+                            <PerformanceSamplesChart data={qualityPerformanceSamples} />
+                          ) : (
+                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />
+                          )}
+                        </Space>
+                      </Space>
+                    </Card>
+                  )}
+                  {!hasQualityReportArtifact(qualityReportBuild) && (
                     <Alert
                       type="warning"
                       showIcon
                       style={{ marginTop: 16 }}
-                      message="当前 Jenkins 记录没有归档平台报告文件"
-                      description="旧质检任务可能只记录在 Jenkins 控制台里。重新执行一次质检后，会生成 summary.json、截图、设备日志和质检日志。"
+                      message="当前任务暂未发现可展示的质检文件"
+                      description="如果任务刚结束，稍等几秒刷新列表；如果 Jenkins 未完成归档，可先打开 Jenkins 控制台查看原始日志。"
                     />
                   )}
                 </Card>

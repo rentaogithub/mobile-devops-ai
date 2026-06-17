@@ -16,7 +16,7 @@ const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
-const QA_MONKEY_DURATION_SECONDS = new Set(['1800', '3600', '14400', '28800']);
+const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
 const RELEASE_BUILD_LIST_LIMIT = Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 8);
 const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
 const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
@@ -246,8 +246,17 @@ function buildWdaUrl(deviceKey: string, poolValue: string) {
 function isRecentlyActiveQualityBuild(buildNumber: number, buildDir: string, xml: string, logPath: string) {
   if (readXmlTag(xml, 'result')) return false;
 
+  const buildTimestamp = Number(readXmlTag(xml, 'timestamp')) || (fs.existsSync(buildDir) ? fs.statSync(buildDir).mtimeMs : 0);
+  const summaryFile = findLatestQualityFile(DEFAULT_QA_JOB_NAME, 'summary.json', buildTimestamp, buildNumber);
+  const summary = summaryFile ? readJsonFile(summaryFile) : null;
+  const summaryStatus = String(summary?.status || '').toLowerCase();
+  if (['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(summaryStatus)) {
+    return false;
+  }
+
   const progressFile = findLatestQualityFile(DEFAULT_QA_JOB_NAME, 'quality-progress.json', 0, buildNumber);
   const progress = progressFile ? readJsonFile(progressFile) : null;
+  if (isTerminalQualityProgress(progress)) return false;
   const progressUpdatedAt = Number(progress?.updatedAt || 0);
   if (progressUpdatedAt > 0) {
     return Date.now() - progressUpdatedAt <= JENKINS_ORPHAN_BUILD_STALE_MS;
@@ -259,6 +268,14 @@ function isRecentlyActiveQualityBuild(buildNumber: number, buildDir: string, xml
     return Math.max(latest, fs.statSync(candidate).mtimeMs);
   }, 0);
   return latestMtime > 0 && Date.now() - latestMtime <= JENKINS_ORPHAN_BUILD_STALE_MS;
+}
+
+function isTerminalQualityProgress(progress: any) {
+  const status = String(progress?.status || '').toLowerCase();
+  if (['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(status)) return true;
+  const percent = Number(progress?.progressPercent);
+  const remaining = Number(progress?.remainingSeconds);
+  return Number.isFinite(percent) && percent >= 100 && (!Number.isFinite(remaining) || remaining <= 0);
 }
 
 function findActiveQualityBuildOnDevice(deviceKey: string) {
@@ -573,6 +590,13 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     const filePath = artifactPath(name);
     return filePath && fs.existsSync(filePath) ? buildLocalQualityArtifactUrl(filePath) : '';
   };
+  const firstArtifactUrl = (...names: Array<string | undefined>) => {
+    for (const name of names) {
+      const url = artifactUrl(name);
+      if (url) return url;
+    }
+    return '';
+  };
 
   return {
     summaryUrl: buildLocalQualityArtifactUrl(summaryFile),
@@ -580,8 +604,8 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     deviceLogUrl: artifactUrl(summary?.artifacts?.deviceLog || 'device.log'),
     processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
     monkeyReportUrl: artifactUrl(summary?.artifacts?.monkeyReport),
-    performanceSamplesUrl: artifactUrl(summary?.artifacts?.performanceSamples),
-    performanceTraceUrl: artifactUrl(summary?.artifacts?.performanceTrace),
+    performanceSamplesUrl: firstArtifactUrl(summary?.artifacts?.performanceSamples, 'performance-samples.jsonl'),
+    performanceTraceUrl: firstArtifactUrl(summary?.artifacts?.performanceTrace, 'performance.trace.zip', 'performance.trace'),
     crashReportsUrl: artifactUrl(summary?.artifacts?.crashReports),
     junitUrl: artifactUrl(summary?.artifacts?.junit || 'junit.xml'),
     qualityLogUrl: artifactUrl(summary?.artifacts?.qualityLog || 'quality.log'),
@@ -708,19 +732,21 @@ async function hasActiveQualityScriptProcess() {
   }
 }
 
-async function buildCompletedOverride(jobName: string, build: any, localSummary?: any | null) {
-  if (!build?.building || !localSummary?.status) return null;
-  const status = String(localSummary.status || '').toLowerCase();
-  if (status !== 'passed' && status !== 'failed') return null;
+async function buildCompletedOverride(jobName: string, build: any, localSummary?: any | null, localProgress?: any | null) {
+  if (!build?.building) return null;
+  const summaryStatus = String(localSummary?.status || '').toLowerCase();
+  const progressStatus = String(localProgress?.status || '').toLowerCase();
+  const status = summaryStatus || (isTerminalQualityProgress(localProgress) ? progressStatus || 'passed' : '');
+  if (!['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(status)) return null;
   const buildNumber = Number(build.number);
   if (!Number.isFinite(buildNumber)) return null;
-  const result = status === 'passed' ? 'SUCCESS' : 'FAILURE';
+  const result = status === 'failed' ? 'FAILURE' : (status === 'canceled' || status === 'cancelled' || status === 'aborted' ? 'ABORTED' : 'SUCCESS');
   return {
     building: false,
     result,
     duration: build.duration || Math.max(0, Date.now() - Number(build.timestamp || Date.now())),
     description: [build.description, '本机检测到质检 summary 已生成，Jenkins 构建状态未及时刷新，已按本地报告纠偏。'].filter(Boolean).join('\n'),
-    completedMessage: localSummary.message || (result === 'SUCCESS' ? '质检完成' : '质检失败'),
+    completedMessage: localSummary?.message || localProgress?.message || (result === 'SUCCESS' ? '质检完成' : '质检失败'),
   };
 }
 
@@ -1032,8 +1058,8 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
           monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
-          performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples),
-          performanceTraceUrl: artifactUrl(summary.artifacts?.performanceTrace),
+          performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples || 'performance-samples.jsonl'),
+          performanceTraceUrl: artifactUrl(summary.artifacts?.performanceTrace || 'performance.trace.zip' || 'performance.trace'),
           crashReportsUrl: artifactUrl(summary.artifacts?.crashReports),
           junitUrl: artifactUrl(summary.artifacts?.junit || 'junit.xml'),
           qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog || 'quality.log'),
@@ -1132,6 +1158,105 @@ async function readLocalQualityTextArtifact(filePath: string, limitBytes = 1024 
   } finally {
     fs.closeSync(file);
   }
+}
+
+function flattenNumericValues(value: any, pathParts: string[] = [], output: Array<{ path: string; value: number }> = []) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    output.push({ path: pathParts.join('.').toLowerCase(), value });
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => flattenNumericValues(item, [...pathParts, String(index)], output));
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    Object.entries(value).forEach(([key, item]) => flattenNumericValues(item, [...pathParts, key], output));
+  }
+  return output;
+}
+
+function normalizeMemoryMegabytes(value: number) {
+  if (value > 1024 * 1024) return value / 1024 / 1024;
+  return value;
+}
+
+function summarizePerformanceSeries(values: Array<number | null | undefined>) {
+  const validValues = values.filter((value): value is number => Number.isFinite(Number(value)));
+  if (!validValues.length) return { avg: null, max: null, min: null };
+  const sum = validValues.reduce((total, value) => total + value, 0);
+  return {
+    avg: Number((sum / validValues.length).toFixed(2)),
+    max: Number(Math.max(...validValues).toFixed(2)),
+    min: Number(Math.min(...validValues).toFixed(2)),
+  };
+}
+
+function extractPerformanceTimestamp(item: any, fallbackIndex: number) {
+  const directValue = item?.timeSeconds ?? item?.elapsedSeconds ?? item?.seconds ?? item?.timestamp ?? item?.ts ?? item?.time;
+  if (typeof directValue === 'number' && Number.isFinite(directValue)) {
+    if (directValue > 1_000_000_000) return fallbackIndex;
+    return directValue;
+  }
+  if (typeof directValue === 'string') {
+    const parsedNumber = Number(directValue);
+    if (Number.isFinite(parsedNumber)) return parsedNumber > 1_000_000_000 ? fallbackIndex : parsedNumber;
+    const parsedDate = Date.parse(directValue);
+    if (Number.isFinite(parsedDate)) return fallbackIndex;
+  }
+  return fallbackIndex;
+}
+
+function parsePerformanceSamplesJsonl(content: string, maxSamples = 5000) {
+  const lines = content.split(/\r?\n/);
+  const samples: Array<{ index: number; timeSeconds: number; cpu: number | null; memoryMB: number | null; fps: number | null }> = [];
+  const cpuValues: number[] = [];
+  const memoryValues: number[] = [];
+  const fpsValues: number[] = [];
+  let parsedLineCount = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let item: any;
+    try {
+      item = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    parsedLineCount += 1;
+    const values = flattenNumericValues(item);
+    const cpu = values.find(({ path: keyPath, value }) => keyPath.includes('cpu') && value >= 0 && value <= 1000)?.value ?? null;
+    const fps = values.find(({ path: keyPath, value }) => /fps|frame/.test(keyPath) && value >= 0 && value <= 240)?.value ?? null;
+    const memory = values.find(({ path: keyPath, value }) => (
+      /memory|mem|resident|rss/.test(keyPath) && value > 0
+    ))?.value ?? null;
+    const memoryMB = memory === null ? null : Number(normalizeMemoryMegabytes(memory).toFixed(2));
+    if (cpu !== null) cpuValues.push(cpu);
+    if (memoryMB !== null) memoryValues.push(memoryMB);
+    if (fps !== null) fpsValues.push(fps);
+
+    if (samples.length < maxSamples) {
+      samples.push({
+        index: parsedLineCount,
+        timeSeconds: Number(extractPerformanceTimestamp(item, parsedLineCount).toFixed(2)),
+        cpu: cpu === null ? null : Number(cpu.toFixed(2)),
+        memoryMB,
+        fps: fps === null ? null : Number(fps.toFixed(2)),
+      });
+    }
+  }
+
+  return {
+    sampleCount: parsedLineCount,
+    returnedSampleCount: samples.length,
+    truncated: parsedLineCount > samples.length,
+    samples,
+    summary: {
+      cpu: summarizePerformanceSeries(cpuValues),
+      memoryMB: summarizePerformanceSeries(memoryValues),
+      fps: summarizePerformanceSeries(fpsValues),
+    },
+  };
 }
 
 async function fetchThirdSdkDependencies(branch: string, revision?: string): Promise<{
@@ -1468,6 +1593,43 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
   }
 });
 
+router.get('/nn/quality/performance-samples', async (req: Request, res: Response) => {
+  try {
+    const artifactUrl = String(req.query.url || '').trim();
+    if (!artifactUrl) {
+      res.status(400).json({ success: false, error: 'url 不能为空' });
+      return;
+    }
+    const parsedUrl = new URL(artifactUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
+    const jenkinsUrl = new URL(JENKINS_BASE_URL);
+    const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
+    if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
+      res.status(400).json({ success: false, error: '只允许读取当前 Jenkins 的 artifact 文件' });
+      return;
+    }
+
+    const preview = isLocalQualityArtifact
+      ? await readLocalQualityTextArtifact(String(parsedUrl.searchParams.get('path') || ''), 8 * 1024 * 1024)
+      : await fetchJenkinsTextArtifact(artifactUrl, 8 * 1024 * 1024);
+    const parsed = parsePerformanceSamplesJsonl(preview.content);
+
+    res.json({
+      success: true,
+      data: {
+        url: artifactUrl,
+        contentType: preview.contentType,
+        sourceTruncated: preview.truncated,
+        ...parsed,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '读取性能采样失败'),
+    });
+  }
+});
+
 router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
@@ -1505,7 +1667,7 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
         ? buildLocalQualityArtifactLinks(localSummaryResult.filePath, localSummary)
         : {};
       const localProgress = readLocalQualityProgress(DEFAULT_QA_JOB_NAME, build);
-      const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary);
+      const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary, localProgress);
       const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
       const stateOverride = completedOverride || interruptedOverride;
       const normalizedBuild = stateOverride ? { ...build, ...stateOverride } : build;
@@ -1525,8 +1687,8 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
             ...(localSummary || {}),
             artifacts: {
               ...(localSummary?.artifacts || {}),
-              ...localArtifactLinks,
               ...(qualitySummary.artifacts || {}),
+              ...localArtifactLinks,
             },
             message: completedOverride?.completedMessage || localSummary?.message || qualitySummary.message,
           };
@@ -1864,8 +2026,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const requestedDeviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
     const rawMonkeyDurationSeconds = String(req.body?.monkeyDurationSeconds || '').trim();
     const monkeyDurationSeconds = testSuite === 'monkey'
-      ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800')
-      : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800');
+      ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400')
+      : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400');
 
     if (!buildNumber) {
       res.status(400).json({
@@ -1966,7 +2128,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       MONKEY_BACK_ACTION_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_ACTION_PROBABILITY') || '0.12',
       MONKEY_BACK_TAP_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_TAP_PROBABILITY') || '0.35',
       MONKEY_AVOID_TOP_BAR: getRuntimeEnv('QA_MONKEY_AVOID_TOP_BAR') || '1',
-      MONKEY_HEARTBEAT_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_HEARTBEAT_INTERVAL_SECONDS') || '60',
+      MONKEY_HEARTBEAT_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_HEARTBEAT_INTERVAL_SECONDS') || '10',
       MONKEY_FORBIDDEN_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_TEXTS') || 'debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn',
       MONKEY_FORBIDDEN_PAGE_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PAGE_TEXTS') || 'DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow',
       MONKEY_FORBIDDEN_REGION_RATIO: getRuntimeEnv('QA_MONKEY_FORBIDDEN_REGION_RATIO') || '0.78,0.18,1.0,0.72',

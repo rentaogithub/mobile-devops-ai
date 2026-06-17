@@ -57,6 +57,7 @@ PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
 PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
 PERFORMANCE_TRACE_FILE="${RESULT_DIR}/performance.trace"
+PERFORMANCE_TRACE_ARCHIVE_FILE="${RESULT_DIR}/performance.trace.zip"
 CRASH_REPORT_DIR="${RESULT_DIR}/crash-reports"
 LAUNCH_METHOD=""
 LAUNCH_STARTED_AT_MS=""
@@ -85,7 +86,7 @@ WDA_XCODEBUILD_EXTRA_ARGS="${WDA_XCODEBUILD_EXTRA_ARGS:-}"
 MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
 WDA_READY_ERROR=""
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
-MONKEY_DURATION_SECONDS="${MONKEY_DURATION_SECONDS:-28800}"
+MONKEY_DURATION_SECONDS="${MONKEY_DURATION_SECONDS:-14400}"
 MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
 MONKEY_MAX_REPORTED_EVENTS="${MONKEY_MAX_REPORTED_EVENTS:-1000}"
 MONKEY_BACK_INTERVAL_EVENTS="${MONKEY_BACK_INTERVAL_EVENTS:-25}"
@@ -94,7 +95,7 @@ MONKEY_STUCK_CHECK_INTERVAL_EVENTS="${MONKEY_STUCK_CHECK_INTERVAL_EVENTS:-10}"
 MONKEY_BACK_ACTION_PROBABILITY="${MONKEY_BACK_ACTION_PROBABILITY:-0.12}"
 MONKEY_BACK_TAP_PROBABILITY="${MONKEY_BACK_TAP_PROBABILITY:-0.35}"
 MONKEY_AVOID_TOP_BAR="${MONKEY_AVOID_TOP_BAR:-1}"
-MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-60}"
+MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-10}"
 MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-8}"
 MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-12}"
 MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn}"
@@ -417,7 +418,7 @@ write_summary() {
     "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL_DISPLAY:-${DEVICE_POOL_LABEL:-}}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
 	    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
-	    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
+	    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_ARCHIVE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
 	    "${PERF_COLD_START_WARN_MS:-8000}" "${PERF_COLD_START_SLOW_MS:-15000}" "${PERF_CPU_AVG_WARN:-80}" "${PERF_MEMORY_PEAK_WARN_MB:-1500}" "${PERF_FPS_AVG_WARN:-45}" "${PERF_FPS_MIN_WARN:-20}" <<'PY'
 import json
 import os
@@ -453,6 +454,7 @@ summary_path = sys.argv[1]
     process_file,
     monkey_report_file,
     performance_sample_file,
+    performance_trace_archive_file,
     performance_trace_file,
     crash_report_dir,
     cold_start_warn_ms,
@@ -461,7 +463,7 @@ summary_path = sys.argv[1]
     memory_peak_warn_mb,
     fps_avg_warn,
     fps_min_warn,
-) = sys.argv[2:37]
+) = sys.argv[2:38]
 
 def to_int(value):
     try:
@@ -739,7 +741,7 @@ data = {
 	        "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
         "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
-        "performanceTrace": rel(performance_trace_file) if os.path.exists(performance_trace_file) else "",
+        "performanceTrace": rel(performance_trace_archive_file) if os.path.exists(performance_trace_archive_file) else "",
         "crashReports": rel(crash_report_dir) if os.path.isdir(crash_report_dir) else "",
 	        "junit": "junit.xml",
         "qualityLog": "quality.log",
@@ -1816,6 +1818,7 @@ start_xctrace_sampling() {
   xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
   xctrace_log="${RESULT_DIR}/performance-xctrace.log"
   rm -rf "${PERFORMANCE_TRACE_FILE}"
+  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
   : > "${xctrace_log}"
   log "启动 xctrace 性能采样: template=${PERFORMANCE_XCTRACE_TEMPLATE}, pid=${app_pid} -> ${PERFORMANCE_TRACE_FILE}"
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
@@ -1835,6 +1838,138 @@ start_xctrace_sampling() {
     return 1
   fi
   return 0
+}
+
+package_performance_trace() {
+  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    return 1
+  fi
+  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
+  if command -v ditto >/dev/null 2>&1; then
+    ditto -c -k --keepParent "${PERFORMANCE_TRACE_FILE}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+  elif command -v zip >/dev/null 2>&1; then
+    (
+      cd "${RESULT_DIR}" && zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${PERFORMANCE_TRACE_FILE}")"
+    ) || true
+  fi
+  [ -s "${PERFORMANCE_TRACE_ARCHIVE_FILE}" ]
+}
+
+export_xctrace_performance_samples() {
+  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    return 1
+  fi
+  if [ -s "${PERFORMANCE_SAMPLE_FILE}" ]; then
+    return 0
+  fi
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find xctrace >/dev/null 2>&1; then
+    return 1
+  fi
+  local export_xml="${RESULT_DIR}/performance-xctrace-process-live.xml"
+  local export_log="${RESULT_DIR}/performance-xctrace-export.log"
+  local toc_xml="${RESULT_DIR}/performance-xctrace-toc.xml"
+  local exported=0
+  : > "${export_log}"
+
+  for attempt in 1 2 3 4 5; do
+    rm -f "${export_xml}"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] export attempt ${attempt}: activity-monitor-process-live"
+      xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "/trace-toc/run[@number='1']/data/table[@schema='activity-monitor-process-live']" --output "${export_xml}"
+    } >>"${export_log}" 2>&1
+    if [ -s "${export_xml}" ]; then
+      exported=1
+      break
+    fi
+
+    rm -f "${export_xml}"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] export attempt ${attempt}: fallback schema lookup"
+      xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "//table[@schema='activity-monitor-process-live']" --output "${export_xml}"
+    } >>"${export_log}" 2>&1
+    if [ -s "${export_xml}" ]; then
+      exported=1
+      break
+    fi
+
+    sleep $((attempt * 2))
+  done
+
+  if [ "${exported}" != "1" ]; then
+    rm -f "${toc_xml}"
+    xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
+    log "xctrace 性能数据导出失败。"
+    log "xctrace 导出日志: ${export_log}"
+    return 1
+  fi
+  python3 - "${export_xml}" "${PERFORMANCE_SAMPLE_FILE}" <<'PY'
+import json
+import sys
+import xml.etree.ElementTree as ET
+
+xml_path, output_path = sys.argv[1:3]
+id_values = {}
+
+def numeric(value):
+    if value is None:
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return None
+
+def value_of(element):
+    if element is None:
+        return None
+    ref = element.attrib.get("ref")
+    if ref:
+        return id_values.get(ref)
+    text = (element.text or "").strip()
+    value = text if text != "" else None
+    element_id = element.attrib.get("id")
+    if element_id:
+        id_values[element_id] = value
+    return value
+
+try:
+    root = ET.parse(xml_path).getroot()
+except Exception:
+    root = ET.Element("empty")
+
+rows = []
+for row in root.iter("row"):
+    values = [value_of(child) for child in list(row)]
+    if len(values) < 11:
+        continue
+    start_ns = numeric(values[0])
+    cpu = numeric(values[6])
+    memory_bytes = numeric(values[10])
+    if start_ns is None or (cpu is None and memory_bytes is None):
+        continue
+    sample = {
+        "timeSeconds": round(start_ns / 1_000_000_000, 2),
+        "source": "xctrace.activity-monitor-process-live",
+    }
+    if cpu is not None:
+        sample["cpu"] = round(cpu, 2)
+    if memory_bytes is not None:
+        sample["memoryBytes"] = int(memory_bytes)
+    rows.append(sample)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    for item in rows:
+        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+print(len(rows))
+PY
+  local sample_count
+  sample_count="$(wc -l < "${PERFORMANCE_SAMPLE_FILE}" 2>/dev/null | tr -d ' ' || echo 0)"
+  if [ "${sample_count:-0}" -gt 0 ]; then
+    log "xctrace 已导出性能采样: ${PERFORMANCE_SAMPLE_FILE} (${sample_count} 条)"
+    return 0
+  fi
+  log "xctrace 未导出可用性能采样。"
+  return 1
 }
 
 stop_performance_sampling() {
@@ -1871,7 +2006,22 @@ stop_xctrace_sampling() {
   fi
   rm -f "${xctrace_pid_file}"
   if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
-    log "xctrace 性能采样: ${PERFORMANCE_TRACE_FILE}"
+    local waited=0
+    while [ "${waited}" -lt 30 ]; do
+      if [ -d "${PERFORMANCE_TRACE_FILE}/Trace1.run" ] && [ -s "${PERFORMANCE_TRACE_FILE}/form.template" ]; then
+        break
+      fi
+      sleep 1
+      waited=$((waited + 1))
+    done
+  fi
+  if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    export_xctrace_performance_samples || true
+    if package_performance_trace; then
+      log "xctrace 性能采样: ${PERFORMANCE_TRACE_ARCHIVE_FILE}"
+    else
+      log "xctrace 性能采样已生成，但打包失败: ${PERFORMANCE_TRACE_FILE}"
+    fi
   else
     log "xctrace 性能采样未生成 trace。"
   fi
@@ -2383,7 +2533,18 @@ def is_recoverable_wda_error(exc):
     message = str(exc)
     if isinstance(exc, (TimeoutError, socket.timeout, urllib.error.URLError)):
         return True
-    if "timed out" in message or "Connection refused" in message or "Errno 61" in message:
+    recoverable_tokens = (
+        "timed out",
+        "Connection refused",
+        "Connection reset by peer",
+        "Broken pipe",
+        "Remote end closed connection",
+        "Errno 54",
+        "Errno 57",
+        "Errno 60",
+        "Errno 61",
+    )
+    if any(token in message for token in recoverable_tokens):
         return True
     if isinstance(exc, urllib.error.HTTPError) and exc.code >= 500:
         return True
@@ -2431,7 +2592,7 @@ def recover_wda_session(reason, recovery_index):
         "reason": str(reason)[:300],
         "recoveryIndex": recovery_index,
     }
-    events.append(event)
+    record_event(event)
     print(f"Monkey WDA recovery {recovery_index}/{max_wda_recoveries}: {event['reason']}", flush=True)
     write_progress("running", f"WDA 短暂超时，正在恢复 {recovery_index}/{max_wda_recoveries}", event)
     if recovery_sleep_seconds:
@@ -2568,6 +2729,53 @@ def is_forbidden_page(source):
         return False
     source_lower = source.lower()
     return any(term in source_lower for term in forbidden_page_terms_lower)
+
+def text_attr(node, attr):
+    match = re.search(rf'\b{attr}="([^"]*)"', node)
+    return match.group(1).strip() if match else ""
+
+def summarize_source(source, limit=8):
+    if not source:
+        return {}
+    texts = []
+    classes = []
+    for match in re.finditer(r'<[^>]+>', source):
+        node = match.group(0)
+        node_type = text_attr(node, "type")
+        if node_type and node_type not in classes:
+            classes.append(node_type)
+        for attr in ("label", "name", "value"):
+            text = text_attr(node, attr)
+            if not text or len(text) > 80:
+                continue
+            if text.lower() in ("true", "false"):
+                continue
+            if text not in texts:
+                texts.append(text)
+        if len(texts) >= limit:
+            break
+    return {
+        "text": texts[:limit],
+        "nodeTypes": classes[:6],
+    }
+
+def current_page_context(source):
+    if not source:
+        return {}
+    return {
+        "fingerprint": hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest(),
+        "summary": summarize_source(source),
+    }
+
+def record_event(event, source=""):
+    now = time.time()
+    event["startedAtMs"] = int(now * 1000)
+    event["elapsedSeconds"] = round(now - started_at, 3)
+    context = current_page_context(source)
+    if context:
+        event["page"] = context
+    events.append(event)
+    return event
 
 def safe_random_point(left, top, right, bottom, forbidden_regions):
     left = min(left, right)
@@ -2777,19 +2985,19 @@ try:
             if is_system_permission_alert(current_source):
                 reason = "systemPermissionAlert"
                 detail = dismiss_system_alert(session_id, width, height)
-                events.append({
+                record_event({
                     "index": index + 1,
                     "type": "dismissAlert",
                     "reason": reason,
                     **detail,
-                })
+                }, current_source)
                 same_page_events = 0
                 last_fingerprint = ""
             elif is_forbidden_page(current_source):
                 reason = "forbiddenPage"
                 start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
                 action = "edgeBack"
-                events.append({
+                record_event({
                     "index": index + 1,
                     "type": action,
                     "reason": reason,
@@ -2797,7 +3005,7 @@ try:
                     "startY": start_y,
                     "endX": end_x,
                     "endY": end_y,
-                })
+                }, current_source)
                 same_page_events = 0
                 last_fingerprint = ""
             elif stuck_events and same_page_events >= stuck_events:
@@ -2805,7 +3013,7 @@ try:
                 if random.random() < 0.65:
                     start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
                     action = "edgeBack"
-                    events.append({
+                    record_event({
                         "index": index + 1,
                         "type": action,
                         "reason": reason,
@@ -2813,11 +3021,11 @@ try:
                         "startY": start_y,
                         "endX": end_x,
                         "endY": end_y,
-                    })
+                    }, current_source)
                 else:
                     x, y = tap_back_region(session_id, width, safe_top)
                     action = "tapBack"
-                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                    record_event({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y}, current_source)
                 same_page_events = 0
                 last_fingerprint = ""
             elif back_interval_events and index > 0 and index % back_interval_events == 0:
@@ -2825,11 +3033,11 @@ try:
                 if random.random() < back_tap_probability:
                     x, y = tap_back_region(session_id, width, safe_top)
                     action = "tapBack"
-                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                    record_event({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y}, current_source)
                 else:
                     start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
                     action = "edgeBack"
-                    events.append({
+                    record_event({
                         "index": index + 1,
                         "type": action,
                         "reason": reason,
@@ -2837,17 +3045,17 @@ try:
                         "startY": start_y,
                         "endX": end_x,
                         "endY": end_y,
-                    })
+                    }, current_source)
             elif random.random() < back_action_probability:
                 reason = "probability"
                 if random.random() < back_tap_probability:
                     x, y = tap_back_region(session_id, width, safe_top)
                     action = "tapBack"
-                    events.append({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y})
+                    record_event({"index": index + 1, "type": action, "reason": reason, "x": x, "y": y}, current_source)
                 else:
                     start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
                     action = "edgeBack"
-                    events.append({
+                    record_event({
                         "index": index + 1,
                         "type": action,
                         "reason": reason,
@@ -2855,7 +3063,7 @@ try:
                         "startY": start_y,
                         "endX": end_x,
                         "endY": end_y,
-                    })
+                    }, current_source)
             elif random.random() < 0.72:
                 x, y, fallback = safe_random_point(
                     safe_left,
@@ -2865,17 +3073,17 @@ try:
                     forbidden_regions,
                 )
                 tap(session_id, x, y)
-                events.append({
+                record_event({
                     "index": index + 1,
                     "type": "tap",
                     "x": x,
                     "y": y,
                     "forbiddenRegions": len(forbidden_regions),
                     "usedFallbackPoint": fallback,
-                })
+                }, current_source)
             else:
                 start_x, start_y, end_x, end_y, fallback = swipe(session_id, width, height, forbidden_regions)
-                events.append({
+                record_event({
                     "index": index + 1,
                     "type": "swipe",
                     "startX": start_x,
@@ -2884,7 +3092,7 @@ try:
                     "endY": end_y,
                     "forbiddenRegions": len(forbidden_regions),
                     "usedFallbackPoint": fallback,
-                })
+                }, current_source)
             wda_recoveries = 0
         except Exception as exc:
             if not is_recoverable_wda_error(exc):
@@ -2926,10 +3134,20 @@ try:
     write_progress("passed", report["message"])
 except Exception as exc:
     message = str(exc)
-    if "Connection refused" in message or "Errno 61" in message or "timed out" in message:
+    if (
+        "Connection refused" in message
+        or "Connection reset by peer" in message
+        or "Broken pipe" in message
+        or "Remote end closed connection" in message
+        or "Errno 54" in message
+        or "Errno 57" in message
+        or "Errno 60" in message
+        or "Errno 61" in message
+        or "timed out" in message
+    ):
         message = (
-            f"WDA 不可访问：{wda_url}。请确认打包机已启动 WebDriverAgent，"
-            f"并且 curl {wda_url}/status 可通。原始错误：{message}"
+            f"WDA 连接不稳定：{wda_url}。脚本已尝试自动恢复，"
+            f"仍失败时请检查 WebDriverAgent、iproxy、USB 连接和设备锁屏状态。原始错误：{message}"
         )
     report["message"] = message
     write_progress("failed", message)

@@ -1296,6 +1296,27 @@ export interface JenkinsQualityArtifactPreview {
   truncated?: boolean;
 }
 
+export interface JenkinsQualityPerformanceSamples {
+  url: string;
+  contentType?: string;
+  sampleCount: number;
+  returnedSampleCount: number;
+  truncated?: boolean;
+  sourceTruncated?: boolean;
+  samples: Array<{
+    index: number;
+    timeSeconds: number;
+    cpu: number | null;
+    memoryMB: number | null;
+    fps: number | null;
+  }>;
+  summary: {
+    cpu: { avg: number | null; max: number | null; min: number | null };
+    memoryMB: { avg: number | null; max: number | null; min: number | null };
+    fps: { avg: number | null; max: number | null; min: number | null };
+  };
+}
+
 export type QualityTaskType = 'ios_monkey';
 export type QualityTaskStatus = 'created' | 'queued' | 'preparing' | 'installing' | 'running' | 'collecting' | 'analyzing' | 'reporting' | 'notifying' | 'success' | 'failed' | 'unstable' | 'canceled' | string;
 
@@ -1465,6 +1486,14 @@ export const jenkinsApi = {
 
   previewQualityArtifact: async (url: string): Promise<ApiResponse<JenkinsQualityArtifactPreview>> => {
     const response = await api.get<ApiResponse<JenkinsQualityArtifactPreview>>('/jenkins/nn/quality/artifact-preview', {
+      params: { url },
+      timeout: 30000,
+    });
+    return response.data;
+  },
+
+  getQualityPerformanceSamples: async (url: string): Promise<ApiResponse<JenkinsQualityPerformanceSamples>> => {
+    const response = await api.get<ApiResponse<JenkinsQualityPerformanceSamples>>('/jenkins/nn/quality/performance-samples', {
       params: { url },
       timeout: 30000,
     });

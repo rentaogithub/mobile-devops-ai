@@ -74,9 +74,21 @@ export class SymbolizerService {
     try {
       logger.info('开始符号化崩溃日志', { dsymPath });
       const warnings: string[] = [];
+      let wasResourceIPS = false;
 
       // 先检测是否是 .ips JSON 格式（不进行完整解析）
-      const trimmed = crashLog.trim();
+      let trimmed = crashLog.trim();
+      if (trimmed.startsWith('{')) {
+        const resourceReport = this.convertResourceIPSToCrashLog(crashLog);
+        if (resourceReport) {
+          wasResourceIPS = true;
+          crashLog = resourceReport;
+          trimmed = crashLog.trim();
+          logger.info('检测到 resource/wakeups .ips，已转换为简化堆栈格式', {
+            convertedLength: crashLog.length,
+          });
+        }
+      }
       // 检查是否是文本格式的崩溃日志（包含特定的文本格式标记）
       const isTextFormat = crashLog.includes('Thread 0 Crashed:') || 
                           crashLog.includes('Binary Images:') ||
@@ -253,7 +265,7 @@ export class SymbolizerService {
       const finalDsymUUID = await this.extractDSYMUUID(dsymPath);
       const matchedByUUID = this.findBinaryNameByUUID(crashLog, finalDsymUUID);
       
-      if (!matchedByUUID) {
+      if (!matchedByUUID && !wasResourceIPS) {
         const warning = `⚠️ 警告：dSYM 文件的 UUID 与崩溃日志不匹配。符号化结果可能不准确。建议上传正确版本的 dSYM 文件以获得准确的符号化结果。`;
         warnings.push(warning);
       }
@@ -266,6 +278,120 @@ export class SymbolizerService {
       logger.error('符号化失败', { error });
       throw error;
     }
+  }
+
+  /**
+   * wakeups/resource .ips 没有 threads/binaryImages，但通常包含
+   * "Heaviest stack for the target process"。转换成现有解析器支持的简化栈格式。
+   */
+  private convertResourceIPSToCrashLog(content: string): string | null {
+    if (!/Heaviest stack for the target process:/i.test(content)) {
+      return null;
+    }
+
+    const metadata = this.extractResourceIPSMetadata(content);
+    const lines = content.split(/\r?\n/);
+    const stackLines: string[] = [];
+    let inHeaviestStack = false;
+    let frameIndex = 0;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (/^Heaviest stack for the target process:/i.test(trimmed)) {
+        inHeaviestStack = true;
+        continue;
+      }
+
+      if (!inHeaviestStack) {
+        continue;
+      }
+
+      if (!trimmed) {
+        if (stackLines.length > 0) break;
+        continue;
+      }
+
+      const match = trimmed.match(/^\d+\s+\S+\s+\(([^+()]+)\s+\+\s+(\d+)\)\s+\[(0x[0-9a-f]+)\]/i);
+      if (!match) {
+        if (stackLines.length > 0 && !/^\d+\s+/.test(trimmed)) break;
+        continue;
+      }
+
+      const binaryName = match[1].trim();
+      const offset = Number(match[2]);
+      const address = Number.parseInt(match[3], 16);
+      if (!binaryName || !Number.isFinite(offset) || !Number.isFinite(address) || address <= offset) {
+        continue;
+      }
+
+      const loadAddress = `0x${(address - offset).toString(16)}`;
+      stackLines.push(`${frameIndex} ${binaryName} ${match[3]} ${loadAddress} + ${offset}`);
+      frameIndex += 1;
+    }
+
+    if (stackLines.length === 0) {
+      return null;
+    }
+
+    return [
+      `Incident Identifier: ${metadata.incidentId || 'N/A'}`,
+      `Process:             ${metadata.processName || 'Unknown'} [${metadata.pid || 0}]`,
+      `Identifier:          ${metadata.bundleId || 'N/A'}`,
+      `Version:             ${metadata.version || 'N/A'}${metadata.buildVersion ? ` (${metadata.buildVersion})` : ''}`,
+      `Date/Time:           ${metadata.timestamp || ''}`,
+      `OS Version:          ${metadata.osVersion || 'iOS'}`,
+      'Report Version:      104',
+      '',
+      `Exception Type:      ${metadata.event ? `RESOURCE_${metadata.event.toUpperCase()}` : 'RESOURCE'}`,
+      metadata.wakeups ? `Exception Reason:    ${metadata.wakeups}` : '',
+      '',
+      'Thread 0 Crashed:',
+      ...stackLines,
+    ].filter((line) => line !== '').join('\n');
+  }
+
+  private extractResourceIPSMetadata(content: string): {
+    incidentId?: string;
+    processName?: string;
+    pid?: string;
+    bundleId?: string;
+    version?: string;
+    buildVersion?: string;
+    timestamp?: string;
+    osVersion?: string;
+    event?: string;
+    wakeups?: string;
+  } {
+    let jsonHeader: any = {};
+    const firstLine = content.split(/\r?\n/).find((line) => line.trim().startsWith('{'))?.trim();
+    if (firstLine) {
+      try {
+        jsonHeader = JSON.parse(firstLine);
+      } catch {
+        jsonHeader = {};
+      }
+    }
+
+    const readField = (label: string) => {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return content.match(new RegExp(`^${escaped}:\\s*(.+)$`, 'im'))?.[1]?.trim();
+    };
+
+    const versionLine = readField('Version');
+    const versionMatch = versionLine?.match(/^([^\s(]+)(?:\s+\(([^)]+)\))?/);
+
+    return {
+      incidentId: jsonHeader.incident_id || jsonHeader.incidentID || readField('Incident Identifier'),
+      processName: jsonHeader.app_name || jsonHeader.procName || readField('Command'),
+      pid: readField('PID'),
+      bundleId: jsonHeader.bundleID || readField('Identifier'),
+      version: jsonHeader.app_version || versionMatch?.[1],
+      buildVersion: jsonHeader.build_version || versionMatch?.[2],
+      timestamp: jsonHeader.timestamp || readField('Date/Time'),
+      osVersion: jsonHeader.os_version || readField('OS Version'),
+      event: readField('Event'),
+      wakeups: readField('Wakeups'),
+    };
   }
 
   /**

@@ -180,8 +180,8 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_DURATION_SECONDS</name>
-          <defaultValue>28800</defaultValue>
-          <description>Monkey 持续运行秒数，可选 1800（0.5 小时）、3600（1 小时）、14400（4 小时）、28800（8 小时）。设为 0 时按 MONKEY_EVENT_COUNT 次数执行。</description>
+          <defaultValue>14400</defaultValue>
+          <description>Monkey 持续运行秒数，可选 300（5 分钟）、1800（0.5 小时）、3600（1 小时）、14400（4 小时）、28800（8 小时）。设为 0 时按 MONKEY_EVENT_COUNT 次数执行。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -234,8 +234,8 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_HEARTBEAT_INTERVAL_SECONDS</name>
-          <defaultValue>60</defaultValue>
-          <description>长时间 Monkey 运行时写入 Jenkins 日志的心跳间隔秒数。0=关闭心跳。</description>
+          <defaultValue>10</defaultValue>
+          <description>长时间 Monkey 运行时写入 Jenkins 日志和进度文件的心跳间隔秒数。0=关闭心跳。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -377,7 +377,7 @@ bash scripts/sonic/ios-quality.sh</command>
   </builders>
   <publishers>
     <hudson.tasks.junit.JUnitResultArchiver>
-      <testResults>quality-results/**/*.xml</testResults>
+      <testResults>quality-results/qa-${BUILD_NUMBER}-*/junit.xml</testResults>
       <keepLongStdio>true</keepLongStdio>
       <skipPublishingChecks>true</skipPublishingChecks>
       <checksName></checksName>
