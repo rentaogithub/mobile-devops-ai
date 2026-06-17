@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Typography, Card, Input, Button, Space, Upload, Alert, Descriptions, Switch, Tabs, message } from 'antd';
+import { Typography, Card, Input, Button, Space, Upload, Alert, Descriptions, Switch, Tabs, Spin, message } from 'antd';
 import {
   ApiOutlined,
   CommentOutlined,
@@ -15,7 +15,8 @@ import { watermarkApi, WatermarkDecodeResult } from '../services/api';
 import LogsPairPage from './LogsPairPage';
 
 const { Title, Paragraph } = Typography;
-const FEEDBACK_LOG_URL = 'https://op.nn.com/#/speed/logs';
+const FEEDBACK_LOG_URL = '/op/#/speed/logs';
+const EXTERNAL_FEEDBACK_LOG_URL = 'https://op.nn.com/#/speed/logs';
 
 const formatWatermarkImageTime = (time?: string) => {
   if (!time) {
@@ -44,9 +45,10 @@ export default function LogsPage() {
   const [watermarkDeep, setWatermarkDeep] = useState(true);
   const [watermarkLoading, setWatermarkLoading] = useState(false);
   const [watermarkResult, setWatermarkResult] = useState<WatermarkDecodeResult | null>(null);
+  const [feedbackFrameLoading, setFeedbackFrameLoading] = useState(true);
 
   const openFeedbackLogs = () => {
-    window.open(FEEDBACK_LOG_URL, '_blank', 'noopener,noreferrer');
+    window.open(EXTERNAL_FEEDBACK_LOG_URL, '_blank', 'noopener,noreferrer');
   };
 
   const handleWatermarkUpload = async (options: any) => {
@@ -185,17 +187,40 @@ export default function LogsPage() {
                       新窗口打开 OP 日志平台
                     </Button>
                   </Space>
-                  <iframe
-                    title="OP 反馈日志"
-                    src={FEEDBACK_LOG_URL}
-                    style={{
-                      width: '100%',
-                      height: 680,
-                      border: '1px solid #f0f0f0',
-                      borderRadius: 6,
-                      background: '#fff',
-                    }}
-                  />
+                  <div style={{ position: 'relative', minHeight: 680 }}>
+                    {feedbackFrameLoading && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 1,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: '#fff',
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 6,
+                        }}
+                      >
+                        <Space direction="vertical" align="center">
+                          <Spin />
+                          <span style={{ color: '#666' }}>正在加载 OP 日志平台...</span>
+                        </Space>
+                      </div>
+                    )}
+                    <iframe
+                      title="OP 反馈日志"
+                      src={FEEDBACK_LOG_URL}
+                      onLoad={() => setFeedbackFrameLoading(false)}
+                      style={{
+                        width: '100%',
+                        height: 680,
+                        border: '1px solid #f0f0f0',
+                        borderRadius: 6,
+                        background: '#fff',
+                      }}
+                    />
+                  </div>
                 </Space>
               ),
             },

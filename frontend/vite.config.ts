@@ -82,6 +82,24 @@ export default defineConfig(async () => {
           secure: false,
           timeout: 600000,
         },
+        '^/op(?=/|$)': {
+          target: backendTarget,
+          changeOrigin: false,
+          secure: false,
+          timeout: 600000,
+        },
+        '^/jeecg-boot(?=/|$)': {
+          target: backendTarget,
+          changeOrigin: false,
+          secure: false,
+          timeout: 600000,
+        },
+        '^/sys(?=/|$)': {
+          target: backendTarget,
+          changeOrigin: false,
+          secure: false,
+          timeout: 600000,
+        },
         '^/(organizations|settings|auth|_static|_assets|avatar|static)(?=/|$)': {
           target: backendTarget,
           changeOrigin: false,

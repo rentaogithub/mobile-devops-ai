@@ -80,6 +80,7 @@ WDA_SCHEME="${WDA_SCHEME:-WebDriverAgentRunner}"
 WDA_START_TIMEOUT_SECONDS="${WDA_START_TIMEOUT_SECONDS:-300}"
 WDA_DEVELOPMENT_TEAM="${WDA_DEVELOPMENT_TEAM:-${QA_WDA_DEVELOPMENT_TEAM:-LX4548D2Q6}}"
 WDA_BUNDLE_ID="${WDA_BUNDLE_ID:-${QA_WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}}"
+WDA_DERIVED_DATA_PATH="${WDA_DERIVED_DATA_PATH:-${RESULT_DIR}/wda-derived-data}"
 WDA_XCODEBUILD_EXTRA_ARGS="${WDA_XCODEBUILD_EXTRA_ARGS:-}"
 MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
 WDA_READY_ERROR=""
@@ -94,8 +95,8 @@ MONKEY_BACK_ACTION_PROBABILITY="${MONKEY_BACK_ACTION_PROBABILITY:-0.12}"
 MONKEY_BACK_TAP_PROBABILITY="${MONKEY_BACK_TAP_PROBABILITY:-0.35}"
 MONKEY_AVOID_TOP_BAR="${MONKEY_AVOID_TOP_BAR:-1}"
 MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-60}"
-MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-5}"
-MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-3}"
+MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-8}"
+MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-12}"
 MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn}"
 MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow}"
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
@@ -147,9 +148,9 @@ write_quality_progress() {
   local status="$1"
   local phase="${2:-}"
   local message="${3:-}"
-  local percent="${4:-0}"
-  local executed="${5:-${MONKEY_EXECUTED_EVENTS:-0}}"
-  local elapsed="${6:-0}"
+  local percent="${4:-}"
+  local executed="${5:-}"
+  local elapsed="${6:-}"
   local remaining="${7:-}"
   python3 - "$PROGRESS_FILE" "$status" "$phase" "$message" "$percent" "$executed" "$elapsed" "$remaining" \
     "${MONKEY_EVENT_COUNT:-30}" "${MONKEY_DURATION_SECONDS:-0}" <<'PY' || true
@@ -188,6 +189,16 @@ def optional_int(value):
         return None
     return to_int(value, 0)
 
+def keep_or_int(value, current, default=0):
+    if value == "":
+        return to_int(current, default)
+    return to_int(value, default)
+
+def keep_or_optional_int(value, current):
+    if value == "":
+        return current
+    return optional_int(value)
+
 data = {}
 if os.path.exists(progress_file):
     try:
@@ -196,8 +207,11 @@ if os.path.exists(progress_file):
     except Exception:
         data = {}
 
-next_percent = round(max(0.0, min(100.0, to_float(percent, 0.0))), 2)
 current_percent = to_float(data.get("progressPercent"), 0.0)
+if percent == "":
+    next_percent = current_percent
+else:
+    next_percent = round(max(0.0, min(100.0, to_float(percent, 0.0))), 2)
 if status == "running":
     next_percent = max(current_percent, next_percent)
 
@@ -206,9 +220,9 @@ data.update({
     "phase": phase,
     "message": message,
     "updatedAt": int(time.time() * 1000),
-    "elapsedSeconds": to_int(elapsed, to_int(data.get("elapsedSeconds"), 0)),
-    "remainingSeconds": optional_int(remaining),
-    "executedEvents": to_int(executed, to_int(data.get("executedEvents"), 0)),
+    "elapsedSeconds": keep_or_int(elapsed, data.get("elapsedSeconds"), 0),
+    "remainingSeconds": keep_or_optional_int(remaining, data.get("remainingSeconds")),
+    "executedEvents": keep_or_int(executed, data.get("executedEvents"), 0),
     "requestedEvents": to_int(requested_events, 30),
     "requestedDurationSeconds": to_int(requested_duration, 0),
     "progressPercent": next_percent,
@@ -319,8 +333,9 @@ fail() {
   if type stop_performance_sampling >/dev/null 2>&1; then
     stop_performance_sampling || true
   fi
-  write_quality_progress "failed" "failed" "${message}" 100 "${MONKEY_EXECUTED_EVENTS:-0}" 0 0
+  write_quality_progress "failed" "failed" "${message}" "" "${MONKEY_EXECUTED_EVENTS:-}" "" ""
   write_summary "failed" "${message}" || true
+  write_standard_monkey_outputs || true
   write_report 1 "${message}"
   exit 1
 }
@@ -758,6 +773,212 @@ data["performanceAnalysis"]["conclusion"] = build_performance_conclusions(
 )
 with open(summary_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
+PY
+}
+
+write_standard_monkey_outputs() {
+  python3 - "$SUMMARY_FILE" "$RESULT_DIR" "$BUILD_NUMBER" <<'PY'
+import html
+import json
+import os
+import sys
+import time
+
+summary_path, result_dir, build_number = sys.argv[1:4]
+
+def read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def write_json(path, value):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(value, f, ensure_ascii=False, indent=2)
+
+def issue(issue_type, severity, title, fingerprint, refs=None, count=1, screen=""):
+    return {
+        "id": f"issue_{len(issues) + 1:03d}",
+        "type": issue_type,
+        "severity": severity,
+        "title": title,
+        "fingerprint": fingerprint or title,
+        "is_new": False,
+        "count": count,
+        "screen": screen,
+        "first_seen_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "artifact_refs": refs or {},
+    }
+
+summary = read_json(summary_path, {})
+progress = read_json(os.path.join(result_dir, "quality-progress.json"), {})
+issues = []
+
+exception = summary.get("exceptionAnalysis") or {}
+crash_reports = exception.get("crashReports") or {}
+for sample in crash_reports.get("samples") or []:
+    title = sample.get("exception") or sample.get("process") or sample.get("file") or "Crash report"
+    issues.append(issue(
+        "crash",
+        "blocker",
+        title,
+        "|".join(str(x) for x in ["crash", sample.get("process"), sample.get("exception"), sample.get("reason")] if x),
+        {"stack": sample.get("file", "")},
+    ))
+
+if (exception.get("memoryIssueCount") or 0) > 0:
+    issues.append(issue("oom", "blocker", "疑似 OOM / Jetsam", "oom|memory", {"deviceLog": "device.log"}, exception.get("memoryIssueCount") or 1))
+
+if (exception.get("watchdogCount") or 0) > 0:
+    issues.append(issue("stuck", "blocker", "疑似卡死 / Watchdog", "stuck|watchdog", {"deviceLog": "device.log"}, exception.get("watchdogCount") or 1))
+
+for item in ((summary.get("performanceAnalysis") or {}).get("conclusion") or {}).get("issues") or []:
+    severity = "blocker" if item.get("severity") == "failed" else "warning"
+    issues.append(issue(
+        "performance",
+        severity,
+        item.get("message") or item.get("metric") or "性能异常",
+        "|".join(str(x) for x in ["performance", item.get("metric"), item.get("message")] if x),
+        {"performance": summary.get("artifacts", {}).get("performanceSamples", "")},
+    ))
+
+blocker_count = sum(1 for item in issues if item.get("severity") == "blocker")
+warning_count = sum(1 for item in issues if item.get("severity") == "warning")
+status = "success"
+if summary.get("status") == "failed" or blocker_count > 0:
+    status = "failed"
+elif warning_count > 0 or (summary.get("performanceAnalysis", {}).get("conclusion", {}).get("severity") == "warning"):
+    status = "unstable"
+
+duration_seconds = None
+monkey_duration_ms = (summary.get("performanceAnalysis") or {}).get("monkeyDurationMs")
+if isinstance(monkey_duration_ms, (int, float)):
+    duration_seconds = int(monkey_duration_ms / 1000)
+
+result = {
+    "schema_version": "quality.task.result.v1",
+    "task_id": f"jenkins:nn-auto-quality:{build_number}" if build_number else "",
+    "task_type": "ios_monkey" if summary.get("testSuite") == "monkey" else f"ios_{summary.get('testSuite') or 'quality'}",
+    "status": status,
+    "passed": status == "success",
+    "project_id": "nn-ios",
+    "app": {
+        "name": "NNIM",
+        "bundle_id": summary.get("bundleId") or summary.get("detectedBundleId") or "",
+        "version": summary.get("appVersion") or "",
+        "build": summary.get("sourceBuildNumber") or "",
+        "branch": summary.get("branch") or "",
+        "commit": summary.get("commitHash") or "",
+    },
+    "device": {
+        "udid": summary.get("deviceUdid") or "",
+        "pool": summary.get("devicePool") or "",
+        "pool_label": summary.get("devicePoolLabel") or "",
+    },
+    "monkey": {
+        "status": summary.get("monkeyStatus") or "",
+        "message": summary.get("monkeyMessage") or "",
+        "duration_seconds": duration_seconds,
+        "executed_actions": summary.get("monkeyExecutedEvents") or 0,
+        "requested_actions": summary.get("monkeyEventCount") or 0,
+        "events_per_minute": (summary.get("performanceAnalysis") or {}).get("monkeyEventsPerMinute"),
+        "seed": summary.get("monkeySeed") or "",
+    },
+    "quality_gate": {
+        "passed": status == "success",
+        "blocker_count": blocker_count,
+        "warning_count": warning_count,
+        "rules": {
+            "max_new_crash": 0,
+            "max_oom": 0,
+            "max_blocker_stuck": 0,
+            "max_critical_white_screen": 0,
+        },
+    },
+    "metrics": {
+        "launch_duration_ms": summary.get("launchDurationMs"),
+        "cold_start_ready_ms": summary.get("coldStartReadyMs"),
+        "crash_count": summary.get("exceptionAnalysis", {}).get("crashCount", 0),
+        "oom_count": summary.get("exceptionAnalysis", {}).get("memoryIssueCount", 0),
+        "stuck_count": summary.get("exceptionAnalysis", {}).get("watchdogCount", 0),
+        "white_screen_count": 0,
+        "performance": summary.get("performanceAnalysis") or {},
+    },
+    "issues": issues,
+    "artifacts": {
+        **(summary.get("artifacts") or {}),
+        "result": "result.json",
+        "issues": "issues.json",
+        "summaryMarkdown": "summary.md",
+        "reportHtml": "report.html",
+    },
+    "progress": progress,
+    "message": summary.get("message") or "",
+    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+}
+
+write_json(os.path.join(result_dir, "result.json"), result)
+write_json(os.path.join(result_dir, "issues.json"), {"task_id": result["task_id"], "issues": issues})
+
+summary_lines = [
+    f"# iOS Monkey 质检结果",
+    "",
+    f"- 任务: {result['task_id'] or '-'}",
+    f"- 结果: {status}",
+    f"- App: {result['app']['version'] or '-'} build {result['app']['build'] or '-'}",
+    f"- Bundle ID: {result['app']['bundle_id'] or '-'}",
+    f"- 设备: {result['device']['udid'] or '-'} / {result['device']['pool_label'] or result['device']['pool'] or '-'}",
+    f"- 执行: {result['monkey']['executed_actions']} 次，{duration_seconds or 0} 秒",
+    f"- Crash: {result['metrics']['crash_count']}，OOM: {result['metrics']['oom_count']}，卡死: {result['metrics']['stuck_count']}",
+    "",
+    "## 结论",
+    result["message"] or "-",
+]
+if issues:
+    summary_lines.extend(["", "## 问题列表"])
+    for item in issues[:20]:
+        summary_lines.append(f"- [{item['severity']}] {item['type']}: {item['title']}")
+with open(os.path.join(result_dir, "summary.md"), "w", encoding="utf-8") as f:
+    f.write("\n".join(summary_lines) + "\n")
+
+issue_rows = "\n".join(
+    f"<tr><td>{html.escape(item['severity'])}</td><td>{html.escape(item['type'])}</td><td>{html.escape(item['title'])}</td><td><code>{html.escape(item['fingerprint'])}</code></td></tr>"
+    for item in issues
+) or "<tr><td colspan='4'>无阻断问题</td></tr>"
+report_html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iOS Monkey 质检报告</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 24px; color: #1f2328; }}
+    h1 {{ margin-bottom: 8px; }}
+    .meta {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin: 16px 0; }}
+    .card {{ border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
+    th, td {{ border: 1px solid #d0d7de; padding: 8px; text-align: left; vertical-align: top; }}
+    th {{ background: #f6f8fa; }}
+    code {{ white-space: pre-wrap; word-break: break-word; }}
+  </style>
+</head>
+<body>
+  <h1>iOS Monkey 质检报告</h1>
+  <p>{html.escape(result['message'])}</p>
+  <div class="meta">
+    <div class="card"><strong>结果</strong><br />{html.escape(status)}</div>
+    <div class="card"><strong>操作次数</strong><br />{result['monkey']['executed_actions']}</div>
+    <div class="card"><strong>执行时长</strong><br />{duration_seconds or 0}s</div>
+    <div class="card"><strong>Crash / OOM / 卡死</strong><br />{result['metrics']['crash_count']} / {result['metrics']['oom_count']} / {result['metrics']['stuck_count']}</div>
+  </div>
+  <h2>问题列表</h2>
+  <table><thead><tr><th>级别</th><th>类型</th><th>标题</th><th>Fingerprint</th></tr></thead><tbody>{issue_rows}</tbody></table>
+</body>
+</html>
+"""
+with open(os.path.join(result_dir, "report.html"), "w", encoding="utf-8") as f:
+    f.write(report_html)
 PY
 }
 
@@ -1976,7 +2197,7 @@ ensure_wda_ready() {
   : > "${wda_log}"
   : > "${iproxy_log}"
 
-  log "准备启动 WDA: project=${wda_project}, scheme=${WDA_SCHEME}, device=${SELECTED_DEVICE}, url=${WDA_URL}"
+  log "准备启动 WDA: project=${wda_project}, scheme=${WDA_SCHEME}, device=${SELECTED_DEVICE}, url=${WDA_URL}, derivedData=${WDA_DERIVED_DATA_PATH}"
   write_quality_progress "running" "wda" "准备启动 WebDriverAgentRunner" 1.2
 
   if command -v iproxy >/dev/null 2>&1; then
@@ -2005,6 +2226,7 @@ ensure_wda_ready() {
       -project "${wda_project}"
       -scheme "${WDA_SCHEME}"
       -destination "id=${SELECTED_DEVICE}"
+      -derivedDataPath "${WDA_DERIVED_DATA_PATH}"
       -allowProvisioningUpdates
     )
     local xcodebuild_settings=("CODE_SIGN_STYLE=Automatic")
@@ -2102,6 +2324,7 @@ with open(report_file, "w", encoding="utf-8") as f:
 PY
     return 1
   fi
+  export MONKEY_WDA_MAX_RECOVERIES MONKEY_WDA_RECOVERY_SLEEP_SECONDS
   python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_DURATION_SECONDS" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" "$MONKEY_MAX_REPORTED_EVENTS" "$MONKEY_BACK_INTERVAL_EVENTS" "$MONKEY_STUCK_EVENTS" "$MONKEY_STUCK_CHECK_INTERVAL_EVENTS" "$MONKEY_BACK_ACTION_PROBABILITY" "$MONKEY_BACK_TAP_PROBABILITY" "$MONKEY_AVOID_TOP_BAR" "$MONKEY_HEARTBEAT_INTERVAL_SECONDS" "$MONKEY_FORBIDDEN_TEXTS" "$MONKEY_FORBIDDEN_PAGE_TEXTS" "$MONKEY_FORBIDDEN_REGION_RATIO" "$MONKEY_FORBIDDEN_PADDING" "$PROGRESS_FILE" "$PERFORMANCE_SAMPLE_FILE" <<'PY'
 import hashlib
 import json
@@ -2213,14 +2436,30 @@ def recover_wda_session(reason, recovery_index):
     write_progress("running", f"WDA 短暂超时，正在恢复 {recovery_index}/{max_wda_recoveries}", event)
     if recovery_sleep_seconds:
         time.sleep(recovery_sleep_seconds)
+    status_ok = False
+    try:
+        request("GET", "/status", timeout=4)
+        status_ok = True
+    except Exception as exc:
+        event["statusProbe"] = "timeout"
+        event["statusError"] = str(exc)[:200]
+        print(f"Monkey WDA recovery {recovery_index}: status still busy, will retry later", flush=True)
+        write_progress("running", f"WDA 仍忙，等待下一轮恢复 {recovery_index}/{max_wda_recoveries}", event)
+    if not status_ok:
+        return session_id
     try:
         if session_id:
-            request("DELETE", f"/session/{session_id}", timeout=3)
+            request("DELETE", f"/session/{session_id}", timeout=2)
     except Exception:
         pass
-    request("GET", "/status", timeout=8)
-    session_id = create_session()
-    refresh_window_metrics(session_id)
+    try:
+        session_id = create_session()
+        refresh_window_metrics(session_id)
+        event["sessionReset"] = True
+    except Exception as exc:
+        event["sessionReset"] = False
+        event["sessionError"] = str(exc)[:200]
+        print(f"Monkey WDA recovery {recovery_index}: session reset failed, keep old session", flush=True)
     return session_id
 
 def pointer_actions(points):
@@ -2924,6 +3163,10 @@ if [ "${MONKEY_STATUS}" != "passed" ]; then
   write_quality_progress "passed" "complete" "质检完成" 100 "${MONKEY_EXECUTED_EVENTS:-0}" 0 0
 fi
 write_report 0
+write_standard_monkey_outputs || true
 log "质检结果目录: ${RESULT_DIR}"
 log "JUnit报告: ${REPORT_FILE}"
 log "质检摘要: ${SUMMARY_FILE}"
+log "标准结果: ${RESULT_DIR}/result.json"
+log "标准问题: ${RESULT_DIR}/issues.json"
+log "HTML报告: ${RESULT_DIR}/report.html"

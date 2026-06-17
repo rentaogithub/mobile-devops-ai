@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress } from 'antd';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -13,7 +13,7 @@ import {
   PlusOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, jenkinsApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, jenkinsApi } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
@@ -31,6 +31,13 @@ const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
   { label: '全量回归', value: 'full' },
+];
+
+const MONKEY_DURATION_OPTIONS = [
+  { label: '0.5 小时', value: 1800 },
+  { label: '1 小时', value: 3600 },
+  { label: '4 小时', value: 14400 },
+  { label: '8 小时', value: 28800 },
 ];
 
 const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：nn-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称。';
@@ -116,6 +123,35 @@ function formatSeconds(value?: number | null) {
   return `${rest}秒`;
 }
 
+function progressElapsedSeconds(build: JenkinsQualityBuild) {
+  const progressElapsed = Number(build.qualitySummary?.progress?.elapsedSeconds || 0);
+  if (progressElapsed > 0) return progressElapsed;
+  if (build.duration > 0) return Math.round(build.duration / 1000);
+  return progressElapsed;
+}
+
+function progressRemainingSeconds(build: JenkinsQualityBuild) {
+  const progress = build.qualitySummary?.progress;
+  const requestedDuration = Number(progress?.requestedDurationSeconds || 0);
+  if (requestedDuration <= 0) return progress?.remainingSeconds;
+  return Math.max(0, requestedDuration - progressElapsedSeconds(build));
+}
+
+function progressPercent(build: JenkinsQualityBuild) {
+  const progress = build.qualitySummary?.progress;
+  const requestedDuration = Number(progress?.requestedDurationSeconds || 0);
+  if (requestedDuration > 0) {
+    return Math.min(100, Math.max(0, Math.round((progressElapsedSeconds(build) / requestedDuration) * 100)));
+  }
+  return Math.min(100, Math.max(0, Math.round(progress?.progressPercent || 0)));
+}
+
+function progressStatus(build: JenkinsQualityBuild) {
+  if (build.result === 'FAILURE') return 'exception';
+  if (build.building) return 'active';
+  return 'success';
+}
+
 function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
   if (build.building) {
     return <Tag color="processing">运行中</Tag>;
@@ -154,8 +190,12 @@ export default function CICDPage() {
   const [qualityError, setQualityError] = useState('');
   const [qualityData, setQualityData] = useState<JenkinsQualityListResult | null>(null);
   const [sonicDevicePools, setSonicDevicePools] = useState<SonicDevicePool[]>([]);
+  const [devicePoolStatus, setDevicePoolStatus] = useState<SonicDevicePoolStatusResult | null>(null);
   const [devicePoolModalOpen, setDevicePoolModalOpen] = useState(false);
   const [devicePoolSaving, setDevicePoolSaving] = useState(false);
+  const [devicePoolAdding, setDevicePoolAdding] = useState(false);
+  const [unassignedTargetPool, setUnassignedTargetPool] = useState('ios-default');
+  const [qualityJobSyncing, setQualityJobSyncing] = useState(false);
   const [devicePoolDrafts, setDevicePoolDrafts] = useState<SonicDevicePool[]>([]);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
@@ -167,8 +207,10 @@ export default function CICDPage() {
   const [qualityReportBuild, setQualityReportBuild] = useState<JenkinsQualityBuild | null>(null);
   const [qualityArtifactPreview, setQualityArtifactPreview] = useState<(JenkinsQualityArtifactPreview & { title: string }) | null>(null);
   const [qualityArtifactPreviewLoading, setQualityArtifactPreviewLoading] = useState(false);
-  const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('monkey');
+  const [qualitySuites, setQualitySuites] = useState<JenkinsQualitySuite[]>(['monkey']);
+  const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(28800);
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
+  const [qualityDeviceUdids, setQualityDeviceUdids] = useState<string[]>([]);
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
     build: JenkinsBuild;
     log: string;
@@ -245,6 +287,14 @@ export default function CICDPage() {
     }
   };
 
+  async function refreshQualitySection(options?: { silent?: boolean }) {
+    const [qualityResult] = await Promise.all([
+      loadQualityBuilds(options),
+      loadSonicDevicePools(),
+    ]);
+    return qualityResult;
+  }
+
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
     const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000];
     const previousNumber = previousLatest ? Number(previousLatest) : 0;
@@ -253,7 +303,7 @@ export default function CICDPage() {
       if (delay > 0) {
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
-      const nextData = await loadQualityBuilds({ silent: true });
+      const nextData = await refreshQualitySection({ silent: true });
       const latestBuild = nextData?.builds?.[0];
       const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
 
@@ -268,19 +318,31 @@ export default function CICDPage() {
         return;
       }
     }
-    await loadQualityBuilds({ silent: true });
+    await refreshQualitySection({ silent: true });
   };
 
   const loadSonicDevicePools = async () => {
     try {
-      const response = await jenkinsApi.listSonicDevicePools();
-      const pools = response.data || [];
+      const response = await jenkinsApi.getSonicDevicePoolStatus();
+      const status = response.data || null;
+      const pools = status?.pools || [];
+      setDevicePoolStatus(status);
       setSonicDevicePools(pools);
       if (pools.length > 0 && !pools.some((pool) => pool.value === qualityDevicePool)) {
         setQualityDevicePool(pools[0].value);
       }
+      if (pools.length > 0 && !pools.some((pool) => pool.value === unassignedTargetPool)) {
+        setUnassignedTargetPool(pools[0].value);
+      }
     } catch (err: any) {
-      message.warning(err?.error || err?.message || '加载质检设备池失败');
+      try {
+        const response = await jenkinsApi.listSonicDevicePools();
+        const pools = response.data || [];
+        setDevicePoolStatus(null);
+        setSonicDevicePools(pools);
+      } catch {
+        message.warning(err?.error || err?.message || '加载质检设备池失败');
+      }
     }
   };
 
@@ -311,14 +373,49 @@ export default function CICDPage() {
     setDevicePoolDrafts((items) => items.filter((_, itemIndex) => itemIndex !== index));
   };
 
+  const devicePoolDevicesText = (pool: SonicDevicePool) => {
+    const devices = pool.devices?.length
+      ? pool.devices
+      : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : []);
+    return devices.map((device) => device.label ? `${device.udid} ${device.label}` : device.udid).join('\n');
+  };
+
+  const parseDevicePoolDevices = (text: string) => text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [udid, ...labelParts] = line.split(/\s+/);
+      return {
+        udid,
+        label: labelParts.join(' ') || undefined,
+      };
+    })
+    .filter((device) => device.udid);
+
+  const deviceStatusTag = (status?: string) => {
+    if (status === 'idle') return <Tag color="green">空闲</Tag>;
+    if (status === 'busy') return <Tag color="orange">占用</Tag>;
+    if (status === 'offline') return <Tag color="red">离线</Tag>;
+    if (status === 'unassigned') return <Tag color="blue">未配置</Tag>;
+    return <Tag>未知</Tag>;
+  };
+
+  const cleanDevicePoolsForSave = (pools: SonicDevicePool[]) => pools.map((pool) => ({
+    label: pool.label.trim(),
+    value: pool.value.trim(),
+    deviceId: pool.deviceId?.trim() || undefined,
+    groupId: pool.groupId?.trim() || undefined,
+    devices: (pool.devices || []).map((device) => ({
+      label: device.label?.trim() || undefined,
+      udid: device.udid.trim(),
+      description: device.description?.trim() || undefined,
+    })).filter((device) => device.udid),
+    description: pool.description.trim(),
+  }));
+
   const saveDevicePools = async () => {
-    const normalized = devicePoolDrafts.map((pool) => ({
-      label: pool.label.trim(),
-      value: pool.value.trim(),
-      deviceId: pool.deviceId?.trim() || undefined,
-      groupId: pool.groupId?.trim() || undefined,
-      description: pool.description.trim(),
-    }));
+    const normalized = cleanDevicePoolsForSave(devicePoolDrafts);
 
     if (normalized.some((pool) => !pool.label || !pool.value)) {
       message.warning('设备池名称和 value 不能为空');
@@ -339,6 +436,69 @@ export default function CICDPage() {
       message.error(err?.error || err?.message || '保存质检设备池失败');
     } finally {
       setDevicePoolSaving(false);
+    }
+  };
+
+  const addUnassignedDevicesToPool = async () => {
+    const devices = devicePoolStatus?.unassignedDevices || [];
+    if (devices.length === 0) {
+      message.info('没有可加入的在线设备');
+      return;
+    }
+
+    const targetValue = unassignedTargetPool || sonicDevicePools[0]?.value;
+    if (!targetValue) {
+      message.warning('请先创建一个设备池');
+      return;
+    }
+
+    const nextPools = sonicDevicePools.map((pool) => {
+      if (pool.value !== targetValue) return pool;
+      const existingDevices = pool.devices?.length
+        ? pool.devices
+        : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : []);
+      const existingUdids = new Set(existingDevices.map((device) => device.udid).filter(Boolean));
+      const nextDevices = [
+        ...existingDevices,
+        ...devices
+          .filter((device) => !existingUdids.has(device.udid))
+          .map((device) => ({
+            udid: device.udid,
+            label: device.marketName || device.name || undefined,
+            description: [device.productVersion, device.connType].filter(Boolean).join(' / ') || undefined,
+          })),
+      ];
+      return {
+        ...pool,
+        deviceId: nextDevices[0]?.udid || pool.deviceId,
+        groupId: undefined,
+        devices: nextDevices,
+      };
+    });
+
+    setDevicePoolAdding(true);
+    try {
+      await jenkinsApi.updateSonicDevicePools(cleanDevicePoolsForSave(nextPools));
+      message.success(`已加入 ${devices.length} 台设备`);
+      await loadSonicDevicePools();
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '加入设备池失败');
+    } finally {
+      setDevicePoolAdding(false);
+    }
+  };
+
+  const syncQualityJobConfig = async () => {
+    setQualityJobSyncing(true);
+    try {
+      const response = await jenkinsApi.syncQualityJobConfig();
+      const data = response.data;
+      message.success(data?.concurrentBuild ? 'Jenkins 质检 Job 已同步，并发已开启' : 'Jenkins 质检 Job 已同步');
+      await refreshQualitySection({ silent: true });
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '同步 Jenkins 质检 Job 配置失败');
+    } finally {
+      setQualityJobSyncing(false);
     }
   };
 
@@ -413,7 +573,7 @@ export default function CICDPage() {
     try {
       await jenkinsApi.stopQualityBuild(buildNumber);
       message.success(`已停止质检任务 #${buildNumber}`);
-      loadQualityBuilds();
+      await refreshQualitySection({ silent: true });
     } catch (err: any) {
       message.error(err?.error || err?.message || '停止质检任务失败');
     } finally {
@@ -453,9 +613,13 @@ export default function CICDPage() {
 
   const openQualityModal = (build?: JenkinsBuild) => {
     const fallbackBuild = build || data?.builds?.find((item) => item.result === 'SUCCESS') || data?.builds?.[0] || null;
+    const nextSuites: JenkinsQualitySuite[] = ['monkey'];
+    const nextPool = sonicDevicePools.find((pool) => (pool.stats?.idle || 0) > 0)?.value || sonicDevicePools[0]?.value || 'ios-default';
     setQualityBuild(fallbackBuild);
-    setQualitySuite('monkey');
-    setQualityDevicePool(sonicDevicePools[0]?.value || 'ios-default');
+    setQualitySuites(nextSuites);
+    setQualityMonkeyDurationSeconds(28800);
+    setQualityDevicePool(nextPool);
+    setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool, nextSuites));
     setQualityModalOpen(true);
   };
 
@@ -464,21 +628,39 @@ export default function CICDPage() {
       message.warning('请选择需要质检的构建');
       return;
     }
+    if (qualitySuites.length === 0) {
+      message.warning('请至少选择一个测试套件');
+      return;
+    }
+    if (!selectedQualityPool || availableQualityDevices.length === 0) {
+      message.warning('请选择有空闲设备的设备池');
+      return;
+    }
+    if (qualityDeviceUdids.length === 0) {
+      message.warning('请至少选择一台空闲设备');
+      return;
+    }
+    if (qualitySuites.length > qualityDeviceUdids.length) {
+      message.warning(`已选择 ${qualitySuites.length} 个测试套件，请至少选择 ${qualitySuites.length} 台空闲设备`);
+      return;
+    }
     setQualitySubmitting(true);
     const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
     try {
-      await jenkinsApi.triggerQuality({
-        buildNumber: qualityBuild.number,
-        branch: qualityBuild.branchName,
-        commitHash: qualityBuild.commitHash,
-        appVersion: qualityBuild.appVersion,
-        packageUrl: qualityBuild.installPackageUrl || qualityBuild.packageUrl,
-        xcarchivePath: qualityBuild.xcarchivePath,
-        archiveUrl: qualityBuild.archiveUrl,
-        testSuite: qualitySuite,
-        devicePool: qualityDevicePool,
-      });
-      message.success(`已触发自动质检：#${qualityBuild.number}，任务列表将在后台刷新`);
+      await Promise.all(qualitySuites.map((suite, index) => jenkinsApi.triggerQuality({
+          buildNumber: qualityBuild.number,
+          branch: qualityBuild.branchName,
+          commitHash: qualityBuild.commitHash,
+          appVersion: qualityBuild.appVersion,
+          packageUrl: qualityBuild.installPackageUrl || qualityBuild.packageUrl,
+          xcarchivePath: qualityBuild.xcarchivePath,
+          archiveUrl: qualityBuild.archiveUrl,
+          testSuite: suite,
+          devicePool: qualityDevicePool,
+          deviceUdid: qualityDeviceUdids[index],
+          monkeyDurationSeconds: suite === 'monkey' ? qualityMonkeyDurationSeconds : undefined,
+        })));
+      message.success(`已触发 ${qualitySuites.length} 个自动质检任务：#${qualityBuild.number}，任务列表将在后台刷新`);
       setQualityModalOpen(false);
       void refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
     } catch (err: any) {
@@ -538,8 +720,7 @@ export default function CICDPage() {
     const nextSection = location.pathname.startsWith('/cicd/quality') ? 'quality' : 'release';
     setActiveSection(nextSection);
     if (nextSection === 'quality') {
-      loadQualityBuilds();
-      loadSonicDevicePools();
+      refreshQualitySection();
     } else {
       setQualityError('');
     }
@@ -567,16 +748,46 @@ export default function CICDPage() {
     () => (qualityData?.builds || []).some((build) => build.building),
     [qualityData],
   );
+  const availableQualityDevicePools = useMemo(
+    () => sonicDevicePools.filter((pool) => (pool.stats?.idle ?? 0) > 0),
+    [sonicDevicePools],
+  );
+  const selectedQualityPool = useMemo(
+    () => sonicDevicePools.find((pool) => pool.value === qualityDevicePool),
+    [sonicDevicePools, qualityDevicePool],
+  );
+  const availableQualityDevices = useMemo(
+    () => (selectedQualityPool?.devices || []).filter((device) => device.status === 'idle' && device.udid),
+    [selectedQualityPool],
+  );
+
+  const defaultQualityDeviceUdids = (poolValue: string, suites = qualitySuites) => {
+    const pool = sonicDevicePools.find((item) => item.value === poolValue);
+    return (pool?.devices || [])
+      .filter((device) => device.status === 'idle' && device.udid)
+      .slice(0, suites.length)
+      .map((device) => device.udid);
+  };
 
   useEffect(() => {
     if (activeSection !== 'quality' || !hasRunningQualityBuild) {
       return undefined;
     }
     const timer = window.setInterval(() => {
-      loadQualityBuilds({ silent: true });
+      refreshQualitySection({ silent: true });
     }, 5000);
     return () => window.clearInterval(timer);
   }, [activeSection, hasRunningQualityBuild]);
+
+  useEffect(() => {
+    if (!qualityModalOpen) return;
+    setQualityDeviceUdids((current) => {
+      const availableUdids = availableQualityDevices.map((device) => device.udid);
+      const next = current.filter((udid) => availableUdids.includes(udid));
+      if (next.length > 0 || qualitySuites.length === 0) return next;
+      return availableUdids.slice(0, qualitySuites.length);
+    });
+  }, [qualityModalOpen, availableQualityDevices, qualitySuites.length]);
 
   const publishBranchOptions = useMemo(
     () => branches.map((branch) => ({ value: branch, label: branch })),
@@ -612,10 +823,13 @@ export default function CICDPage() {
           </Space>
         ) : (
           <Space>
+            <Button icon={<SettingOutlined />} loading={qualityJobSyncing} onClick={syncQualityJobConfig}>
+              同步 Jenkins 配置
+            </Button>
             <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
               设备池
             </Button>
-            <Button icon={<ReloadOutlined />} onClick={() => loadQualityBuilds()} loading={qualityLoading}>
+            <Button icon={<ReloadOutlined />} onClick={() => refreshQualitySection()} loading={qualityLoading}>
               刷新
             </Button>
             <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} disabled={!data?.builds?.length}>
@@ -869,14 +1083,65 @@ export default function CICDPage() {
                   ))}
                 </Row>
                 <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+                  {devicePoolStatus?.detector && !devicePoolStatus.detector.available && (
+                    <Col span={24}>
+                      <Alert
+                        type="warning"
+                        showIcon
+                        message="无法检测本机 iOS 设备在线状态"
+                        description={devicePoolStatus.detector.error}
+                      />
+                    </Col>
+                  )}
+                  {(devicePoolStatus?.unassignedDevices || []).length > 0 && (
+                    <Col span={24}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="检测到未加入设备池的在线设备"
+                        description={(devicePoolStatus?.unassignedDevices || []).map((device) => `${device.udid}${device.marketName ? ` ${device.marketName}` : ''}`).join('；')}
+                        action={(
+                          <Space>
+                            <Select
+                              size="small"
+                              value={unassignedTargetPool}
+                              style={{ width: 160 }}
+                              options={sonicDevicePools.map((pool) => ({ label: pool.label, value: pool.value }))}
+                              onChange={setUnassignedTargetPool}
+                            />
+                            <Button size="small" type="primary" loading={devicePoolAdding} onClick={addUnassignedDevicesToPool}>
+                              加入设备池
+                            </Button>
+                          </Space>
+                        )}
+                      />
+                    </Col>
+                  )}
                   {sonicDevicePools.map((pool) => (
                     <Col xs={24} md={8} key={pool.value}>
                       <Card size="small" title={pool.label}>
                         <Space direction="vertical" size={8}>
                           <Space wrap>
                             <Tag color="blue">{pool.value}</Tag>
-                            {(pool.deviceId || pool.groupId) && <Tag color="purple">设备 {pool.deviceId || pool.groupId}</Tag>}
+                            {(pool.devices?.length || pool.deviceId || pool.groupId) && (
+                              <Tag color="purple">设备 {pool.devices?.length || 1} 台</Tag>
+                            )}
+                            {pool.stats && <Tag color="green">空闲 {pool.stats.idle}</Tag>}
+                            {pool.stats && pool.stats.busy > 0 && <Tag color="orange">占用 {pool.stats.busy}</Tag>}
+                            {pool.stats && pool.stats.offline > 0 && <Tag color="red">离线 {pool.stats.offline}</Tag>}
                           </Space>
+                          {(pool.devices?.length ? pool.devices : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : [])).slice(0, 4).map((device) => (
+                            <Space key={device.udid} size={4} wrap>
+                              {deviceStatusTag(device.status)}
+                              <Text code style={{ fontSize: 12 }}>{device.udid}</Text>
+                              {(device.marketName || device.productVersion) && (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {[device.marketName, device.productVersion].filter(Boolean).join(' / ')}
+                                </Text>
+                              )}
+                              {device.activeBuildNumber && <Tag>#{device.activeBuildNumber}</Tag>}
+                            </Space>
+                          ))}
                           <Text type="secondary">{pool.description}</Text>
                         </Space>
                       </Card>
@@ -968,19 +1233,20 @@ export default function CICDPage() {
                           if (!record.building && !progress) {
                             return <Text type="secondary">-</Text>;
                           }
-                          const percent = Math.min(100, Math.max(0, Math.round(progress?.progressPercent || 0)));
+                          const percent = progressPercent(record);
                           const perf = progress?.recentPerformance;
+                          const remainingSeconds = progressRemainingSeconds(record);
                           return (
                             <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                              <Progress percent={percent} size="small" status={record.building ? 'active' : 'success'} />
+                              <Progress percent={percent} size="small" status={progressStatus(record)} />
                               {progress?.message && (
                                 <Text type="secondary" style={{ fontSize: 12 }}>
                                   {progress.message}
                                 </Text>
                               )}
                               <Text type="secondary" style={{ fontSize: 12 }}>
-                                {progress?.executedEvents || 0} 次 / 已运行 {formatSeconds(progress?.elapsedSeconds)}
-                                {progress?.remainingSeconds !== null && progress?.remainingSeconds !== undefined ? ` / 剩余 ${formatSeconds(progress.remainingSeconds)}` : ''}
+                                {progress?.executedEvents || 0} 次 / 已运行 {formatSeconds(progressElapsedSeconds(record))}
+                                {remainingSeconds !== null && remainingSeconds !== undefined ? ` / 剩余 ${formatSeconds(remainingSeconds)}` : ''}
                               </Text>
                               {(perf?.cpu !== null && perf?.cpu !== undefined) || (perf?.memoryMB !== null && perf?.memoryMB !== undefined) || (perf?.fps !== null && perf?.fps !== undefined) ? (
                                 <Space size={4} wrap>
@@ -1167,27 +1433,68 @@ export default function CICDPage() {
           )}
           <div>
             <Text strong>测试套件</Text>
-            <Radio.Group
-              optionType="button"
-              buttonStyle="solid"
+            <Checkbox.Group
               options={QUALITY_SUITE_OPTIONS}
-              value={qualitySuite}
-              onChange={(event) => setQualitySuite(event.target.value)}
-              style={{ display: 'block', marginTop: 8 }}
+              value={qualitySuites}
+              onChange={(values) => {
+                const nextSuites = values as JenkinsQualitySuite[];
+                setQualitySuites(nextSuites);
+                setQualityDeviceUdids((current) => {
+                  const stillAvailable = current.filter((udid) => availableQualityDevices.some((device) => device.udid === udid));
+                  if (stillAvailable.length >= nextSuites.length) return stillAvailable.slice(0, nextSuites.length);
+                  const additions = availableQualityDevices
+                    .map((device) => device.udid)
+                    .filter((udid) => !stillAvailable.includes(udid))
+                    .slice(0, nextSuites.length - stillAvailable.length);
+                  return [...stillAvailable, ...additions];
+                });
+              }}
+              style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}
             />
           </div>
+          {qualitySuites.includes('monkey') && (
+            <div>
+              <Text strong>Monkey 执行时长</Text>
+              <Radio.Group
+                optionType="button"
+                buttonStyle="solid"
+                options={MONKEY_DURATION_OPTIONS}
+                value={qualityMonkeyDurationSeconds}
+                onChange={(event) => setQualityMonkeyDurationSeconds(event.target.value)}
+                style={{ display: 'block', marginTop: 8 }}
+              />
+            </div>
+          )}
           <div>
-            <Text strong>设备池</Text>
-            <Select
-              value={qualityDevicePool}
-              options={sonicDevicePools.map((pool) => ({
-                label: (pool.deviceId || pool.groupId) ? `${pool.label}（${pool.deviceId || pool.groupId}）` : pool.label,
-                value: pool.value,
-              }))}
-              onChange={setQualityDevicePool}
-              style={{ display: 'block', marginTop: 8, width: '100%' }}
-            />
+            <Text strong>设备池（空闲）</Text>
+            {availableQualityDevicePools.length === 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                message="当前没有空闲设备池"
+                style={{ marginTop: 8 }}
+              />
+            )}
           </div>
+          {availableQualityDevices.length > 0 && (
+            <div>
+              <Checkbox.Group
+                value={qualityDeviceUdids}
+                onChange={(values) => setQualityDeviceUdids(values as string[])}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}
+              >
+                {availableQualityDevices.map((device) => (
+                  <Checkbox key={device.udid} value={device.udid}>
+                    <Space size={6} wrap>
+                      <Text>{device.marketName || device.name || 'iPhone'}</Text>
+                      {device.productVersion && <Tag>{device.productVersion}</Tag>}
+                      <Text code style={{ fontSize: 12 }}>{device.udid}</Text>
+                    </Space>
+                  </Checkbox>
+                ))}
+              </Checkbox.Group>
+            </div>
+          )}
         </Space>
       </Modal>
 
@@ -1254,17 +1561,17 @@ export default function CICDPage() {
                 description={(
                   <Space direction="vertical" size={8} style={{ width: '100%' }}>
                     <Progress
-                      percent={Math.min(100, Math.max(0, Math.round(qualityReportBuild.qualitySummary.progress.progressPercent || 0)))}
-                      status={qualityReportBuild.building ? 'active' : 'success'}
+                      percent={progressPercent(qualityReportBuild)}
+                      status={progressStatus(qualityReportBuild)}
                     />
                     <Space wrap>
                       {qualityReportBuild.qualitySummary.progress.message && (
                         <Tag color="blue">{qualityReportBuild.qualitySummary.progress.message}</Tag>
                       )}
                       <Tag>已执行 {qualityReportBuild.qualitySummary.progress.executedEvents || 0} 次</Tag>
-                      <Tag>已运行 {formatSeconds(qualityReportBuild.qualitySummary.progress.elapsedSeconds)}</Tag>
-                      {qualityReportBuild.qualitySummary.progress.remainingSeconds !== null && qualityReportBuild.qualitySummary.progress.remainingSeconds !== undefined && (
-                        <Tag>剩余 {formatSeconds(qualityReportBuild.qualitySummary.progress.remainingSeconds)}</Tag>
+                      <Tag>已运行 {formatSeconds(progressElapsedSeconds(qualityReportBuild))}</Tag>
+                      {progressRemainingSeconds(qualityReportBuild) !== null && progressRemainingSeconds(qualityReportBuild) !== undefined && (
+                        <Tag>剩余 {formatSeconds(progressRemainingSeconds(qualityReportBuild))}</Tag>
                       )}
                       {qualityReportBuild.qualitySummary.progress.recentPerformance?.cpu !== null && qualityReportBuild.qualitySummary.progress.recentPerformance?.cpu !== undefined && (
                         <Tag>CPU {qualityReportBuild.qualitySummary.progress.recentPerformance.cpu}%</Tag>
@@ -1570,7 +1877,7 @@ export default function CICDPage() {
             type="info"
             showIcon
             message="设备池由平台维护"
-            description="value 会作为 DEVICE_POOL 传给 Jenkins，设备 UDID/选择器会作为 DEVICE_UDID 和 DEVICE_SELECTOR 传给自动质检 Job；留空时由脚本选择第一台可用 USB iPhone。"
+            description="一个设备池可配置多台 iPhone；创建任务时平台会在池内选择未被占用的 UDID，并作为 DEVICE_UDID / DEVICE_SELECTOR 传给 Jenkins。"
           />
           {devicePoolDrafts.map((pool, index) => (
             <Card size="small" key={`${pool.value}-${index}`}>
@@ -1589,13 +1896,6 @@ export default function CICDPage() {
                     onChange={(event) => updateDevicePoolDraft(index, { value: event.target.value })}
                   />
                 </Col>
-                <Col xs={24} sm={4}>
-                  <Input
-                    value={pool.deviceId || pool.groupId}
-                    placeholder="设备 UDID/选择器"
-                    onChange={(event) => updateDevicePoolDraft(index, { deviceId: event.target.value, groupId: undefined })}
-                  />
-                </Col>
                 <Col xs={24} sm={6}>
                   <Input
                     value={pool.description}
@@ -1609,6 +1909,21 @@ export default function CICDPage() {
                     icon={<DeleteOutlined />}
                     disabled={devicePoolDrafts.length <= 1}
                     onClick={() => removeDevicePoolDraft(index)}
+                  />
+                </Col>
+                <Col span={24}>
+                  <Input.TextArea
+                    rows={3}
+                    value={devicePoolDevicesText(pool)}
+                    placeholder="每行一台设备：UDID 可选名称，例如 00008101-0015192E0178001E iPhone 12"
+                    onChange={(event) => {
+                      const devices = parseDevicePoolDevices(event.target.value);
+                      updateDevicePoolDraft(index, {
+                        devices,
+                        deviceId: devices[0]?.udid || '',
+                        groupId: undefined,
+                      });
+                    }}
                   />
                 </Col>
               </Row>

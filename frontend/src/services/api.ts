@@ -1296,6 +1296,62 @@ export interface JenkinsQualityArtifactPreview {
   truncated?: boolean;
 }
 
+export type QualityTaskType = 'ios_monkey';
+export type QualityTaskStatus = 'created' | 'queued' | 'preparing' | 'installing' | 'running' | 'collecting' | 'analyzing' | 'reporting' | 'notifying' | 'success' | 'failed' | 'unstable' | 'canceled' | string;
+
+export interface QualityIssue {
+  id: string;
+  task_id?: string;
+  project_id?: string;
+  type: 'crash' | 'oom' | 'stuck' | 'white_screen' | 'performance' | string;
+  severity: 'blocker' | 'warning' | 'info' | string;
+  title: string;
+  fingerprint: string;
+  is_new?: boolean;
+  count?: number;
+  screen?: string;
+  first_seen_at?: string;
+  artifact_refs?: Record<string, string>;
+}
+
+export interface QualityTask {
+  task_id: string;
+  task_type: QualityTaskType | string;
+  status: QualityTaskStatus;
+  progress?: number;
+  project_id?: string;
+  app_name?: string;
+  app_version?: string;
+  build?: string;
+  created_by?: string;
+  created_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  config?: {
+    duration_minutes?: number;
+    seed?: string | number;
+    max_actions?: number;
+    device_pool?: string;
+    device_udid?: string;
+    wda_url?: string;
+    blacklist_profile?: string;
+  };
+  result?: {
+    passed?: boolean;
+    crash_count?: number;
+    oom_count?: number;
+    stuck_count?: number;
+    white_screen_count?: number;
+    duration_seconds?: number;
+    total_actions?: number;
+    report_url?: string;
+    artifact_url?: string;
+  };
+  summary?: JenkinsQualityBuild['qualitySummary'];
+  issues?: QualityIssue[];
+  links?: Record<string, string>;
+}
+
 export interface SonicQualityStatus {
   configured: boolean;
   apiBase: string;
@@ -1315,6 +1371,52 @@ export interface SonicDevicePool {
   description: string;
   deviceId?: string;
   groupId?: string;
+  devices?: Array<{
+    label?: string;
+    udid: string;
+    description?: string;
+    status?: 'idle' | 'busy' | 'offline' | 'unassigned' | string;
+    online?: boolean;
+    busy?: boolean;
+    activeBuildNumber?: number;
+    name?: string;
+    marketName?: string;
+    productVersion?: string;
+    connType?: string;
+  }>;
+  stats?: {
+    total: number;
+    online: number;
+    idle: number;
+    busy: number;
+    offline: number;
+  };
+}
+
+export interface SonicDevicePoolStatusResult {
+  pools: SonicDevicePool[];
+  detectedDevices: Array<{
+    udid: string;
+    serial?: string;
+    name?: string;
+    marketName?: string;
+    productVersion?: string;
+    connType?: string;
+  }>;
+  unassignedDevices: Array<{
+    udid: string;
+    name?: string;
+    marketName?: string;
+    productVersion?: string;
+    connType?: string;
+    status?: string;
+    busy?: boolean;
+    activeBuildNumber?: number;
+  }>;
+  detector: {
+    available: boolean;
+    error?: string;
+  };
 }
 
 export const jenkinsApi = {
@@ -1379,8 +1481,32 @@ export const jenkinsApi = {
     return response.data;
   },
 
+  getSonicDevicePoolStatus: async (): Promise<ApiResponse<SonicDevicePoolStatusResult>> => {
+    const response = await api.get<ApiResponse<SonicDevicePoolStatusResult>>('/jenkins/nn/quality/sonic/device-pools/status');
+    return response.data;
+  },
+
   updateSonicDevicePools: async (devicePools: SonicDevicePool[]): Promise<ApiResponse<SonicDevicePool[]>> => {
     const response = await api.put<ApiResponse<SonicDevicePool[]>>('/jenkins/nn/quality/sonic/device-pools', { devicePools });
+    return response.data;
+  },
+
+  syncQualityJobConfig: async (): Promise<ApiResponse<{
+    jobName: string;
+    jobUrl: string;
+    configPath: string;
+    status: number;
+    concurrentBuild: boolean;
+    hasWdaDerivedDataPath: boolean;
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      jobName: string;
+      jobUrl: string;
+      configPath: string;
+      status: number;
+      concurrentBuild: boolean;
+      hasWdaDerivedDataPath: boolean;
+    }>>('/jenkins/nn/quality/job/sync');
     return response.data;
   },
 
@@ -1394,6 +1520,8 @@ export const jenkinsApi = {
     archiveUrl?: string;
     testSuite: JenkinsQualitySuite;
     devicePool: string;
+    deviceUdid?: string;
+    monkeyDurationSeconds?: number;
   }): Promise<ApiResponse<{
     jobName: string;
     sourceBuildNumber: string;
@@ -1408,6 +1536,68 @@ export const jenkinsApi = {
       devicePool: string;
       url: string;
     }>>('/jenkins/nn/quality', payload);
+    return response.data;
+  },
+};
+
+export const qualityApi = {
+  createTask: async (payload: {
+    task_type: QualityTaskType;
+    project_id?: string;
+    app: {
+      name?: string;
+      bundle_id?: string;
+      version?: string;
+      build: string | number;
+      branch?: string;
+      commit_hash?: string;
+      ipa_url?: string;
+      xcarchive_path?: string;
+      archive_url?: string;
+    };
+    monkey: {
+      duration_minutes?: number;
+      seed?: string | number;
+      max_actions?: number;
+      device_pool?: string;
+      interval_seconds?: number;
+      page_blacklist?: string;
+      text_blacklist?: string;
+    };
+    notify?: {
+      wecom?: boolean;
+      mention_on_failure?: boolean;
+      owner_group?: string;
+    };
+  }): Promise<ApiResponse<{ task_id: string; status: QualityTaskStatus; queue_url?: string; job_url?: string }>> => {
+    const response = await api.post<ApiResponse<{ task_id: string; status: QualityTaskStatus; queue_url?: string; job_url?: string }>>('/quality/tasks', payload);
+    return response.data;
+  },
+
+  listTasks: async (): Promise<ApiResponse<{ tasks: QualityTask[] }>> => {
+    const response = await api.get<ApiResponse<{ tasks: QualityTask[] }>>('/quality/tasks');
+    return response.data;
+  },
+
+  getTask: async (taskId: string): Promise<ApiResponse<QualityTask>> => {
+    const response = await api.get<ApiResponse<QualityTask>>(`/quality/tasks/${encodeURIComponent(taskId)}`);
+    return response.data;
+  },
+
+  listIssues: async (taskId: string): Promise<ApiResponse<{ task_id: string; issues: QualityIssue[] }>> => {
+    const response = await api.get<ApiResponse<{ task_id: string; issues: QualityIssue[] }>>(`/quality/tasks/${encodeURIComponent(taskId)}/issues`);
+    return response.data;
+  },
+
+  rerunTask: async (taskId: string, seedStrategy: 'reuse' | 'new' = 'reuse'): Promise<ApiResponse<{ task_id: string; status: QualityTaskStatus; queue_url?: string; job_url?: string }>> => {
+    const response = await api.post<ApiResponse<{ task_id: string; status: QualityTaskStatus; queue_url?: string; job_url?: string }>>(`/quality/tasks/${encodeURIComponent(taskId)}/rerun`, {
+      seed_strategy: seedStrategy,
+    });
+    return response.data;
+  },
+
+  cancelTask: async (taskId: string): Promise<ApiResponse<{ task_id: string; status: QualityTaskStatus }>> => {
+    const response = await api.post<ApiResponse<{ task_id: string; status: QualityTaskStatus }>>(`/quality/tasks/${encodeURIComponent(taskId)}/cancel`);
     return response.data;
   },
 };

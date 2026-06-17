@@ -1,4 +1,4 @@
-<?xml version='1.1' encoding='UTF-8'?>
+<?xml version='1.0' encoding='UTF-8'?>
 <project>
   <actions/>
   <description>nn-ios local iPhone automatic quality job. Triggered by nn-ios-platform.</description>
@@ -161,6 +161,12 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>WDA_DERIVED_DATA_PATH</name>
+          <defaultValue></defaultValue>
+          <description>可选：WebDriverAgentRunner DerivedData 路径。并发任务建议按设备或任务隔离，留空时脚本使用本次结果目录下的独立路径。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>WDA_XCODEBUILD_EXTRA_ARGS</name>
           <defaultValue></defaultValue>
           <description>可选：追加给 WDA xcodebuild 的额外参数。</description>
@@ -175,7 +181,7 @@
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_DURATION_SECONDS</name>
           <defaultValue>28800</defaultValue>
-          <description>Monkey 持续运行秒数，默认 28800（8 小时）。设为 0 时按 MONKEY_EVENT_COUNT 次数执行。</description>
+          <description>Monkey 持续运行秒数，可选 1800（0.5 小时）、3600（1 小时）、14400（4 小时）、28800（8 小时）。设为 0 时按 MONKEY_EVENT_COUNT 次数执行。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -350,7 +356,7 @@
   <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
   <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
   <triggers/>
-  <concurrentBuild>false</concurrentBuild>
+  <concurrentBuild>true</concurrentBuild>
   <builders>
     <hudson.tasks.Shell>
       <command>set -e

@@ -16,6 +16,7 @@ const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
+const QA_MONKEY_DURATION_SECONDS = new Set(['1800', '3600', '14400', '28800']);
 const RELEASE_BUILD_LIST_LIMIT = Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 8);
 const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
 const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
@@ -23,6 +24,7 @@ const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_ST
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -101,6 +103,19 @@ interface QualityDevicePool {
   description: string;
   deviceId?: string;
   groupId?: string;
+  devices?: Array<{
+    label?: string;
+    udid: string;
+    description?: string;
+    status?: string;
+    online?: boolean;
+    busy?: boolean;
+    activeBuildNumber?: number;
+    name?: string;
+    marketName?: string;
+    productVersion?: string;
+    connType?: string;
+  }>;
 }
 
 const DEFAULT_QUALITY_DEVICE_POOLS: QualityDevicePool[] = [
@@ -139,12 +154,20 @@ function normalizeQualityDevicePool(pool: any): QualityDevicePool | null {
   const label = String(pool?.label || '').trim();
   const value = String(pool?.value || '').trim();
   if (!label || !value) return null;
+  const devices = (Array.isArray(pool?.devices) ? pool.devices : [])
+    .map((device: any) => ({
+      label: String(device?.label || '').trim() || undefined,
+      udid: String(device?.udid || device?.deviceId || device?.value || '').trim(),
+      description: String(device?.description || '').trim() || undefined,
+    }))
+    .filter((device: any) => device.udid);
   return {
     label,
     value,
     description: String(pool?.description || '用于打包机本机 iOS 真机质检调度。').trim(),
     deviceId: pool?.deviceId ? String(pool.deviceId).trim() : undefined,
     groupId: pool?.groupId ? String(pool.groupId).trim() : undefined,
+    devices,
   };
 }
 
@@ -182,6 +205,237 @@ function getQualityDevicePools() {
 
 function findQualityDevicePool(value: string) {
   return getQualityDevicePools().find((pool) => pool.value === value);
+}
+
+function sanitizeToken(value: string) {
+  return String(value || '').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 80) || 'default';
+}
+
+function hashText(value: string) {
+  let hash = 0;
+  for (const char of value) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function deviceKeyFromPool(pool: QualityDevicePool, fallback: string) {
+  return String(pool.deviceId || pool.groupId || fallback || '').trim();
+}
+
+function deviceKeysFromPool(pool: QualityDevicePool, fallback: string) {
+  const keys = (pool.devices || []).map((device) => device.udid).filter(Boolean);
+  const legacyKey = deviceKeyFromPool(pool, '');
+  if (legacyKey) keys.push(legacyKey);
+  return Array.from(new Set(keys)).filter(Boolean).concat(keys.length === 0 ? [fallback] : []);
+}
+
+function deriveWdaPort(deviceKey: string, poolValue: string) {
+  const configured = Number(getRuntimeEnv('QA_WDA_BASE_PORT') || 8100);
+  const basePort = Number.isFinite(configured) && configured > 0 ? configured : 8100;
+  const key = deviceKey || poolValue || 'ios-default';
+  return basePort + (hashText(key) % 200);
+}
+
+function buildWdaUrl(deviceKey: string, poolValue: string) {
+  const explicitUrl = String(getRuntimeEnv('QA_WDA_URL') || '').trim();
+  if (explicitUrl && explicitUrl !== 'http://127.0.0.1:8100') return explicitUrl;
+  return `http://127.0.0.1:${deriveWdaPort(deviceKey, poolValue)}`;
+}
+
+function isRecentlyActiveQualityBuild(buildNumber: number, buildDir: string, xml: string, logPath: string) {
+  if (readXmlTag(xml, 'result')) return false;
+
+  const progressFile = findLatestQualityFile(DEFAULT_QA_JOB_NAME, 'quality-progress.json', 0, buildNumber);
+  const progress = progressFile ? readJsonFile(progressFile) : null;
+  const progressUpdatedAt = Number(progress?.updatedAt || 0);
+  if (progressUpdatedAt > 0) {
+    return Date.now() - progressUpdatedAt <= JENKINS_ORPHAN_BUILD_STALE_MS;
+  }
+
+  const candidates = [progressFile, logPath, buildDir].filter(Boolean);
+  const latestMtime = candidates.reduce((latest, candidate) => {
+    if (!fs.existsSync(candidate)) return latest;
+    return Math.max(latest, fs.statSync(candidate).mtimeMs);
+  }, 0);
+  return latestMtime > 0 && Date.now() - latestMtime <= JENKINS_ORPHAN_BUILD_STALE_MS;
+}
+
+function findActiveQualityBuildOnDevice(deviceKey: string) {
+  if (!deviceKey) return null;
+  const buildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
+  if (!fs.existsSync(buildsDir)) return null;
+  const buildNumbers = fs.readdirSync(buildsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name))
+    .sort((a, b) => b - a);
+
+  for (const buildNumber of buildNumbers) {
+    const buildDir = path.join(buildsDir, String(buildNumber));
+    const buildXmlPath = path.join(buildDir, 'build.xml');
+    const logPath = path.join(buildDir, 'log');
+    const xml = fs.existsSync(buildXmlPath) ? fs.readFileSync(buildXmlPath, 'utf-8') : '';
+    if (!isRecentlyActiveQualityBuild(buildNumber, buildDir, xml, logPath)) continue;
+    const logText = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8').slice(-8192) : '';
+    const buildDevice = readXmlParameter(xml, 'DEVICE_UDID') ||
+      readXmlParameter(xml, 'DEVICE_SELECTOR') ||
+      logText.match(/使用设备:\s*([^\n\r]+)/)?.[1]?.trim() ||
+      '';
+    if (buildDevice === deviceKey) return { buildNumber, deviceKey };
+  }
+  return null;
+}
+
+function selectAvailableDeviceFromPool(pool: QualityDevicePool, fallback: string) {
+  const deviceKeys = deviceKeysFromPool(pool, fallback);
+  for (const deviceKey of deviceKeys) {
+    const activeBuild = findActiveQualityBuildOnDevice(deviceKey);
+    if (!activeBuild) return { deviceKey, activeBuild: null, deviceKeys };
+  }
+  const firstDeviceKey = deviceKeys[0] || fallback;
+  return { deviceKey: firstDeviceKey, activeBuild: findActiveQualityBuildOnDevice(firstDeviceKey), deviceKeys };
+}
+
+async function findTideviceCommand() {
+  const candidates = [
+    getRuntimeEnv('TIDEVICE_CMD'),
+    path.join(process.env.HOME || '', '.local/bin/tidevice'),
+    '/opt/homebrew/bin/tidevice',
+    '/usr/local/bin/tidevice',
+    'tidevice',
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (candidate.includes('/')) {
+        if (!fs.existsSync(candidate)) continue;
+        return candidate;
+      }
+      await execFileAsync('which', [candidate], { timeout: 1000 });
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return '';
+}
+
+async function listLocalIosDevices() {
+  const tidevice = await findTideviceCommand();
+  if (!tidevice) {
+    return { devices: [] as any[], error: '未找到 tidevice，无法检测本机 iOS 设备在线状态' };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(tidevice, ['list', '--json'], { timeout: 5000 });
+    const parsed = JSON.parse(stdout || '[]');
+    const devices = (Array.isArray(parsed) ? parsed : []).map((device: any) => ({
+      udid: String(device?.udid || '').trim(),
+      serial: String(device?.serial || '').trim(),
+      name: String(device?.name || '').trim(),
+      marketName: String(device?.market_name || device?.marketName || '').trim(),
+      productVersion: String(device?.product_version || device?.productVersion || '').trim(),
+      connType: String(device?.conn_type || device?.connType || '').trim(),
+    })).filter((device: any) => device.udid);
+    return { devices, error: '' };
+  } catch (error: any) {
+    return { devices: [] as any[], error: error.message || '检测本机 iOS 设备失败' };
+  }
+}
+
+async function getQualityDevicePoolRuntimeStatus() {
+  const pools = getQualityDevicePools();
+  const onlineResult = await listLocalIosDevices();
+  const onlineByUdid = new Map(onlineResult.devices.map((device: any) => [device.udid, device]));
+  const configuredUdids = new Set<string>();
+
+  const poolsWithStatus = pools.map((pool) => {
+    const configuredDevices = deviceKeysFromPool(pool, '')
+      .filter(Boolean)
+      .map((udid) => {
+        configuredUdids.add(udid);
+        const onlineDevice = onlineByUdid.get(udid) as any;
+        const activeBuild = findActiveQualityBuildOnDevice(udid);
+        return {
+          udid,
+          label: (pool.devices || []).find((device) => device.udid === udid)?.label || onlineDevice?.name || '',
+          online: Boolean(onlineDevice),
+          busy: Boolean(activeBuild),
+          status: activeBuild ? 'busy' : (onlineDevice ? 'idle' : 'offline'),
+          activeBuildNumber: activeBuild?.buildNumber,
+          name: onlineDevice?.name || '',
+          marketName: onlineDevice?.marketName || '',
+          productVersion: onlineDevice?.productVersion || '',
+          connType: onlineDevice?.connType || '',
+        };
+      });
+    return {
+      ...pool,
+      devices: configuredDevices,
+      stats: {
+        total: configuredDevices.length,
+        online: configuredDevices.filter((device) => device.online).length,
+        idle: configuredDevices.filter((device) => device.status === 'idle').length,
+        busy: configuredDevices.filter((device) => device.status === 'busy').length,
+        offline: configuredDevices.filter((device) => device.status === 'offline').length,
+      },
+    };
+  });
+
+  const unassignedDevices = onlineResult.devices
+    .filter((device: any) => !configuredUdids.has(device.udid))
+    .map((device: any) => ({
+      ...device,
+      online: true,
+      busy: Boolean(findActiveQualityBuildOnDevice(device.udid)),
+      status: findActiveQualityBuildOnDevice(device.udid) ? 'busy' : 'unassigned',
+      activeBuildNumber: findActiveQualityBuildOnDevice(device.udid)?.buildNumber,
+    }));
+
+  return {
+    pools: poolsWithStatus,
+    detectedDevices: onlineResult.devices,
+    unassignedDevices,
+    detector: {
+      available: !onlineResult.error,
+      error: onlineResult.error,
+    },
+  };
+}
+
+async function syncQualityJenkinsJobConfig() {
+  const configPath = path.join(getPlatformRootDir(), 'scripts/jenkins/nn-auto-quality-config.xml');
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`未找到 Jenkins 质检 Job 配置模板：${configPath}`);
+  }
+  const configXml = fs.readFileSync(configPath, 'utf-8');
+  const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+  const crumb = await getCrumb();
+  const jobUrl = `${JENKINS_BASE_URL}/${jobPath}`;
+  const existsResponse = await axios.get(`${jobUrl}/api/json`, {
+    timeout: 10000,
+    validateStatus: () => true,
+    ...buildAuthConfig(),
+  });
+  const targetUrl = existsResponse.status === 200
+    ? `${jobUrl}/config.xml`
+    : `${JENKINS_BASE_URL}/createItem?name=${encodeURIComponent(DEFAULT_QA_JOB_NAME)}`;
+  const response = await axios.post(targetUrl, configXml, {
+    timeout: 30000,
+    headers: {
+      ...crumb.headers,
+      'Content-Type': 'application/xml',
+    },
+    validateStatus: (status) => status >= 200 && status < 400,
+    ...buildAuthConfig(),
+  });
+  return {
+    jobName: DEFAULT_QA_JOB_NAME,
+    jobUrl: `${jobUrl}/`,
+    configPath,
+    status: response.status,
+    concurrentBuild: /<concurrentBuild>true<\/concurrentBuild>/.test(configXml),
+    hasWdaDerivedDataPath: /<name>WDA_DERIVED_DATA_PATH<\/name>/.test(configXml),
+  };
 }
 
 function saveQualityDevicePools(pools: QualityDevicePool[]) {
@@ -254,6 +508,10 @@ function buildJenkinsArtifactUrl(jobPath: string, buildNumber: number, relativeP
   return `${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/artifact/${encodedPath}`;
 }
 
+function buildLocalQualityArtifactUrl(filePath: string) {
+  return `${LOCAL_QUALITY_ARTIFACT_ROUTE}?path=${encodeURIComponent(filePath)}`;
+}
+
 function localJenkinsJobDir(jobName: string) {
   const jenkinsHome = process.env.JENKINS_HOME || path.join(process.env.HOME || '', '.jenkins');
   const parts = jobName.split('/').filter(Boolean);
@@ -271,6 +529,23 @@ function localJenkinsWorkspaceDir(jobName: string) {
   return path.join(jenkinsHome, 'workspace', leafName);
 }
 
+function localJenkinsWorkspaceDirs(jobName: string) {
+  const baseDir = localJenkinsWorkspaceDir(jobName);
+  const parentDir = path.dirname(baseDir);
+  const leafName = path.basename(baseDir);
+  const dirs = [baseDir];
+  if (fs.existsSync(parentDir)) {
+    for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === leafName || entry.name.startsWith(`${leafName}@`)) {
+        const dir = path.join(parentDir, entry.name);
+        if (!dirs.includes(dir)) dirs.push(dir);
+      }
+    }
+  }
+  return dirs;
+}
+
 function readJsonFile(filePath: string): any | null {
   try {
     if (!fs.existsSync(filePath)) return null;
@@ -280,22 +555,130 @@ function readJsonFile(filePath: string): any | null {
   }
 }
 
+function isPathInside(parentDir: string, candidatePath: string) {
+  const relative = path.relative(path.resolve(parentDir), path.resolve(candidatePath));
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isAllowedLocalQualityArtifact(filePath: string) {
+  const workspaceResultsDirs = localJenkinsWorkspaceDirs(DEFAULT_QA_JOB_NAME).map((workspaceDir) => path.join(workspaceDir, 'quality-results'));
+  const jobBuildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
+  return workspaceResultsDirs.some((workspaceResultsDir) => isPathInside(workspaceResultsDir, filePath)) || isPathInside(jobBuildsDir, filePath);
+}
+
+function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
+  const summaryDir = path.dirname(summaryFile);
+  const artifactPath = (name?: string) => (name ? path.join(summaryDir, name) : '');
+  const artifactUrl = (name?: string) => {
+    const filePath = artifactPath(name);
+    return filePath && fs.existsSync(filePath) ? buildLocalQualityArtifactUrl(filePath) : '';
+  };
+
+  return {
+    summaryUrl: buildLocalQualityArtifactUrl(summaryFile),
+    screenshotUrl: artifactUrl(summary?.artifacts?.screenshot || 'screenshot.png'),
+    deviceLogUrl: artifactUrl(summary?.artifacts?.deviceLog || 'device.log'),
+    processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
+    monkeyReportUrl: artifactUrl(summary?.artifacts?.monkeyReport),
+    performanceSamplesUrl: artifactUrl(summary?.artifacts?.performanceSamples),
+    performanceTraceUrl: artifactUrl(summary?.artifacts?.performanceTrace),
+    crashReportsUrl: artifactUrl(summary?.artifacts?.crashReports),
+    junitUrl: artifactUrl(summary?.artifacts?.junit || 'junit.xml'),
+    qualityLogUrl: artifactUrl(summary?.artifacts?.qualityLog || 'quality.log'),
+  };
+}
+
+function decodeXmlText(value?: string) {
+  return String(value || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+function readXmlTag(xml: string, tagName: string) {
+  return decodeXmlText(xml.match(new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`))?.[1]?.trim() || '');
+}
+
+function readXmlParameter(xml: string, name: string) {
+  const blocks = xml.match(/<hudson\.model\.[^>]*ParameterValue>[\s\S]*?<\/hudson\.model\.[^>]*ParameterValue>/g) || [];
+  for (const block of blocks) {
+    if (readXmlTag(block, 'name') === name) return readXmlTag(block, 'value');
+  }
+  return '';
+}
+
+function listLocalSummaryArtifacts(archiveDir: string) {
+  const resultsDir = path.join(archiveDir, 'quality-results');
+  const artifacts: Array<{ fileName: string; relativePath: string }> = [];
+  const visit = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const filePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(filePath);
+        continue;
+      }
+      if (entry.name !== 'summary.json') continue;
+      artifacts.push({
+        fileName: entry.name,
+        relativePath: path.relative(archiveDir, filePath).split(path.sep).join('/'),
+      });
+    }
+  };
+  if (fs.existsSync(resultsDir)) visit(resultsDir);
+  return artifacts;
+}
+
+function readLocalQualityBuilds(jobName: string, limit = 20) {
+  const jobDir = localJenkinsJobDir(jobName);
+  const buildsDir = path.join(jobDir, 'builds');
+  if (!fs.existsSync(buildsDir)) return [];
+  return fs.readdirSync(buildsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+    .map((entry) => Number(entry.name))
+    .sort((a, b) => b - a)
+    .slice(0, limit)
+    .map((buildNumber) => {
+      const buildDir = path.join(buildsDir, String(buildNumber));
+      const buildXmlPath = path.join(buildDir, 'build.xml');
+      const logPath = path.join(buildDir, 'log');
+      const xml = fs.existsSync(buildXmlPath) ? fs.readFileSync(buildXmlPath, 'utf-8') : '';
+      const logTail = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8').slice(-4096) : '';
+      const result = readXmlTag(xml, 'result') || logTail.match(/Finished:\s+([A-Z]+)/)?.[1] || '';
+      const timestamp = Number(readXmlTag(xml, 'timestamp')) || fs.statSync(buildDir).mtimeMs;
+      return {
+        number: buildNumber,
+        result,
+        timestamp,
+        duration: Number(readXmlTag(xml, 'duration')) || 0,
+        building: !result,
+        url: `${JENKINS_BASE_URL}/${encodeJobPath(jobName)}/${buildNumber}/`,
+        description: readXmlTag(xml, 'description'),
+        artifacts: listLocalSummaryArtifacts(path.join(buildDir, 'archive')),
+      };
+    });
+}
+
 function findLatestQualityFile(jobName: string, fileName: string, buildTimestamp?: number, buildNumber?: number) {
-  const workspaceDir = localJenkinsWorkspaceDir(jobName);
-  const resultsDir = path.join(workspaceDir, 'quality-results');
-  if (!fs.existsSync(resultsDir)) return '';
+  const resultsDirs = localJenkinsWorkspaceDirs(jobName)
+    .map((workspaceDir) => path.join(workspaceDir, 'quality-results'))
+    .filter((resultsDir) => fs.existsSync(resultsDir));
+  if (resultsDirs.length === 0) return '';
   const normalizedBuildNumber = buildNumber ? String(buildNumber) : '';
   const minMtime = Number(buildTimestamp || 0) - 5 * 60 * 1000;
   let latest = { filePath: '', mtimeMs: 0 };
-  for (const entry of fs.readdirSync(resultsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (normalizedBuildNumber && !entry.name.startsWith(`qa-${normalizedBuildNumber}-`)) continue;
-    const candidate = path.join(resultsDir, entry.name, fileName);
-    if (!fs.existsSync(candidate)) continue;
-    const stat = fs.statSync(candidate);
-    if (minMtime > 0 && stat.mtimeMs < minMtime) continue;
-    if (stat.mtimeMs > latest.mtimeMs) {
-      latest = { filePath: candidate, mtimeMs: stat.mtimeMs };
+  for (const resultsDir of resultsDirs) {
+    for (const entry of fs.readdirSync(resultsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (normalizedBuildNumber && !entry.name.startsWith(`qa-${normalizedBuildNumber}-`)) continue;
+      const candidate = path.join(resultsDir, entry.name, fileName);
+      if (!fs.existsSync(candidate)) continue;
+      const stat = fs.statSync(candidate);
+      if (minMtime > 0 && stat.mtimeMs < minMtime) continue;
+      if (stat.mtimeMs > latest.mtimeMs) {
+        latest = { filePath: candidate, mtimeMs: stat.mtimeMs };
+      }
     }
   }
   return latest.filePath;
@@ -306,9 +689,14 @@ function readLocalQualityProgress(jobName: string, build: any) {
   return progressFile ? readJsonFile(progressFile) : null;
 }
 
-function readLocalQualitySummary(jobName: string, build: any) {
+function readLocalQualitySummaryWithPath(jobName: string, build: any) {
   const summaryFile = findLatestQualityFile(jobName, 'summary.json', Number(build?.timestamp || 0), Number(build?.number || 0));
-  return summaryFile ? readJsonFile(summaryFile) : null;
+  const summary = summaryFile ? readJsonFile(summaryFile) : null;
+  return summary ? { summary, filePath: summaryFile } : null;
+}
+
+function readLocalQualitySummary(jobName: string, build: any) {
+  return readLocalQualitySummaryWithPath(jobName, build)?.summary || null;
 }
 
 async function hasActiveQualityScriptProcess() {
@@ -715,6 +1103,37 @@ async function fetchJenkinsTextArtifact(url: string, limitBytes = 1024 * 1024) {
   });
 }
 
+async function readLocalQualityTextArtifact(filePath: string, limitBytes = 1024 * 1024) {
+  const resolvedPath = path.resolve(filePath);
+  if (!isAllowedLocalQualityArtifact(resolvedPath) || !fs.existsSync(resolvedPath)) {
+    throw new Error('本机质检文件不存在或不允许访问');
+  }
+  const stat = fs.statSync(resolvedPath);
+  if (stat.isDirectory()) {
+    const entries = fs.readdirSync(resolvedPath).slice(0, 500);
+    return {
+      content: entries.join('\n'),
+      truncated: false,
+      contentType: 'text/plain',
+    };
+  }
+  if (/\.(trace|ipa|png|jpg|jpeg|zip)$/i.test(resolvedPath)) {
+    throw new Error('该文件不是文本格式，请使用打开/下载查看');
+  }
+  const file = fs.openSync(resolvedPath, 'r');
+  try {
+    const buffer = Buffer.alloc(Math.min(stat.size, limitBytes));
+    const bytesRead = fs.readSync(file, buffer, 0, buffer.length, 0);
+    return {
+      content: buffer.subarray(0, bytesRead).toString('utf-8'),
+      truncated: stat.size > limitBytes,
+      contentType: /\.json$/i.test(resolvedPath) ? 'application/json' : (/\.xml$/i.test(resolvedPath) ? 'application/xml' : 'text/plain'),
+    };
+  } finally {
+    fs.closeSync(file);
+  }
+}
+
 async function fetchThirdSdkDependencies(branch: string, revision?: string): Promise<{
   branch: string;
   revision?: string;
@@ -978,6 +1397,24 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
   }
 });
 
+router.get('/nn/quality/local-artifact', async (req: Request, res: Response) => {
+  try {
+    const filePath = path.resolve(String(req.query.path || ''));
+    if (!isAllowedLocalQualityArtifact(filePath) || !fs.existsSync(filePath)) {
+      res.status(404).send('Not found');
+      return;
+    }
+    const stat = fs.statSync(filePath);
+    if (stat.isDirectory()) {
+      res.type('text/plain').send(fs.readdirSync(filePath).join('\n'));
+      return;
+    }
+    res.sendFile(filePath);
+  } catch (error: any) {
+    res.status(500).send(error.message || '读取本机质检文件失败');
+  }
+});
+
 router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) => {
   try {
     const artifactUrl = String(req.query.url || '').trim();
@@ -985,9 +1422,10 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
       res.status(400).json({ success: false, error: 'url 不能为空' });
       return;
     }
-    const parsedUrl = new URL(artifactUrl);
+    const parsedUrl = new URL(artifactUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
     const jenkinsUrl = new URL(JENKINS_BASE_URL);
-    if (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/')) {
+    const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
+    if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
       res.status(400).json({ success: false, error: '只允许预览当前 Jenkins 的 artifact 文件' });
       return;
     }
@@ -996,7 +1434,9 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
       return;
     }
 
-    const preview = await fetchJenkinsTextArtifact(artifactUrl);
+    const preview = isLocalQualityArtifact
+      ? await readLocalQualityTextArtifact(String(parsedUrl.searchParams.get('path') || ''))
+      : await fetchJenkinsTextArtifact(artifactUrl);
     let content = preview.content;
     let format: 'text' | 'json' | 'xml' = 'text';
     if (/\.json($|[?#])/i.test(parsedUrl.pathname) || /application\/json/i.test(preview.contentType)) {
@@ -1040,16 +1480,40 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
       'lastBuild[number,result,timestamp,duration,building,url,description]',
       'builds[number,result,timestamp,duration,building,url,description,artifacts[fileName,relativePath]]{0,20}',
     ].join(',');
-    const response = await fetchJenkinsJobJson(jobPath, tree);
-    const job = response.data || {};
+    let job: any;
+    try {
+      const response = await fetchJenkinsJobJson(jobPath, tree);
+      job = response.data || {};
+    } catch (error) {
+      const localBuilds = readLocalQualityBuilds(DEFAULT_QA_JOB_NAME);
+      if (localBuilds.length === 0) throw error;
+      job = {
+        displayName: DEFAULT_QA_JOB_NAME,
+        fullName: DEFAULT_QA_JOB_NAME,
+        url: `${JENKINS_BASE_URL}/${jobPath}/`,
+        buildable: true,
+        color: 'notbuilt',
+        lastBuild: localBuilds[0],
+        builds: localBuilds,
+        localFallback: true,
+      };
+    }
     const builds = await Promise.all((Array.isArray(job.builds) ? job.builds : []).map(async (build: any) => {
-      const localSummary = readLocalQualitySummary(DEFAULT_QA_JOB_NAME, build);
+      const localSummaryResult = readLocalQualitySummaryWithPath(DEFAULT_QA_JOB_NAME, build);
+      const localSummary = localSummaryResult?.summary || null;
+      const localArtifactLinks = localSummaryResult?.filePath
+        ? buildLocalQualityArtifactLinks(localSummaryResult.filePath, localSummary)
+        : {};
       const localProgress = readLocalQualityProgress(DEFAULT_QA_JOB_NAME, build);
       const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary);
       const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
       const stateOverride = completedOverride || interruptedOverride;
       const normalizedBuild = stateOverride ? { ...build, ...stateOverride } : build;
-      const qualitySummary = await fetchQualitySummary(jobPath, normalizedBuild);
+      const qualitySummary = job.localFallback ? {
+        status: normalizedBuild.result === 'SUCCESS' || normalizedBuild.result === 'UNSTABLE' ? 'passed' : (normalizedBuild.result === 'FAILURE' ? 'failed' : ''),
+        message: normalizedBuild.result === 'UNSTABLE' ? '质检完成，Jenkins 标记为 UNSTABLE' : '',
+        artifacts: {},
+      } : await fetchQualitySummary(jobPath, normalizedBuild);
       const mergedQualitySummary = interruptedOverride
         ? {
             ...qualitySummary,
@@ -1061,6 +1525,7 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
             ...(localSummary || {}),
             artifacts: {
               ...(localSummary?.artifacts || {}),
+              ...localArtifactLinks,
               ...(qualitySummary.artifacts || {}),
             },
             message: completedOverride?.completedMessage || localSummary?.message || qualitySummary.message,
@@ -1068,6 +1533,7 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
       return {
         ...normalizedBuild,
         url: normalizeJenkinsUrl(normalizedBuild.url),
+        artifacts: [],
         qualitySummary: {
           ...mergedQualitySummary,
           progress: localProgress || mergedQualitySummary.progress,
@@ -1184,6 +1650,20 @@ router.get('/nn/quality/sonic/device-pools', async (_req: Request, res: Response
   });
 });
 
+router.get('/nn/quality/sonic/device-pools/status', async (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: await getQualityDevicePoolRuntimeStatus(),
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message || '读取质检设备池状态失败',
+    });
+  }
+});
+
 router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response) => {
   try {
     const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
@@ -1220,6 +1700,22 @@ router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response)
     res.status(500).json({
       success: false,
       error: error.message || '保存质检设备池失败',
+    });
+  }
+});
+
+router.post('/nn/quality/job/sync', async (_req: Request, res: Response) => {
+  try {
+    const data = await syncQualityJenkinsJobConfig();
+    res.json({
+      success: true,
+      data,
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '同步 Jenkins 自动质检 Job 配置失败'),
+      status: error.response?.status,
     });
   }
 });
@@ -1332,11 +1828,7 @@ router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Respons
       return;
     }
 
-    try {
-      await stopJenkinsBuild(DEFAULT_QA_JOB_NAME, buildNumber);
-    } finally {
-      await cleanupLocalQualityProcesses();
-    }
+    await stopJenkinsBuild(DEFAULT_QA_JOB_NAME, buildNumber);
 
     res.json({
       success: true,
@@ -1369,6 +1861,11 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const testSuite = normalizeQualitySuite(rawTestSuite);
     const jenkinsTestSuite = testSuite === 'monkey' ? 'smoke' : testSuite;
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
+    const requestedDeviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
+    const rawMonkeyDurationSeconds = String(req.body?.monkeyDurationSeconds || '').trim();
+    const monkeyDurationSeconds = testSuite === 'monkey'
+      ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800')
+      : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800');
 
     if (!buildNumber) {
       res.status(400).json({
@@ -1384,11 +1881,41 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       });
       return;
     }
+    if (testSuite === 'monkey' && !QA_MONKEY_DURATION_SECONDS.has(monkeyDurationSeconds)) {
+      res.status(400).json({
+        success: false,
+        error: `Monkey 执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：0.5小时、1小时、4小时、8小时`,
+      });
+      return;
+    }
     const selectedDevicePool = findQualityDevicePool(devicePool);
     if (!selectedDevicePool) {
       res.status(400).json({
         success: false,
         error: '设备池无效，请在平台质检设备池配置中选择',
+      });
+      return;
+    }
+    const selectedDevice = requestedDeviceUdid
+      ? {
+          deviceKey: requestedDeviceUdid,
+          activeBuild: findActiveQualityBuildOnDevice(requestedDeviceUdid),
+          deviceKeys: deviceKeysFromPool(selectedDevicePool, devicePool),
+        }
+      : selectAvailableDeviceFromPool(selectedDevicePool, devicePool);
+    if (requestedDeviceUdid && !selectedDevice.deviceKeys.includes(requestedDeviceUdid)) {
+      res.status(400).json({
+        success: false,
+        error: `设备 ${requestedDeviceUdid} 不属于设备池 ${devicePool}`,
+      });
+      return;
+    }
+    const deviceKey = selectedDevice.deviceKey;
+    const wdaUrl = buildWdaUrl(deviceKey, devicePool);
+    if (selectedDevice.activeBuild) {
+      res.status(409).json({
+        success: false,
+        error: `设备池 ${devicePool} 内设备均被占用，当前设备 ${deviceKey} 已被质检任务 #${selectedDevice.activeBuild.buildNumber} 占用，请选择其他设备池或等待任务结束`,
       });
       return;
     }
@@ -1411,8 +1938,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       RUN_MONKEY: testSuite === 'monkey' ? '1' : '0',
       DEVICE_POOL: devicePool,
       DEVICE_POOL_LABEL: devicePoolLabel,
-      DEVICE_UDID: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
-      DEVICE_SELECTOR: selectedDevicePool.deviceId || selectedDevicePool.groupId || '',
+      DEVICE_UDID: deviceKey,
+      DEVICE_SELECTOR: deviceKey,
       DEVICE_CLOUD: 'LocalMac',
       QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : 'local-ios-device',
       QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : 'local-usb',
@@ -1420,16 +1947,17 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       COLD_START_DETECT_SCREEN: getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1',
       COLD_START_READY_TIMEOUT_SECONDS: getRuntimeEnv('QA_COLD_START_READY_TIMEOUT_SECONDS') || '45',
       COLD_START_READY_TEXT: getRuntimeEnv('QA_COLD_START_READY_TEXT') || '',
-      WDA_URL: getRuntimeEnv('QA_WDA_URL') || 'http://127.0.0.1:8100',
+      WDA_URL: wdaUrl,
       WDA_AUTO_START: getRuntimeEnv('QA_WDA_AUTO_START') || '1',
       WDA_AUTO_INSTALL: getRuntimeEnv('QA_WDA_AUTO_INSTALL') || '1',
       WDA_PROJECT_PATH: getRuntimeEnv('QA_WDA_PROJECT_PATH') || '',
       WDA_START_TIMEOUT_SECONDS: getRuntimeEnv('QA_WDA_START_TIMEOUT_SECONDS') || '300',
       WDA_DEVELOPMENT_TEAM: getRuntimeEnv('QA_WDA_DEVELOPMENT_TEAM') || '',
       WDA_BUNDLE_ID: getRuntimeEnv('QA_WDA_BUNDLE_ID') || '',
+      WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(DEFAULT_QA_JOB_NAME), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
       WDA_XCODEBUILD_EXTRA_ARGS: getRuntimeEnv('QA_WDA_XCODEBUILD_EXTRA_ARGS') || '',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
-      MONKEY_DURATION_SECONDS: getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '28800',
+      MONKEY_DURATION_SECONDS: monkeyDurationSeconds,
       MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
       MONKEY_MAX_REPORTED_EVENTS: getRuntimeEnv('QA_MONKEY_MAX_REPORTED_EVENTS') || '1000',
       MONKEY_BACK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_BACK_INTERVAL_EVENTS') || '25',
