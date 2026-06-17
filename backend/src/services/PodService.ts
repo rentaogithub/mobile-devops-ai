@@ -31,6 +31,7 @@ interface PodUploadParams {
   dependencies?: string;      // JSON string of [{name, version}]
   sys_frameworks?: string;    // 系统 frameworks，逗号分隔
   sys_libraries?: string;     // 系统 libraries，逗号分隔
+  target_branch?: string;     // 发布后同步到 nnios 的目标分支
 }
 
 const NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
@@ -38,6 +39,19 @@ const NEXUS_USER = 'admin';
 const NEXUS_PASS = 'admin123';
 const SPEC_REPO_URL = 'http://rentao:renyang%40666@git.leigod.top/nn_ios/nnspec.git';
 const SPEC_REPO_LOCAL = path.join(process.env.UPLOAD_DIR || '/tmp', '../pods-spec-repo');
+const NNIOS_REPO_URL = process.env.NNIOS_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
+const NNIOS_REPO_LOCAL = path.resolve(
+  process.env.NNIOS_REPO_LOCAL ||
+    path.join(process.env.GIT_WORK_DIR || path.join(process.env.UPLOAD_DIR || '/tmp', '../git-workspace'), 'nnios')
+);
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export class PodService {
   private db = getDatabase();
@@ -349,6 +363,258 @@ ${sourceLine}
   }
 
   /**
+   * 同版本重新发布前清理服务器本机的 podx 缓存。
+   */
+  private cleanPodxCache(name: string): void {
+    try {
+      logger.info('检测到相同版本组件，执行 podx clean', { name });
+      execSync(`podx clean ${shellQuote(name)}`, {
+        encoding: 'utf-8',
+        timeout: 120000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      logger.info('podx clean 执行成功', { name });
+    } catch (error: any) {
+      logger.error('podx clean 执行失败', { name, error: error.message });
+      throw new Error(`已存在相同版本，执行 podx clean ${name} 失败: ${error.message}`);
+    }
+  }
+
+  private normalizeNniosBranch(branch?: string): string | undefined {
+    const normalized = (branch || '').trim().replace(/^origin\//, '');
+    if (!normalized) return undefined;
+    try {
+      execSync(`git check-ref-format --branch ${shellQuote(normalized)}`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      throw new Error('nnios 目标分支名称不是合法的 git 分支');
+    }
+    return normalized;
+  }
+
+  private assertNniosBranchExists(branch: string): void {
+    try {
+      execSync(`git ls-remote --exit-code --heads ${shellQuote(NNIOS_REPO_URL)} ${shellQuote(branch)}`, {
+        encoding: 'utf-8',
+        timeout: 30000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error: any) {
+      throw new Error(`nnios 分支 ${branch} 不存在或无法访问: ${error.message}`);
+    }
+  }
+
+  private checkoutNniosBranch(branch: string): string {
+    const targetBranch = this.normalizeNniosBranch(branch);
+    if (!targetBranch) {
+      throw new Error('nnios 目标分支不能为空');
+    }
+
+    this.assertNniosBranchExists(targetBranch);
+    if (!fs.existsSync(path.join(NNIOS_REPO_LOCAL, '.git'))) {
+      fs.mkdirSync(path.dirname(NNIOS_REPO_LOCAL), { recursive: true });
+      execSync(`git clone ${shellQuote(NNIOS_REPO_URL)} ${shellQuote(NNIOS_REPO_LOCAL)}`, {
+        encoding: 'utf-8',
+        timeout: 120000,
+      });
+    }
+
+    execSync('git fetch origin --prune', { cwd: NNIOS_REPO_LOCAL, encoding: 'utf-8', timeout: 60000 });
+    execSync(`git checkout -B ${shellQuote(targetBranch)} ${shellQuote(`origin/${targetBranch}`)}`, {
+      cwd: NNIOS_REPO_LOCAL,
+      encoding: 'utf-8',
+      timeout: 60000,
+    });
+    execSync(`git pull --ff-only origin ${shellQuote(targetBranch)}`, {
+      cwd: NNIOS_REPO_LOCAL,
+      encoding: 'utf-8',
+      timeout: 60000,
+    });
+
+    return targetBranch;
+  }
+
+  private findPodVersionInRuby(content: string, name: string): string | null {
+    const escapedName = escapeRegExp(name);
+    const pattern = new RegExp(
+      `^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*['"]([^'"]+)['"]`,
+      'm'
+    );
+    return content.match(pattern)?.[1] || null;
+  }
+
+  private getNniosPodVersion(name: string, branch: string): { branch: string; version: string | null } {
+    const targetBranch = this.checkoutNniosBranch(branch);
+    const candidateFiles = ['Podfile', path.join('NNIM', 'third_sdk.rb')];
+
+    for (const relativePath of candidateFiles) {
+      const filePath = path.join(NNIOS_REPO_LOCAL, relativePath);
+      if (!fs.existsSync(filePath)) continue;
+
+      const version = this.findPodVersionInRuby(fs.readFileSync(filePath, 'utf-8'), name);
+      if (version) {
+        return { branch: targetBranch, version };
+      }
+    }
+
+    return { branch: targetBranch, version: null };
+  }
+
+  private verifyNniosThirdSdkVersion(name: string, version: string, branch: string): void {
+    const thirdSdkPath = path.join(NNIOS_REPO_LOCAL, 'NNIM', 'third_sdk.rb');
+    if (!fs.existsSync(thirdSdkPath)) {
+      throw new Error(`nnios/${branch} 缺少 NNIM/third_sdk.rb，无法确认 ${name} 版本`);
+    }
+
+    const actualVersion = this.findPodVersionInRuby(fs.readFileSync(thirdSdkPath, 'utf-8'), name);
+    if (actualVersion !== version) {
+      throw new Error(
+        `nnios/${branch} 的 NNIM/third_sdk.rb 未同步到 ${name}@${version}，当前为 ${actualVersion || '未找到'}`
+      );
+    }
+
+    logger.info('nnios third_sdk.rb 版本确认成功', {
+      name,
+      version,
+      targetBranch: branch,
+      relativePath: 'NNIM/third_sdk.rb',
+    });
+  }
+
+  private updatePodVersionInRuby(content: string, name: string, version: string): { content: string; changed: boolean } {
+    const escapedName = escapeRegExp(name);
+    let changed = false;
+
+    const withVersionPattern = new RegExp(
+      `(^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*)['"][^'"]+['"]`,
+      'm'
+    );
+    if (withVersionPattern.test(content)) {
+      return {
+        content: content.replace(withVersionPattern, (_match, prefix) => {
+          changed = true;
+          return `${prefix}'${version}'`;
+        }),
+        changed,
+      };
+    }
+
+    const noVersionPattern = new RegExp(`(^\\s*pod\\s+['"]${escapedName}['"])(\\s*(?:,|$))`, 'm');
+    if (noVersionPattern.test(content)) {
+      return {
+        content: content.replace(noVersionPattern, (_match, prefix, suffix) => {
+          changed = true;
+          return `${prefix}, '${version}'${suffix === ',' ? ',' : suffix}`;
+        }),
+        changed,
+      };
+    }
+
+    return { content, changed: false };
+  }
+
+  private appendPodToThirdSdk(content: string, name: string, version: string): { content: string; changed: boolean } {
+    const marker = /^\s*end\s*$/gm;
+    const matches = [...content.matchAll(marker)];
+    if (matches.length === 0) {
+      return { content, changed: false };
+    }
+
+    const last = matches[matches.length - 1];
+    const insertAt = last.index ?? content.length;
+    const line = `    pod   '${name}', '${version}', :source => private_source\n`;
+    return {
+      content: `${content.slice(0, insertAt)}\n    # 内部组件\n${line}${content.slice(insertAt)}`,
+      changed: true,
+    };
+  }
+
+  /**
+   * 发布成功后，将当前组件版本同步到 nnios 指定分支。
+   */
+  private syncVersionToNnios(name: string, version: string, branch?: string): void {
+    const targetBranch = this.normalizeNniosBranch(branch);
+    if (!targetBranch) return;
+
+    this.assertNniosBranchExists(targetBranch);
+    logger.info('同步组件版本到 nnios', { name, version, targetBranch, repo: NNIOS_REPO_LOCAL });
+
+    try {
+      this.checkoutNniosBranch(targetBranch);
+
+      const candidateFiles = ['Podfile', path.join('NNIM', 'third_sdk.rb')];
+      let changed = false;
+      let matchedExisting = false;
+
+      for (const relativePath of candidateFiles) {
+        const filePath = path.join(NNIOS_REPO_LOCAL, relativePath);
+        if (!fs.existsSync(filePath)) continue;
+
+        const original = fs.readFileSync(filePath, 'utf-8');
+        const updated = this.updatePodVersionInRuby(original, name, version);
+        if (updated.changed) {
+          fs.writeFileSync(filePath, updated.content, 'utf-8');
+          changed = true;
+          matchedExisting = true;
+          logger.info('更新 nnios 组件版本声明', { relativePath, name, version });
+        }
+      }
+
+      if (!matchedExisting) {
+        const thirdSdkPath = path.join(NNIOS_REPO_LOCAL, 'NNIM', 'third_sdk.rb');
+        if (!fs.existsSync(thirdSdkPath)) {
+          throw new Error('未找到组件声明，且 NNIM/third_sdk.rb 不存在，无法追加');
+        }
+        const original = fs.readFileSync(thirdSdkPath, 'utf-8');
+        const appended = this.appendPodToThirdSdk(original, name, version);
+        if (!appended.changed) {
+          throw new Error('未找到组件声明，且无法定位 third_sdk.rb 追加位置');
+        }
+        fs.writeFileSync(thirdSdkPath, appended.content, 'utf-8');
+        changed = true;
+        logger.info('追加 nnios 组件版本声明', { relativePath: 'NNIM/third_sdk.rb', name, version });
+      }
+
+      if (!changed) {
+        logger.info('nnios 组件版本无需更新', { name, version, targetBranch });
+        return;
+      }
+
+      const diffNameOnly = execSync('git diff --name-only', {
+        cwd: NNIOS_REPO_LOCAL,
+        encoding: 'utf-8',
+        timeout: 10000,
+      }).trim();
+      if (!diffNameOnly) {
+        logger.info('nnios 工作区无变更，跳过提交', { name, version, targetBranch });
+        this.verifyNniosThirdSdkVersion(name, version, targetBranch);
+        return;
+      }
+
+      execSync('git add Podfile NNIM/third_sdk.rb', { cwd: NNIOS_REPO_LOCAL, encoding: 'utf-8' });
+      execSync(`git commit -m ${shellQuote(`chore: update ${name} to ${version}`)}`, {
+        cwd: NNIOS_REPO_LOCAL,
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+      execSync(`git push origin ${shellQuote(targetBranch)}`, {
+        cwd: NNIOS_REPO_LOCAL,
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+
+      this.verifyNniosThirdSdkVersion(name, version, targetBranch);
+      logger.info('nnios 分支同步成功', { name, version, targetBranch });
+    } catch (error: any) {
+      logger.error('同步组件版本到 nnios 失败', { name, version, targetBranch, error: error.message });
+      throw new Error(`同步到 nnios/${targetBranch} 失败: ${error.message}`);
+    }
+  }
+
+  /**
    * 从 spec 仓库中删除指定版本或整个组件目录
    * @param name 组件名称
    * @param version 版本号（不传则删除整个组件目录）
@@ -475,10 +741,10 @@ ${sourceLine}
   ): Promise<PodComponent> {
     const { name, version } = params;
 
-    // 检查是否已存在，拒绝重复发布
+    // 已发布相同版本时，先清理服务器本机 podx 缓存，再继续覆盖发布。
     const existing = await this.getOne(name, version);
     if (existing) {
-      throw new Error(`${name}@${version} 已存在，请在详情中重新上传 zip 或使用新版本号`);
+      this.cleanPodxCache(name);
     }
 
     // 1. 自动打包为 zip
@@ -553,7 +819,17 @@ ${sourceLine}
       logger.warn('Spec 同步失败，但 Nexus 上传已成功', { name, version });
     }
 
-    // 7. 保存到数据库
+    // 7. 同步当前组件版本到 nnios 指定分支
+    if (status === 'published' && params.target_branch) {
+      try {
+        this.syncVersionToNnios(name, version, params.target_branch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
+    }
+
+    // 8. 保存到数据库
     const component = this.saveComponent({
       name,
       version,
@@ -662,16 +938,46 @@ ${sourceLine}
   /**
    * 删除指定组件版本（同时删除 Nexus 文件）
    */
-  async deleteVersion(name: string, version: string): Promise<void> {
-    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ? AND version = ?');
-    const result = stmt.run(name, version);
-    if (result.changes === 0) {
+  async deleteVersion(name: string, version: string, targetBranch: string): Promise<{ fallbackVersion?: string }> {
+    const component = await this.getOne(name, version);
+    if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
+
+    const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
+    const currentRef = this.getNniosPodVersion(name, targetBranch);
+    let fallbackVersion: string | undefined;
+
+    if (currentRef.version === version) {
+      fallbackVersion = remainingVersions[0]?.version;
+      if (!fallbackVersion) {
+        throw new Error(`nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`);
+      }
+      logger.info('删除版本前回退 nnios 组件版本', {
+        name,
+        version,
+        targetBranch: currentRef.branch,
+        fallbackVersion,
+      });
+      this.syncVersionToNnios(name, fallbackVersion, currentRef.branch);
+    } else {
+      logger.info('删除版本无需回退 nnios 组件版本', {
+        name,
+        version,
+        targetBranch: currentRef.branch,
+        currentVersion: currentRef.version,
+      });
+    }
+
+    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ? AND version = ?');
+    stmt.run(name, version);
+
     // 删除 Nexus 上的文件
     await this.deleteFromNexus(name, version);
     // 删除 spec 仓库中的版本目录
     await this.deleteFromSpecRepo(name, version);
+
+    return { fallbackVersion };
   }
 
   /**
@@ -712,23 +1018,34 @@ ${sourceLine}
   /**
    * 更新已发布组件的 podspec 内容，并同步到远程仓库
    */
-  async updatePodspec(name: string, version: string, podspecContent: string): Promise<PodComponent> {
+  async updatePodspec(name: string, version: string, podspecContent: string, targetBranch: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
 
+    this.cleanPodxCache(name);
+
     // 1. 同步新的 podspec 到 git 仓库
     await this.syncToSpecRepo(name, version, podspecContent);
 
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      this.syncVersionToNnios(name, version, targetBranch);
+    } catch (error: any) {
+      status = 'failed';
+      errorMessage = error.message;
+    }
+
     // 2. 更新数据库
     this.db
-      .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = NULL WHERE name = ? AND version = ?')
-      .run(podspecContent, 'published', name, version);
+      .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = ? WHERE name = ? AND version = ?')
+      .run(podspecContent, status, errorMessage || null, name, version);
 
-    logger.info('Podspec 更新成功', { name, version });
+    logger.info('Podspec 更新成功', { name, version, targetBranch, status });
 
-    return { ...component, podspec_content: podspecContent, status: 'published', error_message: undefined };
+    return { ...component, podspec_content: podspecContent, status, error_message: errorMessage };
   }
 
   /**
@@ -739,12 +1056,15 @@ ${sourceLine}
     name: string,
     version: string,
     filePath: string,
-    originalFileName: string
+    originalFileName: string,
+    targetBranch: string
   ): Promise<PodComponent> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
+
+    this.cleanPodxCache(name);
 
     // 1. 自动打包为 zip
     let zipPath: string;
@@ -802,12 +1122,22 @@ ${sourceLine}
       errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
     }
 
-    // 8. 更新数据库
+    // 8. 同步当前组件版本到 nnios 指定分支
+    if (status === 'published') {
+      try {
+        this.syncVersionToNnios(name, version, targetBranch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
+    }
+
+    // 9. 更新数据库
     this.db
       .prepare(`UPDATE pods_components SET source_zip_url = ?, podspec_content = ?, status = ?, error_message = ?, upload_time = datetime('now', 'localtime') WHERE name = ? AND version = ?`)
       .run(sourceZipUrl, podspecContent, status, errorMessage || null, name, version);
 
-    logger.info('zip 替换成功', { name, version });
+    logger.info('zip 替换成功', { name, version, targetBranch, status });
 
     return {
       ...component,
@@ -821,21 +1151,30 @@ ${sourceLine}
   /**
    * 重试发布（重新同步 spec 仓库）
    */
-  async retrySync(name: string, version: string): Promise<PodComponent> {
+  async retrySync(name: string, version: string, targetBranch: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
 
     try {
+      this.cleanPodxCache(name);
       await this.syncToSpecRepo(name, version, component.podspec_content);
 
-      // 更新状态
-      this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = NULL WHERE name = ? AND version = ?')
-        .run('published', name, version);
+      let status: 'published' | 'failed' = 'published';
+      let errorMessage: string | undefined;
+      try {
+        this.syncVersionToNnios(name, version, targetBranch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
 
-      return { ...component, status: 'published', error_message: undefined };
+      this.db
+        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE name = ? AND version = ?')
+        .run(status, errorMessage || null, name, version);
+
+      return { ...component, status, error_message: errorMessage };
     } catch (error: any) {
       this.db
         .prepare('UPDATE pods_components SET error_message = ? WHERE name = ? AND version = ?')

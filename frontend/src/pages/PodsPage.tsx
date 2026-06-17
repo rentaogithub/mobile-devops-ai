@@ -10,7 +10,7 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { podsApi, PodComponent } from '../services/api';
+import { jenkinsApi, podsApi, PodComponent } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -23,6 +23,30 @@ interface ComponentGroup {
   latestStatus: string;
   latestTime: string;
   isInternal: boolean;
+}
+
+function isReleaseBranch(branch: string) {
+  return /^release\/\d+(?:\.\d+){2,}$/.test(branch);
+}
+
+function compareReleaseBranches(a: string, b: string) {
+  const parse = (branch: string) =>
+    (branch.match(/^release\/(\d+(?:\.\d+){2,})$/)?.[1] || '')
+      .split('.')
+      .map((part) => Number(part));
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return a.localeCompare(b);
+}
+
+function buildNniosBranchOptions(branches: string[]) {
+  const releaseBranches = branches.filter(isReleaseBranch);
+  const latestRelease = releaseBranches.sort(compareReleaseBranches)[releaseBranches.length - 1];
+  return branches.filter((branch) => !isReleaseBranch(branch) || branch === latestRelease);
 }
 
 export default function PodsPage() {
@@ -62,9 +86,29 @@ export default function PodsPage() {
   const [internalVersion, setInternalVersion] = useState<string>('');
   const [prepareCommand, setPrepareCommand] = useState<string>('');
   const [publishTabKey, setPublishTabKey] = useState<string>('local');
+  const [nniosBranches, setNniosBranches] = useState<string[]>([]);
+  const [nniosBranchLoading, setNniosBranchLoading] = useState(false);
+  const [detailTargetBranch, setDetailTargetBranch] = useState<string>('develop');
 
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
+
+  const loadNniosBranches = useCallback(async () => {
+    if (!isAdmin) return;
+    setNniosBranchLoading(true);
+    try {
+      const res = await jenkinsApi.listBranches();
+      const branches = buildNniosBranchOptions(res.data || []);
+      setNniosBranches(branches);
+      if (!form.getFieldValue('target_branch')) {
+        form.setFieldValue('target_branch', branches.includes('develop') ? 'develop' : branches[0]);
+      }
+    } catch (error: any) {
+      message.warning(error?.error || error?.message || '加载 nnios 分支失败，请稍后重试');
+    } finally {
+      setNniosBranchLoading(false);
+    }
+  }, [form, isAdmin]);
 
   const fetchComponents = useCallback(async () => {
     setLoading(true);
@@ -83,6 +127,18 @@ export default function PodsPage() {
   useEffect(() => {
     fetchComponents();
   }, [fetchComponents]);
+
+  useEffect(() => {
+    if (publishModalOpen && publishTabKey === 'local' && isAdmin) {
+      loadNniosBranches();
+    }
+  }, [isAdmin, loadNniosBranches, publishModalOpen, publishTabKey]);
+
+  useEffect(() => {
+    if (detailDrawerOpen && isAdmin) {
+      loadNniosBranches();
+    }
+  }, [detailDrawerOpen, isAdmin, loadNniosBranches]);
 
   // 按组件名称分组
   const groups: ComponentGroup[] = useMemo(() => {
@@ -138,28 +194,23 @@ export default function PodsPage() {
     }
   }, [filteredGroups, selectedName]);
 
-  const handlePublish = async () => {
+  const doPublish = async (values: any, file: File) => {
+    setPublishing(true);
     try {
-      const values = await form.validateFields();
-      if (!uploadFile) {
-        message.error('请选择 zip 文件');
-        return;
-      }
-      setPublishing(true);
-
-      const res = await podsApi.publish(uploadFile, {
+      const res = await podsApi.publish(file, {
         name: values.name,
         version: values.version,
         lib_type: values.lib_type,
         lib_name: values.lib_name,
         sys_frameworks: values.sys_frameworks,
         sys_libraries: values.sys_libraries,
+        target_branch: values.target_branch,
       });
       if (res.success) {
         if (res.data?.status === 'published') {
           message.success(`${values.name}@${values.version} 发布成功`);
         } else {
-          message.warning('Nexus 上传成功，但 spec 仓库同步失败，可稍后重试');
+          message.warning(res.data?.error_message || '组件已上传，但后续同步失败，可稍后重试');
         }
         setPublishModalOpen(false);
         form.resetFields();
@@ -174,10 +225,62 @@ export default function PodsPage() {
     }
   };
 
-  const handleRetry = async (record: PodComponent) => {
+  const handlePublish = async () => {
     try {
-      await podsApi.retry(record.name, record.version);
-      message.success('同步成功');
+      const values = await form.validateFields();
+      if (!uploadFile) {
+        message.error('请选择 zip 文件');
+        return;
+      }
+
+      const targetBranch = values.target_branch || 'develop';
+      let confirmBranch = '';
+      Modal.confirm({
+        title: `${values.name}@${values.version} 发布确认`,
+        content: (
+          <div>
+            <p>
+              将发布组件 <Text strong code>{values.name}@{values.version}</Text>，
+              并同步到 nnios 分支 <Text strong code>{targetBranch}</Text>。
+            </p>
+            <p>请再次输入发布分支确认：</p>
+            <Input
+              placeholder={targetBranch}
+              onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+            />
+          </div>
+        ),
+        okText: '确认发布',
+        cancelText: '取消',
+        onOk: async () => {
+          if (confirmBranch !== targetBranch) {
+            message.error('发布分支输入不匹配，已取消发布');
+            return Promise.reject();
+          }
+          await doPublish(values, uploadFile);
+        },
+      });
+    } catch (error: any) {
+      if (error?.errorFields) return;
+      message.error(error?.error || error?.message || '发布失败');
+    }
+  };
+
+  const handleRetry = async (record: PodComponent, targetBranch: string) => {
+    if (!targetBranch) {
+      message.error('请选择 nnios 分支');
+      return;
+    }
+    try {
+      const res = await podsApi.retry(record.name, record.version, targetBranch);
+      if (res.data?.status === 'failed') {
+        message.warning(res.data.error_message || 'Spec 已同步，但 nnios 分支同步失败');
+      } else {
+        message.success('同步成功');
+      }
+      if (selectedComponent?.name === record.name && selectedComponent.version === record.version && res.data) {
+        setSelectedComponent(res.data);
+      }
       fetchComponents();
     } catch (error: any) {
       message.error(error?.error || '重试失败');
@@ -186,15 +289,37 @@ export default function PodsPage() {
 
   const handleDelete = (record: PodComponent) => {
     let confirmText = '';
+    let targetBranch = detailTargetBranch || 'develop';
+    let confirmBranch = '';
     Modal.confirm({
       title: `删除版本 ${record.name}@${record.version}`,
       content: (
         <div>
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
+          <p>如果 nnios 目标分支正在引用该版本，会自动回退到此组件剩余的最新版本。</p>
+          <div style={{ marginBottom: 12 }}>
+            <Text strong>nnios 目标分支</Text>
+            <Select
+              showSearch
+              defaultValue={targetBranch}
+              loading={nniosBranchLoading}
+              style={{ width: '100%', marginTop: 6 }}
+              options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+              onChange={(value) => { targetBranch = value; }}
+              onDropdownVisibleChange={(open) => {
+                if (open && nniosBranches.length === 0) loadNniosBranches();
+              }}
+            />
+          </div>
           <p>请输入版本号 <Text strong code>{record.version}</Text> 确认删除：</p>
           <Input
             placeholder={record.version}
             onChange={(e) => { confirmText = e.target.value; }}
+          />
+          <p style={{ marginTop: 12 }}>请再次输入发布分支确认：</p>
+          <Input
+            placeholder={targetBranch}
+            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
           />
         </div>
       ),
@@ -205,9 +330,17 @@ export default function PodsPage() {
           message.error('版本号输入不匹配，取消删除');
           return Promise.reject();
         }
+        if (confirmBranch !== targetBranch) {
+          message.error('发布分支输入不匹配，取消删除');
+          return Promise.reject();
+        }
         try {
-          await podsApi.delete(record.name, record.version);
-          message.success('删除成功');
+          const res = await podsApi.delete(record.name, record.version, targetBranch);
+          if (res.data?.fallbackVersion) {
+            message.success(`删除成功，nnios/${targetBranch} 已回退到 ${record.name}@${res.data.fallbackVersion}`);
+          } else {
+            message.success('删除成功');
+          }
           fetchComponents();
         } catch (error: any) {
           message.error(error?.error || '删除失败');
@@ -262,10 +395,14 @@ export default function PodsPage() {
     if (!selectedComponent) return;
     setSavingPodspec(true);
     try {
-      const res = await podsApi.updatePodspec(selectedComponent.name, selectedComponent.version, podspecDraft);
+      const res = await podsApi.updatePodspec(selectedComponent.name, selectedComponent.version, podspecDraft, detailTargetBranch);
       if (res.success) {
-        message.success('Podspec 更新成功，已同步到远程仓库');
-        setSelectedComponent({ ...selectedComponent, podspec_content: podspecDraft, status: 'published' });
+        if (res.data?.status === 'failed') {
+          message.warning(res.data.error_message || 'Podspec 已同步，但 nnios 分支同步失败');
+        } else {
+          message.success('Podspec 更新成功，已同步到远程仓库');
+        }
+        setSelectedComponent(res.data || { ...selectedComponent, podspec_content: podspecDraft, status: 'published' });
         setEditingPodspec(false);
         fetchComponents();
       }
@@ -280,9 +417,13 @@ export default function PodsPage() {
     if (!selectedComponent) return;
     setReplacingZip(true);
     try {
-      const res = await podsApi.replaceZip(selectedComponent.name, selectedComponent.version, file);
+      const res = await podsApi.replaceZip(selectedComponent.name, selectedComponent.version, file, detailTargetBranch);
       if (res.success && res.data) {
-        message.success('zip 替换成功，podspec 已更新');
+        if (res.data.status === 'failed') {
+          message.warning(res.data.error_message || 'zip 已替换，但 nnios 分支同步失败');
+        } else {
+          message.success('zip 替换成功，podspec 已更新');
+        }
         setSelectedComponent(res.data);
         setPodspecDraft(res.data.podspec_content);
         fetchComponents();
@@ -292,6 +433,36 @@ export default function PodsPage() {
     } finally {
       setReplacingZip(false);
     }
+  };
+
+  const confirmReplaceZip = (file: File) => {
+    if (!selectedComponent) return;
+    let confirmBranch = '';
+    Modal.confirm({
+      title: `替换 ${selectedComponent.name}@${selectedComponent.version} 的 zip`,
+      content: (
+        <div>
+          <p>
+            将替换 Nexus 上的二进制，并同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。
+          </p>
+          <p>请再次输入发布分支确认：</p>
+          <Input
+            placeholder={detailTargetBranch}
+            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+          />
+        </div>
+      ),
+      okText: '确认替换',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        if (confirmBranch !== detailTargetBranch) {
+          message.error('发布分支输入不匹配，已取消替换');
+          return Promise.reject();
+        }
+        await handleReplaceZip(file);
+      },
+    });
   };
 
   const handleFetchOfficialVersions = async () => {
@@ -387,6 +558,7 @@ export default function PodsPage() {
     setSelectedComponent(record);
     setEditingPodspec(false);
     setPodspecDraft(record.podspec_content);
+    setDetailTargetBranch('develop');
     setDetailDrawerOpen(true);
   };
 
@@ -656,6 +828,7 @@ export default function PodsPage() {
           setAvailableSubspecs([]);
           setSelectedSubspecs([]);
           setCheckingDeps(false);
+          setNniosBranches([]);
         }}
         footer={null}
         width={560}
@@ -677,6 +850,26 @@ export default function PodsPage() {
                     <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                       <Input placeholder="例如: 2.7.0" />
                     </Form.Item>
+                    {isAdmin && (
+                      <Form.Item
+                        name="target_branch"
+                        label="同步到 nnios 分支"
+                        initialValue="develop"
+                        rules={[
+                          { required: true, message: '请选择 nnios 分支' },
+                        ]}
+                      >
+                        <Select
+                          showSearch
+                          loading={nniosBranchLoading}
+                          placeholder="选择 nnios 分支"
+                          options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                          onDropdownVisibleChange={(open) => {
+                            if (open && nniosBranches.length === 0) loadNniosBranches();
+                          }}
+                        />
+                      </Form.Item>
+                    )}
                     <Form.Item label="二进制库 zip 文件" required extra="将 .framework 或 .a 压缩为 zip，系统自动识别库类型">
                       <Upload
                         accept=".zip"
@@ -1006,6 +1199,26 @@ export default function PodsPage() {
             </Descriptions>
 
             {isAdmin && (
+            <Card size="small" style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
+                <Select
+                  showSearch
+                  loading={nniosBranchLoading}
+                  value={detailTargetBranch}
+                  style={{ flex: 1 }}
+                  placeholder="选择 nnios 分支"
+                  options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                  onChange={setDetailTargetBranch}
+                  onDropdownVisibleChange={(open) => {
+                    if (open && nniosBranches.length === 0) loadNniosBranches();
+                  }}
+                />
+              </div>
+            </Card>
+            )}
+
+            {isAdmin && (
             <Card size="small" style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
@@ -1022,7 +1235,7 @@ export default function PodsPage() {
                       message.error('请上传 zip 格式文件');
                       return Upload.LIST_IGNORE;
                     }
-                    handleReplaceZip(file);
+                    confirmReplaceZip(file);
                     return false;
                   }}
                 >
@@ -1044,8 +1257,8 @@ export default function PodsPage() {
                 </div>
                 <Popconfirm
                   title="确认重试同步？"
-                  description="将当前 podspec 重新推送到 NNSpec 仓库，会覆盖远程已有的文件"
-                  onConfirm={() => selectedComponent && handleRetry(selectedComponent)}
+                  description={`将当前 podspec 重新推送到 NNSpec 仓库，并同步到 nnios/${detailTargetBranch}`}
+                  onConfirm={() => selectedComponent && handleRetry(selectedComponent, detailTargetBranch)}
                   okText="确认"
                   cancelText="取消"
                 >

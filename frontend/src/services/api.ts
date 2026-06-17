@@ -692,6 +692,7 @@ export const podsApi = {
       dependencies?: string;
       sys_frameworks?: string;
       sys_libraries?: string;
+      target_branch?: string;
     }
   ): Promise<ApiResponse<PodComponent>> => {
     const formData = new FormData();
@@ -733,21 +734,22 @@ export const podsApi = {
   },
 
   /** 重试同步 spec 仓库 */
-  retry: async (name: string, version: string): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/retry`);
+  retry: async (name: string, version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/retry`, { target_branch });
     return response.data;
   },
 
   /** 更新 podspec 并同步到远程仓库 */
-  updatePodspec: async (name: string, version: string, podspec_content: string): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.put<ApiResponse<PodComponent>>(`/pods/${name}/${version}/podspec`, { podspec_content });
+  updatePodspec: async (name: string, version: string, podspec_content: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.put<ApiResponse<PodComponent>>(`/pods/${name}/${version}/podspec`, { podspec_content, target_branch });
     return response.data;
   },
 
   /** 重新上传 zip 替换已有版本 */
-  replaceZip: async (name: string, version: string, file: File): Promise<ApiResponse<PodComponent>> => {
+  replaceZip: async (name: string, version: string, file: File, target_branch: string): Promise<ApiResponse<PodComponent>> => {
     const formData = new FormData();
     formData.append('file', file, file.name);
+    formData.append('target_branch', target_branch);
     const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/replace`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300000,
@@ -756,8 +758,10 @@ export const podsApi = {
   },
 
   /** 删除组件版本 */
-  delete: async (name: string, version: string): Promise<ApiResponse> => {
-    const response = await api.delete<ApiResponse>(`/pods/${name}/${version}`);
+  delete: async (name: string, version: string, target_branch: string): Promise<ApiResponse<{ fallbackVersion?: string }>> => {
+    const response = await api.delete<ApiResponse<{ fallbackVersion?: string }>>(`/pods/${name}/${version}`, {
+      params: { target_branch },
+    });
     return response.data;
   },
 

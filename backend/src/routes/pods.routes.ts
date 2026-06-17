@@ -23,6 +23,16 @@ const upload = multer({
   },
 });
 
+function requireTargetBranch(value: unknown): string {
+  const targetBranch = String(value || '').trim();
+  if (!targetBranch) {
+    const error = new Error('同步到 nnios 分支不能为空') as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
+  return targetBranch;
+}
+
 /**
  * POST /api/pods/publish
  * 上传并发布 Pod 组件（需要管理员权限）
@@ -36,7 +46,7 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
     }
 
     const { name, version, lib_type, lib_name, summary, homepage, authors, license,
-      platform_version, dependencies, sys_frameworks, sys_libraries } = req.body;
+      platform_version, dependencies, sys_frameworks, sys_libraries, target_branch } = req.body;
 
     if (!name || !version) {
       fs.unlinkSync(req.file.path);
@@ -45,11 +55,13 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
 
     tempPath = req.file.path;
 
-    logger.info('收到 Pod 组件发布请求', { name, version, lib_type, filename: req.file.originalname });
+    const targetBranch = requireTargetBranch(target_branch);
+
+    logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file.originalname });
 
     const component = await podService.publish(tempPath, req.file.originalname, {
       name, version, lib_type, lib_name, summary, homepage, authors, license,
-      platform_version, dependencies, sys_frameworks, sys_libraries,
+      platform_version, dependencies, sys_frameworks, sys_libraries, target_branch: targetBranch,
     });
 
     // 清理临时文件
@@ -65,7 +77,7 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
       fs.unlinkSync(tempPath);
     }
 
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -92,7 +104,7 @@ router.get('/names', async (_req: Request, res: Response) => {
     const names = await podService.getComponentNames();
     res.json({ success: true, data: names });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -105,7 +117,7 @@ router.get('/:name/versions', async (req: Request, res: Response) => {
     const versions = await podService.getVersions(req.params.name);
     res.json({ success: true, data: versions });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -121,7 +133,7 @@ router.get('/:name/:version', async (req: Request, res: Response) => {
     }
     res.json({ success: true, data: component });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -131,11 +143,12 @@ router.get('/:name/:version', async (req: Request, res: Response) => {
  */
 router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const component = await podService.retrySync(req.params.name, req.params.version);
+    const targetBranch = requireTargetBranch(req.body?.target_branch);
+    const component = await podService.retrySync(req.params.name, req.params.version, targetBranch);
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('重试同步失败', { error: error.message });
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -145,15 +158,16 @@ router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: 
  */
 router.put('/:name/:version/podspec', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const { podspec_content } = req.body;
+    const { podspec_content, target_branch } = req.body;
     if (!podspec_content) {
       return res.status(400).json({ success: false, error: 'podspec 内容不能为空' });
     }
-    const component = await podService.updatePodspec(req.params.name, req.params.version, podspec_content);
+    const targetBranch = requireTargetBranch(target_branch);
+    const component = await podService.updatePodspec(req.params.name, req.params.version, podspec_content, targetBranch);
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('更新 podspec 失败', { error: error.message });
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -168,9 +182,11 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
       return res.status(400).json({ success: false, error: '未上传文件' });
     }
     tempPath = req.file.path;
+    const { target_branch } = req.body;
+    const targetBranch = requireTargetBranch(target_branch);
 
     const component = await podService.replaceZip(
-      req.params.name, req.params.version, tempPath, req.file.originalname
+      req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch
     );
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
@@ -178,7 +194,7 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
   } catch (error: any) {
     logger.error('替换 zip 失败', { error: error.message });
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
@@ -246,11 +262,12 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
  */
 router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    await podService.deleteVersion(req.params.name, req.params.version);
-    res.json({ success: true });
+    const targetBranch = requireTargetBranch(req.query.target_branch);
+    const result = await podService.deleteVersion(req.params.name, req.params.version, targetBranch);
+    res.json({ success: true, data: result });
   } catch (error: any) {
     logger.error('删除组件版本失败', { error: error.message });
-    res.status(error.message.includes('不存在') ? 404 : 500).json({
+    res.status(error.statusCode || (error.message.includes('不存在') ? 404 : 500)).json({
       success: false,
       error: error.message,
     });
