@@ -561,12 +561,11 @@ export default function ManagePage() {
                   <Form.Item
                     label="关联主应用版本"
                     name="relatedAppVersions"
-                    rules={[{ required: true, message: '请至少选择一个关联的主应用版本' }]}
                     style={{ marginBottom: 8 }}
                   >
                     <Select
                       mode="multiple"
-                      placeholder="选择支持的 NNIM 版本（可多选）"
+                      placeholder="默认不关联主应用版本，可按需选择"
                       showSearch
                       filterOption={(input, option) =>
                         (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
@@ -850,11 +849,10 @@ export default function ManagePage() {
             <Form.Item
               label="关联主应用版本"
               name="relatedAppVersions"
-              rules={[{ required: true, message: '请至少选择一个关联的主应用版本' }]}
             >
               <Select
                 mode="multiple"
-                placeholder="选择支持的 NNIM 版本（可多选）"
+                placeholder="默认不关联主应用版本，可按需选择"
                 showSearch
                 filterOption={(input, option) =>
                   (option?.label ?? '').toLowerCase().includes(input.toLowerCase())

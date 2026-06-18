@@ -2,7 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
-import tar from 'tar';
+import * as tar from 'tar';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { AppError, ErrorCode } from '../types';
@@ -146,6 +146,46 @@ export class FileHandlerService {
     } catch (error) {
       console.error(`Failed to cleanup temp file: ${filePath}`, error);
     }
+  }
+
+  /**
+   * 清理上传过程产生的压缩包和解压目录。永久存储里的 dSYM 不会被删除。
+   */
+  async cleanupUploadArtifacts(tempPath?: string, extractedDsymPath?: string, permanentPath?: string): Promise<void> {
+    const cleanupTargets = new Set<string>();
+
+    if (tempPath && tempPath !== permanentPath) {
+      cleanupTargets.add(tempPath);
+    }
+
+    const extractionRoot = extractedDsymPath ? this.findExtractionRoot(extractedDsymPath) : null;
+    if (extractionRoot && extractionRoot !== permanentPath) {
+      cleanupTargets.add(extractionRoot);
+    }
+
+    for (const target of cleanupTargets) {
+      // 避免误删永久 dSYM 或其父目录
+      if (permanentPath && (target === permanentPath || permanentPath.startsWith(`${target}${path.sep}`))) {
+        continue;
+      }
+      await this.cleanupTempFile(target);
+    }
+  }
+
+  private findExtractionRoot(filePath: string): string | null {
+    let current = path.resolve(filePath);
+    const uploadRoot = path.resolve(this.uploadDir);
+
+    while (current.startsWith(uploadRoot)) {
+      if (path.basename(current).startsWith('extracted_')) {
+        return current;
+      }
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+
+    return null;
   }
 
   /**

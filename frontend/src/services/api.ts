@@ -673,6 +673,30 @@ export interface PodComponent {
   upload_time: string;
   status: 'uploaded' | 'published' | 'failed';
   error_message?: string;
+  warning_message?: string;
+}
+
+export interface NNRtcJenkinsBuild {
+  number: number;
+  result: string;
+  branchName: string;
+  timestamp?: number;
+  url?: string;
+  artifactPath: string;
+}
+
+export interface NNRtcPodTask {
+  id: string;
+  type: 'publish' | 'replace';
+  status: 'pending' | 'running' | 'success' | 'failed';
+  progress: number;
+  message: string;
+  logs: string[];
+  data?: PodComponent;
+  warning?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export const podsApi = {
@@ -705,6 +729,43 @@ export const podsApi = {
     const response = await api.post<ApiResponse<PodComponent>>('/pods/publish', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300000,
+    });
+    return response.data;
+  },
+
+  /** 从 NNRtc Jenkins 构建发布组件 */
+  publishNNRtcFromJenkins: async (params: {
+    build_number: string;
+    version: string;
+    target_branch: string;
+    sys_frameworks?: string;
+    sys_libraries?: string;
+  }): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>('/pods/nnrtc/jenkins/publish', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
+  /** 创建 NNRtc Jenkins 发布任务 */
+  startNNRtcPublishTask: async (params: {
+    build_number: string;
+    version: string;
+    target_branch: string;
+    sys_frameworks?: string;
+    sys_libraries?: string;
+  }): Promise<ApiResponse<NNRtcPodTask>> => {
+    const response = await api.post<ApiResponse<NNRtcPodTask>>('/pods/nnrtc/jenkins/publish-task', params, {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  /** 获取 NNRtc Jenkins 构建列表 */
+  listNNRtcJenkinsBuilds: async (): Promise<ApiResponse<NNRtcJenkinsBuild[]>> => {
+    const response = await api.get<ApiResponse<NNRtcJenkinsBuild[]>>('/pods/nnrtc/jenkins/builds', {
+      params: { limit: 50 },
+      timeout: 60000,
     });
     return response.data;
   },
@@ -763,9 +824,43 @@ export const podsApi = {
     return response.data;
   },
 
+  /** 从 NNRtc Jenkins 构建替换已有版本 */
+  replaceNNRtcFromJenkins: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/nnrtc/${version}/jenkins/replace`, {
+      build_number,
+      target_branch,
+    }, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
+  /** 创建 NNRtc Jenkins 替换任务 */
+  startNNRtcReplaceTask: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<NNRtcPodTask>> => {
+    const response = await api.post<ApiResponse<NNRtcPodTask>>(`/pods/nnrtc/${version}/jenkins/replace-task`, {
+      build_number,
+      target_branch,
+    }, {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  /** 查询 NNRtc 发布/替换任务 */
+  getNNRtcTask: async (taskId: string): Promise<ApiResponse<NNRtcPodTask>> => {
+    const response = await api.get<ApiResponse<NNRtcPodTask>>(`/pods/nnrtc/tasks/${taskId}`);
+    return response.data;
+  },
+
+  /** 查询最近 NNRtc 发布/替换任务 */
+  listNNRtcTasks: async (): Promise<ApiResponse<NNRtcPodTask[]>> => {
+    const response = await api.get<ApiResponse<NNRtcPodTask[]>>('/pods/nnrtc/tasks');
+    return response.data;
+  },
+
   /** 删除组件版本 */
-  delete: async (name: string, version: string, target_branch: string): Promise<ApiResponse<{ fallbackVersion?: string }>> => {
-    const response = await api.delete<ApiResponse<{ fallbackVersion?: string }>>(`/pods/${name}/${version}`, {
+  delete: async (name: string, version: string, target_branch: string): Promise<ApiResponse<{ fallbackVersion?: string; warning?: string }>> => {
+    const response = await api.delete<ApiResponse<{ fallbackVersion?: string; warning?: string }>>(`/pods/${name}/${version}`, {
       params: { target_branch },
     });
     return response.data;

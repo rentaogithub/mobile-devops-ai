@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Typography, Card, Table, Tag, Space, Button, Input, Modal, Form,
-  Upload, message, Drawer, Descriptions, Tooltip, Badge, List, Empty, Select, Tabs, Checkbox, Popconfirm,
+  Upload, message, Drawer, Descriptions, Tooltip, Badge, List, Empty, Select, Tabs, Checkbox, Popconfirm, Progress,
 } from 'antd';
 import {
   AppstoreOutlined, SearchOutlined, PlusOutlined, SyncOutlined,
@@ -10,7 +10,7 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { jenkinsApi, podsApi, PodComponent } from '../services/api';
+import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcPodTask } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -47,6 +47,23 @@ function buildNniosBranchOptions(branches: string[]) {
   const releaseBranches = branches.filter(isReleaseBranch);
   const latestRelease = releaseBranches.sort(compareReleaseBranches)[releaseBranches.length - 1];
   return branches.filter((branch) => !isReleaseBranch(branch) || branch === latestRelease);
+}
+
+function formatBuildTime(timestamp?: number) {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatNNRtcBuildLabel(build: NNRtcJenkinsBuild) {
+  const time = formatBuildTime(build.timestamp);
+  return `#${build.number}${build.branchName ? ` ${build.branchName}` : ''}${time ? ` ${time}` : ''}`;
 }
 
 export default function PodsPage() {
@@ -89,6 +106,14 @@ export default function PodsPage() {
   const [nniosBranches, setNniosBranches] = useState<string[]>([]);
   const [nniosBranchLoading, setNniosBranchLoading] = useState(false);
   const [detailTargetBranch, setDetailTargetBranch] = useState<string>('develop');
+  const [detailJenkinsBuildNumber, setDetailJenkinsBuildNumber] = useState('');
+  const [nnrtcBuilds, setNnrtcBuilds] = useState<NNRtcJenkinsBuild[]>([]);
+  const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
+  const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
+  const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
+  const nnrtcTaskContextRef = useRef<{ action: 'publish' | 'replace'; name: string; version: string } | null>(null);
+  const publishName = Form.useWatch('name', form);
+  const isNNRtcPublish = publishName === 'NNRtc';
 
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
@@ -111,6 +136,28 @@ export default function PodsPage() {
       setNniosBranchLoading(false);
     }
   }, [form, isAdmin]);
+
+  const loadNNRtcBuilds = useCallback(async () => {
+    if (!isAdmin) return;
+    setNnrtcBuildLoading(true);
+    try {
+      const res = await podsApi.listNNRtcJenkinsBuilds();
+      const builds = res.data || [];
+      setNnrtcBuilds(builds);
+      if (!form.getFieldValue('nnrtc_build_number') && builds.length > 0) {
+        form.setFieldValue('nnrtc_build_number', String(builds[0].number));
+      } else if (builds.length === 0) {
+        form.setFieldValue('nnrtc_build_number', undefined);
+      }
+      if (!detailJenkinsBuildNumber && builds.length > 0) {
+        setDetailJenkinsBuildNumber(String(builds[0].number));
+      }
+    } catch (error: any) {
+      message.warning(error?.error || error?.message || '加载 NNRtc Jenkins 构建号失败');
+    } finally {
+      setNnrtcBuildLoading(false);
+    }
+  }, [detailJenkinsBuildNumber, form, isAdmin]);
 
   const fetchComponents = useCallback(async () => {
     setLoading(true);
@@ -137,10 +184,65 @@ export default function PodsPage() {
   }, [isAdmin, loadNniosBranches, publishModalOpen, publishTabKey]);
 
   useEffect(() => {
+    if (publishModalOpen && publishTabKey === 'local' && isNNRtcPublish) {
+      setUploadFile(null);
+      loadNNRtcBuilds();
+    }
+  }, [isNNRtcPublish, loadNNRtcBuilds, publishModalOpen, publishTabKey]);
+
+  useEffect(() => {
     if (detailDrawerOpen && isAdmin) {
       loadNniosBranches();
     }
   }, [detailDrawerOpen, isAdmin, loadNniosBranches]);
+
+  useEffect(() => {
+    if (detailDrawerOpen && selectedComponent?.name === 'NNRtc') {
+      loadNNRtcBuilds();
+    }
+  }, [detailDrawerOpen, loadNNRtcBuilds, selectedComponent?.name]);
+
+  const startNNRtcTaskPolling = useCallback((task: NNRtcPodTask, context: { action: 'publish' | 'replace'; name: string; version: string }) => {
+    nnrtcTaskContextRef.current = context;
+    setNnrtcTask(task);
+    setNnrtcTaskModalOpen(true);
+  }, []);
+
+  useEffect(() => {
+    if (!nnrtcTaskModalOpen || !nnrtcTask || ['success', 'failed'].includes(nnrtcTask.status)) return undefined;
+    const timer = window.setInterval(async () => {
+      try {
+        const res = await podsApi.getNNRtcTask(nnrtcTask.id);
+        if (!res.data) return;
+        setNnrtcTask(res.data);
+        if (res.data.status === 'success') {
+          const context = nnrtcTaskContextRef.current;
+          if (res.warning || res.data.warning) {
+            message.warning(res.warning || res.data.warning);
+          } else {
+            message.success(context?.action === 'replace' ? 'NNRtc 替换完成' : 'NNRtc 发布完成');
+          }
+          if (context?.action === 'publish') {
+            setPublishModalOpen(false);
+            form.resetFields();
+            setUploadFile(null);
+            setSelectedName(context.name);
+          }
+          if (context?.action === 'replace' && res.data.data) {
+            setSelectedComponent(res.data.data);
+            setPodspecDraft(res.data.data.podspec_content);
+            setDetailJenkinsBuildNumber('');
+          }
+          fetchComponents();
+        } else if (res.data.status === 'failed') {
+          message.error(res.data.error || 'NNRtc 任务失败');
+        }
+      } catch (error: any) {
+        message.error(error?.error || '查询 NNRtc 任务失败');
+      }
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [fetchComponents, form, nnrtcTask, nnrtcTaskModalOpen]);
 
   // 按组件名称分组
   const groups: ComponentGroup[] = useMemo(() => {
@@ -196,20 +298,37 @@ export default function PodsPage() {
     }
   }, [filteredGroups, selectedName]);
 
-  const doPublish = async (values: any, file: File) => {
+  const doPublish = async (values: any, file?: File) => {
     setPublishing(true);
     try {
-      const res = await podsApi.publish(file, {
-        name: values.name,
-        version: values.version,
-        lib_type: values.lib_type,
-        lib_name: values.lib_name,
-        sys_frameworks: values.sys_frameworks,
-        sys_libraries: values.sys_libraries,
-        target_branch: values.target_branch,
+      if (values.name === 'NNRtc') {
+        const taskRes = await podsApi.startNNRtcPublishTask({
+            build_number: values.nnrtc_build_number,
+            version: values.version,
+            sys_frameworks: values.sys_frameworks,
+            sys_libraries: values.sys_libraries,
+            target_branch: values.target_branch,
+        });
+        if (taskRes.success && taskRes.data) {
+          startNNRtcTaskPolling(taskRes.data, { action: 'publish', name: values.name, version: values.version });
+          message.success('NNRtc 发布任务已开始');
+        }
+        return;
+      }
+
+      const res = await podsApi.publish(file!, {
+            name: values.name,
+            version: values.version,
+            lib_type: values.lib_type,
+            lib_name: values.lib_name,
+            sys_frameworks: values.sys_frameworks,
+            sys_libraries: values.sys_libraries,
+            target_branch: values.target_branch,
       });
       if (res.success) {
-        if (res.data?.status === 'published') {
+        if (res.warning) {
+          message.warning(res.warning);
+        } else if (res.data?.status === 'published') {
           message.success(`${values.name}@${values.version} 发布成功`);
         } else {
           message.warning(res.data?.error_message || '组件已上传，但后续同步失败，可稍后重试');
@@ -230,12 +349,15 @@ export default function PodsPage() {
   const handlePublish = async () => {
     try {
       const values = await form.validateFields();
-      if (!uploadFile) {
-        message.error('请选择 zip 文件');
+      if (values.name !== 'NNRtc' && !uploadFile) {
+        message.error(values.name === 'NNRtc' ? '请选择 zip/tgz 文件' : '请选择 zip 文件');
         return;
       }
 
       const targetBranch = values.target_branch || 'develop';
+      const sourceText = values.name === 'NNRtc'
+        ? `Jenkins 构建 #${values.nnrtc_build_number}`
+        : uploadFile?.name;
       let confirmBranch = '';
       Modal.confirm({
         title: `${values.name}@${values.version} 发布确认`,
@@ -245,6 +367,7 @@ export default function PodsPage() {
               将发布组件 <Text strong code>{values.name}@{values.version}</Text>，
               并同步到 nnios 分支 <Text strong code>{targetBranch}</Text>。
             </p>
+            <p>发布来源：<Text strong code>{sourceText}</Text></p>
             <p>请再次输入发布分支确认：</p>
             <Input
               placeholder={targetBranch}
@@ -259,7 +382,7 @@ export default function PodsPage() {
             message.error('发布分支输入不匹配，已取消发布');
             return Promise.reject();
           }
-          await doPublish(values, uploadFile);
+          await doPublish(values, uploadFile || undefined);
         },
       });
     } catch (error: any) {
@@ -342,9 +465,13 @@ export default function PodsPage() {
     });
   };
 
-  const handleDelete = (record: PodComponent) => {
+  const handleDelete = async (record: PodComponent) => {
+    const branches = nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches();
+    const branchOptions = branches.length > 0 ? branches : ['develop'];
     let confirmText = '';
-    let targetBranch = detailTargetBranch || 'develop';
+    let targetBranch = detailTargetBranch && branchOptions.includes(detailTargetBranch)
+      ? detailTargetBranch
+      : (branchOptions.includes('develop') ? 'develop' : branchOptions[0]);
     let confirmBranch = '';
     Modal.confirm({
       title: `删除版本 ${record.name}@${record.version}`,
@@ -352,18 +479,17 @@ export default function PodsPage() {
         <div>
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
           <p>如果 nnios 目标分支正在引用该版本，会自动回退到此组件剩余的最新版本。</p>
+          {record.name === 'NNRtc' && (
+            <p>将同时删除 dSYM 管理中的 <Text strong code>NNRtc@{record.version}</Text> 符号文件。</p>
+          )}
           <div style={{ marginBottom: 12 }}>
             <Text strong>nnios 目标分支</Text>
             <Select
               showSearch
               defaultValue={targetBranch}
-              loading={nniosBranchLoading}
               style={{ width: '100%', marginTop: 6 }}
-              options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+              options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
               onChange={(value) => { targetBranch = value; }}
-              onDropdownVisibleChange={(open) => {
-                if (open && nniosBranches.length === 0) loadNniosBranches();
-              }}
             />
           </div>
           <p>请输入版本号 <Text strong code>{record.version}</Text> 确认删除：</p>
@@ -379,6 +505,7 @@ export default function PodsPage() {
         </div>
       ),
       okText: '确认删除',
+      cancelText: '取消',
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmText !== record.version) {
@@ -391,7 +518,9 @@ export default function PodsPage() {
         }
         try {
           const res = await podsApi.delete(record.name, record.version, targetBranch);
-          if (res.data?.fallbackVersion) {
+          if (res.warning || res.data?.warning) {
+            message.warning(res.warning || res.data?.warning);
+          } else if (res.data?.fallbackVersion) {
             message.success(`删除成功，nnios/${targetBranch} 已回退到 ${record.name}@${res.data.fallbackVersion}`);
           } else {
             message.success('删除成功');
@@ -474,7 +603,9 @@ export default function PodsPage() {
     try {
       const res = await podsApi.replaceZip(selectedComponent.name, selectedComponent.version, file, detailTargetBranch);
       if (res.success && res.data) {
-        if (res.data.status === 'failed') {
+        if (res.warning) {
+          message.warning(res.warning);
+        } else if (res.data.status === 'failed') {
           message.warning(res.data.error_message || 'zip 已替换，但 nnios 分支同步失败');
         } else {
           message.success('zip 替换成功，podspec 已更新');
@@ -516,6 +647,59 @@ export default function PodsPage() {
           return Promise.reject();
         }
         await handleReplaceZip(file);
+      },
+    });
+  };
+
+  const handleReplaceNNRtcFromJenkins = async (buildNumber: string) => {
+    if (!selectedComponent) return;
+    setReplacingZip(true);
+    try {
+      const res = await podsApi.startNNRtcReplaceTask(selectedComponent.version, buildNumber, detailTargetBranch);
+      if (res.success && res.data) {
+        startNNRtcTaskPolling(res.data, { action: 'replace', name: selectedComponent.name, version: selectedComponent.version });
+        message.success('NNRtc 替换任务已开始');
+      }
+    } catch (error: any) {
+      message.error(error?.error || '替换失败');
+    } finally {
+      setReplacingZip(false);
+    }
+  };
+
+  const confirmReplaceNNRtcFromJenkins = () => {
+    if (!selectedComponent) return;
+    const buildNumber = detailJenkinsBuildNumber.trim();
+    if (!buildNumber) {
+      message.error('请输入 Jenkins 构建号');
+      return;
+    }
+    let confirmBranch = '';
+    Modal.confirm({
+      title: `从 Jenkins 替换 ${selectedComponent.name}@${selectedComponent.version}`,
+      content: (
+        <div>
+          <p>
+            将使用 NNRtc Jenkins 构建 <Text strong code>#{buildNumber}</Text> 的 nrt/nrtc.tgz，
+            提取 NNRtc.framework 发布，并同步 NNRtc.dSYM。
+          </p>
+          <p>同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。</p>
+          <p>请再次输入发布分支确认：</p>
+          <Input
+            placeholder={detailTargetBranch}
+            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+          />
+        </div>
+      ),
+      okText: '确认替换',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        if (confirmBranch !== detailTargetBranch) {
+          message.error('发布分支输入不匹配，已取消替换');
+          return Promise.reject();
+        }
+        await handleReplaceNNRtcFromJenkins(buildNumber);
       },
     });
   };
@@ -614,6 +798,7 @@ export default function PodsPage() {
     setEditingPodspec(false);
     setPodspecDraft(record.podspec_content);
     setDetailTargetBranch('develop');
+    setDetailJenkinsBuildNumber('');
     setDetailDrawerOpen(true);
   };
 
@@ -889,6 +1074,7 @@ export default function PodsPage() {
           setSelectedSubspecs([]);
           setCheckingDeps(false);
           setNniosBranches([]);
+          setNnrtcBuilds([]);
         }}
         footer={null}
         width={560}
@@ -910,6 +1096,41 @@ export default function PodsPage() {
                     <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                       <Input placeholder="例如: 2.7.0" />
                     </Form.Item>
+                    {isNNRtcPublish && (
+                      <>
+                        <Form.Item
+                          name="nnrtc_build_number"
+                          label={(
+                            <span>
+                              NNRtc 发布来源（
+                              <a
+                                href="http://10.1.3.177:8080/job/nnrtc-ios-build/"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                Jenkins
+                              </a>
+                              ）
+                            </span>
+                          )}
+                          rules={[{ required: true, message: '请选择 Jenkins 构建号' }]}
+                        >
+                          <Select
+                            showSearch
+                            loading={nnrtcBuildLoading}
+                            placeholder="选择构建号"
+                            optionFilterProp="label"
+                            options={nnrtcBuilds.map((build) => ({
+                              value: String(build.number),
+                              label: formatNNRtcBuildLabel(build),
+                            }))}
+                            onDropdownVisibleChange={(open) => {
+                              if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                            }}
+                          />
+                        </Form.Item>
+                      </>
+                    )}
                     {isAdmin && (
                       <Form.Item
                         name="target_branch"
@@ -930,24 +1151,32 @@ export default function PodsPage() {
                         />
                       </Form.Item>
                     )}
-                    <Form.Item label="二进制库 zip 文件" required extra="将 .framework 或 .a 压缩为 zip，系统自动识别库类型">
-                      <Upload
-                        accept=".zip"
-                        maxCount={1}
-                        beforeUpload={(file) => {
-                          if (!file.name.toLowerCase().endsWith('.zip')) {
-                            message.error('请上传 zip 格式文件');
-                            return Upload.LIST_IGNORE;
-                          }
-                          setUploadFile(file);
-                          return false;
-                        }}
-                        onRemove={() => setUploadFile(null)}
-                        fileList={uploadFile ? [{ uid: '-1', name: uploadFile.name, status: 'done' as const }] : []}
+                    {!isNNRtcPublish && (
+                      <Form.Item
+                        label="二进制库 zip 文件"
+                        required
+                        extra="将 .framework 或 .a 压缩为 zip，系统自动识别库类型"
                       >
-                        <Button icon={<UploadOutlined />}>选择 zip 文件</Button>
-                      </Upload>
-                    </Form.Item>
+                        <Upload
+                          accept=".zip"
+                          maxCount={1}
+                          beforeUpload={(file) => {
+                            const lowerName = file.name.toLowerCase();
+                            const valid = lowerName.endsWith('.zip');
+                            if (!valid) {
+                              message.error('请上传 zip 格式文件');
+                              return Upload.LIST_IGNORE;
+                            }
+                            setUploadFile(file);
+                            return false;
+                          }}
+                          onRemove={() => setUploadFile(null)}
+                          fileList={uploadFile ? [{ uid: '-1', name: uploadFile.name, status: 'done' as const }] : []}
+                        >
+                          <Button icon={<UploadOutlined />}>选择 zip 文件</Button>
+                        </Upload>
+                      </Form.Item>
+                    )}
                     <Form.Item name="lib_type" label="库类型（可选，留空自动识别）">
                       <Select allowClear placeholder="自动识别" options={[
                         { value: 'framework', label: '.framework' },
@@ -1217,6 +1446,49 @@ export default function PodsPage() {
         />
       </Modal>
 
+      <Modal
+        title={nnrtcTask?.type === 'replace' ? 'NNRtc 构建替换进度' : 'NNRtc 发布进度'}
+        open={nnrtcTaskModalOpen}
+        onCancel={() => setNnrtcTaskModalOpen(false)}
+        footer={
+          nnrtcTask && ['success', 'failed'].includes(nnrtcTask.status)
+            ? [<Button key="close" type="primary" onClick={() => setNnrtcTaskModalOpen(false)}>关闭</Button>]
+            : null
+        }
+        closable={!nnrtcTask || ['success', 'failed'].includes(nnrtcTask.status)}
+        maskClosable={false}
+        width={520}
+      >
+        <div>
+          <Progress
+            percent={Math.min(100, Math.max(0, nnrtcTask?.progress || 0))}
+            status={nnrtcTask?.status === 'failed' ? 'exception' : nnrtcTask?.status === 'success' ? 'success' : 'active'}
+          />
+          <div style={{ marginTop: 12 }}>
+            <Text strong>{nnrtcTask?.message || '等待开始'}</Text>
+          </div>
+          {nnrtcTask?.warning && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="warning">{nnrtcTask.warning}</Text>
+            </div>
+          )}
+          {nnrtcTask?.error && (
+            <div style={{ marginTop: 8 }}>
+              <Text type="danger">{nnrtcTask.error}</Text>
+            </div>
+          )}
+          {nnrtcTask?.logs && nnrtcTask.logs.length > 0 && (
+            <div style={{ marginTop: 12, background: '#f5f5f5', padding: 12, borderRadius: 6, maxHeight: 180, overflow: 'auto' }}>
+              {nnrtcTask.logs.map((line, index) => (
+                <div key={`${line}-${index}`} style={{ fontSize: 12, lineHeight: 1.7 }}>
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
+
       {/* 版本详情抽屉 */}
       <Drawer
         title={selectedComponent ? `${selectedComponent.name}@${selectedComponent.version}` : '版本详情'}
@@ -1284,25 +1556,53 @@ export default function PodsPage() {
                 <div>
                   <Text strong>替换二进制文件</Text>
                   <br />
-                  <Text type="secondary" style={{ fontSize: 12 }}>上传新的 zip 文件替换 Nexus 上的二进制，自动更新 sha256 和 podspec</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {selectedComponent.name === 'NNRtc'
+                      ? '从 Jenkins 构建提取 NNRtc.framework 替换，并同步 NNRtc.dSYM'
+                      : '上传新的 zip 文件替换 Nexus 上的二进制，自动更新 sha256 和 podspec'}
+                  </Text>
                 </div>
-                <Upload
-                  accept=".zip"
-                  maxCount={1}
-                  showUploadList={false}
-                  beforeUpload={(file) => {
-                    if (!file.name.toLowerCase().endsWith('.zip')) {
-                      message.error('请上传 zip 格式文件');
-                      return Upload.LIST_IGNORE;
-                    }
-                    confirmReplaceZip(file);
-                    return false;
-                  }}
-                >
-                  <Button icon={<UploadOutlined />} loading={replacingZip}>
-                    {replacingZip ? '上传中...' : '选择新 zip'}
-                  </Button>
-                </Upload>
+                {selectedComponent.name === 'NNRtc' ? (
+                  <Space.Compact>
+                    <Select
+                      showSearch
+                      loading={nnrtcBuildLoading}
+                      value={detailJenkinsBuildNumber || undefined}
+                      placeholder="选择构建号"
+                      optionFilterProp="label"
+                      style={{ width: 220 }}
+                      options={nnrtcBuilds.map((build) => ({
+                        value: String(build.number),
+                        label: formatNNRtcBuildLabel(build),
+                      }))}
+                      onChange={setDetailJenkinsBuildNumber}
+                      onDropdownVisibleChange={(open) => {
+                        if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                      }}
+                    />
+                    <Button loading={replacingZip} onClick={confirmReplaceNNRtcFromJenkins}>
+                      构建替换
+                    </Button>
+                  </Space.Compact>
+                ) : (
+                  <Upload
+                    accept=".zip"
+                    maxCount={1}
+                    showUploadList={false}
+                    beforeUpload={(file) => {
+                      if (!file.name.toLowerCase().endsWith('.zip')) {
+                        message.error('请上传 zip 格式文件');
+                        return Upload.LIST_IGNORE;
+                      }
+                      confirmReplaceZip(file);
+                      return false;
+                    }}
+                  >
+                    <Button icon={<UploadOutlined />} loading={replacingZip}>
+                      {replacingZip ? '上传中...' : '选择新 zip'}
+                    </Button>
+                  </Upload>
+                )}
               </div>
             </Card>
             )}

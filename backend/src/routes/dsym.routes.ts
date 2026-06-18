@@ -29,6 +29,8 @@ const storage = new StorageService();
  */
 router.post('/upload', adminMiddleware, upload.single('file'), async (req: Request, res: Response) => {
   let tempPath: string | undefined;
+  let dsymPath: string | undefined;
+  let permanentPath: string | undefined;
 
   try {
     if (!req.file) {
@@ -48,7 +50,7 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
 
     // 识别并提取 dSYM
     logger.info('开始识别和提取 dSYM');
-    const dsymPath = await fileHandler.identifyAndExtractDSYM(tempPath);
+    dsymPath = await fileHandler.identifyAndExtractDSYM(tempPath);
     logger.info('dSYM 提取完成', { dsymPath });
 
     // 提取 UUID
@@ -56,18 +58,34 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
     const uuid = await fileHandler.extractUUID(dsymPath);
     logger.info('UUID 提取完成', { uuid });
 
-    // 检查 UUID 是否已存在
-    const exists = await storage.exists(uuid);
-    if (exists) {
-      await fileHandler.cleanupTempFile(tempPath);
-      throw new AppError(ErrorCode.INVALID_FILE_FORMAT, `UUID ${uuid} 已存在`, 409);
-    }
-
     // 提取应用信息
     const appInfo = await fileHandler.extractAppInfo(dsymPath);
 
+    // 同应用同版本覆盖：先删除旧记录和旧 dSYM 文件
+    const sameVersionDsyms = await storage.findByAppNameAndVersion(appInfo.appName, appInfo.version);
+    for (const existing of sameVersionDsyms) {
+      logger.info('覆盖同版本 dSYM，删除旧记录', {
+        appName: existing.appName,
+        version: existing.version,
+        uuid: existing.uuid,
+        filePath: existing.filePath,
+      });
+      await storage.deleteDSYM(existing.uuid);
+    }
+
+    // 覆盖同版本后，若 UUID 仍存在，说明同一个 UUID 被其他版本占用，拒绝上传
+    const uuidOwner = await storage.findByUUID(uuid);
+    if (uuidOwner) {
+      await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath);
+      throw new AppError(
+        ErrorCode.INVALID_FILE_FORMAT,
+        `UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`,
+        409
+      );
+    }
+
     // 移动到永久存储
-    const permanentPath = await fileHandler.moveToPermanentStorage(dsymPath, uuid);
+    permanentPath = await fileHandler.moveToPermanentStorage(dsymPath, uuid);
 
     // 获取文件大小
     const fileSize = fileHandler.getFileSize(permanentPath);
@@ -84,6 +102,9 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
     });
 
     logger.info('dSYM 上传成功', { uuid, appName: appInfo.appName });
+
+    // 上传成功后只保留永久存储中的 .dSYM，清理压缩包和解压外层目录
+    await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath, permanentPath);
 
     // 清除符号化缓存，确保使用新的 dSYM 重新符号化
     symbolicationCache.clear();
@@ -106,9 +127,7 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
     });
 
     // 清理临时文件
-    if (tempPath) {
-      await fileHandler.cleanupTempFile(tempPath);
-    }
+    await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath, permanentPath);
 
     if (error instanceof AppError) {
       res.status(error.statusCode).json({
@@ -268,6 +287,8 @@ router.delete('/:uuid', adminMiddleware, async (req: Request, res: Response) => 
     await storage.deleteDSYM(uuid);
 
     logger.info('dSYM 删除成功', { uuid });
+    symbolicationCache.clear();
+    logger.info('已清除符号化缓存（dSYM 删除）', { uuid });
 
     res.json({
       success: true,

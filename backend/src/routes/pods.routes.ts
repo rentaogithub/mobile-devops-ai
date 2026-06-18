@@ -1,24 +1,99 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
+import axios from 'axios';
 import fs from 'fs';
+import path from 'path';
 import podService from '../services/PodService';
 import logger from '../utils/logger';
 import { adminMiddleware } from '../middleware/auth';
 
 const router = Router();
+const NNRTC_JENKINS_BASE_URL = (process.env.NNRTC_JENKINS_BASE_URL || 'http://10.1.3.177:8080').replace(/\/$/, '');
+const NNRTC_JENKINS_JOB = process.env.NNRTC_JENKINS_JOB || 'nnrtc-ios-build';
+const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');
+const NNRTC_TASKS_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
+
+type NNRtcTaskStatus = 'pending' | 'running' | 'success' | 'failed';
+interface NNRtcTask {
+  id: string;
+  type: 'publish' | 'replace';
+  status: NNRtcTaskStatus;
+  progress: number;
+  message: string;
+  logs: string[];
+  data?: any;
+  warning?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+const nnrtcTasks = new Map<string, NNRtcTask>();
+
+function persistNNRtcTasks() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tasks = Array.from(nnrtcTasks.values())
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 100);
+    fs.writeFileSync(NNRTC_TASKS_PATH, JSON.stringify({ tasks, updatedAt: Date.now() }, null, 2), 'utf-8');
+  } catch (error: any) {
+    logger.warn('保存 NNRtc Pod 任务失败', { error: error.message });
+  }
+}
+
+function loadNNRtcTasks() {
+  try {
+    if (!fs.existsSync(NNRTC_TASKS_PATH)) return;
+    const parsed = JSON.parse(fs.readFileSync(NNRTC_TASKS_PATH, 'utf-8'));
+    const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
+    for (const item of tasks) {
+      if (!item?.id) continue;
+      const task: NNRtcTask = {
+        id: String(item.id),
+        type: item.type === 'replace' ? 'replace' : 'publish',
+        status: ['pending', 'running', 'success', 'failed'].includes(item.status) ? item.status : 'failed',
+        progress: Number(item.progress) || 0,
+        message: String(item.message || ''),
+        logs: Array.isArray(item.logs) ? item.logs.map(String) : [],
+        data: item.data,
+        warning: item.warning ? String(item.warning) : undefined,
+        error: item.error ? String(item.error) : undefined,
+        createdAt: Number(item.createdAt) || Date.now(),
+        updatedAt: Number(item.updatedAt) || Date.now(),
+      };
+      if (task.status === 'pending' || task.status === 'running') {
+        task.status = 'failed';
+        task.progress = 100;
+        task.error = '服务重启，任务已中断';
+        task.message = '服务重启，任务已中断';
+        task.logs.push(task.message);
+        task.updatedAt = Date.now();
+      }
+      nnrtcTasks.set(task.id, task);
+    }
+    persistNNRtcTasks();
+  } catch (error: any) {
+    logger.warn('加载 NNRtc Pod 任务失败', { error: error.message });
+  }
+}
+
+loadNNRtcTasks();
 
 const upload = multer({
-  dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
+  dest: UPLOAD_DIR,
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '524288000'),
   },
   fileFilter: (_req, file, cb) => {
     const name = file.originalname.toLowerCase();
-    if (name.endsWith('.zip') || name.endsWith('.framework') || name.endsWith('.a') ||
+    if (name.endsWith('.zip') || name.endsWith('.tgz') || name.endsWith('.tar.gz') ||
+        name.endsWith('.framework') || name.endsWith('.a') ||
         file.mimetype === 'application/zip' || file.mimetype === 'application/octet-stream') {
       cb(null, true);
     } else {
-      cb(new Error('仅支持 .zip、.framework、.a 格式文件'));
+      cb(new Error('仅支持 .zip、.tgz、.tar.gz、.framework、.a 格式文件'));
     }
   },
 });
@@ -31,6 +106,160 @@ function requireTargetBranch(value: unknown): string {
     throw error;
   }
   return targetBranch;
+}
+
+function isNNRtcPackageFile(fileName: string): boolean {
+  const lowerName = fileName.toLowerCase();
+  return lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz') || /^nrtc?\.zip$/i.test(fileName);
+}
+
+function encodeJobPath(jobName: string) {
+  return jobName
+    .split('/')
+    .filter(Boolean)
+    .map((part) => `job/${encodeURIComponent(part)}`)
+    .join('/');
+}
+
+function buildJenkinsAuthConfig() {
+  const username = process.env.NNRTC_JENKINS_USER || process.env.JENKINS_USER || '';
+  const token = process.env.NNRTC_JENKINS_TOKEN || process.env.JENKINS_TOKEN || '';
+  if (!username || !token) return {};
+  return { auth: { username, password: token } };
+}
+
+function createNNRtcTask(type: NNRtcTask['type']): NNRtcTask {
+  const now = Date.now();
+  const task: NNRtcTask = {
+    id: `nnrtc_${type}_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    type,
+    status: 'pending',
+    progress: 0,
+    message: '等待开始',
+    logs: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  nnrtcTasks.set(task.id, task);
+  persistNNRtcTasks();
+  return task;
+}
+
+function updateNNRtcTask(task: NNRtcTask, patch: Partial<NNRtcTask>) {
+  Object.assign(task, patch, { updatedAt: Date.now() });
+  if (patch.message) task.logs.push(patch.message);
+  nnrtcTasks.set(task.id, task);
+  persistNNRtcTasks();
+}
+
+function scheduleTaskCleanup() {
+  const expireAt = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, task] of nnrtcTasks.entries()) {
+    if (task.updatedAt < expireAt) nnrtcTasks.delete(id);
+  }
+  persistNNRtcTasks();
+}
+
+function findNNRtcArtifact(artifacts: any[]) {
+  return artifacts.find((item: any) => {
+    const fileName = String(item?.fileName || '').toLowerCase();
+    const relativePath = String(item?.relativePath || '').toLowerCase();
+    return fileName === 'nrt.tgz' || fileName === 'nrtc.tgz' || fileName === 'nnrtc.tgz' ||
+      relativePath.endsWith('/nrt.tgz') || relativePath.endsWith('/nrtc.tgz') || relativePath.endsWith('/nnrtc.tgz');
+  });
+}
+
+async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
+  number: number;
+  result: string;
+  branchName: string;
+  timestamp?: number;
+  url?: string;
+  artifactPath: string;
+}>> {
+  const jobPath = encodeJobPath(NNRTC_JENKINS_JOB);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
+  const response = await axios.get(`${NNRTC_JENKINS_BASE_URL}/${jobPath}/api/json`, {
+    timeout: 30000,
+    params: {
+      tree: `builds[number,result,timestamp,url,actions[parameters[name,value]],artifacts[fileName,relativePath]]{0,${safeLimit}}`,
+    },
+    ...buildJenkinsAuthConfig(),
+  });
+  const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
+  return builds
+    .map((build: any) => {
+      const artifact = findNNRtcArtifact(Array.isArray(build?.artifacts) ? build.artifacts : []);
+      if (!artifact) return null;
+      if (String(build.result || '') !== 'SUCCESS') return null;
+      const parameters = (Array.isArray(build?.actions) ? build.actions : [])
+        .flatMap((action: any) => Array.isArray(action?.parameters) ? action.parameters : []);
+      const branchName = String(
+        parameters.find((item: any) => String(item?.name || '').toUpperCase() === 'BRANCH')?.value ||
+        parameters.find((item: any) => /branch/i.test(String(item?.name || '')))?.value ||
+        ''
+      ).replace(/^origin\//, '');
+      return {
+        number: Number(build.number),
+        result: String(build.result || ''),
+        branchName,
+        timestamp: Number(build.timestamp) || undefined,
+        url: build.url ? String(build.url) : undefined,
+        artifactPath: String(artifact.relativePath || artifact.fileName || ''),
+      };
+    })
+    .filter(Boolean) as Array<{
+      number: number;
+      result: string;
+      branchName: string;
+      timestamp?: number;
+      url?: string;
+      artifactPath: string;
+    }>;
+}
+
+async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ filePath: string; fileName: string; artifactUrl: string }> {
+  const build = String(buildNumber || '').trim();
+  if (!/^\d+$/.test(build)) {
+    const error = new Error('NNRtc Jenkins 构建号必须是数字') as Error & { statusCode?: number };
+    error.statusCode = 400;
+    throw error;
+  }
+
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  const jobPath = encodeJobPath(NNRTC_JENKINS_JOB);
+  const apiUrl = `${NNRTC_JENKINS_BASE_URL}/${jobPath}/${build}/api/json`;
+  const metaResponse = await axios.get(apiUrl, {
+    timeout: 30000,
+    params: { tree: 'artifacts[fileName,relativePath]' },
+    ...buildJenkinsAuthConfig(),
+  });
+  const artifacts = Array.isArray(metaResponse.data?.artifacts) ? metaResponse.data.artifacts : [];
+  const artifact = findNNRtcArtifact(artifacts);
+
+  if (!artifact?.relativePath) {
+    const names = artifacts.map((item: any) => item?.relativePath || item?.fileName).filter(Boolean).join(', ');
+    throw new Error(`构建 #${build} 未找到 nrt.tgz/nrtc.tgz/nnrtc.tgz artifact${names ? `，当前 artifacts: ${names}` : ''}`);
+  }
+
+  const fileName = String(artifact.fileName || path.basename(artifact.relativePath));
+  const artifactUrl = `${NNRTC_JENKINS_BASE_URL}/${jobPath}/${build}/artifact/${String(artifact.relativePath).split('/').map(encodeURIComponent).join('/')}`;
+  const filePath = path.join(UPLOAD_DIR, `nnrtc_jenkins_${build}_${Date.now()}_${fileName}`);
+  const response = await axios.get(artifactUrl, {
+    responseType: 'stream',
+    timeout: 600000,
+    ...buildJenkinsAuthConfig(),
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const writer = fs.createWriteStream(filePath);
+    response.data.pipe(writer);
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+    response.data.on('error', reject);
+  });
+
+  return { filePath, fileName, artifactUrl };
 }
 
 /**
@@ -59,17 +288,20 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
 
     logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file.originalname });
 
-    const component = await podService.publish(tempPath, req.file.originalname, {
+    const params = {
       name, version, lib_type, lib_name, summary, homepage, authors, license,
       platform_version, dependencies, sys_frameworks, sys_libraries, target_branch: targetBranch,
-    });
+    };
+    const component = name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)
+      ? await podService.publishNNRtcPackage(tempPath, req.file.originalname, params)
+      : await podService.publish(tempPath, req.file.originalname, params);
 
     // 清理临时文件
     if (fs.existsSync(tempPath)) {
       fs.unlinkSync(tempPath);
     }
 
-    res.json({ success: true, data: component });
+    res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('Pod 组件发布失败', { error: error.message });
 
@@ -79,6 +311,211 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
 
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
+});
+
+/**
+ * GET /api/pods/nnrtc/jenkins/builds
+ * 获取 NNRtc Jenkins 最近包含 tgz artifact 的构建列表
+ */
+router.get('/nnrtc/jenkins/builds', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const builds = await listNNRtcJenkinsBuilds(Number(req.query.limit || 30));
+    res.json({ success: true, data: builds });
+  } catch (error: any) {
+    logger.error('获取 NNRtc Jenkins 构建列表失败', { error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/nnrtc/jenkins/publish
+ * 从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
+ */
+router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res: Response) => {
+  let tempPath: string | undefined;
+
+  try {
+    const { build_number, version, target_branch, sys_frameworks, sys_libraries } = req.body;
+    if (!version) {
+      return res.status(400).json({ success: false, error: '版本号为必填项' });
+    }
+    const targetBranch = requireTargetBranch(target_branch);
+    const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+    tempPath = artifact.filePath;
+
+    logger.info('从 Jenkins artifact 发布 NNRtc', {
+      build_number,
+      version,
+      target_branch: targetBranch,
+      artifactUrl: artifact.artifactUrl,
+    });
+
+    const component = await podService.publishNNRtcPackage(tempPath, artifact.fileName, {
+      name: 'NNRtc',
+      version,
+      lib_type: 'framework',
+      lib_name: 'NNRtc.framework',
+      sys_frameworks,
+      sys_libraries,
+      target_branch: targetBranch,
+    });
+
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.json({ success: true, data: component, warning: component.warning_message });
+  } catch (error: any) {
+    logger.error('从 Jenkins 发布 NNRtc 失败', { error: error.message });
+    if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/nnrtc/jenkins/publish-task
+ * 后台任务：从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
+ */
+router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { build_number, version, target_branch, sys_frameworks, sys_libraries } = req.body;
+    if (!version) return res.status(400).json({ success: false, error: '版本号为必填项' });
+    const targetBranch = requireTargetBranch(target_branch);
+    const task = createNNRtcTask('publish');
+    scheduleTaskCleanup();
+    res.json({ success: true, data: task });
+
+    setImmediate(async () => {
+      let tempPath: string | undefined;
+      try {
+        updateNNRtcTask(task, { status: 'running', progress: 10, message: `开始发布 NNRtc@${version}` });
+        updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
+        const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+        tempPath = artifact.filePath;
+        updateNNRtcTask(task, { progress: 45, message: '提取 NNRtc.framework / NNRtc.dSYM 并发布 Pod' });
+        const component = await podService.publishNNRtcPackage(tempPath, artifact.fileName, {
+          name: 'NNRtc',
+          version,
+          lib_type: 'framework',
+          lib_name: 'NNRtc.framework',
+          sys_frameworks,
+          sys_libraries,
+          target_branch: targetBranch,
+        });
+        if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        updateNNRtcTask(task, {
+          status: 'success',
+          progress: 100,
+          message: component.warning_message || `NNRtc@${version} 发布完成`,
+          data: component,
+          warning: component.warning_message,
+        });
+      } catch (error: any) {
+        if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        logger.error('NNRtc 发布任务失败', { taskId: task.id, error: error.message });
+        updateNNRtcTask(task, {
+          status: 'failed',
+          progress: 100,
+          message: `发布失败: ${error.message}`,
+          error: error.message,
+        });
+      }
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/nnrtc/:version/jenkins/replace
+ * 从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
+ */
+router.post('/nnrtc/:version/jenkins/replace', adminMiddleware, async (req: Request, res: Response) => {
+  let tempPath: string | undefined;
+
+  try {
+    const { build_number, target_branch } = req.body;
+    const targetBranch = requireTargetBranch(target_branch);
+    const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+    tempPath = artifact.filePath;
+
+    logger.info('从 Jenkins artifact 替换 NNRtc 二进制', {
+      build_number,
+      version: req.params.version,
+      target_branch: targetBranch,
+      artifactUrl: artifact.artifactUrl,
+    });
+
+    const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch);
+
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.json({ success: true, data: component, warning: component.warning_message });
+  } catch (error: any) {
+    logger.error('从 Jenkins 替换 NNRtc 失败', { error: error.message });
+    if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/nnrtc/:version/jenkins/replace-task
+ * 后台任务：从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
+ */
+router.post('/nnrtc/:version/jenkins/replace-task', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { build_number, target_branch } = req.body;
+    const targetBranch = requireTargetBranch(target_branch);
+    const task = createNNRtcTask('replace');
+    scheduleTaskCleanup();
+    res.json({ success: true, data: task });
+
+    setImmediate(async () => {
+      let tempPath: string | undefined;
+      try {
+        updateNNRtcTask(task, { status: 'running', progress: 10, message: `开始替换 NNRtc@${req.params.version}` });
+        updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
+        const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+        tempPath = artifact.filePath;
+        updateNNRtcTask(task, { progress: 45, message: '提取 NNRtc.framework / NNRtc.dSYM 并替换 Pod' });
+        const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch);
+        if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        updateNNRtcTask(task, {
+          status: 'success',
+          progress: 100,
+          message: component.warning_message || `NNRtc@${req.params.version} 替换完成`,
+          data: component,
+          warning: component.warning_message,
+        });
+      } catch (error: any) {
+        if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        logger.error('NNRtc 替换任务失败', { taskId: task.id, error: error.message });
+        updateNNRtcTask(task, {
+          status: 'failed',
+          progress: 100,
+          message: `替换失败: ${error.message}`,
+          error: error.message,
+        });
+      }
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/pods/nnrtc/tasks
+ * 查询最近 NNRtc 发布/替换任务
+ */
+router.get('/nnrtc/tasks', adminMiddleware, async (_req: Request, res: Response) => {
+  const tasks = Array.from(nnrtcTasks.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  res.json({ success: true, data: tasks });
+});
+
+/**
+ * GET /api/pods/nnrtc/tasks/:taskId
+ * 查询 NNRtc 发布/替换任务进度
+ */
+router.get('/nnrtc/tasks/:taskId', adminMiddleware, async (req: Request, res: Response) => {
+  const task = nnrtcTasks.get(req.params.taskId);
+  if (!task) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
+  res.json({ success: true, data: task, warning: task.warning });
 });
 
 /**
@@ -131,7 +568,7 @@ router.get('/:name/:version', async (req: Request, res: Response) => {
     if (!component) {
       return res.status(404).json({ success: false, error: '组件不存在' });
     }
-    res.json({ success: true, data: component });
+    res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
@@ -200,9 +637,9 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
     const { target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
 
-    const component = await podService.replaceZip(
-      req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch
-    );
+    const component = req.params.name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)
+      ? await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch)
+      : await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.json({ success: true, data: component });
@@ -279,7 +716,7 @@ router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Resp
   try {
     const targetBranch = requireTargetBranch(req.query.target_branch);
     const result = await podService.deleteVersion(req.params.name, req.params.version, targetBranch);
-    res.json({ success: true, data: result });
+    res.json({ success: true, data: result, warning: result.warning });
   } catch (error: any) {
     logger.error('删除组件版本失败', { error: error.message });
     res.status(error.statusCode || (error.message.includes('不存在') ? 404 : 500)).json({
@@ -295,8 +732,8 @@ router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Resp
  */
 router.delete('/:name', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const count = await podService.deleteComponent(req.params.name);
-    res.json({ success: true, data: { deletedVersions: count } });
+    const result = await podService.deleteComponent(req.params.name);
+    res.json({ success: true, data: { deletedVersions: result.deletedVersions }, warning: result.warning });
   } catch (error: any) {
     logger.error('删除组件失败', { error: error.message });
     res.status(error.message.includes('不存在') ? 404 : 500).json({

@@ -3,7 +3,12 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import * as tar from 'tar';
+import AdmZip from 'adm-zip';
 import logger from '../utils/logger';
+import { FileHandlerService } from './FileHandlerService';
+import { StorageService } from './StorageService';
+import symbolicationCache from './SymbolicationCacheService';
 
 export interface PodComponent {
   id: number;
@@ -16,6 +21,7 @@ export interface PodComponent {
   upload_time: string;
   status: 'uploaded' | 'published' | 'failed';
   error_message?: string;
+  warning_message?: string;
 }
 
 interface PodUploadParams {
@@ -55,6 +61,8 @@ function escapeRegExp(value: string): string {
 
 export class PodService {
   private db = getDatabase();
+  private fileHandler = new FileHandlerService();
+  private storage = new StorageService();
 
   /**
    * 初始化 pods_components 表
@@ -368,15 +376,29 @@ ${sourceLine}
   private cleanPodxCache(name: string): void {
     try {
       logger.info('检测到相同版本组件，执行 podx clean', { name });
+      const podxWorkDir = fs.existsSync(path.join(NNIOS_REPO_LOCAL, 'Podfile'))
+        ? NNIOS_REPO_LOCAL
+        : process.cwd();
       execSync(`podx clean ${shellQuote(name)}`, {
         encoding: 'utf-8',
         timeout: 120000,
         stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: podxWorkDir,
+        env: {
+          ...process.env,
+          PATH: [
+            path.join(process.env.HOME || '/Users/a1', '.local/bin'),
+            '/opt/homebrew/bin',
+            '/usr/local/bin',
+            process.env.PATH || '',
+          ].join(':'),
+        },
       });
-      logger.info('podx clean 执行成功', { name });
+      logger.info('podx clean 执行成功', { name, cwd: podxWorkDir });
     } catch (error: any) {
-      logger.error('podx clean 执行失败', { name, error: error.message });
-      throw new Error(`已存在相同版本，执行 podx clean ${name} 失败: ${error.message}`);
+      const detail = error.stderr?.toString?.() || error.stdout?.toString?.() || error.message;
+      logger.error('podx clean 执行失败', { name, error: detail });
+      throw new Error(`已存在相同版本，执行 podx clean ${name} 失败: ${detail}`);
     }
   }
 
@@ -731,6 +753,176 @@ ${sourceLine}
     }
   }
 
+  private findDirectoryByName(rootDir: string, dirName: string): string | null {
+    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === '__MACOSX' || entry.name.startsWith('.')) continue;
+      const fullPath = path.join(rootDir, entry.name);
+      if (!entry.isDirectory()) continue;
+      if (entry.name === dirName) return fullPath;
+      const nested = this.findDirectoryByName(fullPath, dirName);
+      if (nested) return nested;
+    }
+    return null;
+  }
+
+  private async extractNNRtcPackage(packagePath: string, originalFileName?: string): Promise<{
+    workDir: string;
+    frameworkPath: string;
+    dsymPath: string;
+    frameworkZipPath: string;
+  }> {
+    const uploadDir = process.env.UPLOAD_DIR || '/tmp';
+    const workDir = path.join(uploadDir, `nnrtc_pkg_${Date.now()}`);
+    fs.mkdirSync(workDir, { recursive: true });
+
+    try {
+      const lowerName = (originalFileName || packagePath).toLowerCase();
+      if (lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz')) {
+        await tar.x({ file: packagePath, cwd: workDir });
+      } else if (lowerName.endsWith('.zip')) {
+        new AdmZip(packagePath).extractAllTo(workDir, true);
+      } else {
+        throw new Error('仅支持 nrt.tgz、.tar.gz 或 .zip 包');
+      }
+
+      const frameworkPath = this.findDirectoryByName(workDir, 'NNRtc.framework');
+      const dsymPath = this.findDirectoryByName(workDir, 'NNRtc.dSYM');
+      if (!frameworkPath) {
+        throw new Error('包内未找到 NNRtc.framework');
+      }
+      if (!dsymPath) {
+        throw new Error('包内未找到 NNRtc.dSYM');
+      }
+
+      const frameworkZipPath = path.join(uploadDir, `NNRtc_${Date.now()}.zip`);
+      execSync(`cd ${shellQuote(path.dirname(frameworkPath))} && zip -r ${shellQuote(frameworkZipPath)} ${shellQuote(path.basename(frameworkPath))}`, {
+        encoding: 'utf-8',
+        timeout: 120000,
+      });
+
+      return { workDir, frameworkPath, dsymPath, frameworkZipPath };
+    } catch (error) {
+      fs.rmSync(workDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private async saveNNRtcDSYM(dsymPath: string, version: string): Promise<void> {
+    const uuid = await this.fileHandler.extractUUID(dsymPath);
+    const appInfo = await this.fileHandler.extractAppInfo(dsymPath);
+    const appName = appInfo.appName || 'NNRtc';
+
+    const sameVersionDsyms = await this.storage.findByAppNameAndVersion(appName, version);
+    for (const existing of sameVersionDsyms) {
+      logger.info('覆盖 NNRtc 同版本 dSYM，删除旧记录', {
+        appName: existing.appName,
+        version: existing.version,
+        uuid: existing.uuid,
+      });
+      await this.storage.deleteDSYM(existing.uuid);
+    }
+
+    const uuidOwner = await this.storage.findByUUID(uuid);
+    if (uuidOwner) {
+      if (uuidOwner.appName === appName) {
+        logger.info('覆盖 NNRtc 同 UUID dSYM，删除旧记录', {
+          appName: uuidOwner.appName,
+          version: uuidOwner.version,
+          uuid: uuidOwner.uuid,
+        });
+        await this.storage.deleteDSYM(uuidOwner.uuid);
+      } else {
+        throw new Error(`NNRtc.dSYM UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`);
+      }
+    }
+
+    const permanentPath = await this.fileHandler.moveToPermanentStorage(dsymPath, uuid);
+    const fileSize = this.fileHandler.getFileSize(permanentPath);
+    await this.storage.saveDSYMInfo({
+      uuid,
+      appName,
+      version,
+      buildNumber: appInfo.buildNumber,
+      architecture: appInfo.architecture,
+      filePath: permanentPath,
+      fileSize,
+    });
+    logger.info('NNRtc dSYM 已同步到 dSYM 管理', { uuid, appName, version });
+    symbolicationCache.clear();
+    logger.info('已清除符号化缓存（NNRtc dSYM 更新）', { uuid, appName, version });
+  }
+
+  private async deleteNNRtcDSYMs(version: string): Promise<void> {
+    const dsyms = await this.storage.findByAppNameAndVersion('NNRtc', version);
+    if (dsyms.length === 0) {
+      logger.info('未找到需要删除的 NNRtc dSYM', { version });
+      return;
+    }
+
+    for (const dsym of dsyms) {
+      logger.info('删除 NNRtc 版本对应 dSYM', {
+        version,
+        uuid: dsym.uuid,
+        filePath: dsym.filePath,
+      });
+      await this.storage.deleteDSYM(dsym.uuid);
+    }
+    symbolicationCache.clear();
+    logger.info('已清除符号化缓存（NNRtc dSYM 删除）', { version });
+  }
+
+  async publishNNRtcPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
+    if (params.name !== 'NNRtc') {
+      throw new Error('NNRtc 包发布仅支持组件 NNRtc');
+    }
+    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName);
+    try {
+      const component = await this.publish(extracted.frameworkZipPath, 'NNRtc.zip', {
+        ...params,
+        lib_type: 'framework',
+        lib_name: 'NNRtc.framework',
+      });
+      if (component.status === 'published') {
+        try {
+          await this.saveNNRtcDSYM(extracted.dsymPath, params.version);
+        } catch (error: any) {
+          component.warning_message = `NNRtc Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('NNRtc dSYM 同步失败，Pod 发布已完成', {
+            version: params.version,
+            error: error.message,
+          });
+        }
+      }
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
+  async replaceNNRtcPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
+    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName);
+    try {
+      const component = await this.replaceZip('NNRtc', version, extracted.frameworkZipPath, 'NNRtc.zip', targetBranch);
+      if (component.status === 'published') {
+        try {
+          await this.saveNNRtcDSYM(extracted.dsymPath, version);
+        } catch (error: any) {
+          component.warning_message = `NNRtc Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('NNRtc dSYM 同步失败，Pod 替换已完成', {
+            version,
+            error: error.message,
+          });
+        }
+      }
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
   /**
    * 完整的发布流程：自动打包 zip + 检测库类型 + 上传 Nexus + 生成 podspec + 同步 spec 仓库
    */
@@ -938,7 +1130,7 @@ ${sourceLine}
   /**
    * 删除指定组件版本（同时删除 Nexus 文件）
    */
-  async deleteVersion(name: string, version: string, targetBranch: string): Promise<{ fallbackVersion?: string }> {
+  async deleteVersion(name: string, version: string, targetBranch: string): Promise<{ fallbackVersion?: string; warning?: string }> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
@@ -976,22 +1168,40 @@ ${sourceLine}
     await this.deleteFromNexus(name, version);
     // 删除 spec 仓库中的版本目录
     await this.deleteFromSpecRepo(name, version);
+    let warning: string | undefined;
+    if (name === 'NNRtc') {
+      try {
+        await this.deleteNNRtcDSYMs(version);
+      } catch (error: any) {
+        warning = `NNRtc@${version} 已删除，但对应 dSYM 清理失败: ${error.message}`;
+        logger.error('删除 NNRtc 版本后清理 dSYM 失败', { version, error: error.message });
+      }
+    }
 
-    return { fallbackVersion };
+    return { fallbackVersion, warning };
   }
 
   /**
    * 删除整个组件（所有版本 + Nexus 文件）
    */
-  async deleteComponent(name: string): Promise<number> {
+  async deleteComponent(name: string): Promise<{ deletedVersions: number; warning?: string }> {
     const versions = await this.getVersions(name);
     if (versions.length === 0) {
       throw new Error(`组件 ${name} 不存在`);
     }
 
     // 逐个删除 Nexus 文件
+    const dsymWarnings: string[] = [];
     for (const v of versions) {
       await this.deleteFromNexus(name, v.version);
+      if (name === 'NNRtc') {
+        try {
+          await this.deleteNNRtcDSYMs(v.version);
+        } catch (error: any) {
+          dsymWarnings.push(`${v.version}: ${error.message}`);
+          logger.error('删除 NNRtc 组件后清理 dSYM 失败', { version: v.version, error: error.message });
+        }
+      }
     }
 
     // 删除数据库记录
@@ -1002,7 +1212,10 @@ ${sourceLine}
     // 删除 spec 仓库中的整个组件目录（包含所有版本）
     await this.deleteFromSpecRepo(name);
 
-    return result.changes;
+    return {
+      deletedVersions: result.changes,
+      warning: dsymWarnings.length > 0 ? `NNRtc 组件已删除，但部分 dSYM 清理失败: ${dsymWarnings.join('; ')}` : undefined,
+    };
   }
 
   /**

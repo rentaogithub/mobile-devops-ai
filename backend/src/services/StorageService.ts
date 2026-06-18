@@ -117,6 +117,28 @@ export class StorageService {
   }
 
   /**
+   * 根据应用名和版本查找 dSYM。用于同版本覆盖上传。
+   */
+  async findByAppNameAndVersion(appName: string, version: string): Promise<DSYMInfo[]> {
+    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE app_name = ? AND version = ?');
+    const results = stmt.all(appName, version) as {
+      id: number;
+      uuid: string;
+      app_name: string;
+      version: string;
+      build_number: string | null;
+      architecture: string;
+      file_path: string;
+      file_size: number;
+      notes: string | null;
+      related_app_version: string | null;
+      upload_time: string;
+    }[];
+
+    return results.map((row) => this.mapToDTO(row));
+  }
+
+  /**
    * 获取所有 dSYM
    */
   async getAllDSYMs(): Promise<DSYMInfo[]> {
