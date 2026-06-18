@@ -674,6 +674,9 @@ export interface PodComponent {
   status: 'uploaded' | 'published' | 'failed';
   error_message?: string;
   warning_message?: string;
+  package_type?: 'release' | 'test';
+  build_id?: string;
+  nnios_branch?: string;
 }
 
 export interface NNRtcJenkinsBuild {
@@ -717,6 +720,8 @@ export const podsApi = {
       sys_frameworks?: string;
       sys_libraries?: string;
       target_branch?: string;
+      package_type?: 'release' | 'test';
+      build_id?: string;
     }
   ): Promise<ApiResponse<PodComponent>> => {
     const formData = new FormData();
@@ -738,6 +743,7 @@ export const podsApi = {
     build_number: string;
     version: string;
     target_branch: string;
+    package_type?: 'release' | 'test';
     sys_frameworks?: string;
     sys_libraries?: string;
   }): Promise<ApiResponse<PodComponent>> => {
@@ -752,6 +758,7 @@ export const podsApi = {
     build_number: string;
     version: string;
     target_branch: string;
+    package_type?: 'release' | 'test';
     sys_frameworks?: string;
     sys_libraries?: string;
   }): Promise<ApiResponse<NNRtcPodTask>> => {
@@ -859,9 +866,9 @@ export const podsApi = {
   },
 
   /** 删除组件版本 */
-  delete: async (name: string, version: string, target_branch: string): Promise<ApiResponse<{ fallbackVersion?: string; warning?: string }>> => {
+  delete: async (name: string, version: string, target_branch?: string): Promise<ApiResponse<{ fallbackVersion?: string; warning?: string }>> => {
     const response = await api.delete<ApiResponse<{ fallbackVersion?: string; warning?: string }>>(`/pods/${name}/${version}`, {
-      params: { target_branch },
+      params: target_branch ? { target_branch } : undefined,
     });
     return response.data;
   },
@@ -873,9 +880,9 @@ export const podsApi = {
   },
 
   /** 从官方 CocoaPods 导入组件 */
-  importOfficial: async (name: string, version: string, buildBinary?: boolean, outputType?: string, depVersionOverrides?: Record<string, string>, selectedSubspecs?: string[], internalVersion?: string, prepareCommand?: string): Promise<ApiResponse<PodComponent>> => {
+  importOfficial: async (name: string, version: string, buildBinary?: boolean, outputType?: string, depVersionOverrides?: Record<string, string>, selectedSubspecs?: string[], internalVersion?: string, prepareCommand?: string, targetBranch?: string): Promise<ApiResponse<PodComponent>> => {
     const response = await api.post<ApiResponse<PodComponent>>('/pods/official/import', {
-      name, version, buildBinary, outputType, depVersionOverrides, selectedSubspecs, internalVersion, prepareCommand,
+      name, version, buildBinary, outputType, depVersionOverrides, selectedSubspecs, internalVersion, prepareCommand, target_branch: targetBranch,
     }, {
       timeout: 600000,
     });
@@ -1564,6 +1571,26 @@ export const jenkinsApi = {
     branch?: string;
   }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>> => {
     const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>>('/jenkins/nn/build', payload);
+    return response.data;
+  },
+
+  createReleaseBranch: async (payload: {
+    targetBranch: string;
+    baseBranch?: string;
+  }): Promise<ApiResponse<{
+    repoDir: string;
+    targetBranch: string;
+    baseBranch: string;
+    commands: Array<{ command: string; output: string }>;
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      repoDir: string;
+      targetBranch: string;
+      baseBranch: string;
+      commands: Array<{ command: string; output: string }>;
+    }>>('/jenkins/nn/release-branch', payload, {
+      timeout: 10 * 60 * 1000,
+    });
     return response.data;
   },
 

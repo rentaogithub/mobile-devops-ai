@@ -110,7 +110,11 @@ function requireTargetBranch(value: unknown): string {
 
 function isNNRtcPackageFile(fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
-  return lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz') || /^nrtc?\.zip$/i.test(fileName);
+  return lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz');
+}
+
+function isNNRtcTestVersion(version?: string) {
+  return /(?:_test|-test)$/.test(String(version || ''));
 }
 
 function encodeJobPath(jobName: string) {
@@ -167,6 +171,11 @@ function findNNRtcArtifact(artifacts: any[]) {
     return fileName === 'nrt.tgz' || fileName === 'nrtc.tgz' || fileName === 'nnrtc.tgz' ||
       relativePath.endsWith('/nrt.tgz') || relativePath.endsWith('/nrtc.tgz') || relativePath.endsWith('/nnrtc.tgz');
   });
+}
+
+function isNNRtcReleaseBuildForVersion(branchName: string, version: string) {
+  const normalized = String(branchName || '').replace(/^origin\//, '');
+  return normalized === `release_${version}` || normalized === `release/${version}`;
 }
 
 async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
@@ -275,7 +284,7 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
     }
 
     const { name, version, lib_type, lib_name, summary, homepage, authors, license,
-      platform_version, dependencies, sys_frameworks, sys_libraries, target_branch } = req.body;
+      platform_version, dependencies, sys_frameworks, sys_libraries, target_branch, package_type, build_id } = req.body;
 
     if (!name || !version) {
       fs.unlinkSync(req.file.path);
@@ -288,9 +297,14 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
 
     logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file.originalname });
 
+    const nnrtcPackageType: 'release' | 'test' | undefined = name === 'NNRtc'
+      ? (package_type === 'test' || isNNRtcTestVersion(version) ? 'test' : 'release')
+      : undefined;
     const params = {
       name, version, lib_type, lib_name, summary, homepage, authors, license,
       platform_version, dependencies, sys_frameworks, sys_libraries, target_branch: targetBranch,
+      package_type: nnrtcPackageType,
+      build_id,
     };
     const component = name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)
       ? await podService.publishNNRtcPackage(tempPath, req.file.originalname, params)
@@ -335,7 +349,7 @@ router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res:
   let tempPath: string | undefined;
 
   try {
-    const { build_number, version, target_branch, sys_frameworks, sys_libraries } = req.body;
+    const { build_number, version, target_branch, sys_frameworks, sys_libraries, package_type } = req.body;
     if (!version) {
       return res.status(400).json({ success: false, error: '版本号为必填项' });
     }
@@ -358,6 +372,8 @@ router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res:
       sys_frameworks,
       sys_libraries,
       target_branch: targetBranch,
+      package_type: package_type === 'test' || isNNRtcTestVersion(version) ? 'test' : 'release',
+      build_id: String(build_number || ''),
     });
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
@@ -375,7 +391,7 @@ router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res:
  */
 router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const { build_number, version, target_branch, sys_frameworks, sys_libraries } = req.body;
+    const { build_number, version, target_branch, sys_frameworks, sys_libraries, package_type } = req.body;
     if (!version) return res.status(400).json({ success: false, error: '版本号为必填项' });
     const targetBranch = requireTargetBranch(target_branch);
     const task = createNNRtcTask('publish');
@@ -389,7 +405,11 @@ router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request,
         updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
         const artifact = await downloadNNRtcJenkinsArtifact(build_number);
         tempPath = artifact.filePath;
-        updateNNRtcTask(task, { progress: 45, message: '提取 NNRtc.framework / NNRtc.dSYM 并发布 Pod' });
+        const isTestPackage = package_type === 'test' || isNNRtcTestVersion(version);
+        updateNNRtcTask(task, {
+          progress: 45,
+          message: isTestPackage ? '提取 NNRtc.framework 并发布测试包 Pod' : '提取 NNRtc.framework / NNRtc.dSYM 并发布 Pod',
+        });
         const component = await podService.publishNNRtcPackage(tempPath, artifact.fileName, {
           name: 'NNRtc',
           version,
@@ -398,6 +418,8 @@ router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request,
           sys_frameworks,
           sys_libraries,
           target_branch: targetBranch,
+          package_type: isTestPackage ? 'test' : 'release',
+          build_id: String(build_number || ''),
         });
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         updateNNRtcTask(task, {
@@ -443,7 +465,16 @@ router.post('/nnrtc/:version/jenkins/replace', adminMiddleware, async (req: Requ
       artifactUrl: artifact.artifactUrl,
     });
 
-    const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch);
+    const current = await podService.getOne('NNRtc', req.params.version);
+    const isTestPackage = current?.package_type === 'test' || isNNRtcTestVersion(req.params.version);
+    const component = await podService.replaceNNRtcPackage(
+      req.params.version,
+      tempPath,
+      artifact.fileName,
+      targetBranch,
+      String(build_number || ''),
+      !isTestPackage
+    );
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.json({ success: true, data: component, warning: component.warning_message });
@@ -473,8 +504,13 @@ router.post('/nnrtc/:version/jenkins/replace-task', adminMiddleware, async (req:
         updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
         const artifact = await downloadNNRtcJenkinsArtifact(build_number);
         tempPath = artifact.filePath;
-        updateNNRtcTask(task, { progress: 45, message: '提取 NNRtc.framework / NNRtc.dSYM 并替换 Pod' });
-        const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch);
+        const current = await podService.getOne('NNRtc', req.params.version);
+        const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
+        updateNNRtcTask(task, {
+          progress: 45,
+          message: syncDSYM ? '提取 NNRtc.framework / NNRtc.dSYM 并替换 Pod' : '提取 NNRtc.framework 并替换测试包 Pod',
+        });
+        const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch, String(build_number || ''), syncDSYM);
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         updateNNRtcTask(task, {
           status: 'success',
@@ -516,6 +552,49 @@ router.get('/nnrtc/tasks/:taskId', adminMiddleware, async (req: Request, res: Re
   const task = nnrtcTasks.get(req.params.taskId);
   if (!task) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
   res.json({ success: true, data: task, warning: task.warning });
+});
+
+/**
+ * POST /api/pods/nnrtc/:version/dsym/backfill
+ * 从 Jenkins release 构建补齐 NNRtc 正式包 dSYM，不重新发布 Pod
+ */
+router.post('/nnrtc/:version/dsym/backfill', adminMiddleware, async (req: Request, res: Response) => {
+  let tempPath: string | undefined;
+
+  try {
+    const version = req.params.version;
+    if (isNNRtcTestVersion(version)) {
+      await podService.syncNNRtcDSYMFromPackage('', '', version);
+      return res.json({ success: true, data: { version, skipped: true }, warning: '测试包不需要 dSYM，已清理同版本 dSYM' });
+    }
+
+    const existing = await podService.hasNNRtcDSYM(version);
+    if (existing && !req.body?.force) {
+      return res.json({ success: true, data: { version, exists: true } });
+    }
+
+    const buildNumber = String(req.body?.build_number || '').trim();
+    let targetBuild = buildNumber;
+    if (!targetBuild) {
+      const builds = await listNNRtcJenkinsBuilds(100);
+      const matched = builds.find((build) => isNNRtcReleaseBuildForVersion(build.branchName, version));
+      if (!matched) {
+        throw new Error(`未找到 release_${version} 对应的 NNRtc Jenkins 构建`);
+      }
+      targetBuild = String(matched.number);
+    }
+
+    const artifact = await downloadNNRtcJenkinsArtifact(targetBuild);
+    tempPath = artifact.filePath;
+    await podService.syncNNRtcDSYMFromPackage(tempPath, artifact.fileName, version, targetBuild);
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+
+    res.json({ success: true, data: { version, buildNumber: targetBuild, artifactUrl: artifact.artifactUrl } });
+  } catch (error: any) {
+    logger.error('补齐 NNRtc dSYM 失败', { version: req.params.version, error: error.message });
+    if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
 });
 
 /**
@@ -595,7 +674,11 @@ router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: 
  */
 router.post('/:name/:version/sync-branch', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const targetBranch = requireTargetBranch(req.body?.target_branch);
+    const current = await podService.getOne(req.params.name, req.params.version);
+    const isTestPackage = current?.package_type === 'test' || isNNRtcTestVersion(req.params.version);
+    const targetBranch = req.body?.target_branch
+      ? requireTargetBranch(req.body.target_branch)
+      : (isTestPackage ? undefined : requireTargetBranch(req.body?.target_branch));
     const component = await podService.syncVersionToBranch(req.params.name, req.params.version, targetBranch);
     res.json({ success: true, data: component });
   } catch (error: any) {
@@ -637,9 +720,14 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
     const { target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
 
-    const component = req.params.name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)
-      ? await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch)
-      : await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
+    let component;
+    if (req.params.name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+      const current = await podService.getOne(req.params.name, req.params.version);
+      const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
+      component = await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch, undefined, syncDSYM);
+    } else {
+      component = await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
+    }
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.json({ success: true, data: component });
@@ -684,10 +772,11 @@ router.get('/official/:name/:version/dependencies', async (req: Request, res: Re
  */
 router.post('/official/import', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const { name, version, buildBinary, outputType, depVersionOverrides, selectedSubspecs, internalVersion, prepareCommand } = req.body;
+    const { name, version, buildBinary, outputType, depVersionOverrides, selectedSubspecs, internalVersion, prepareCommand, target_branch } = req.body;
     if (!name || !version) {
       return res.status(400).json({ success: false, error: '组件名称和版本号为必填项' });
     }
+    const targetBranch = requireTargetBranch(target_branch);
 
     // internalVersion: 用户自定义发布版本号（如 1.4.0.1），若不传则与 version 相同
     const publishVersion = (internalVersion || '').trim() || version;
@@ -695,10 +784,10 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
     let component;
     if (buildBinary) {
       // 源码编译为二进制
-      component = await podService.buildBinaryFromSource(name, version, outputType || 'framework', depVersionOverrides, selectedSubspecs, publishVersion, prepareCommand);
+      component = await podService.buildBinaryFromSource(name, version, outputType || 'framework', depVersionOverrides, selectedSubspecs, publishVersion, prepareCommand, targetBranch);
     } else {
       // 直接导入（二进制 SDK）
-      component = await podService.importFromOfficial(name, version, publishVersion, prepareCommand);
+      component = await podService.importFromOfficial(name, version, publishVersion, prepareCommand, targetBranch);
     }
 
     res.json({ success: true, data: component });
@@ -714,7 +803,7 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
  */
 router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Response) => {
   try {
-    const targetBranch = requireTargetBranch(req.query.target_branch);
+    const targetBranch = req.query.target_branch ? requireTargetBranch(req.query.target_branch) : undefined;
     const result = await podService.deleteVersion(req.params.name, req.params.version, targetBranch);
     res.json({ success: true, data: result, warning: result.warning });
   } catch (error: any) {

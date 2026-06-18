@@ -23,6 +23,10 @@ const upload = multer({
 const fileHandler = new FileHandlerService();
 const storage = new StorageService();
 
+function isNNRtcTestVersion(version?: string) {
+  return /(?:_test|-test)$/.test(String(version || ''));
+}
+
 /**
  * POST /api/dsym/upload
  * 上传 dSYM 文件（需要管理员权限）
@@ -60,6 +64,14 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
 
     // 提取应用信息
     const appInfo = await fileHandler.extractAppInfo(dsymPath);
+    if (appInfo.appName === 'NNRtc' && isNNRtcTestVersion(appInfo.version)) {
+      await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath);
+      throw new AppError(
+        ErrorCode.INVALID_FILE_FORMAT,
+        'NNRtc 测试包不允许上传 dSYM，请使用正式包 dSYM',
+        400
+      );
+    }
 
     // 同应用同版本覆盖：先删除旧记录和旧 dSYM 文件
     const sameVersionDsyms = await storage.findByAppNameAndVersion(appInfo.appName, appInfo.version);

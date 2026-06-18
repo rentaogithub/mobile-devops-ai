@@ -43,6 +43,36 @@ function compareReleaseBranches(a: string, b: string) {
   return a.localeCompare(b);
 }
 
+function isNNRtcReleaseBuildBranch(branch?: string) {
+  return /^release[_/]\d+(?:\.\d+){2,}$/.test(String(branch || ''));
+}
+
+function getNNRtcReleaseVersion(branch?: string) {
+  return String(branch || '').match(/^release[_/](\d+(?:\.\d+){2,})$/)?.[1] || '';
+}
+
+function isNNRtcTestVersion(version?: string) {
+  return /(?:_test|-test)$/.test(String(version || ''));
+}
+
+function buildNNRtcTestVersion(version: string) {
+  return `${version}-test`;
+}
+
+function compareVersionText(a: string, b: string) {
+  const parse = (version: string) => version
+    .replace(/(?:_test|-test)$/, '')
+    .split('.')
+    .map((part) => Number(part));
+  const left = parse(a);
+  const right = parse(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return a.localeCompare(b);
+}
+
 function buildNniosBranchOptions(branches: string[]) {
   const releaseBranches = branches.filter(isReleaseBranch);
   const latestRelease = releaseBranches.sort(compareReleaseBranches)[releaseBranches.length - 1];
@@ -64,6 +94,19 @@ function formatBuildTime(timestamp?: number) {
 function formatNNRtcBuildLabel(build: NNRtcJenkinsBuild) {
   const time = formatBuildTime(build.timestamp);
   return `#${build.number}${build.branchName ? ` ${build.branchName}` : ''}${time ? ` ${time}` : ''}`;
+}
+
+function buildNNRtcJenkinsBuildUrl(buildId: string) {
+  return `http://10.1.3.177:8080/job/nnrtc-ios-build/${encodeURIComponent(buildId)}/`;
+}
+
+function supportsNniosBuildTask(name?: string) {
+  return name === 'NNRtc' || name === 'leigod_im_cross_sdk';
+}
+
+function isOfficialComponent(component?: PodComponent | null) {
+  if (!component?.homepage) return false;
+  return !component.homepage.includes('leigod');
 }
 
 export default function PodsPage() {
@@ -102,18 +145,44 @@ export default function PodsPage() {
   const [selectedSubspecs, setSelectedSubspecs] = useState<string[]>([]);
   const [internalVersion, setInternalVersion] = useState<string>('');
   const [prepareCommand, setPrepareCommand] = useState<string>('');
+  const [officialTargetBranch, setOfficialTargetBranch] = useState<string>('develop');
+  const [officialTriggerNniosBuild, setOfficialTriggerNniosBuild] = useState(false);
   const [publishTabKey, setPublishTabKey] = useState<string>('local');
   const [nniosBranches, setNniosBranches] = useState<string[]>([]);
   const [nniosBranchLoading, setNniosBranchLoading] = useState(false);
   const [detailTargetBranch, setDetailTargetBranch] = useState<string>('develop');
   const [detailJenkinsBuildNumber, setDetailJenkinsBuildNumber] = useState('');
+  const [detailTriggerNniosBuild, setDetailTriggerNniosBuild] = useState(false);
   const [nnrtcBuilds, setNnrtcBuilds] = useState<NNRtcJenkinsBuild[]>([]);
   const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
   const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
   const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
-  const nnrtcTaskContextRef = useRef<{ action: 'publish' | 'replace'; name: string; version: string } | null>(null);
+  const nnrtcTaskContextRef = useRef<{
+    action: 'publish' | 'replace';
+    name: string;
+    version: string;
+    targetBranch: string;
+    triggerNniosBuild: boolean;
+  } | null>(null);
+  const nnrtcHandledTasksRef = useRef<Set<string>>(new Set());
+  const nnrtcBuildTriggeredTasksRef = useRef<Set<string>>(new Set());
   const publishName = Form.useWatch('name', form);
+  const nnrtcPackageType = Form.useWatch('nnrtc_package_type', form) || 'release';
+  const nnrtcTestSource = Form.useWatch('nnrtc_test_source', form) || 'jenkins';
+  const nnrtcBuildNumber = Form.useWatch('nnrtc_build_number', form);
   const isNNRtcPublish = publishName === 'NNRtc';
+  const nnrtcUseUpload = isNNRtcPublish && nnrtcPackageType === 'test' && nnrtcTestSource === 'upload';
+  const nnrtcUseJenkins = isNNRtcPublish && (nnrtcPackageType !== 'test' || nnrtcTestSource !== 'upload');
+  const showPublishNniosBuildTask = supportsNniosBuildTask(publishName);
+  const selectedIsOfficial = isOfficialComponent(selectedComponent);
+  const selectedNNRtcPackageType = selectedComponent?.name === 'NNRtc'
+    ? (selectedComponent.package_type || (isNNRtcTestVersion(selectedComponent.version) ? 'test' : 'release'))
+    : undefined;
+  const detailNNRtcBuilds = useMemo(() => (
+    nnrtcBuilds.filter((build) => selectedNNRtcPackageType === 'release'
+      ? isNNRtcReleaseBuildBranch(build.branchName)
+      : !isNNRtcReleaseBuildBranch(build.branchName))
+  ), [nnrtcBuilds, selectedNNRtcPackageType]);
 
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
@@ -128,6 +197,9 @@ export default function PodsPage() {
       if (!form.getFieldValue('target_branch')) {
         form.setFieldValue('target_branch', branches.includes('develop') ? 'develop' : branches[0]);
       }
+      if (!officialTargetBranch || !branches.includes(officialTargetBranch)) {
+        setOfficialTargetBranch(branches.includes('develop') ? 'develop' : branches[0]);
+      }
       return branches;
     } catch (error: any) {
       message.warning(error?.error || error?.message || '加载 nnios 分支失败，请稍后重试');
@@ -135,7 +207,7 @@ export default function PodsPage() {
     } finally {
       setNniosBranchLoading(false);
     }
-  }, [form, isAdmin]);
+  }, [form, isAdmin, officialTargetBranch]);
 
   const loadNNRtcBuilds = useCallback(async () => {
     if (!isAdmin) return;
@@ -178,10 +250,10 @@ export default function PodsPage() {
   }, [fetchComponents]);
 
   useEffect(() => {
-    if (publishModalOpen && publishTabKey === 'local' && isAdmin) {
+    if (publishModalOpen && isAdmin) {
       loadNniosBranches();
     }
-  }, [isAdmin, loadNniosBranches, publishModalOpen, publishTabKey]);
+  }, [isAdmin, loadNniosBranches, publishModalOpen]);
 
   useEffect(() => {
     if (publishModalOpen && publishTabKey === 'local' && isNNRtcPublish) {
@@ -202,8 +274,36 @@ export default function PodsPage() {
     }
   }, [detailDrawerOpen, loadNNRtcBuilds, selectedComponent?.name]);
 
-  const startNNRtcTaskPolling = useCallback((task: NNRtcPodTask, context: { action: 'publish' | 'replace'; name: string; version: string }) => {
+  useEffect(() => {
+    if (!detailDrawerOpen || selectedComponent?.name !== 'NNRtc') return;
+    const currentInOptions = detailNNRtcBuilds.some((build) => String(build.number) === detailJenkinsBuildNumber);
+    if (!currentInOptions) {
+      setDetailJenkinsBuildNumber(detailNNRtcBuilds[0] ? String(detailNNRtcBuilds[0].number) : '');
+    }
+  }, [detailDrawerOpen, detailJenkinsBuildNumber, detailNNRtcBuilds, selectedComponent?.name]);
+
+  const triggerNniosBuildTask = useCallback(async (branch: string) => {
+    const targetBranch = branch.trim();
+    if (!targetBranch) {
+      message.warning('未选择 nnios 分支，已跳过 nnios 构建任务');
+      return;
+    }
+    await jenkinsApi.publishNN({
+      deployTarget: 'Pgyer',
+      branch: targetBranch,
+    });
+    message.success(`已触发 nnios/${targetBranch} 构建任务`);
+  }, []);
+
+  const startNNRtcTaskPolling = useCallback((task: NNRtcPodTask, context: {
+    action: 'publish' | 'replace';
+    name: string;
+    version: string;
+    targetBranch: string;
+    triggerNniosBuild: boolean;
+  }) => {
     nnrtcTaskContextRef.current = context;
+    nnrtcHandledTasksRef.current.delete(task.id);
     setNnrtcTask(task);
     setNnrtcTaskModalOpen(true);
   }, []);
@@ -216,6 +316,8 @@ export default function PodsPage() {
         if (!res.data) return;
         setNnrtcTask(res.data);
         if (res.data.status === 'success') {
+          if (nnrtcHandledTasksRef.current.has(res.data.id)) return;
+          nnrtcHandledTasksRef.current.add(res.data.id);
           const context = nnrtcTaskContextRef.current;
           if (res.warning || res.data.warning) {
             message.warning(res.warning || res.data.warning);
@@ -234,7 +336,17 @@ export default function PodsPage() {
             setDetailJenkinsBuildNumber('');
           }
           fetchComponents();
+          if (context?.triggerNniosBuild && !nnrtcBuildTriggeredTasksRef.current.has(res.data.id)) {
+            nnrtcBuildTriggeredTasksRef.current.add(res.data.id);
+            try {
+              await triggerNniosBuildTask(context.targetBranch);
+            } catch (error: any) {
+              message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            }
+          }
         } else if (res.data.status === 'failed') {
+          if (nnrtcHandledTasksRef.current.has(res.data.id)) return;
+          nnrtcHandledTasksRef.current.add(res.data.id);
           message.error(res.data.error || 'NNRtc 任务失败');
         }
       } catch (error: any) {
@@ -242,7 +354,7 @@ export default function PodsPage() {
       }
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [fetchComponents, form, nnrtcTask, nnrtcTaskModalOpen]);
+  }, [fetchComponents, form, nnrtcTask, nnrtcTaskModalOpen, triggerNniosBuildTask]);
 
   // 按组件名称分组
   const groups: ComponentGroup[] = useMemo(() => {
@@ -287,6 +399,56 @@ export default function PodsPage() {
     return groups.find((g) => g.name === selectedName) || null;
   }, [groups, selectedName]);
 
+  const nnrtcPublishBuilds = useMemo(() => (
+    nnrtcBuilds.filter((build) => nnrtcPackageType === 'release'
+      ? isNNRtcReleaseBuildBranch(build.branchName)
+      : !isNNRtcReleaseBuildBranch(build.branchName))
+  ), [nnrtcBuilds, nnrtcPackageType]);
+
+  const latestNNRtcReleaseVersion = useMemo(() => {
+    const versions = components
+      .filter((item) => item.name === 'NNRtc' && !isNNRtcTestVersion(item.version))
+      .map((item) => item.version)
+      .filter((version) => /^\d+(?:\.\d+){2,}$/.test(version));
+    return versions.sort(compareVersionText).at(-1) || '';
+  }, [components]);
+
+  useEffect(() => {
+    if (!isNNRtcPublish) return;
+    if (!form.getFieldValue('nnrtc_package_type')) {
+      form.setFieldValue('nnrtc_package_type', 'release');
+    }
+
+    if (nnrtcPackageType === 'test') {
+      if (!form.getFieldValue('nnrtc_test_source')) {
+        form.setFieldValue('nnrtc_test_source', 'jenkins');
+      }
+      const nextVersion = latestNNRtcReleaseVersion ? buildNNRtcTestVersion(latestNNRtcReleaseVersion) : '';
+      if (nnrtcTestSource === 'upload' && form.getFieldValue('nnrtc_build_number')) {
+        form.setFieldValue('nnrtc_build_number', undefined);
+      }
+      if (form.getFieldValue('version') !== nextVersion) {
+        form.setFieldValue('version', nextVersion);
+      }
+      if (nnrtcTestSource === 'upload') return;
+    }
+
+    const currentBuild = String(nnrtcBuildNumber || form.getFieldValue('nnrtc_build_number') || '');
+    const currentInOptions = nnrtcPublishBuilds.some((build) => String(build.number) === currentBuild);
+    const nextBuild = currentInOptions ? currentBuild : (nnrtcPublishBuilds[0] ? String(nnrtcPublishBuilds[0].number) : undefined);
+    if (nextBuild !== currentBuild) {
+      form.setFieldValue('nnrtc_build_number', nextBuild);
+    }
+
+    const selectedBuild = nnrtcPublishBuilds.find((build) => String(build.number) === (nextBuild || currentBuild));
+    const nextVersion = nnrtcPackageType === 'release'
+      ? getNNRtcReleaseVersion(selectedBuild?.branchName)
+      : (latestNNRtcReleaseVersion ? buildNNRtcTestVersion(latestNNRtcReleaseVersion) : '');
+    if (form.getFieldValue('version') !== nextVersion) {
+      form.setFieldValue('version', nextVersion);
+    }
+  }, [form, isNNRtcPublish, latestNNRtcReleaseVersion, nnrtcBuildNumber, nnrtcPackageType, nnrtcPublishBuilds, nnrtcTestSource]);
+
   // 自动选中第一个
   useEffect(() => {
     if (!selectedName && filteredGroups.length > 0) {
@@ -300,17 +462,25 @@ export default function PodsPage() {
 
   const doPublish = async (values: any, file?: File) => {
     setPublishing(true);
+    const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
     try {
-      if (values.name === 'NNRtc') {
+      if (values.name === 'NNRtc' && values.nnrtc_test_source !== 'upload') {
         const taskRes = await podsApi.startNNRtcPublishTask({
             build_number: values.nnrtc_build_number,
             version: values.version,
+            package_type: values.nnrtc_package_type === 'test' ? 'test' : 'release',
             sys_frameworks: values.sys_frameworks,
             sys_libraries: values.sys_libraries,
             target_branch: values.target_branch,
         });
         if (taskRes.success && taskRes.data) {
-          startNNRtcTaskPolling(taskRes.data, { action: 'publish', name: values.name, version: values.version });
+          startNNRtcTaskPolling(taskRes.data, {
+            action: 'publish',
+            name: values.name,
+            version: values.version,
+            targetBranch: values.target_branch,
+            triggerNniosBuild: shouldTriggerNniosBuild,
+          });
           message.success('NNRtc 发布任务已开始');
         }
         return;
@@ -324,6 +494,9 @@ export default function PodsPage() {
             sys_frameworks: values.sys_frameworks,
             sys_libraries: values.sys_libraries,
             target_branch: values.target_branch,
+            package_type: values.name === 'NNRtc'
+              ? (values.nnrtc_package_type === 'test' || isNNRtcTestVersion(values.version) ? 'test' : 'release')
+              : undefined,
       });
       if (res.success) {
         if (res.warning) {
@@ -338,6 +511,13 @@ export default function PodsPage() {
         setUploadFile(null);
         setSelectedName(values.name);
         fetchComponents();
+        if (shouldTriggerNniosBuild) {
+          try {
+            await triggerNniosBuildTask(values.target_branch);
+          } catch (error: any) {
+            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+          }
+        }
       }
     } catch (error: any) {
       message.error(error?.error || error?.message || '发布失败');
@@ -349,15 +529,16 @@ export default function PodsPage() {
   const handlePublish = async () => {
     try {
       const values = await form.validateFields();
-      if (values.name !== 'NNRtc' && !uploadFile) {
+      if ((values.name !== 'NNRtc' || values.nnrtc_test_source === 'upload') && !uploadFile) {
         message.error(values.name === 'NNRtc' ? '请选择 zip/tgz 文件' : '请选择 zip 文件');
         return;
       }
 
       const targetBranch = values.target_branch || 'develop';
       const sourceText = values.name === 'NNRtc'
-        ? `Jenkins 构建 #${values.nnrtc_build_number}`
+        ? (values.nnrtc_test_source === 'upload' ? uploadFile?.name : `Jenkins 构建 #${values.nnrtc_build_number}`)
         : uploadFile?.name;
+      const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
       let confirmBranch = '';
       Modal.confirm({
         title: `${values.name}@${values.version} 发布确认`,
@@ -368,9 +549,14 @@ export default function PodsPage() {
               并同步到 nnios 分支 <Text strong code>{targetBranch}</Text>。
             </p>
             <p>发布来源：<Text strong code>{sourceText}</Text></p>
-            <p>请再次输入发布分支确认：</p>
+            {shouldTriggerNniosBuild && (
+              <p>发布成功后会触发 nnios/<Text strong code>{targetBranch}</Text> 的构建任务。</p>
+            )}
+            <p>
+              请再次输入 nnios 目标分支 <Text strong code>{targetBranch}</Text> 确认：
+            </p>
             <Input
-              placeholder={targetBranch}
+              placeholder={`请输入 ${targetBranch}，不是版本号`}
               onChange={(e) => { confirmBranch = e.target.value.trim(); }}
             />
           </div>
@@ -379,7 +565,7 @@ export default function PodsPage() {
         cancelText: '取消',
         onOk: async () => {
           if (confirmBranch !== targetBranch) {
-            message.error('发布分支输入不匹配，已取消发布');
+            message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
             return Promise.reject();
           }
           await doPublish(values, uploadFile || undefined);
@@ -433,9 +619,11 @@ export default function PodsPage() {
             options={branches.map((branch) => ({ value: branch, label: branch }))}
             onChange={(value) => { targetBranch = value; }}
           />
-          <p style={{ marginTop: 12 }}>请再次输入同步分支确认：</p>
+          <p style={{ marginTop: 12 }}>
+            请再次输入 nnios 目标分支 <Text strong code>{targetBranch || '上方选择的分支'}</Text> 确认：
+          </p>
           <Input
-            placeholder={targetBranch || '请输入上方选择的分支'}
+            placeholder={targetBranch ? `请输入 ${targetBranch}` : '请输入上方选择的分支'}
             onChange={(e) => { confirmBranch = e.target.value.trim(); }}
           />
         </div>
@@ -448,7 +636,7 @@ export default function PodsPage() {
           return Promise.reject();
         }
         if (confirmBranch !== targetBranch) {
-          message.error('同步分支输入不匹配，已取消同步');
+          message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
           return Promise.reject();
         }
         try {
@@ -465,13 +653,37 @@ export default function PodsPage() {
     });
   };
 
+  const handleSyncIntegratedBranch = async (record: PodComponent) => {
+    const targetBranch = record.nnios_branch || detailTargetBranch;
+    if (!targetBranch) {
+      message.error('当前测试包没有记录 nnios 集成分支，请重新发布或先选择分支同步一次');
+      return;
+    }
+    try {
+      const res = await podsApi.syncBranch(record.name, record.version, targetBranch);
+      if (res.success) {
+        message.success(`已同步到 nnios/${targetBranch}`);
+        if (res.data) {
+          setSelectedComponent(res.data);
+          setDetailTargetBranch(res.data.nnios_branch || targetBranch);
+        }
+        fetchComponents();
+      }
+    } catch (error: any) {
+      message.error(error?.error || '同步失败');
+    }
+  };
+
   const handleDelete = async (record: PodComponent) => {
-    const branches = nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches();
+    const isNNRtcTestPackage = record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version));
+    const branches = isNNRtcTestPackage ? [] : (nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches());
     const branchOptions = branches.length > 0 ? branches : ['develop'];
     let confirmText = '';
-    let targetBranch = detailTargetBranch && branchOptions.includes(detailTargetBranch)
-      ? detailTargetBranch
-      : (branchOptions.includes('develop') ? 'develop' : branchOptions[0]);
+    let targetBranch = isNNRtcTestPackage
+      ? (record.nnios_branch || detailTargetBranch)
+      : (detailTargetBranch && branchOptions.includes(detailTargetBranch)
+        ? detailTargetBranch
+        : (branchOptions.includes('develop') ? 'develop' : branchOptions[0]));
     let confirmBranch = '';
     Modal.confirm({
       title: `删除版本 ${record.name}@${record.version}`,
@@ -482,26 +694,41 @@ export default function PodsPage() {
           {record.name === 'NNRtc' && (
             <p>将同时删除 dSYM 管理中的 <Text strong code>NNRtc@{record.version}</Text> 符号文件。</p>
           )}
-          <div style={{ marginBottom: 12 }}>
-            <Text strong>nnios 目标分支</Text>
-            <Select
-              showSearch
-              defaultValue={targetBranch}
-              style={{ width: '100%', marginTop: 6 }}
-              options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
-              onChange={(value) => { targetBranch = value; }}
-            />
-          </div>
+          {isNNRtcTestPackage ? (
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>nnios 目标分支</Text>
+              <div style={{ marginTop: 6 }}>
+                {targetBranch ? <Tag color="blue">{targetBranch}</Tag> : <Text type="secondary">未记录</Text>}
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>nnios 目标分支</Text>
+              <Select
+                showSearch
+                defaultValue={targetBranch}
+                style={{ width: '100%', marginTop: 6 }}
+                options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
+                onChange={(value) => { targetBranch = value; }}
+              />
+            </div>
+          )}
           <p>请输入版本号 <Text strong code>{record.version}</Text> 确认删除：</p>
           <Input
             placeholder={record.version}
             onChange={(e) => { confirmText = e.target.value; }}
           />
-          <p style={{ marginTop: 12 }}>请再次输入发布分支确认：</p>
-          <Input
-            placeholder={targetBranch}
-            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
-          />
+          {!isNNRtcTestPackage && (
+            <>
+              <p style={{ marginTop: 12 }}>
+                请再次输入 nnios 目标分支 <Text strong code>{targetBranch}</Text> 确认：
+              </p>
+              <Input
+                placeholder={`请输入 ${targetBranch}`}
+                onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+              />
+            </>
+          )}
         </div>
       ),
       okText: '确认删除',
@@ -512,8 +739,12 @@ export default function PodsPage() {
           message.error('版本号输入不匹配，取消删除');
           return Promise.reject();
         }
-        if (confirmBranch !== targetBranch) {
-          message.error('发布分支输入不匹配，取消删除');
+        if (!targetBranch) {
+          message.error('当前测试包没有记录 nnios 集成分支，无法删除');
+          return Promise.reject();
+        }
+        if (!isNNRtcTestPackage && confirmBranch !== targetBranch) {
+          message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
           return Promise.reject();
         }
         try {
@@ -613,6 +844,13 @@ export default function PodsPage() {
         setSelectedComponent(res.data);
         setPodspecDraft(res.data.podspec_content);
         fetchComponents();
+        if (supportsNniosBuildTask(selectedComponent.name) && detailTriggerNniosBuild) {
+          try {
+            await triggerNniosBuildTask(detailTargetBranch);
+          } catch (error: any) {
+            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+          }
+        }
       }
     } catch (error: any) {
       message.error(error?.error || '替换失败');
@@ -631,9 +869,14 @@ export default function PodsPage() {
           <p>
             将替换 Nexus 上的二进制，并同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。
           </p>
-          <p>请再次输入发布分支确认：</p>
+          {supportsNniosBuildTask(selectedComponent.name) && detailTriggerNniosBuild && (
+            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+          )}
+          <p>
+            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+          </p>
           <Input
-            placeholder={detailTargetBranch}
+            placeholder={`请输入 ${detailTargetBranch}`}
             onChange={(e) => { confirmBranch = e.target.value.trim(); }}
           />
         </div>
@@ -643,7 +886,7 @@ export default function PodsPage() {
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmBranch !== detailTargetBranch) {
-          message.error('发布分支输入不匹配，已取消替换');
+          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
         await handleReplaceZip(file);
@@ -657,7 +900,13 @@ export default function PodsPage() {
     try {
       const res = await podsApi.startNNRtcReplaceTask(selectedComponent.version, buildNumber, detailTargetBranch);
       if (res.success && res.data) {
-        startNNRtcTaskPolling(res.data, { action: 'replace', name: selectedComponent.name, version: selectedComponent.version });
+        startNNRtcTaskPolling(res.data, {
+          action: 'replace',
+          name: selectedComponent.name,
+          version: selectedComponent.version,
+          targetBranch: detailTargetBranch,
+          triggerNniosBuild: detailTriggerNniosBuild,
+        });
         message.success('NNRtc 替换任务已开始');
       }
     } catch (error: any) {
@@ -684,9 +933,14 @@ export default function PodsPage() {
             提取 NNRtc.framework 发布，并同步 NNRtc.dSYM。
           </p>
           <p>同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。</p>
-          <p>请再次输入发布分支确认：</p>
+          {detailTriggerNniosBuild && (
+            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+          )}
+          <p>
+            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+          </p>
           <Input
-            placeholder={detailTargetBranch}
+            placeholder={`请输入 ${detailTargetBranch}`}
             onChange={(e) => { confirmBranch = e.target.value.trim(); }}
           />
         </div>
@@ -696,7 +950,7 @@ export default function PodsPage() {
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmBranch !== detailTargetBranch) {
-          message.error('发布分支输入不匹配，已取消替换');
+          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
         await handleReplaceNNRtcFromJenkins(buildNumber);
@@ -764,14 +1018,26 @@ export default function PodsPage() {
     }
     setImporting(true);
     try {
-      const res = await podsApi.importOfficial(officialName.trim(), officialVersion, buildBinary, buildOutputType, depSelectedVersions, selectedSubspecs.length > 0 ? selectedSubspecs : undefined, internalVersion.trim() || undefined, prepareCommand.trim() || undefined);
+      const targetBranch = officialTargetBranch || 'develop';
+      const shouldTriggerNniosBuild = officialTriggerNniosBuild;
+      const res = await podsApi.importOfficial(
+        officialName.trim(),
+        officialVersion,
+        buildBinary,
+        buildOutputType,
+        depSelectedVersions,
+        selectedSubspecs.length > 0 ? selectedSubspecs : undefined,
+        internalVersion.trim() || undefined,
+        prepareCommand.trim() || undefined,
+        targetBranch
+      );
       if (res.success) {
         const status = res.data?.status;
         const publishedVer = internalVersion.trim() || officialVersion;
         if (status === 'published') {
-          message.success(`${officialName}@${publishedVer} 导入成功`);
+          message.success(`${officialName}@${publishedVer} 导入成功，已同步到 nnios/${targetBranch}`);
         } else {
-          message.warning('Nexus 上传成功，但 spec 仓库同步失败');
+          message.warning(res.data?.error_message || 'Nexus 上传成功，但后续同步失败');
         }
         setPublishModalOpen(false);
         setOfficialName('');
@@ -783,8 +1049,17 @@ export default function PodsPage() {
         setSelectedSubspecs([]);
         setInternalVersion('');
         setPrepareCommand('');
+        setOfficialTargetBranch('develop');
+        setOfficialTriggerNniosBuild(false);
         setSelectedName(officialName.trim());
         fetchComponents();
+        if (status === 'published' && shouldTriggerNniosBuild) {
+          try {
+            await triggerNniosBuildTask(targetBranch);
+          } catch (error: any) {
+            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+          }
+        }
       }
     } catch (error: any) {
       message.error(error?.error || '导入失败');
@@ -797,8 +1072,9 @@ export default function PodsPage() {
     setSelectedComponent(record);
     setEditingPodspec(false);
     setPodspecDraft(record.podspec_content);
-    setDetailTargetBranch('develop');
+    setDetailTargetBranch(record.nnios_branch || 'develop');
     setDetailJenkinsBuildNumber('');
+    setDetailTriggerNniosBuild(false);
     setDetailDrawerOpen(true);
   };
 
@@ -819,6 +1095,60 @@ export default function PodsPage() {
       key: 'version',
       width: 120,
       render: (v: string) => <Tag color="blue">{v}</Tag>,
+    },
+    {
+      title: '包类型',
+      dataIndex: 'package_type',
+      key: 'package_type',
+      width: 90,
+      render: (_: string | undefined, record) => {
+        if (record.name !== 'NNRtc') return <Text type="secondary">-</Text>;
+        const type = record.package_type || (isNNRtcTestVersion(record.version) ? 'test' : 'release');
+        return <Tag color={type === 'test' ? 'orange' : 'green'}>{type === 'test' ? '测试包' : '正式包'}</Tag>;
+      },
+    },
+    {
+      title: '构建ID',
+      dataIndex: 'build_id',
+      key: 'build_id',
+      width: 90,
+      render: (buildId: string | undefined, record) => (
+        record.name === 'NNRtc' && buildId
+          ? (
+            <a href={buildNNRtcJenkinsBuildUrl(buildId)} target="_blank" rel="noopener noreferrer">
+              <Text code>#{buildId}</Text>
+            </a>
+          )
+          : <Text type="secondary">-</Text>
+      ),
+    },
+    {
+      title: 'nnios 集成分支',
+      dataIndex: 'nnios_branch',
+      key: 'nnios_branch',
+      width: 220,
+      render: (branch: string | undefined, record) => {
+        const type = record.package_type || (isNNRtcTestVersion(record.version) ? 'test' : 'release');
+        if (record.name === 'NNRtc' && type === 'test') {
+          return branch ? (
+            <Tooltip title={branch}>
+              <Tag
+                color="blue"
+                style={{
+                  maxWidth: 190,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  verticalAlign: 'middle',
+                }}
+              >
+                {branch}
+              </Tag>
+            </Tooltip>
+          ) : <Text type="secondary">未记录</Text>;
+        }
+        return <Text type="secondary">-</Text>;
+      },
     },
     {
       title: '状态',
@@ -856,9 +1186,11 @@ export default function PodsPage() {
           </Button>
           {isAdmin && (
             <>
-              <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
-                同步
-              </Button>
+              {!(record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version))) && (
+                <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
+                  同步
+                </Button>
+              )}
               <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
                 删除
               </Button>
@@ -1045,6 +1377,7 @@ export default function PodsPage() {
               rowKey={(r) => `${r.name}-${r.version}`}
               loading={loading}
               size="small"
+              scroll={{ x: 1280 }}
               pagination={
                 selectedGroup.versions.length > 10
                   ? { pageSize: 10, showTotal: (t) => `共 ${t} 个版本` }
@@ -1073,6 +1406,8 @@ export default function PodsPage() {
           setAvailableSubspecs([]);
           setSelectedSubspecs([]);
           setCheckingDeps(false);
+          setOfficialTargetBranch('develop');
+          setOfficialTriggerNniosBuild(false);
           setNniosBranches([]);
           setNnrtcBuilds([]);
         }}
@@ -1093,11 +1428,60 @@ export default function PodsPage() {
                     <Form.Item name="name" label="组件名称" rules={[{ required: true, message: '请输入组件名称' }]}>
                       <Input placeholder="例如: NNRtc" />
                     </Form.Item>
+                    {!isNNRtcPublish && (
                     <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                       <Input placeholder="例如: 2.7.0" />
                     </Form.Item>
+                    )}
                     {isNNRtcPublish && (
                       <>
+                        <Form.Item
+                          name="nnrtc_package_type"
+                          label="包类型"
+                          initialValue="release"
+                          rules={[{ required: true, message: '请选择包类型' }]}
+                        >
+                          <Select
+                            onChange={(value) => {
+                              setUploadFile(null);
+                              if (value === 'test' && !form.getFieldValue('nnrtc_test_source')) {
+                                form.setFieldValue('nnrtc_test_source', 'jenkins');
+                              }
+                              if (value !== 'test') {
+                                form.setFieldValue('nnrtc_test_source', undefined);
+                              }
+                              if (value === 'test' && form.getFieldValue('nnrtc_test_source') === 'upload') {
+                                form.setFieldValue('nnrtc_build_number', undefined);
+                              }
+                            }}
+                            options={[
+                              { value: 'release', label: '正式包' },
+                              { value: 'test', label: '测试包' },
+                            ]}
+                          />
+                        </Form.Item>
+                        {nnrtcPackageType === 'test' && (
+                          <Form.Item
+                            name="nnrtc_test_source"
+                            label="测试包来源"
+                            initialValue="jenkins"
+                            rules={[{ required: true, message: '请选择测试包来源' }]}
+                          >
+                            <Select
+                              onChange={(value) => {
+                                setUploadFile(null);
+                                if (value === 'upload') {
+                                  form.setFieldValue('nnrtc_build_number', undefined);
+                                }
+                              }}
+                              options={[
+                                { value: 'jenkins', label: 'Jenkins 构建' },
+                                { value: 'upload', label: '上传压缩包' },
+                              ]}
+                            />
+                          </Form.Item>
+                        )}
+                        {nnrtcUseJenkins && (
                         <Form.Item
                           name="nnrtc_build_number"
                           label={(
@@ -1120,13 +1504,20 @@ export default function PodsPage() {
                             loading={nnrtcBuildLoading}
                             placeholder="选择构建号"
                             optionFilterProp="label"
-                            options={nnrtcBuilds.map((build) => ({
+                            options={nnrtcPublishBuilds.map((build) => ({
                               value: String(build.number),
                               label: formatNNRtcBuildLabel(build),
                             }))}
                             onDropdownVisibleChange={(open) => {
                               if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
                             }}
+                          />
+                        </Form.Item>
+                        )}
+                        <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
+                          <Input
+                            readOnly
+                            placeholder={nnrtcPackageType === 'release' ? '按 release_x.x.x 构建分支自动获取' : '按当前正式包最高版本自动生成'}
                           />
                         </Form.Item>
                       </>
@@ -1151,20 +1542,32 @@ export default function PodsPage() {
                         />
                       </Form.Item>
                     )}
-                    {!isNNRtcPublish && (
+                    {showPublishNniosBuildTask && (
                       <Form.Item
-                        label="二进制库 zip 文件"
+                        name="trigger_nnios_build"
+                        valuePropName="checked"
+                        initialValue={false}
+                        style={{ marginBottom: 16 }}
+                      >
+                        <Checkbox>是否发布 nnios 构建任务</Checkbox>
+                      </Form.Item>
+                    )}
+                    {(!isNNRtcPublish || nnrtcUseUpload) && (
+                      <Form.Item
+                        label={isNNRtcPublish ? 'NNRtc 测试包' : '二进制库 zip 文件'}
                         required
-                        extra="将 .framework 或 .a 压缩为 zip，系统自动识别库类型"
+                        extra={isNNRtcPublish ? '支持 zip、tgz、tar.gz，包内需要包含 NNRtc.framework，不同步 dSYM' : '将 .framework 或 .a 压缩为 zip，系统自动识别库类型'}
                       >
                         <Upload
-                          accept=".zip"
+                          accept={isNNRtcPublish ? '.zip,.tgz,.tar.gz' : '.zip'}
                           maxCount={1}
                           beforeUpload={(file) => {
                             const lowerName = file.name.toLowerCase();
-                            const valid = lowerName.endsWith('.zip');
+                            const valid = isNNRtcPublish
+                              ? (lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz'))
+                              : lowerName.endsWith('.zip');
                             if (!valid) {
-                              message.error('请上传 zip 格式文件');
+                              message.error(isNNRtcPublish ? '请上传 zip、tgz 或 tar.gz 格式文件' : '请上传 zip 格式文件');
                               return Upload.LIST_IGNORE;
                             }
                             setUploadFile(file);
@@ -1173,7 +1576,7 @@ export default function PodsPage() {
                           onRemove={() => setUploadFile(null)}
                           fileList={uploadFile ? [{ uid: '-1', name: uploadFile.name, status: 'done' as const }] : []}
                         >
-                          <Button icon={<UploadOutlined />}>选择 zip 文件</Button>
+                          <Button icon={<UploadOutlined />}>{isNNRtcPublish ? '选择压缩包' : '选择 zip 文件'}</Button>
                         </Upload>
                       </Form.Item>
                     )}
@@ -1316,7 +1719,7 @@ export default function PodsPage() {
                                       if (!depVersion) return;
                                       setDepPublishing(prev => ({ ...prev, [dep.name]: true }));
                                       try {
-                                        const res = await podsApi.importOfficial(dep.name, depVersion, true, 'framework');
+                                        const res = await podsApi.importOfficial(dep.name, depVersion, true, 'framework', undefined, undefined, undefined, undefined, officialTargetBranch || 'develop');
                                         if (res.success) {
                                           message.success(`${dep.name}@${depVersion} 发布成功`);
                                           setDependencies(prev => prev.map(d =>
@@ -1390,6 +1793,35 @@ export default function PodsPage() {
                           />
                         </div>
                       )}
+                    </div>
+                  )}
+                  {officialVersions.length > 0 && isAdmin && (
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ marginBottom: 4 }}>
+                        <Text strong>同步到 nnios 分支</Text>
+                      </div>
+                      <Select
+                        showSearch
+                        loading={nniosBranchLoading}
+                        value={officialTargetBranch}
+                        style={{ width: '100%' }}
+                        placeholder="选择 nnios 分支"
+                        options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                        onChange={setOfficialTargetBranch}
+                        onDropdownVisibleChange={(open) => {
+                          if (open && nniosBranches.length === 0) loadNniosBranches();
+                        }}
+                      />
+                    </div>
+                  )}
+                  {officialVersions.length > 0 && (
+                    <div style={{ marginBottom: 16 }}>
+                      <Checkbox
+                        checked={officialTriggerNniosBuild}
+                        onChange={(e) => setOfficialTriggerNniosBuild(e.target.checked)}
+                      >
+                        是否发布 nnios 构建任务
+                      </Checkbox>
                     </div>
                   )}
                   {officialVersions.length > 0 && (
@@ -1503,6 +1935,25 @@ export default function PodsPage() {
               <Descriptions.Item label="版本号">
                 <Tag color="blue">{selectedComponent.version}</Tag>
               </Descriptions.Item>
+              {selectedComponent.name === 'NNRtc' && (
+                <Descriptions.Item label="包类型">
+                  <Tag color={selectedNNRtcPackageType === 'test' ? 'orange' : 'green'}>
+                    {selectedNNRtcPackageType === 'test' ? '测试包' : '正式包'}
+                  </Tag>
+                </Descriptions.Item>
+              )}
+              {selectedComponent.name === 'NNRtc' && (
+                <Descriptions.Item label="构建ID">
+                  {selectedComponent.build_id ? <Text code>#{selectedComponent.build_id}</Text> : <Text type="secondary">-</Text>}
+                </Descriptions.Item>
+              )}
+              {selectedComponent.name === 'NNRtc' && (
+                <Descriptions.Item label="nnios 集成分支">
+                  {selectedNNRtcPackageType === 'test'
+                    ? (selectedComponent.nnios_branch ? <Tag color="blue">{selectedComponent.nnios_branch}</Tag> : <Text type="secondary">未记录</Text>)
+                    : <Text type="secondary">-</Text>}
+                </Descriptions.Item>
+              )}
               <Descriptions.Item label="状态">{statusTag(selectedComponent.status)}</Descriptions.Item>
               <Descriptions.Item label="描述">{selectedComponent.summary || '-'}</Descriptions.Item>
               <Descriptions.Item label="Nexus 地址">
@@ -1530,28 +1981,103 @@ export default function PodsPage() {
               )}
             </Descriptions>
 
-            {isAdmin && (
+            {isAdmin && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
-                <Select
-                  showSearch
-                  loading={nniosBranchLoading}
-                  value={detailTargetBranch}
-                  style={{ flex: 1 }}
-                  placeholder="选择 nnios 分支"
-                  options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
-                  onChange={setDetailTargetBranch}
-                  onDropdownVisibleChange={(open) => {
-                    if (open && nniosBranches.length === 0) loadNniosBranches();
-                  }}
-                />
-              </div>
+              {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
+                  <Tag color="blue" style={{ marginInlineEnd: 0 }}>{selectedComponent.nnios_branch || detailTargetBranch || '未记录'}</Tag>
+                  <Button
+                    size="small"
+                    icon={<SyncOutlined />}
+                    disabled={!selectedComponent.nnios_branch && !detailTargetBranch}
+                    onClick={() => handleSyncIntegratedBranch(selectedComponent)}
+                  >
+                    同步
+                  </Button>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
+                  <Select
+                    showSearch
+                    loading={nniosBranchLoading}
+                    value={detailTargetBranch}
+                    style={{ flex: 1 }}
+                    placeholder="选择 nnios 分支"
+                    options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                    onChange={setDetailTargetBranch}
+                    onDropdownVisibleChange={(open) => {
+                      if (open && nniosBranches.length === 0) loadNniosBranches();
+                    }}
+                  />
+                </div>
+              )}
             </Card>
             )}
 
-            {isAdmin && (
+            {isAdmin && !selectedIsOfficial && selectedComponent && supportsNniosBuildTask(selectedComponent.name) && (
             <Card size="small" style={{ marginBottom: 16 }}>
+              <Checkbox
+                checked={detailTriggerNniosBuild}
+                onChange={(e) => setDetailTriggerNniosBuild(e.target.checked)}
+              >
+                是否发布 nnios 构建任务
+              </Checkbox>
+            </Card>
+            )}
+
+            {isAdmin && !selectedIsOfficial && (
+            <Card size="small" style={{ marginBottom: 16 }}>
+              {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+                <div style={{ display: 'grid', gridTemplateColumns: '96px minmax(0, 1fr)', rowGap: 8, columnGap: 12, alignItems: 'center' }}>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>替换来源1：</Text>
+                  <div>
+                    <Upload
+                      accept=".zip,.tgz,.tar.gz"
+                      maxCount={1}
+                      showUploadList={false}
+                      beforeUpload={(file) => {
+                        const lowerName = file.name.toLowerCase();
+                        if (!lowerName.endsWith('.zip') && !lowerName.endsWith('.tgz') && !lowerName.endsWith('.tar.gz')) {
+                          message.error('请上传 zip、tgz 或 tar.gz 格式文件');
+                          return Upload.LIST_IGNORE;
+                        }
+                        confirmReplaceZip(file);
+                        return false;
+                      }}
+                    >
+                      <Button icon={<UploadOutlined />} loading={replacingZip}>
+                        {replacingZip ? '上传中...' : '上传替换'}
+                      </Button>
+                    </Upload>
+                  </div>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>替换来源2：</Text>
+                  <div>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Select
+                        showSearch
+                        loading={nnrtcBuildLoading}
+                        value={detailJenkinsBuildNumber || undefined}
+                        placeholder="选择构建号"
+                        optionFilterProp="label"
+                        style={{ flex: 1 }}
+                        options={detailNNRtcBuilds.map((build) => ({
+                          value: String(build.number),
+                          label: formatNNRtcBuildLabel(build),
+                        }))}
+                        onChange={setDetailJenkinsBuildNumber}
+                        onDropdownVisibleChange={(open) => {
+                          if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                        }}
+                      />
+                      <Button loading={replacingZip} disabled={detailNNRtcBuilds.length === 0} onClick={confirmReplaceNNRtcFromJenkins}>
+                        构建替换
+                      </Button>
+                    </Space.Compact>
+                  </div>
+                </div>
+              ) : (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
                   <Text strong>替换二进制文件</Text>
@@ -1563,27 +2089,29 @@ export default function PodsPage() {
                   </Text>
                 </div>
                 {selectedComponent.name === 'NNRtc' ? (
-                  <Space.Compact>
-                    <Select
-                      showSearch
-                      loading={nnrtcBuildLoading}
-                      value={detailJenkinsBuildNumber || undefined}
-                      placeholder="选择构建号"
-                      optionFilterProp="label"
-                      style={{ width: 220 }}
-                      options={nnrtcBuilds.map((build) => ({
-                        value: String(build.number),
-                        label: formatNNRtcBuildLabel(build),
-                      }))}
-                      onChange={setDetailJenkinsBuildNumber}
-                      onDropdownVisibleChange={(open) => {
-                        if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
-                      }}
-                    />
-                    <Button loading={replacingZip} onClick={confirmReplaceNNRtcFromJenkins}>
-                      构建替换
-                    </Button>
-                  </Space.Compact>
+                  <div style={{ minWidth: 360 }}>
+                    <Space.Compact style={{ width: '100%' }}>
+                      <Select
+                        showSearch
+                        loading={nnrtcBuildLoading}
+                        value={detailJenkinsBuildNumber || undefined}
+                        placeholder="选择构建号"
+                        optionFilterProp="label"
+                        style={{ flex: 1 }}
+                        options={detailNNRtcBuilds.map((build) => ({
+                          value: String(build.number),
+                          label: formatNNRtcBuildLabel(build),
+                        }))}
+                        onChange={setDetailJenkinsBuildNumber}
+                        onDropdownVisibleChange={(open) => {
+                          if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                        }}
+                      />
+                      <Button loading={replacingZip} disabled={detailNNRtcBuilds.length === 0} onClick={confirmReplaceNNRtcFromJenkins}>
+                        构建替换
+                      </Button>
+                    </Space.Compact>
+                  </div>
                 ) : (
                   <Upload
                     accept=".zip"
@@ -1604,6 +2132,7 @@ export default function PodsPage() {
                   </Upload>
                 )}
               </div>
+              )}
             </Card>
             )}
 

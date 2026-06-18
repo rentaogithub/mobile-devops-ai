@@ -14,6 +14,7 @@ const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://127.0.0.1:8080
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
+const DEFAULT_NNIOS_REPO_LOCAL = path.resolve(process.cwd(), '..', 'nnios');
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
@@ -90,6 +91,10 @@ function getPlatformRootDir() {
     fs.existsSync(path.join(candidate, 'scripts/sonic/ios-quality.sh'))
   ));
   return matched || process.cwd();
+}
+
+function getNniosRepoLocalDir() {
+  return path.resolve(getRuntimeEnv('NNIOS_REPO_LOCAL') || DEFAULT_NNIOS_REPO_LOCAL);
 }
 
 function getConnectionErrorMessage(error: any) {
@@ -1946,6 +1951,85 @@ router.post('/nn/build', async (req: Request, res: Response) => {
       success: false,
       error: extractErrorMessage(error, '触发 Jenkins 发布失败'),
       status: error.response?.status,
+    });
+  }
+});
+
+router.post('/nn/release-branch', async (req: Request, res: Response) => {
+  try {
+    const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
+    const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';
+    const repoDir = getNniosRepoLocalDir();
+
+    if (!targetBranch) {
+      res.status(400).json({
+        success: false,
+        error: '请输入新分支名称',
+      });
+      return;
+    }
+    if (targetBranch === baseBranch) {
+      res.status(400).json({
+        success: false,
+        error: '新分支不能与基准分支相同',
+      });
+      return;
+    }
+    if (!fs.existsSync(path.join(repoDir, '.git'))) {
+      res.status(400).json({
+        success: false,
+        error: `nnios 工作区不存在或不是 Git 仓库：${repoDir}`,
+      });
+      return;
+    }
+
+    try {
+      await execFileAsync('git', ['check-ref-format', '--branch', targetBranch], { timeout: 10000 });
+      await execFileAsync('git', ['check-ref-format', '--branch', baseBranch], { timeout: 10000 });
+    } catch {
+      res.status(400).json({
+        success: false,
+        error: '分支名称不是合法的 Git 分支名',
+      });
+      return;
+    }
+
+    const commands: Array<{ command: string; output: string }> = [];
+    const runMgit = async (args: string[]) => {
+      const command = ['mgit', ...args].join(' ');
+      try {
+        const { stdout, stderr } = await execFileAsync('mgit', args, {
+          cwd: repoDir,
+          timeout: 10 * 60 * 1000,
+          maxBuffer: 20 * 1024 * 1024,
+        });
+        const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+        commands.push({ command, output });
+      } catch (error: any) {
+        const output = [error.stdout, error.stderr, error.message].filter(Boolean).join('\n').trim();
+        commands.push({ command, output });
+        throw new Error(`${command} 执行失败：${output || error.message}`);
+      }
+    };
+
+    await runMgit(['checkout', baseBranch]);
+    await runMgit(['pull', '--ff-only']);
+    await runMgit(['checkout', '-b', targetBranch]);
+    await runMgit(['push']);
+
+    res.json({
+      success: true,
+      data: {
+        repoDir,
+        targetBranch,
+        baseBranch,
+        commands,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '拉取 nnios 新分支失败'),
     });
   }
 });

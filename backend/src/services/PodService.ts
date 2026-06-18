@@ -22,6 +22,9 @@ export interface PodComponent {
   status: 'uploaded' | 'published' | 'failed';
   error_message?: string;
   warning_message?: string;
+  package_type?: 'release' | 'test';
+  build_id?: string;
+  nnios_branch?: string;
 }
 
 interface PodUploadParams {
@@ -38,6 +41,9 @@ interface PodUploadParams {
   sys_frameworks?: string;    // 系统 frameworks，逗号分隔
   sys_libraries?: string;     // 系统 libraries，逗号分隔
   target_branch?: string;     // 发布后同步到 nnios 的目标分支
+  package_type?: 'release' | 'test';
+  build_id?: string;
+  nnios_branch?: string;
 }
 
 const NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
@@ -57,6 +63,16 @@ function shellQuote(value: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isNNRtcTestVersion(version?: string) {
+  return /(?:_test|-test)$/.test(String(version || ''));
+}
+
+function normalizeNNRtcTestVersion(version: string) {
+  if (version.endsWith('-test')) return version;
+  if (version.endsWith('_test')) return version.replace(/_test$/, '-test');
+  return `${version}-test`;
 }
 
 export class PodService {
@@ -80,15 +96,33 @@ export class PodService {
         upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
         status TEXT DEFAULT 'uploaded',
         error_message TEXT,
+        package_type TEXT,
+        build_id TEXT,
+        nnios_branch TEXT,
         UNIQUE(name, version)
       );
       CREATE INDEX IF NOT EXISTS idx_pod_name ON pods_components(name);
       CREATE INDEX IF NOT EXISTS idx_pod_version ON pods_components(name, version);
     `);
 
+    const columns = (this.db.prepare('PRAGMA table_info(pods_components)').all() as any[])
+      .map((column) => column.name);
+    if (!columns.includes('package_type')) {
+      this.db.prepare('ALTER TABLE pods_components ADD COLUMN package_type TEXT').run();
+    }
+    if (!columns.includes('build_id')) {
+      this.db.prepare('ALTER TABLE pods_components ADD COLUMN build_id TEXT').run();
+    }
+    if (!columns.includes('nnios_branch')) {
+      this.db.prepare('ALTER TABLE pods_components ADD COLUMN nnios_branch TEXT').run();
+    }
+
     // 异步确保需要的第三方 spec repos 已注册（不阻塞启动）
     this.ensureSpecRepos().catch((err) => {
       logger.warn('确保 spec repos 失败', { error: err.message });
+    });
+    this.cleanupNNRtcTestDSYMs().catch((err) => {
+      logger.warn('清理 NNRtc 测试包 dSYM 失败', { error: err.message });
     });
   }
 
@@ -753,6 +787,17 @@ ${sourceLine}
     }
   }
 
+  private validateFrameworkNameMatchesComponent(componentName: string, detected: { lib_type: 'framework' | 'static_library'; lib_name: string } | null): void {
+    if (!detected || detected.lib_type !== 'framework') return;
+
+    const frameworkName = path.basename(detected.lib_name)
+      .replace(/\.xcframework$/i, '')
+      .replace(/\.framework$/i, '');
+    if (frameworkName !== componentName) {
+      throw new Error(`上传包内 framework 名称 ${path.basename(detected.lib_name)} 与组件名 ${componentName} 不一致`);
+    }
+  }
+
   private findDirectoryByName(rootDir: string, dirName: string): string | null {
     const entries = fs.readdirSync(rootDir, { withFileTypes: true });
     for (const entry of entries) {
@@ -766,10 +811,10 @@ ${sourceLine}
     return null;
   }
 
-  private async extractNNRtcPackage(packagePath: string, originalFileName?: string): Promise<{
+  private async extractNNRtcPackage(packagePath: string, originalFileName?: string, requireDSYM = true): Promise<{
     workDir: string;
     frameworkPath: string;
-    dsymPath: string;
+    dsymPath?: string;
     frameworkZipPath: string;
   }> {
     const uploadDir = process.env.UPLOAD_DIR || '/tmp';
@@ -791,7 +836,7 @@ ${sourceLine}
       if (!frameworkPath) {
         throw new Error('包内未找到 NNRtc.framework');
       }
-      if (!dsymPath) {
+      if (requireDSYM && !dsymPath) {
         throw new Error('包内未找到 NNRtc.dSYM');
       }
 
@@ -801,7 +846,7 @@ ${sourceLine}
         timeout: 120000,
       });
 
-      return { workDir, frameworkPath, dsymPath, frameworkZipPath };
+      return { workDir, frameworkPath, dsymPath: dsymPath || undefined, frameworkZipPath };
     } catch (error) {
       fs.rmSync(workDir, { recursive: true, force: true });
       throw error;
@@ -872,27 +917,81 @@ ${sourceLine}
     logger.info('已清除符号化缓存（NNRtc dSYM 删除）', { version });
   }
 
+  async hasNNRtcDSYM(version: string): Promise<boolean> {
+    const dsyms = await this.storage.findByAppNameAndVersion('NNRtc', version);
+    return dsyms.length > 0;
+  }
+
+  async syncNNRtcDSYMFromPackage(packagePath: string, originalFileName: string, version: string, buildId?: string): Promise<void> {
+    if (isNNRtcTestVersion(version)) {
+      await this.deleteNNRtcDSYMs(version);
+      return;
+    }
+
+    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, true);
+    try {
+      if (!extracted.dsymPath) {
+        throw new Error('包内未找到 NNRtc.dSYM');
+      }
+      await this.saveNNRtcDSYM(extracted.dsymPath, version);
+      if (buildId) {
+        this.db
+          .prepare('UPDATE pods_components SET build_id = ? WHERE name = ? AND version = ?')
+          .run(buildId, 'NNRtc', version);
+      }
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
+  private async cleanupNNRtcTestDSYMs(): Promise<void> {
+    const dsyms = (await this.storage.getAllDSYMs())
+      .filter((item) => item.appName === 'NNRtc' && isNNRtcTestVersion(item.version));
+    if (dsyms.length === 0) return;
+
+    for (const dsym of dsyms) {
+      logger.info('清理 NNRtc 测试包 dSYM', {
+        version: dsym.version,
+        uuid: dsym.uuid,
+        filePath: dsym.filePath,
+      });
+      await this.storage.deleteDSYM(dsym.uuid);
+    }
+    symbolicationCache.clear();
+    logger.info('已清除符号化缓存（NNRtc 测试包 dSYM 清理）', { count: dsyms.length });
+  }
+
   async publishNNRtcPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
     if (params.name !== 'NNRtc') {
       throw new Error('NNRtc 包发布仅支持组件 NNRtc');
     }
-    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName);
+    const isTestPackage = params.package_type === 'test' || isNNRtcTestVersion(params.version);
+    const normalizedParams = isTestPackage
+      ? { ...params, version: normalizeNNRtcTestVersion(params.version) }
+      : params;
+    const syncDSYM = !isTestPackage;
+    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, syncDSYM);
     try {
       const component = await this.publish(extracted.frameworkZipPath, 'NNRtc.zip', {
-        ...params,
+        ...normalizedParams,
+        package_type: isTestPackage ? 'test' : 'release',
         lib_type: 'framework',
         lib_name: 'NNRtc.framework',
       });
-      if (component.status === 'published') {
+      if (syncDSYM && extracted.dsymPath && component.status === 'published') {
         try {
           await this.saveNNRtcDSYM(extracted.dsymPath, params.version);
         } catch (error: any) {
           component.warning_message = `NNRtc Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
           logger.error('NNRtc dSYM 同步失败，Pod 发布已完成', {
-            version: params.version,
+            version: normalizedParams.version,
             error: error.message,
           });
         }
+      }
+      if (!syncDSYM && component.status === 'published') {
+        await this.deleteNNRtcDSYMs(normalizedParams.version);
       }
       return component;
     } finally {
@@ -901,11 +1000,25 @@ ${sourceLine}
     }
   }
 
-  async replaceNNRtcPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
-    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName);
+  async replaceNNRtcPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string, buildId?: string, syncDSYM = true): Promise<PodComponent> {
+    const shouldSyncDSYM = syncDSYM && !isNNRtcTestVersion(version);
+    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, shouldSyncDSYM);
     try {
       const component = await this.replaceZip('NNRtc', version, extracted.frameworkZipPath, 'NNRtc.zip', targetBranch);
-      if (component.status === 'published') {
+      if (buildId) {
+        this.db
+          .prepare('UPDATE pods_components SET build_id = ? WHERE name = ? AND version = ?')
+          .run(buildId, 'NNRtc', version);
+        component.build_id = buildId;
+      }
+      if (!shouldSyncDSYM) {
+        this.db
+          .prepare('UPDATE pods_components SET package_type = ?, nnios_branch = ? WHERE name = ? AND version = ?')
+          .run('test', targetBranch, 'NNRtc', version);
+        component.package_type = 'test';
+        component.nnios_branch = targetBranch;
+      }
+      if (shouldSyncDSYM && extracted.dsymPath && component.status === 'published') {
         try {
           await this.saveNNRtcDSYM(extracted.dsymPath, version);
         } catch (error: any) {
@@ -915,6 +1028,9 @@ ${sourceLine}
             error: error.message,
           });
         }
+      }
+      if (!shouldSyncDSYM && component.status === 'published') {
+        await this.deleteNNRtcDSYMs(version);
       }
       return component;
     } finally {
@@ -950,9 +1066,10 @@ ${sourceLine}
       throw new Error(`打包 zip 失败: ${error.message}`);
     }
 
-    // 2. 自动检测库类型（如果用户未指定）
+    // 2. 自动检测库类型，并校验 framework 名称与组件名一致。
+    const detected = this.detectLibType(zipPath);
+    this.validateFrameworkNameMatchesComponent(name, detected);
     if (!params.lib_type || !params.lib_name) {
-      const detected = this.detectLibType(zipPath);
       if (detected) {
         if (!params.lib_type) {
           params.lib_type = detected.lib_type;
@@ -1031,6 +1148,9 @@ ${sourceLine}
       podspec_content: podspecContent,
       status,
       error_message: errorMessage,
+      package_type: params.package_type,
+      build_id: params.build_id,
+      nnios_branch: params.package_type === 'test' ? params.target_branch : undefined,
     });
 
     return component;
@@ -1048,12 +1168,15 @@ ${sourceLine}
     podspec_content: string;
     status: string;
     error_message?: string;
+    package_type?: 'release' | 'test';
+    build_id?: string;
+    nnios_branch?: string;
   }): PodComponent {
     // 使用 REPLACE 实现 upsert，覆盖同名同版本记录，刷新 upload_time
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO pods_components 
-        (name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, upload_time)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        (name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, package_type, build_id, nnios_branch, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
     `);
 
     const result = stmt.run(
@@ -1064,7 +1187,10 @@ ${sourceLine}
       data.source_zip_url,
       data.podspec_content,
       data.status,
-      data.error_message || null
+      data.error_message || null,
+      data.package_type || null,
+      data.build_id || null,
+      data.nnios_branch || null
     );
 
     const row = this.db
@@ -1130,14 +1256,19 @@ ${sourceLine}
   /**
    * 删除指定组件版本（同时删除 Nexus 文件）
    */
-  async deleteVersion(name: string, version: string, targetBranch: string): Promise<{ fallbackVersion?: string; warning?: string }> {
+  async deleteVersion(name: string, version: string, targetBranch?: string): Promise<{ fallbackVersion?: string; warning?: string }> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
+    const isTestPackage = component.package_type === 'test' || (name === 'NNRtc' && isNNRtcTestVersion(version));
+    const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
+    if (!branch) {
+      throw new Error('nnios 目标分支不能为空');
+    }
 
     const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
-    const currentRef = this.getNniosPodVersion(name, targetBranch);
+    const currentRef = this.getNniosPodVersion(name, branch);
     let fallbackVersion: string | undefined;
 
     if (currentRef.version === version) {
@@ -1290,8 +1421,9 @@ ${sourceLine}
       throw new Error(`打包 zip 失败: ${error.message}`);
     }
 
-    // 2. 自动检测库类型
+    // 2. 自动检测库类型，并校验 framework 名称与组件名一致。
     const detected = this.detectLibType(zipPath);
+    this.validateFrameworkNameMatchesComponent(name, detected);
     const lib_type = detected?.lib_type || 'framework';
     const lib_name = detected?.lib_name || `${name}.framework`;
 
@@ -1399,19 +1531,24 @@ ${sourceLine}
   /**
    * 仅同步当前组件版本到 nnios 指定分支的 Podfile / third_sdk.rb。
    */
-  async syncVersionToBranch(name: string, version: string, targetBranch: string): Promise<PodComponent> {
+  async syncVersionToBranch(name: string, version: string, targetBranch?: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
+    const isTestPackage = component.package_type === 'test' || isNNRtcTestVersion(component.version);
+    const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
+    if (!branch) {
+      throw new Error('请选择 nnios 分支');
+    }
 
     try {
-      this.syncVersionToNnios(name, version, targetBranch);
+      this.syncVersionToNnios(name, version, branch);
       this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = NULL WHERE name = ? AND version = ?')
-        .run('published', name, version);
+        .prepare('UPDATE pods_components SET status = ?, error_message = NULL, nnios_branch = CASE WHEN ? THEN ? ELSE nnios_branch END WHERE name = ? AND version = ?')
+        .run('published', isTestPackage ? 1 : 0, branch, name, version);
 
-      return { ...component, status: 'published', error_message: undefined };
+      return { ...component, status: 'published', error_message: undefined, nnios_branch: isTestPackage ? branch : component.nnios_branch };
     } catch (error: any) {
       this.db
         .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE name = ? AND version = ?')
@@ -1431,7 +1568,8 @@ ${sourceLine}
     version: string,
     pubVer: string,
     workDir: string,
-    prepareCommand?: string
+    prepareCommand?: string,
+    targetBranch?: string
   ): Promise<PodComponent> {
     const gitUrl = spec.source.git;
     const tag = spec.source.tag || `v${version}`;
@@ -1730,6 +1868,15 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${err.message}`;
     }
 
+    if (status === 'published' && targetBranch) {
+      try {
+        this.syncVersionToNnios(podName, pubVer, targetBranch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
+    }
+
     const component = this.saveComponent({
       name: podName,
       version: pubVer,
@@ -1776,6 +1923,9 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       upload_time: row.upload_time,
       status: row.status,
       error_message: row.error_message || undefined,
+      package_type: row.package_type || (row.name === 'NNRtc' ? (isNNRtcTestVersion(row.version) ? 'test' : 'release') : undefined),
+      build_id: row.build_id || undefined,
+      nnios_branch: row.nnios_branch || undefined,
     };
   }
 
@@ -2127,7 +2277,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
    * 从官方 CocoaPods 导入组件到内部仓库
    * 下载官方 zip → 上传 Nexus → 生成内部 podspec → 同步 NNSpec
    */
-  async importFromOfficial(podName: string, version: string, publishVersion?: string, prepareCommand?: string): Promise<PodComponent> {
+  async importFromOfficial(podName: string, version: string, publishVersion?: string, prepareCommand?: string, targetBranch?: string): Promise<PodComponent> {
     // publishVersion: 内部发布用的版本号，可追加后缀如 1.4.0.1
     const pubVer = publishVersion || version;
 
@@ -2277,6 +2427,15 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
     }
 
+    if (status === 'published' && targetBranch) {
+      try {
+        this.syncVersionToNnios(podName, pubVer, targetBranch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
+    }
+
     // 7. 保存到数据库
     const component = this.saveComponent({
       name: podName,
@@ -2297,7 +2456,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
    * 从源码编译为二进制 framework 并发布
    * 使用 xcodebuild 编译源码 Pod 为真机 .framework 或 .a
    */
-  async buildBinaryFromSource(podName: string, version: string, outputType: 'framework' | 'static_library' = 'framework', depVersionOverrides?: Record<string, string>, selectedSubspecs?: string[], publishVersion?: string, prepareCommand?: string): Promise<PodComponent> {
+  async buildBinaryFromSource(podName: string, version: string, outputType: 'framework' | 'static_library' = 'framework', depVersionOverrides?: Record<string, string>, selectedSubspecs?: string[], publishVersion?: string, prepareCommand?: string, targetBranch?: string): Promise<PodComponent> {
     const pubVer = publishVersion || version;
     logger.info('buildBinaryFromSource 调用参数', { podName, version, outputType, depVersionOverrides, selectedSubspecs, publishVersion: pubVer });
     const existing = await this.getOne(podName, pubVer);
@@ -2327,7 +2486,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
         if (fs.existsSync(workDir)) {
           fs.rmSync(workDir, { recursive: true, force: true });
         }
-        return this.importFromOfficial(podName, version, pubVer);
+        return this.importFromOfficial(podName, version, pubVer, prepareCommand, targetBranch);
       }
 
       if (hasVendoredLibraries && !hasVendoredFrameworks && outputType === 'framework') {
@@ -2398,7 +2557,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
                   try { execSync('git config --global --unset url."https://ghfast.top/https://github.com/".insteadOf', { encoding: 'utf-8' }); } catch { /* */ }
                   gitMirrorSet = false;
                 }
-                const result = await this.buildDirectFromSource(spec, podName, version, pubVer, workDir, prepareCommand);
+                const result = await this.buildDirectFromSource(spec, podName, version, pubVer, workDir, prepareCommand, targetBranch);
                 return result;
               }
               throw new Error(`pod install 失败（已重试 ${maxRetries} 次）:\n${last20}`);
@@ -2778,6 +2937,15 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       } catch (error: any) {
         status = 'failed';
         errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
+      }
+
+      if (status === 'published' && targetBranch) {
+        try {
+          this.syncVersionToNnios(podName, pubVer, targetBranch);
+        } catch (error: any) {
+          status = 'failed';
+          errorMessage = error.message;
+        }
       }
 
       // 11. 保存到数据库

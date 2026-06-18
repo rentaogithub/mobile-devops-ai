@@ -13,6 +13,7 @@ import {
   SettingOutlined,
   PlusOutlined,
   DeleteOutlined,
+  BranchesOutlined,
 } from '@ant-design/icons';
 import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
@@ -1193,6 +1194,11 @@ export default function CICDPage() {
   const [qualityJobSyncing, setQualityJobSyncing] = useState(false);
   const [devicePoolDrafts, setDevicePoolDrafts] = useState<SonicDevicePool[]>([]);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
+  const [releaseBranchModalOpen, setReleaseBranchModalOpen] = useState(false);
+  const [releaseBranchCreating, setReleaseBranchCreating] = useState(false);
+  const [releaseBranchName, setReleaseBranchName] = useState('');
+  const [releaseBranchBase, setReleaseBranchBase] = useState('develop');
+  const [releaseBranchLog, setReleaseBranchLog] = useState('');
   const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
@@ -1535,6 +1541,48 @@ export default function CICDPage() {
       message.error(err?.error || err?.message || '触发发布失败');
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const openReleaseBranchModal = () => {
+    const fallbackBase = publishBranch.trim() || getHighestReleaseBranch(branches) || 'develop';
+    setReleaseBranchBase(fallbackBase);
+    setReleaseBranchName('');
+    setReleaseBranchLog('');
+    setReleaseBranchModalOpen(true);
+    if (branches.length === 0) {
+      loadBranches();
+    }
+  };
+
+  const createReleaseBranch = async () => {
+    const targetBranch = releaseBranchName.trim().replace(/^origin\//, '');
+    const baseBranch = releaseBranchBase.trim().replace(/^origin\//, '') || 'develop';
+    if (!targetBranch) {
+      message.warning('请输入新分支名称');
+      return;
+    }
+    if (targetBranch === baseBranch) {
+      message.warning('新分支不能与基准分支相同');
+      return;
+    }
+    setReleaseBranchCreating(true);
+    setReleaseBranchLog('正在执行 mgit，请稍候...');
+    try {
+      const response = await jenkinsApi.createReleaseBranch({ targetBranch, baseBranch });
+      const logs = (response.data?.commands || [])
+        .map((item) => `$ ${item.command}\n${item.output || '(无输出)'}`)
+        .join('\n\n');
+      setReleaseBranchLog(logs);
+      message.success(`已拉取新分支 ${targetBranch}`);
+      setPublishBranch(targetBranch);
+      await loadBranches();
+    } catch (err: any) {
+      const errorText = err?.error || err?.message || '拉取新分支失败';
+      setReleaseBranchLog((current) => `${current || ''}\n\n${errorText}`.trim());
+      message.error(errorText);
+    } finally {
+      setReleaseBranchCreating(false);
     }
   };
 
@@ -1907,6 +1955,9 @@ export default function CICDPage() {
           <Space>
             <Button icon={<ExportOutlined />} onClick={() => window.open(data?.job.url || `${window.location.protocol}//${window.location.hostname}:8080/job/nn/`, '_blank', 'noopener,noreferrer')}>
               打开 Jenkins
+            </Button>
+            <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
+              拉取新分支
             </Button>
             <Button icon={<ReloadOutlined />} onClick={() => loadBuilds()} loading={loading}>
               刷新
@@ -2413,6 +2464,78 @@ export default function CICDPage() {
                 </Card>
         </>
       )}
+
+      <Modal
+        title="拉取新分支"
+        open={releaseBranchModalOpen}
+        okText="开始拉取"
+        cancelText="关闭"
+        confirmLoading={releaseBranchCreating}
+        onOk={createReleaseBranch}
+        onCancel={() => {
+          if (releaseBranchCreating) return;
+          setReleaseBranchModalOpen(false);
+        }}
+        cancelButtonProps={{ disabled: releaseBranchCreating }}
+        closable={!releaseBranchCreating}
+        maskClosable={!releaseBranchCreating}
+        width={720}
+      >
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          <Alert
+            type="info"
+            showIcon
+            message="使用 mgit 为 nnios 和子组件创建同名分支并推送远端"
+            description="会依次执行 mgit checkout 基准分支、mgit pull --ff-only、mgit checkout -b 新分支、mgit push。"
+          />
+          <div>
+            <Text strong>新分支名称</Text>
+            <Input
+              value={releaseBranchName}
+              disabled={releaseBranchCreating}
+              onChange={(event) => setReleaseBranchName(event.target.value)}
+              placeholder="例如 release/5.15.0"
+              style={{ marginTop: 8 }}
+            />
+          </div>
+          <div>
+            <Text strong>基准分支</Text>
+            <AutoComplete
+              value={releaseBranchBase}
+              options={publishBranchOptions}
+              disabled={releaseBranchCreating}
+              onChange={setReleaseBranchBase}
+              placeholder="例如 develop 或 release/5.14.8"
+              style={{ marginTop: 8, width: '100%' }}
+              filterOption={(inputValue, option) =>
+                String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
+              }
+            />
+            <Button size="small" type="link" onClick={loadBranches} loading={branchLoading} disabled={releaseBranchCreating} style={{ paddingInline: 0, marginTop: 4 }}>
+              刷新分支列表
+            </Button>
+          </div>
+          {releaseBranchLog && (
+            <pre
+              style={{
+                margin: 0,
+                maxHeight: 280,
+                overflow: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                fontSize: 12,
+                lineHeight: 1.5,
+                background: '#fafafa',
+                padding: 12,
+                border: '1px solid #f0f0f0',
+                borderRadius: 4,
+              }}
+            >
+              {releaseBranchLog}
+            </pre>
+          )}
+        </Space>
+      </Modal>
 
       <Modal
         title="选择发布分支和渠道"
