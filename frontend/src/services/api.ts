@@ -739,6 +739,12 @@ export const podsApi = {
     return response.data;
   },
 
+  /** 同步当前组件版本到 nnios 指定分支 */
+  syncBranch: async (name: string, version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/sync-branch`, { target_branch });
+    return response.data;
+  },
+
   /** 更新 podspec 并同步到远程仓库 */
   updatePodspec: async (name: string, version: string, podspec_content: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
     const response = await api.put<ApiResponse<PodComponent>>(`/pods/${name}/${version}/podspec`, { podspec_content, target_branch });

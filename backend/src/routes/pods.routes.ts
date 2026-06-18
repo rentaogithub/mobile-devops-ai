@@ -153,6 +153,21 @@ router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: 
 });
 
 /**
+ * POST /api/pods/:name/:version/sync-branch
+ * 将当前组件版本同步到指定 nnios 分支（需要管理员权限）
+ */
+router.post('/:name/:version/sync-branch', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const targetBranch = requireTargetBranch(req.body?.target_branch);
+    const component = await podService.syncVersionToBranch(req.params.name, req.params.version, targetBranch);
+    res.json({ success: true, data: component });
+  } catch (error: any) {
+    logger.error('同步组件版本到 nnios 分支失败', { error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * PUT /api/pods/:name/:version/podspec
  * 更新 podspec 内容并同步到远程仓库（需要管理员权限）
  */

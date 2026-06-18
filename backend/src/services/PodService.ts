@@ -1184,6 +1184,30 @@ ${sourceLine}
   }
 
   /**
+   * 仅同步当前组件版本到 nnios 指定分支的 Podfile / third_sdk.rb。
+   */
+  async syncVersionToBranch(name: string, version: string, targetBranch: string): Promise<PodComponent> {
+    const component = await this.getOne(name, version);
+    if (!component) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
+
+    try {
+      this.syncVersionToNnios(name, version, targetBranch);
+      this.db
+        .prepare('UPDATE pods_components SET status = ?, error_message = NULL WHERE name = ? AND version = ?')
+        .run('published', name, version);
+
+      return { ...component, status: 'published', error_message: undefined };
+    } catch (error: any) {
+      this.db
+        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE name = ? AND version = ?')
+        .run('failed', error.message, name, version);
+      throw error;
+    }
+  }
+
+  /**
    * 直接从源码编译 framework（绕过 CocoaPods pod install）
    * 适用于纯 C/C++ 库（如 libwebp）pod install 会报错的场景
    * 流程：git clone → 收集源文件 → xcrun clang 编译 → libtool 打静态库 → 包装为 .framework → zip → Nexus

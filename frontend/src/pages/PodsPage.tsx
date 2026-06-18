@@ -93,8 +93,8 @@ export default function PodsPage() {
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
 
-  const loadNniosBranches = useCallback(async () => {
-    if (!isAdmin) return;
+  const loadNniosBranches = useCallback(async (): Promise<string[]> => {
+    if (!isAdmin) return [];
     setNniosBranchLoading(true);
     try {
       const res = await jenkinsApi.listBranches();
@@ -103,8 +103,10 @@ export default function PodsPage() {
       if (!form.getFieldValue('target_branch')) {
         form.setFieldValue('target_branch', branches.includes('develop') ? 'develop' : branches[0]);
       }
+      return branches;
     } catch (error: any) {
       message.warning(error?.error || error?.message || '加载 nnios 分支失败，请稍后重试');
+      return [];
     } finally {
       setNniosBranchLoading(false);
     }
@@ -285,6 +287,59 @@ export default function PodsPage() {
     } catch (error: any) {
       message.error(error?.error || '重试失败');
     }
+  };
+
+  const handleSyncBranch = async (record: PodComponent) => {
+    const branches = nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches();
+    let targetBranch = detailTargetBranch || (branches.includes('develop') ? 'develop' : branches[0] || '');
+    let confirmBranch = '';
+    Modal.confirm({
+      title: `同步 ${record.name}@${record.version}`,
+      content: (
+        <div>
+          <p>
+            将把当前组件版本写入指定 nnios 分支的 <Text code>NNIM/third_sdk.rb</Text>。
+          </p>
+          <p>请选择要同步的分支：</p>
+          <Select
+            showSearch
+            defaultValue={targetBranch || undefined}
+            loading={nniosBranchLoading}
+            style={{ width: '100%' }}
+            placeholder="选择 nnios 分支"
+            options={branches.map((branch) => ({ value: branch, label: branch }))}
+            onChange={(value) => { targetBranch = value; }}
+          />
+          <p style={{ marginTop: 12 }}>请再次输入同步分支确认：</p>
+          <Input
+            placeholder={targetBranch || '请输入上方选择的分支'}
+            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+          />
+        </div>
+      ),
+      okText: '同步',
+      cancelText: '取消',
+      onOk: async () => {
+        if (!targetBranch) {
+          message.error('请输入要同步的分支');
+          return Promise.reject();
+        }
+        if (confirmBranch !== targetBranch) {
+          message.error('同步分支输入不匹配，已取消同步');
+          return Promise.reject();
+        }
+        try {
+          const res = await podsApi.syncBranch(record.name, record.version, targetBranch);
+          if (res.success) {
+            message.success(`已同步到 nnios/${targetBranch}`);
+            fetchComponents();
+          }
+        } catch (error: any) {
+          message.error(error?.error || '同步失败');
+          return Promise.reject();
+        }
+      },
+    });
   };
 
   const handleDelete = (record: PodComponent) => {
@@ -608,16 +663,21 @@ export default function PodsPage() {
     {
       title: '操作',
       key: 'action',
-      width: isAdmin ? 180 : 80,
+      width: isAdmin ? 230 : 80,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => showDetail(record)}>
             详情
           </Button>
           {isAdmin && (
-            <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
-              删除
-            </Button>
+            <>
+              <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
+                同步
+              </Button>
+              <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
+                删除
+              </Button>
+            </>
           )}
         </Space>
       ),
