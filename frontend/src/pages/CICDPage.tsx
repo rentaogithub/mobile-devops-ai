@@ -79,6 +79,15 @@ function getHighestReleaseBranch(list: string[]) {
   return list.filter(isReleaseBranch).sort(compareReleaseBranches).at(-1) || '';
 }
 
+function getLatestReleaseBranches(list: string[], limit = 2) {
+  return list
+    .map((branch) => branch.trim().replace(/^origin\//, ''))
+    .filter(isReleaseBranch)
+    .sort(compareReleaseBranches)
+    .slice(-limit)
+    .reverse();
+}
+
 function formatBuildTime(timestamp: number) {
   if (!timestamp) return '-';
   return new Date(timestamp).toLocaleString();
@@ -1545,14 +1554,11 @@ export default function CICDPage() {
   };
 
   const openReleaseBranchModal = () => {
-    const fallbackBase = publishBranch.trim() || getHighestReleaseBranch(branches) || 'develop';
-    setReleaseBranchBase(fallbackBase);
+    setReleaseBranchBase('develop');
     setReleaseBranchName('');
     setReleaseBranchLog('');
     setReleaseBranchModalOpen(true);
-    if (branches.length === 0) {
-      loadBranches();
-    }
+    loadBranches();
   };
 
   const createReleaseBranch = async () => {
@@ -1595,8 +1601,10 @@ export default function CICDPage() {
       if (deployTarget !== 'Pgyer') {
         setPublishBranch(getHighestReleaseBranch(nextBranches));
       }
+      return nextBranches;
     } catch (err: any) {
       message.warning(err?.error || err?.message || '加载分支列表失败，可直接输入分支名');
+      return [];
     } finally {
       setBranchLoading(false);
     }
@@ -1935,6 +1943,16 @@ export default function CICDPage() {
     () => branches.map((branch) => ({ value: branch, label: branch })),
     [branches],
   );
+  const releaseBaseBranchOptions = useMemo(() => {
+    const items = ['develop', ...getLatestReleaseBranches(branches, 2)];
+    return Array.from(new Set(items)).map((branch) => ({ value: branch, label: branch }));
+  }, [branches]);
+  useEffect(() => {
+    if (!releaseBranchModalOpen) return;
+    if (!releaseBaseBranchOptions.some((option) => option.value === releaseBranchBase)) {
+      setReleaseBranchBase(releaseBaseBranchOptions[0]?.value || 'develop');
+    }
+  }, [releaseBranchModalOpen, releaseBaseBranchOptions, releaseBranchBase]);
   const pageTitle = activeSection === 'quality' ? '自动质检' : '发布管理';
   const pageDescription = activeSection === 'quality'
     ? '基于打包机本机 USB 真机执行 iOS 自动化质检，覆盖安装、启动、用例、截图和报告采集。'
@@ -2485,8 +2503,8 @@ export default function CICDPage() {
           <Alert
             type="info"
             showIcon
-            message="使用 mgit 为 nnios 和子组件创建同名分支并推送远端"
-            description="会依次执行 mgit checkout 基准分支、mgit pull --ff-only、mgit checkout -b 新分支、mgit push。"
+            message="使用 mgit publish 为 nnios 和子组件拉取同名新分支"
+            description="会先刷新远端引用，切到基准分支并执行 mgit pull --ff-only；基准分支无法快进到最新时会停止，不会继续 publish。"
           />
           <div>
             <Text strong>新分支名称</Text>
@@ -2500,16 +2518,15 @@ export default function CICDPage() {
           </div>
           <div>
             <Text strong>基准分支</Text>
-            <AutoComplete
+            <Select
               value={releaseBranchBase}
-              options={publishBranchOptions}
+              options={releaseBaseBranchOptions}
               disabled={releaseBranchCreating}
+              loading={branchLoading}
               onChange={setReleaseBranchBase}
-              placeholder="例如 develop 或 release/5.14.8"
+              placeholder="请选择基准分支"
+              notFoundContent={branchLoading ? '正在加载分支...' : '未找到 release 分支'}
               style={{ marginTop: 8, width: '100%' }}
-              filterOption={(inputValue, option) =>
-                String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
-              }
             />
             <Button size="small" type="link" onClick={loadBranches} loading={branchLoading} disabled={releaseBranchCreating} style={{ paddingInline: 0, marginTop: 4 }}>
               刷新分支列表

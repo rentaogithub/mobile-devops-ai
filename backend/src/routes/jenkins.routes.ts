@@ -14,7 +14,6 @@ const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://127.0.0.1:8080
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
-const DEFAULT_NNIOS_REPO_LOCAL = path.resolve(process.cwd(), '..', 'nnios');
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
@@ -94,7 +93,16 @@ function getPlatformRootDir() {
 }
 
 function getNniosRepoLocalDir() {
-  return path.resolve(getRuntimeEnv('NNIOS_REPO_LOCAL') || DEFAULT_NNIOS_REPO_LOCAL);
+  const configured = String(getRuntimeEnv('NNIOS_REPO_LOCAL') || '').trim();
+  if (configured) return path.resolve(configured);
+
+  const platformRoot = getPlatformRootDir();
+  const candidates = [
+    path.resolve(platformRoot, '..', 'nnios'),
+    path.resolve(process.cwd(), '..', 'nnios'),
+    path.resolve(process.cwd(), '..', '..', 'nnios'),
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, '.git'))) || candidates[0];
 }
 
 function getConnectionErrorMessage(error: any) {
@@ -1995,10 +2003,10 @@ router.post('/nn/release-branch', async (req: Request, res: Response) => {
     }
 
     const commands: Array<{ command: string; output: string }> = [];
-    const runMgit = async (args: string[]) => {
-      const command = ['mgit', ...args].join(' ');
+    const runCommand = async (bin: string, args: string[]) => {
+      const command = [bin, ...args].join(' ');
       try {
-        const { stdout, stderr } = await execFileAsync('mgit', args, {
+        const { stdout, stderr } = await execFileAsync(bin, args, {
           cwd: repoDir,
           timeout: 10 * 60 * 1000,
           maxBuffer: 20 * 1024 * 1024,
@@ -2011,11 +2019,15 @@ router.post('/nn/release-branch', async (req: Request, res: Response) => {
         throw new Error(`${command} 执行失败：${output || error.message}`);
       }
     };
+    const runMgit = async (args: string[]) => {
+      await runCommand('mgit', args);
+    };
 
+    await runCommand('git', ['fetch', 'origin', '--prune']);
     await runMgit(['checkout', baseBranch]);
     await runMgit(['pull', '--ff-only']);
-    await runMgit(['checkout', '-b', targetBranch]);
-    await runMgit(['push']);
+    await runMgit(['status']);
+    await runMgit(['publish', targetBranch]);
 
     res.json({
       success: true,
