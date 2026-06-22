@@ -98,6 +98,7 @@ MONKEY_AVOID_TOP_BAR="${MONKEY_AVOID_TOP_BAR:-1}"
 MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-10}"
 MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-8}"
 MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-12}"
+MONKEY_WDA_RESTART_TIMEOUT_SECONDS="${MONKEY_WDA_RESTART_TIMEOUT_SECONDS:-120}"
 MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn}"
 MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow}"
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
@@ -2474,14 +2475,33 @@ with open(report_file, "w", encoding="utf-8") as f:
 PY
     return 1
   fi
-  export MONKEY_WDA_MAX_RECOVERIES MONKEY_WDA_RECOVERY_SLEEP_SECONDS
+  local monkey_wda_project monkey_wda_port
+  monkey_wda_project="$(find_wda_project || true)"
+  monkey_wda_port="$(wda_url_part port)"
+  export MONKEY_WDA_MAX_RECOVERIES MONKEY_WDA_RECOVERY_SLEEP_SECONDS MONKEY_WDA_RESTART_TIMEOUT_SECONDS
+  export MONKEY_WDA_PROJECT_PATH="${monkey_wda_project}"
+  export MONKEY_WDA_PORT="${monkey_wda_port}"
+  export MONKEY_WDA_BIND_HOST="${WDA_BIND_HOST}"
+  export MONKEY_WDA_SELECTED_DEVICE="${SELECTED_DEVICE}"
+  export MONKEY_WDA_SCHEME="${WDA_SCHEME}"
+  export MONKEY_WDA_DERIVED_DATA_PATH="${WDA_DERIVED_DATA_PATH}"
+  export MONKEY_WDA_DEVELOPMENT_TEAM="${WDA_DEVELOPMENT_TEAM}"
+  export MONKEY_WDA_BUNDLE_ID="${WDA_BUNDLE_ID}"
+  export MONKEY_WDA_XCODEBUILD_EXTRA_ARGS="${WDA_XCODEBUILD_EXTRA_ARGS}"
+  export MONKEY_WDA_IPROXY_LOG="${RESULT_DIR}/wda-iproxy.log"
+  export MONKEY_WDA_XCODEBUILD_LOG="${RESULT_DIR}/wda-xcodebuild.log"
+  export MONKEY_WDA_IPROXY_PID_FILE="${RESULT_DIR}/wda-iproxy.pid"
+  export MONKEY_WDA_XCODEBUILD_PID_FILE="${RESULT_DIR}/wda-xcodebuild.pid"
   python3 - "$MONKEY_RUNTIME_WDA_URL" "$MONKEY_EVENT_COUNT" "$MONKEY_DURATION_SECONDS" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_SEED" "$MONKEY_REPORT_FILE" "$MONKEY_MAX_REPORTED_EVENTS" "$MONKEY_BACK_INTERVAL_EVENTS" "$MONKEY_STUCK_EVENTS" "$MONKEY_STUCK_CHECK_INTERVAL_EVENTS" "$MONKEY_BACK_ACTION_PROBABILITY" "$MONKEY_BACK_TAP_PROBABILITY" "$MONKEY_AVOID_TOP_BAR" "$MONKEY_HEARTBEAT_INTERVAL_SECONDS" "$MONKEY_FORBIDDEN_TEXTS" "$MONKEY_FORBIDDEN_PAGE_TEXTS" "$MONKEY_FORBIDDEN_REGION_RATIO" "$MONKEY_FORBIDDEN_PADDING" "$PROGRESS_FILE" "$PERFORMANCE_SAMPLE_FILE" <<'PY'
 import hashlib
 import json
 import os
 import random
 import re
+import shlex
 import socket
+import signal
+import subprocess
 import sys
 import time
 import urllib.error
@@ -2508,6 +2528,20 @@ forbidden_padding = max(0, int(float(forbidden_padding or "16")))
 random.seed(seed or None)
 max_wda_recoveries = max(0, int(float(os.environ.get("MONKEY_WDA_MAX_RECOVERIES", "5"))))
 recovery_sleep_seconds = max(0.0, float(os.environ.get("MONKEY_WDA_RECOVERY_SLEEP_SECONDS", "3")))
+restart_timeout_seconds = max(30.0, float(os.environ.get("MONKEY_WDA_RESTART_TIMEOUT_SECONDS", "120")))
+wda_project_path = os.environ.get("MONKEY_WDA_PROJECT_PATH", "")
+wda_port = os.environ.get("MONKEY_WDA_PORT", "8100")
+wda_bind_host = os.environ.get("MONKEY_WDA_BIND_HOST", "127.0.0.1") or "127.0.0.1"
+selected_device = os.environ.get("MONKEY_WDA_SELECTED_DEVICE", "")
+wda_scheme = os.environ.get("MONKEY_WDA_SCHEME", "WebDriverAgentRunner")
+wda_derived_data_path = os.environ.get("MONKEY_WDA_DERIVED_DATA_PATH", "")
+wda_development_team = os.environ.get("MONKEY_WDA_DEVELOPMENT_TEAM", "")
+wda_bundle_id = os.environ.get("MONKEY_WDA_BUNDLE_ID", "")
+wda_xcodebuild_extra_args = os.environ.get("MONKEY_WDA_XCODEBUILD_EXTRA_ARGS", "")
+wda_iproxy_log = os.environ.get("MONKEY_WDA_IPROXY_LOG", "")
+wda_xcodebuild_log = os.environ.get("MONKEY_WDA_XCODEBUILD_LOG", "")
+wda_iproxy_pid_file = os.environ.get("MONKEY_WDA_IPROXY_PID_FILE", "")
+wda_xcodebuild_pid_file = os.environ.get("MONKEY_WDA_XCODEBUILD_PID_FILE", "")
 
 events = []
 session_id = ""
@@ -2572,6 +2606,152 @@ def create_session():
         pass
     return next_session_id
 
+def read_pid(path):
+    if not path:
+        return None
+    try:
+        text = open(path, encoding="utf-8").read().strip()
+        pid = int(text)
+        return pid if pid > 0 else None
+    except Exception:
+        return None
+
+def terminate_pid(pid):
+    if not pid:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        return
+    deadline_kill = time.time() + 5
+    while time.time() < deadline_kill:
+        try:
+            os.kill(pid, 0)
+        except Exception:
+            return
+        time.sleep(0.2)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+def terminate_pid_file(path):
+    pid = read_pid(path)
+    terminate_pid(pid)
+    if path:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+def pkill_pattern(pattern):
+    if not pattern:
+        return
+    try:
+        subprocess.run(["pkill", "-f", pattern], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except Exception:
+        pass
+
+def wait_wda_status(timeout_seconds):
+    deadline_wait = time.time() + timeout_seconds
+    last_error = ""
+    while time.time() < deadline_wait:
+        try:
+            request("GET", "/status", timeout=4)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)[:200]
+            time.sleep(2)
+    return False, last_error
+
+def start_iproxy_process():
+    if not selected_device or not wda_port:
+        raise RuntimeError("缺少设备 UDID 或 WDA 端口，无法重启 iproxy")
+    host = "127.0.0.1" if wda_bind_host in ("", "127.0.0.1", "localhost", "::1") else wda_bind_host
+    if host in ("127.0.0.1", "localhost"):
+        args = ["iproxy", "-u", selected_device, f"{wda_port}:8100"]
+    else:
+        args = ["iproxy", "-u", selected_device, "-s", host, f"{wda_port}:8100"]
+    log_handle = open(wda_iproxy_log, "ab") if wda_iproxy_log else subprocess.DEVNULL
+    proc = subprocess.Popen(args, stdout=log_handle, stderr=subprocess.STDOUT)
+    if wda_iproxy_pid_file:
+        with open(wda_iproxy_pid_file, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
+    return proc
+
+def start_xcodebuild_process():
+    if not wda_project_path or not os.path.isdir(wda_project_path):
+        raise RuntimeError("未找到 WebDriverAgent.xcodeproj，无法重启 WDA")
+    if not selected_device:
+        raise RuntimeError("缺少设备 UDID，无法重启 WDA")
+    args = [
+        "xcodebuild",
+        "-project", wda_project_path,
+        "-scheme", wda_scheme,
+        "-destination", f"id={selected_device}",
+    ]
+    if wda_derived_data_path:
+        args.extend(["-derivedDataPath", wda_derived_data_path])
+    args.append("-allowProvisioningUpdates")
+    args.append("CODE_SIGN_STYLE=Automatic")
+    if wda_development_team:
+        args.append(f"DEVELOPMENT_TEAM={wda_development_team}")
+    if wda_bundle_id:
+        args.append(f"PRODUCT_BUNDLE_IDENTIFIER={wda_bundle_id}")
+    if wda_xcodebuild_extra_args:
+        args.extend(shlex.split(wda_xcodebuild_extra_args))
+    args.append("test")
+    log_handle = open(wda_xcodebuild_log, "ab") if wda_xcodebuild_log else subprocess.DEVNULL
+    proc = subprocess.Popen(args, stdout=log_handle, stderr=subprocess.STDOUT)
+    if wda_xcodebuild_pid_file:
+        with open(wda_xcodebuild_pid_file, "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
+    return proc
+
+def hard_restart_wda(event):
+    global session_id
+    event["hardRestart"] = True
+    print("Monkey WDA hard restart: restarting iproxy and WebDriverAgentRunner", flush=True)
+    write_progress("running", "WDA 连接中断，正在重启 WDA 通道", event)
+    terminate_pid_file(wda_iproxy_pid_file)
+    terminate_pid_file(wda_xcodebuild_pid_file)
+    if wda_port:
+        pkill_pattern(rf"iproxy.*{re.escape(str(wda_port))}.*8100")
+    if selected_device:
+        pkill_pattern(rf"xcodebuild.*{re.escape(wda_scheme)}.*{re.escape(selected_device)}")
+    time.sleep(2)
+    try:
+        start_iproxy_process()
+        start_xcodebuild_process()
+    except Exception as exc:
+        event["hardRestartError"] = str(exc)[:300]
+        print(f"Monkey WDA hard restart failed to start: {event['hardRestartError']}", flush=True)
+        return False
+    ok, error = wait_wda_status(restart_timeout_seconds)
+    event["hardRestartReady"] = ok
+    if error:
+        event["hardRestartStatusError"] = error
+    if not ok:
+        print(f"Monkey WDA hard restart timeout: {error}", flush=True)
+        return False
+    try:
+        if session_id:
+            request("DELETE", f"/session/{session_id}", timeout=2)
+    except Exception:
+        pass
+    try:
+        session_id = create_session()
+        refresh_window_metrics(session_id)
+        event["sessionReset"] = True
+        print("Monkey WDA hard restart succeeded", flush=True)
+        write_progress("running", "WDA 已重启，Monkey 继续执行", event)
+        return True
+    except Exception as exc:
+        event["sessionReset"] = False
+        event["sessionError"] = str(exc)[:200]
+        print(f"Monkey WDA hard restart session reset failed: {event['sessionError']}", flush=True)
+        return False
+
 def refresh_window_metrics(session):
     global width, height, safe_top, tap_safe_top, safe_bottom, safe_left, safe_right
     size_response = request("GET", f"/session/{session}/window/size", timeout=8)
@@ -2607,6 +2787,8 @@ def recover_wda_session(reason, recovery_index):
         print(f"Monkey WDA recovery {recovery_index}: status still busy, will retry later", flush=True)
         write_progress("running", f"WDA 仍忙，等待下一轮恢复 {recovery_index}/{max_wda_recoveries}", event)
     if not status_ok:
+        if recovery_index >= 2:
+            hard_restart_wda(event)
         return session_id
     try:
         if session_id:
@@ -2621,6 +2803,8 @@ def recover_wda_session(reason, recovery_index):
         event["sessionReset"] = False
         event["sessionError"] = str(exc)[:200]
         print(f"Monkey WDA recovery {recovery_index}: session reset failed, keep old session", flush=True)
+        if recovery_index >= 2:
+            hard_restart_wda(event)
     return session_id
 
 def pointer_actions(points):
