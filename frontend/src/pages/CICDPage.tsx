@@ -1871,6 +1871,11 @@ export default function CICDPage() {
     latestBuild: '-',
     successRate: '-',
   }, [data]);
+  const previousHasRunningBuildRef = useRef(false);
+  const hasRunningBuild = useMemo(
+    () => (data?.builds || []).some((build) => build.building),
+    [data],
+  );
   const previousHasRunningQualityBuildRef = useRef(false);
   const hasRunningQualityBuild = useMemo(
     () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
@@ -1896,6 +1901,24 @@ export default function CICDPage() {
       .slice(0, suites.length)
       .map((device) => device.udid);
   };
+
+  useEffect(() => {
+    if (activeSection !== 'release' || !hasRunningBuild) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      loadBuilds(filterDeployTarget, { silent: true });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, hasRunningBuild, filterDeployTarget]);
+
+  useEffect(() => {
+    const previous = previousHasRunningBuildRef.current;
+    previousHasRunningBuildRef.current = hasRunningBuild;
+    if (activeSection === 'release' && previous && !hasRunningBuild) {
+      loadBuilds(filterDeployTarget, { silent: true });
+    }
+  }, [activeSection, hasRunningBuild, filterDeployTarget]);
 
   useEffect(() => {
     if (activeSection !== 'quality' || !hasRunningQualityBuild) {
