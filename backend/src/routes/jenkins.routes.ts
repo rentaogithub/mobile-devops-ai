@@ -105,6 +105,38 @@ function getNniosRepoLocalDir() {
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, '.git'))) || candidates[0];
 }
 
+function getMgitPublishRepos(repoDir: string) {
+  const configPath = path.join(repoDir, 'podx.config.yml');
+  if (!fs.existsSync(configPath)) return ['nnios'];
+  const lines = fs.readFileSync(configPath, 'utf-8').split(/\r?\n/);
+  const repos: string[] = [];
+  let inPublishRepos = false;
+  for (const line of lines) {
+    if (/^publish_repos:\s*$/.test(line)) {
+      inPublishRepos = true;
+      continue;
+    }
+    if (!inPublishRepos) continue;
+    if (/^\S/.test(line)) break;
+    const match = line.match(/^\s*-\s*([a-zA-Z0-9_.-]+)\s*$/);
+    if (match) repos.push(match[1]);
+  }
+  return repos.length > 0 ? repos : ['nnios'];
+}
+
+function repoUrlForMgitRepo(repo: string) {
+  const base = DEFAULT_REPO_URL.replace(/\/nnios\.git$/i, '');
+  return `${base}/${repo}.git`;
+}
+
+async function remoteBranchExists(repo: string, branch: string) {
+  const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', repoUrlForMgitRepo(repo), branch], {
+    timeout: 30000,
+    maxBuffer: 1024 * 1024,
+  });
+  return stdout.trim().length > 0;
+}
+
 function getConnectionErrorMessage(error: any) {
   const code = error?.code ? ` ${error.code}` : '';
   return error?.message ? `${error.message}${code}` : '连接失败';
@@ -2003,6 +2035,31 @@ router.post('/nn/release-branch', async (req: Request, res: Response) => {
     }
 
     const commands: Array<{ command: string; output: string }> = [];
+    const publishRepos = getMgitPublishRepos(repoDir);
+    const existingRepos: string[] = [];
+    for (const repo of publishRepos) {
+      if (await remoteBranchExists(repo, targetBranch)) {
+        existingRepos.push(repo);
+      }
+    }
+    if (existingRepos.length === publishRepos.length) {
+      commands.push({
+        command: `mgit publish ${targetBranch}`,
+        output: `目标分支已存在，跳过重复 publish：${existingRepos.join(', ')}`,
+      });
+      res.json({
+        success: true,
+        data: {
+          repoDir,
+          targetBranch,
+          baseBranch,
+          commands,
+          skipped: true,
+        },
+      });
+      return;
+    }
+
     const runCommand = async (bin: string, args: string[]) => {
       const command = [bin, ...args].join(' ');
       try {
@@ -2023,10 +2080,8 @@ router.post('/nn/release-branch', async (req: Request, res: Response) => {
       await runCommand('mgit', args);
     };
 
-    await runCommand('git', ['fetch', 'origin', '--prune']);
     await runMgit(['checkout', baseBranch]);
     await runMgit(['pull', '--ff-only']);
-    await runMgit(['status']);
     await runMgit(['publish', targetBranch]);
 
     res.json({

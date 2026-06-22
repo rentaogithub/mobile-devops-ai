@@ -1573,13 +1573,9 @@ export default function CICDPage() {
       return;
     }
     setReleaseBranchCreating(true);
-    setReleaseBranchLog('正在执行 mgit，请稍候...');
+    setReleaseBranchLog('');
     try {
-      const response = await jenkinsApi.createReleaseBranch({ targetBranch, baseBranch });
-      const logs = (response.data?.commands || [])
-        .map((item) => `$ ${item.command}\n${item.output || '(无输出)'}`)
-        .join('\n\n');
-      setReleaseBranchLog(logs);
+      await jenkinsApi.createReleaseBranch({ targetBranch, baseBranch });
       message.success(`已拉取新分支 ${targetBranch}`);
       setPublishBranch(targetBranch);
       await loadBranches();
@@ -2500,12 +2496,6 @@ export default function CICDPage() {
         width={720}
       >
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="使用 mgit publish 为 nnios 和子组件拉取同名新分支"
-            description="会先刷新远端引用，切到基准分支并执行 mgit pull --ff-only；基准分支无法快进到最新时会停止，不会继续 publish。"
-          />
           <div>
             <Text strong>新分支名称</Text>
             <Input
