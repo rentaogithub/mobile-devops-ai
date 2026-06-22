@@ -1358,6 +1358,27 @@ export interface JenkinsQualityBuild {
         memoryMB?: { avg?: number | null; max?: number | null; min?: number | null };
         fps?: { avg?: number | null; max?: number | null; min?: number | null };
       };
+      trace?: {
+        available?: boolean;
+        sampleRowsExported?: number | null;
+        durationSeconds?: number | null;
+        startDate?: string;
+        endDate?: string;
+        endReason?: string;
+        templateName?: string;
+        timeLimit?: string;
+        process?: string;
+        pid?: string;
+        terminationReason?: string;
+        segmentCount?: number;
+        segments?: Array<{
+          name?: string;
+          path?: string;
+          current?: boolean;
+          reason?: string;
+          finishedAt?: string;
+        }>;
+      };
       thresholds?: Record<string, number>;
       conclusion?: {
         severity?: 'passed' | 'warning' | 'failed' | string;
@@ -1683,6 +1704,8 @@ export const jenkinsApi = {
     devicePool: string;
     deviceUdid?: string;
     monkeyDurationSeconds?: number;
+    skipInstall?: boolean;
+    appBundleId?: string;
   }): Promise<ApiResponse<{
     jobName: string;
     sourceBuildNumber: string;

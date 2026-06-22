@@ -11,6 +11,8 @@ set -euo pipefail
 # longer depend on a Sonic Server/Web stack.
 
 SOURCE_BUILD_NUMBER="${SOURCE_BUILD_NUMBER:-}"
+QUALITY_STARTED_AT_EPOCH="${QUALITY_STARTED_AT_EPOCH:-$(date +%s)}"
+QUALITY_STARTED_AT_ISO="${QUALITY_STARTED_AT_ISO:-$(date '+%Y-%m-%dT%H:%M:%S%z')}"
 BRANCH="${BRANCH:-}"
 COMMIT_HASH="${COMMIT_HASH:-}"
 APP_VERSION="${APP_VERSION:-}"
@@ -28,6 +30,12 @@ DEVICE_POOL_LABEL_DISPLAY="${DEVICE_POOL_LABEL// \[suite:monkey\]/}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
+SKIP_APP_INSTALL="${SKIP_APP_INSTALL:-0}"
+if [[ "${PACKAGE_URL}" == skip-install:* ]]; then
+  SKIP_APP_INSTALL="1"
+  APP_BUNDLE_ID="${PACKAGE_URL#skip-install:}"
+  PACKAGE_URL=""
+fi
 DETECTED_BUNDLE_ID=""
 DETECTED_EXECUTABLE_NAME=""
 DETECTED_SHORT_VERSION=""
@@ -57,6 +65,9 @@ PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
 PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
 PERFORMANCE_TRACE_FILE="${RESULT_DIR}/performance.trace"
+PERFORMANCE_TRACE_SEGMENTS_DIR="${RESULT_DIR}/performance-traces"
+PERFORMANCE_TRACE_MONITOR_PID_FILE="${RESULT_DIR}/performance-xctrace-monitor.pid"
+PERFORMANCE_MONKEY_RUNNING_FILE="${RESULT_DIR}/monkey-running.flag"
 PERFORMANCE_TRACE_ARCHIVE_FILE="${RESULT_DIR}/performance.trace.zip"
 CRASH_REPORT_DIR="${RESULT_DIR}/crash-reports"
 LAUNCH_METHOD=""
@@ -123,7 +134,7 @@ rm -f "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESUL
 
 cleanup_started_processes() {
   local pid_file pid
-  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid"; do
+  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid" "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"; do
     if [ ! -f "${pid_file}" ]; then
       continue
     fi
@@ -134,6 +145,17 @@ cleanup_started_processes() {
     fi
     rm -f "${pid_file}"
   done
+  rm -f "${PERFORMANCE_MONKEY_RUNNING_FILE}"
+  if [ -n "${SELECTED_DEVICE:-}" ]; then
+    local wda_port
+    wda_port="$(wda_url_part port 2>/dev/null || printf '%s' "8100")"
+    if [ -n "${wda_port}" ]; then
+      pkill -f "iproxy.*${SELECTED_DEVICE}.*${wda_port}:8100" >/dev/null 2>&1 || true
+      pkill -f "iproxy.*${wda_port}:8100.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
+    fi
+    pkill -f "xcodebuild.*${WDA_SCHEME:-WebDriverAgentRunner}.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
+    terminate_device_process_matching "WebDriverAgentRunner" || true
+  fi
 }
 
 trap cleanup_started_processes EXIT
@@ -418,13 +440,16 @@ write_summary() {
     "$status" "$message" "${SOURCE_BUILD_NUMBER:-}" "${BRANCH:-}" "${COMMIT_HASH:-}" "${APP_VERSION:-}" \
     "${REQUESTED_TEST_SUITE:-${TEST_SUITE:-}}" "${DEVICE_POOL:-}" "${DEVICE_POOL_LABEL_DISPLAY:-${DEVICE_POOL_LABEL:-}}" "${SELECTED_DEVICE:-}" "${LAUNCH_BUNDLE_ID:-}" \
     "${DETECTED_BUNDLE_ID:-}" "${LAUNCH_METHOD:-}" "${LAUNCH_DURATION_MS:-}" "${COLD_START_READY_MS:-}" "${COLD_START_WAIT_SECONDS:-}" \
-	    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
-	    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_ARCHIVE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
-	    "${PERF_COLD_START_WARN_MS:-8000}" "${PERF_COLD_START_SLOW_MS:-15000}" "${PERF_CPU_AVG_WARN:-80}" "${PERF_MEMORY_PEAK_WARN_MB:-1500}" "${PERF_FPS_AVG_WARN:-45}" "${PERF_FPS_MIN_WARN:-20}" <<'PY'
+    "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
+    "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_ARCHIVE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
+    "${PERF_COLD_START_WARN_MS:-8000}" "${PERF_COLD_START_SLOW_MS:-15000}" "${PERF_CPU_AVG_WARN:-80}" "${PERF_MEMORY_PEAK_WARN_MB:-1500}" "${PERF_FPS_AVG_WARN:-45}" "${PERF_FPS_MIN_WARN:-20}" \
+    "${QUALITY_STARTED_AT_EPOCH:-}" "${QUALITY_STARTED_AT_ISO:-}" <<'PY'
 import json
 import os
 import re
 import sys
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 summary_path = sys.argv[1]
 (
@@ -464,7 +489,9 @@ summary_path = sys.argv[1]
     memory_peak_warn_mb,
     fps_avg_warn,
     fps_min_warn,
-) = sys.argv[2:38]
+    quality_started_at_epoch,
+    quality_started_at_iso,
+) = sys.argv[2:40]
 
 def to_int(value):
     try:
@@ -491,6 +518,65 @@ def read_text(path, limit_bytes=2 * 1024 * 1024):
             return f.read().decode("utf-8", errors="replace")
     except Exception:
         return ""
+
+def parse_datetime(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    candidates = [
+        text,
+        re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text),
+    ]
+    formats = [
+        "%Y-%m-%d %H:%M:%S.%f %z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ]
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt)
+            except Exception:
+                pass
+    return None
+
+def report_timestamp(text):
+    first_line = (text.splitlines() or [""])[0].strip()
+    if first_line.startswith("{"):
+        try:
+            metadata = json.loads(first_line)
+            parsed = parse_datetime(metadata.get("timestamp") or metadata.get("captureTime"))
+            if parsed:
+                return parsed
+        except Exception:
+            pass
+    for pattern in (
+        r"^(?:Date/Time|Date|End time):\s*(.+)$",
+        r'"timestamp"\s*:\s*"([^"]+)"',
+        r'"captureTime"\s*:\s*"([^"]+)"',
+    ):
+        match = re.search(pattern, text, re.M)
+        if match:
+            parsed = parse_datetime(match.group(1))
+            if parsed:
+                return parsed
+    return None
+
+def first_json_metadata(text):
+    first_line = (text.splitlines() or [""])[0].strip()
+    if first_line.startswith("{"):
+        try:
+            return json.loads(first_line)
+        except Exception:
+            return {}
+    return {}
+
+def in_quality_window(timestamp):
+    started = to_float(quality_started_at_epoch)
+    if not timestamp or started is None:
+        return True
+    return timestamp.timestamp() >= started - 60
 
 def analyze_exceptions(device_log_path, quality_log_path, bundle_id):
     patterns = [
@@ -539,6 +625,9 @@ def analyze_exceptions(device_log_path, quality_log_path, bundle_id):
 def analyze_crash_reports(crash_dir, bundle_id):
     files = []
     samples = []
+    ignored_files = []
+    resource_files = []
+    resource_samples = []
     if not crash_dir or not os.path.isdir(crash_dir):
         return {
             "count": 0,
@@ -553,29 +642,142 @@ def analyze_crash_reports(crash_dir, bundle_id):
                 continue
             full_path = os.path.join(root, name)
             text = read_text(full_path, limit_bytes=512 * 1024)
-            if bundle_id and bundle_id not in text and bundle_id not in name:
+            metadata = first_json_metadata(text)
+            report_bundle = str(metadata.get("bundleID") or metadata.get("bundle_id") or "")
+            report_app = str(metadata.get("app_name") or metadata.get("name") or "")
+            is_target_app = (
+                (bundle_id and (bundle_id in text or bundle_id in name or report_bundle == bundle_id))
+                or report_app == "NNIM"
+                or name.startswith("NNIM.")
+            )
+            if bundle_id and not is_target_app:
+                ignored_files.append(rel(full_path))
                 continue
             rel_path = rel(full_path)
-            files.append(rel_path)
-            if len(samples) >= 5:
+            timestamp = report_timestamp(text)
+            if not in_quality_window(timestamp):
+                ignored_files.append(rel_path)
+                continue
+            bug_type = str(metadata.get("bug_type") or "")
+            lower_name = name.lower()
+            report_kind = "crash"
+            if "wakeups_resource" in lower_name or "cpu_resource" in lower_name or "memory_resource" in lower_name or bug_type in {"142", "145"}:
+                report_kind = "resource"
+            elif "lowbatterylog" in lower_name or bug_type in {"120"}:
+                report_kind = "ignored"
+            if report_kind == "ignored":
+                ignored_files.append(rel_path)
                 continue
             proc = re.search(r"^(?:Process|procName):\s*(.+)$", text, re.M)
+            command = re.search(r"^(?:Command):\s*(.+)$", text, re.M)
             exception = re.search(r"^(?:Exception Type|exception):\s*(.+)$", text, re.M)
             reason = re.search(r"^(?:Exception Reason|Termination Reason|reason):\s*(.+)$", text, re.M)
             crashed_thread = re.search(r"^(?:Crashed Thread|crashedThread):\s*(.+)$", text, re.M)
-            samples.append({
+            event = re.search(r"^(?:Event):\s*(.+)$", text, re.M)
+            sample = {
                 "file": rel_path,
-                "process": proc.group(1).strip()[:160] if proc else "",
+                "process": (proc or command).group(1).strip()[:160] if (proc or command) else report_app,
                 "exception": exception.group(1).strip()[:160] if exception else "",
-                "reason": reason.group(1).strip()[:240] if reason else "",
+                "reason": reason.group(1).strip()[:240] if reason else (event.group(1).strip()[:240] if event else ""),
                 "crashedThread": crashed_thread.group(1).strip()[:80] if crashed_thread else "",
-            })
+                "timestamp": timestamp.isoformat() if timestamp else "",
+                "kind": report_kind,
+            }
+            if report_kind == "resource":
+                resource_files.append(rel_path)
+                if len(resource_samples) < 5:
+                    resource_samples.append(sample)
+                continue
+            files.append(rel_path)
+            if len(samples) < 5:
+                samples.append(sample)
     files.sort()
+    resource_files.sort()
+    ignored_files.sort()
     return {
         "count": len(files),
         "files": files[:20],
         "samples": samples,
     }
+
+def analyze_trace_metadata(result_dir):
+    metadata = {
+        "available": False,
+        "sampleRowsExported": None,
+    }
+    trace_dir = os.path.join(result_dir, "performance.trace")
+    segments_dir = os.path.join(result_dir, "performance-traces")
+    archive = os.path.join(result_dir, "performance.trace.zip")
+    segments = []
+    if os.path.isdir(trace_dir) or os.path.exists(archive):
+        metadata["available"] = True
+    if os.path.isdir(trace_dir):
+        segments.append({
+            "name": "performance.trace",
+            "path": "performance.trace",
+            "current": True,
+            "reason": "final",
+        })
+    if os.path.isdir(segments_dir):
+        manifest = {}
+        manifest_path = os.path.join(segments_dir, "manifest.jsonl")
+        if os.path.exists(manifest_path):
+            try:
+                for line in open(manifest_path, encoding="utf-8"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    item = json.loads(line)
+                    name = os.path.basename(str(item.get("path") or ""))
+                    if name:
+                        manifest[name] = item
+            except Exception:
+                manifest = {}
+        segment_files = sorted(
+            name for name in os.listdir(segments_dir)
+            if name.startswith("performance-") and name.endswith(".trace") and os.path.isdir(os.path.join(segments_dir, name))
+        )
+        metadata["available"] = True
+        for name in segment_files:
+            item = manifest.get(name) or {}
+            segments.append({
+                "name": name,
+                "path": f"performance-traces/{name}",
+                "current": False,
+                "reason": item.get("reason") or "segment",
+                "finishedAt": item.get("finishedAt") or "",
+            })
+    if segments:
+        segments.sort(key=lambda item: (0 if not item.get("current") else 1, item.get("name") or ""))
+        metadata["segmentCount"] = len(segments)
+        metadata["segments"] = segments[:50]
+    toc_path = os.path.join(result_dir, "performance-xctrace-toc.xml")
+    if not os.path.exists(toc_path):
+        return metadata
+    try:
+        root = ET.parse(toc_path).getroot()
+        summary = root.find(".//summary")
+        target = root.find(".//target/process")
+        if summary is not None:
+            def text_of(name):
+                node = summary.find(name)
+                return (node.text or "").strip() if node is not None else ""
+            duration = to_float(text_of("duration"))
+            metadata.update({
+                "durationSeconds": round(duration, 2) if duration is not None else None,
+                "startDate": text_of("start-date"),
+                "endDate": text_of("end-date"),
+                "endReason": text_of("end-reason"),
+                "templateName": text_of("template-name"),
+                "timeLimit": text_of("time-limit"),
+            })
+        if target is not None:
+            metadata["process"] = target.attrib.get("name") or ""
+            metadata["pid"] = target.attrib.get("pid") or ""
+            metadata["terminationReason"] = target.attrib.get("termination-reason") or ""
+    except Exception:
+        pass
+    return metadata
 
 def to_float(value, default=None):
     try:
@@ -717,6 +919,7 @@ def analyze_performance_samples(path):
 data = {
     "status": status,
     "message": message,
+    "startedAt": quality_started_at_iso,
     "sourceBuildNumber": source_build_number,
     "branch": branch,
     "commitHash": commit_hash,
@@ -739,12 +942,12 @@ data = {
     "artifacts": {
         "screenshot": rel(screenshot_file) if os.path.exists(screenshot_file) else "",
         "deviceLog": rel(device_log_file) if os.path.exists(device_log_file) else "",
-	        "processes": rel(process_file) if os.path.exists(process_file) else "",
+        "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
         "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
         "performanceTrace": rel(performance_trace_archive_file) if os.path.exists(performance_trace_archive_file) else "",
         "crashReports": rel(crash_report_dir) if os.path.isdir(crash_report_dir) else "",
-	        "junit": "junit.xml",
+        "junit": "junit.xml",
         "qualityLog": "quality.log",
     },
 }
@@ -768,6 +971,8 @@ data["performanceAnalysis"] = analyze_performance(
     thresholds,
 )
 data["performanceAnalysis"]["samples"] = analyze_performance_samples(performance_sample_file)
+data["performanceAnalysis"]["trace"] = analyze_trace_metadata(result_dir)
+data["performanceAnalysis"]["trace"]["sampleRowsExported"] = data["performanceAnalysis"]["samples"].get("sampleCount", 0)
 data["performanceAnalysis"]["thresholds"] = thresholds
 data["performanceAnalysis"]["conclusion"] = build_performance_conclusions(
     data["performanceAnalysis"],
@@ -1720,7 +1925,8 @@ start_performance_sampling() {
       sampler="tidevice"
     fi
   fi
-  log "性能采样器: ${sampler} (配置=${PERFORMANCE_SAMPLER}, iOS=${DEVICE_IOS_VERSION:-unknown})"
+	  log "性能采样器: ${sampler} (配置=${PERFORMANCE_SAMPLER}, iOS=${DEVICE_IOS_VERSION:-unknown})"
+	  PERFORMANCE_ACTIVE_SAMPLER="${sampler}"
 
   case "${sampler}" in
     xctrace)
@@ -1773,20 +1979,40 @@ resolve_app_pid_with_devicectl() {
   if ! command -v xcrun >/dev/null 2>&1; then
     return 1
   fi
-  local processes_json
+  local processes_json apps_json
   processes_json="${RESULT_DIR}/devicectl-processes.json"
+  apps_json="${RESULT_DIR}/devicectl-apps.json"
   if ! xcrun devicectl device info processes --device "${SELECTED_DEVICE}" --json-output "${processes_json}" --quiet >>"${LOG_FILE}" 2>&1; then
     return 1
   fi
-  python3 - "$processes_json" "${DETECTED_EXECUTABLE_NAME:-}" "${LAUNCH_BUNDLE_ID:-}" <<'PY'
+  xcrun devicectl device info apps --device "${SELECTED_DEVICE}" --json-output "${apps_json}" --quiet >>"${LOG_FILE}" 2>&1 || true
+  python3 - "$processes_json" "$apps_json" "${DETECTED_EXECUTABLE_NAME:-}" "${LAUNCH_BUNDLE_ID:-}" <<'PY'
 import json
+import os
 import sys
+from urllib.parse import urlparse, unquote
 
-path, executable_name, bundle_id = sys.argv[1:4]
+process_path, apps_path, executable_name, bundle_id = sys.argv[1:5]
 try:
-    data = json.load(open(path, encoding="utf-8"))
+    data = json.load(open(process_path, encoding="utf-8"))
 except Exception:
     data = {}
+candidate_executables = {executable_name} if executable_name else set()
+try:
+    apps_data = json.load(open(apps_path, encoding="utf-8"))
+except Exception:
+    apps_data = {}
+for app in apps_data.get("result", {}).get("apps", []):
+    if str(app.get("bundleIdentifier") or "") != bundle_id:
+        continue
+    app_url = str(app.get("url") or "")
+    parsed_path = unquote(urlparse(app_url).path or app_url)
+    app_name = os.path.basename(parsed_path.rstrip("/"))
+    if app_name.endswith(".app"):
+        candidate_executables.add(app_name[:-4])
+    name = str(app.get("name") or "").strip()
+    if name:
+        candidate_executables.add(name)
 items = data.get("result", {}).get("runningProcesses", [])
 matches = []
 for item in items:
@@ -1794,9 +2020,9 @@ for item in items:
     pid = item.get("processIdentifier")
     if not pid:
         continue
-    if executable_name and f"/{executable_name}.app/{executable_name}" in exe:
+    if any(candidate and f"/{candidate}.app/{candidate}" in exe for candidate in candidate_executables):
         matches.append((pid, exe))
-    elif executable_name and exe.endswith(f"/{executable_name}"):
+    elif any(candidate and exe.endswith(f"/{candidate}") for candidate in candidate_executables):
         matches.append((pid, exe))
     elif bundle_id and bundle_id in exe:
         matches.append((pid, exe))
@@ -1810,23 +2036,24 @@ start_xctrace_sampling() {
     log "未找到 xctrace，跳过 xctrace 性能采样。"
     return 1
   fi
-  local app_pid xctrace_pid_file xctrace_log
-  app_pid="$(resolve_app_pid_with_devicectl || true)"
+  local app_pid xctrace_pid_file xctrace_log remaining_seconds
+	  app_pid="$(resolve_app_pid_with_devicectl || true)"
   if [ -z "${app_pid}" ]; then
     log "未能通过 devicectl 获取 App PID，跳过 xctrace 性能采样。"
     return 1
   fi
-  xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
-  xctrace_log="${RESULT_DIR}/performance-xctrace.log"
-  rm -rf "${PERFORMANCE_TRACE_FILE}"
-  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
-  : > "${xctrace_log}"
-  log "启动 xctrace 性能采样: template=${PERFORMANCE_XCTRACE_TEMPLATE}, pid=${app_pid} -> ${PERFORMANCE_TRACE_FILE}"
-  if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
-    (
-      xcrun xctrace record --template "${PERFORMANCE_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --time-limit "${MONKEY_DURATION_SECONDS}s" --output "${PERFORMANCE_TRACE_FILE}" --no-prompt >>"${xctrace_log}" 2>&1
-    ) &
-  else
+	  xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
+	  xctrace_log="${RESULT_DIR}/performance-xctrace.log"
+	  finalize_current_xctrace_segment "restart" || true
+	  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
+	  touch "${xctrace_log}"
+  remaining_seconds="${MONKEY_DURATION_SECONDS:-0}"
+	  log "启动 xctrace 性能采样: template=${PERFORMANCE_XCTRACE_TEMPLATE}, pid=${app_pid}, timeLimit=${remaining_seconds}s -> ${PERFORMANCE_TRACE_FILE}"
+	  if [ "${remaining_seconds:-0}" != "0" ]; then
+	    (
+	      xcrun xctrace record --template "${PERFORMANCE_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --time-limit "${remaining_seconds}s" --output "${PERFORMANCE_TRACE_FILE}" --no-prompt >>"${xctrace_log}" 2>&1
+	    ) &
+	  else
     (
       xcrun xctrace record --template "${PERFORMANCE_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --output "${PERFORMANCE_TRACE_FILE}" --no-prompt >>"${xctrace_log}" 2>&1
     ) &
@@ -1838,22 +2065,73 @@ start_xctrace_sampling() {
     rm -f "${xctrace_pid_file}"
     return 1
   fi
-  return 0
+	  return 0
 }
 
-package_performance_trace() {
+wait_current_xctrace_trace_ready() {
   if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
     return 1
   fi
-  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
-  if command -v ditto >/dev/null 2>&1; then
-    ditto -c -k --keepParent "${PERFORMANCE_TRACE_FILE}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
-  elif command -v zip >/dev/null 2>&1; then
+  local waited=0
+  while [ "${waited}" -lt 30 ]; do
+    if [ -d "${PERFORMANCE_TRACE_FILE}/Trace1.run" ] && [ -s "${PERFORMANCE_TRACE_FILE}/form.template" ]; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+finalize_current_xctrace_segment() {
+  local reason="${1:-segment}"
+  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    return 0
+  fi
+  wait_current_xctrace_trace_ready || true
+  mkdir -p "${PERFORMANCE_TRACE_SEGMENTS_DIR}"
+  local next_index segment_dir
+  next_index="$(find "${PERFORMANCE_TRACE_SEGMENTS_DIR}" -maxdepth 1 -type d -name 'performance-*.trace' 2>/dev/null | wc -l | tr -d ' ')"
+  next_index=$((next_index + 1))
+  segment_dir="${PERFORMANCE_TRACE_SEGMENTS_DIR}/performance-${next_index}.trace"
+  rm -rf "${segment_dir}"
+  mv "${PERFORMANCE_TRACE_FILE}" "${segment_dir}"
+  printf '{"index":%s,"reason":"%s","path":"%s","finishedAt":"%s"}\n' \
+    "${next_index}" "${reason}" "$(basename "${PERFORMANCE_TRACE_SEGMENTS_DIR}")/$(basename "${segment_dir}")" "$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+    >>"${PERFORMANCE_TRACE_SEGMENTS_DIR}/manifest.jsonl"
+  log "保存 xctrace 分段: ${segment_dir} (${reason})"
+}
+
+package_performance_trace() {
+	  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ] && [ ! -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
+	    return 1
+	  fi
+	  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
+	  if [ -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
+	    local package_dir
+	    package_dir="${RESULT_DIR}/performance-trace-package"
+	    rm -rf "${package_dir}"
+	    mkdir -p "${package_dir}"
+	    if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
+	      cp -R "${PERFORMANCE_TRACE_FILE}" "${package_dir}/performance.trace"
+	    fi
+	    cp -R "${PERFORMANCE_TRACE_SEGMENTS_DIR}" "${package_dir}/performance-traces"
+	    if command -v ditto >/dev/null 2>&1; then
+	      ditto -c -k --keepParent "${package_dir}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+	    elif command -v zip >/dev/null 2>&1; then
+	      (
+	        cd "${RESULT_DIR}" && zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${package_dir}")"
+	      ) || true
+	    fi
+	    rm -rf "${package_dir}"
+	  elif command -v ditto >/dev/null 2>&1; then
+	    ditto -c -k --keepParent "${PERFORMANCE_TRACE_FILE}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+	  elif command -v zip >/dev/null 2>&1; then
     (
       cd "${RESULT_DIR}" && zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${PERFORMANCE_TRACE_FILE}")"
     ) || true
   fi
-  [ -s "${PERFORMANCE_TRACE_ARCHIVE_FILE}" ]
+	  [ -s "${PERFORMANCE_TRACE_ARCHIVE_FILE}" ]
 }
 
 export_xctrace_performance_samples() {
@@ -1903,6 +2181,8 @@ export_xctrace_performance_samples() {
     log "xctrace 导出日志: ${export_log}"
     return 1
   fi
+  rm -f "${toc_xml}"
+  xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
   python3 - "${export_xml}" "${PERFORMANCE_SAMPLE_FILE}" <<'PY'
 import json
 import sys
@@ -1991,14 +2271,71 @@ stop_performance_sampling() {
   else
     log "性能采样为空，可能设备不支持 tidevice perf 或采样时间过短。"
   fi
-  stop_xctrace_sampling || true
+	  stop_xctrace_sampling || true
+}
+
+start_xctrace_monitor() {
+  if [ "${PERFORMANCE_ACTIVE_SAMPLER:-}" != "xctrace" ] && [ ! -f "${RESULT_DIR}/performance-xctrace.pid" ]; then
+    return 0
+  fi
+  if [ -f "${PERFORMANCE_TRACE_MONITOR_PID_FILE}" ]; then
+    local existing_pid
+    existing_pid="$(cat "${PERFORMANCE_TRACE_MONITOR_PID_FILE}" 2>/dev/null || true)"
+    if [ -n "${existing_pid}" ] && kill -0 "${existing_pid}" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  (
+    local last_restart_at=0
+    while [ -f "${PERFORMANCE_MONKEY_RUNNING_FILE}" ]; do
+      sleep 10
+      [ -f "${PERFORMANCE_MONKEY_RUNNING_FILE}" ] || break
+      local pid=""
+      if [ -f "${RESULT_DIR}/performance-xctrace.pid" ]; then
+        pid="$(cat "${RESULT_DIR}/performance-xctrace.pid" 2>/dev/null || true)"
+      fi
+      if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+        continue
+      fi
+      if [ -z "${pid}" ] && [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+        continue
+      fi
+      rm -f "${RESULT_DIR}/performance-xctrace.pid"
+      log "检测到 xctrace 采样已结束，Monkey 仍在运行，准备重新采集。"
+      finalize_current_xctrace_segment "xctrace-ended-during-monkey" || true
+      local now
+      now="$(date +%s)"
+      if [ $((now - last_restart_at)) -lt 20 ]; then
+        continue
+      fi
+      last_restart_at="${now}"
+      if start_xctrace_sampling; then
+        log "xctrace 已重新开始采集。"
+      else
+        log "xctrace 重新采集失败，稍后继续尝试。"
+      fi
+    done
+  ) &
+  echo $! > "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"
+  log "xctrace 采样监控已启动: pid=$(cat "${PERFORMANCE_TRACE_MONITOR_PID_FILE}")"
+}
+
+stop_xctrace_monitor() {
+  rm -f "${PERFORMANCE_MONKEY_RUNNING_FILE}"
+  if [ ! -f "${PERFORMANCE_TRACE_MONITOR_PID_FILE}" ]; then
+    return 0
+  fi
+  local pid
+  pid="$(cat "${PERFORMANCE_TRACE_MONITOR_PID_FILE}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"
 }
 
 stop_xctrace_sampling() {
   local xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
-  if [ ! -f "${xctrace_pid_file}" ]; then
-    return 0
-  fi
   local pid
   pid="$(cat "${xctrace_pid_file}" 2>/dev/null || true)"
   if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
@@ -2006,18 +2343,11 @@ stop_xctrace_sampling() {
     wait "${pid}" >/dev/null 2>&1 || true
   fi
   rm -f "${xctrace_pid_file}"
-  if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
-    local waited=0
-    while [ "${waited}" -lt 30 ]; do
-      if [ -d "${PERFORMANCE_TRACE_FILE}/Trace1.run" ] && [ -s "${PERFORMANCE_TRACE_FILE}/form.template" ]; then
-        break
-      fi
-      sleep 1
-      waited=$((waited + 1))
-    done
-  fi
+  wait_current_xctrace_trace_ready || true
   if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
     export_xctrace_performance_samples || true
+  fi
+  if [ -d "${PERFORMANCE_TRACE_FILE}" ] || [ -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
     if package_performance_trace; then
       log "xctrace 性能采样: ${PERFORMANCE_TRACE_ARCHIVE_FILE}"
     else
@@ -2115,6 +2445,40 @@ PY
   return 1
 }
 
+terminate_device_process_matching() {
+  local pattern="$1"
+  if [ -z "${pattern}" ] || [ -z "${SELECTED_DEVICE:-}" ] || ! command -v xcrun >/dev/null 2>&1; then
+    return 0
+  fi
+  local processes_json pid
+  processes_json="${RESULT_DIR}/cleanup-device-processes.json"
+  if ! xcrun devicectl device info processes --device "${SELECTED_DEVICE}" --json-output "${processes_json}" --quiet >/dev/null 2>&1; then
+    return 0
+  fi
+  while IFS= read -r pid; do
+    if [ -n "${pid}" ]; then
+      xcrun devicectl device process terminate --device "${SELECTED_DEVICE}" --pid "${pid}" --kill --quiet >/dev/null 2>&1 || true
+    fi
+  done < <(python3 - "${processes_json}" "${pattern}" <<'PY'
+import json
+import re
+import sys
+
+path, pattern = sys.argv[1:3]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    data = {}
+regex = re.compile(pattern)
+for item in data.get("result", {}).get("runningProcesses", []):
+    text = json.dumps(item, ensure_ascii=False)
+    pid = item.get("processIdentifier")
+    if pid and regex.search(text):
+        print(pid)
+PY
+)
+}
+
 wda_url_part() {
   local part="$1"
   python3 - "$WDA_URL" "$part" <<'PY'
@@ -2160,6 +2524,30 @@ PY
 
 check_wda_ready() {
   check_wda_ready_url "${1:-${WDA_URL}}"
+}
+
+coredevice_tunnel_wda_url() {
+  if ! command -v xcrun >/dev/null 2>&1; then
+    return 1
+  fi
+  local details
+  details="$(xcrun devicectl device info details --device "${SELECTED_DEVICE}" 2>/dev/null || true)"
+  if [ -z "${details}" ]; then
+    return 1
+  fi
+  python3 - "${details}" <<'PY'
+import re
+import sys
+
+text = sys.argv[1]
+match = re.search(r"tunnelIPAddress:\s*([^\s]+)", text)
+if not match:
+    sys.exit(1)
+host = match.group(1).strip()
+if ":" in host and not host.startswith("["):
+    host = f"[{host}]"
+print(f"http://{host}:8100")
+PY
 }
 
 is_local_wda_host() {
@@ -2399,7 +2787,7 @@ ensure_wda_ready() {
     log "检测到已有 WebDriverAgentRunner xcodebuild 进程，复用。"
   fi
 
-  local attempt max_attempts xcodebuild_pid
+  local attempt max_attempts xcodebuild_pid tunnel_wda_url
   max_attempts=$((WDA_START_TIMEOUT_SECONDS / 2))
   if [ "${max_attempts}" -lt 1 ]; then
     max_attempts=1
@@ -2408,6 +2796,13 @@ ensure_wda_ready() {
     if check_wda_ready "${WDA_URL}"; then
       MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
       log "WDA 启动成功: ${MONKEY_RUNTIME_WDA_URL}"
+      write_quality_progress "running" "wda" "WDA 启动成功" 1.4
+      return 0
+    fi
+    tunnel_wda_url="$(coredevice_tunnel_wda_url || true)"
+    if [ -n "${tunnel_wda_url}" ] && check_wda_ready "${tunnel_wda_url}"; then
+      MONKEY_RUNTIME_WDA_URL="${tunnel_wda_url}"
+      log "WDA 通过 CoreDevice 隧道启动成功: ${MONKEY_RUNTIME_WDA_URL}"
       write_quality_progress "running" "wda" "WDA 启动成功" 1.4
       return 0
     fi
@@ -2450,9 +2845,9 @@ ensure_wda_ready() {
 run_monkey_test() {
   rm -f "${MONKEY_REPORT_FILE}"
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
-    log "开始 Monkey 测试: 持续 ${MONKEY_DURATION_SECONDS} 秒，WDA=${WDA_URL}"
+    log "开始 Monkey 测试: 持续 ${MONKEY_DURATION_SECONDS} 秒，WDA=${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"
   else
-    log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${WDA_URL}"
+    log "开始 Monkey 测试: ${MONKEY_EVENT_COUNT} 次随机操作，WDA=${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"
   fi
   write_quality_progress "running" "monkey" "准备 Monkey 测试环境" 1.5
   if ! ensure_wda_ready; then
@@ -3462,46 +3857,55 @@ DEVICE_IOS_VERSION="$(detect_device_ios_version "${TIDEVICE_CMD}" "${SELECTED_DE
 log "设备 iOS 版本: ${DEVICE_IOS_VERSION:-unknown}"
 write_quality_progress "running" "device" "已选择设备 ${SELECTED_DEVICE}" 0.3
 
-write_quality_progress "running" "package" "获取 IPA 包" 0.4
-download_status=0
-download_ipa "${PACKAGE_URL}" || download_status=$?
-if [ "${download_status}" != "0" ] && [ -n "${RESOLVED_XCARCHIVE_PATH}" ]; then
-  log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${RESOLVED_XCARCHIVE_PATH}"
+if [ "${SKIP_APP_INSTALL}" = "1" ]; then
+  if [ -z "${APP_BUNDLE_ID}" ]; then
+    fail "已开启跳过安装，但未配置 APP_BUNDLE_ID，无法启动已安装 App。"
+  fi
+  DETECTED_BUNDLE_ID="${APP_BUNDLE_ID}"
+  LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID}"
+  log "跳过 IPA 获取和安装，直接测试设备上已安装 App: ${LAUNCH_BUNDLE_ID}"
+  write_quality_progress "running" "install" "跳过安装，使用已安装 App" 1.0
+else
+  write_quality_progress "running" "package" "获取 IPA 包" 0.4
   download_status=0
-  package_ipa_from_xcarchive "${RESOLVED_XCARCHIVE_PATH}" || download_status=$?
-fi
-if [ "${download_status}" != "0" ] && [ -n "${ARCHIVE_URL}" ] && [ "${ARCHIVE_URL}" != "${PACKAGE_URL}" ]; then
-  log "PACKAGE_URL 不可用，尝试 ARCHIVE_URL: ${ARCHIVE_URL}"
-  download_status=0
-  download_ipa "${ARCHIVE_URL}" || download_status=$?
-fi
-if [ "${download_status}" = "2" ]; then
-  file_desc="$(file "${IPA_FILE}" 2>/dev/null || true)"
-  fail "下载到的文件不是有效 IPA，可能 PACKAGE_URL 是蒲公英页面短链而不是直接下载地址。PACKAGE_URL=${PACKAGE_URL:-N/A} ARCHIVE_URL=${ARCHIVE_URL:-N/A} 文件信息=${file_desc:-N/A}"
-elif [ "${download_status}" != "0" ]; then
-  fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
-fi
-compute_ipa_hashes || fail "计算 IPA 指纹失败：${IPA_FILE}"
-detect_bundle_id_from_ipa || true
-log "IPA: ${IPA_FILE}"
-if [ -n "${DETECTED_BUNDLE_ID}" ]; then
-  log "检测到安装包 Bundle ID: ${DETECTED_BUNDLE_ID}"
-fi
-if [ -n "${DETECTED_EXECUTABLE_NAME}" ]; then
-  log "检测到安装包可执行名: ${DETECTED_EXECUTABLE_NAME}"
-fi
-if [ -n "${DETECTED_SHORT_VERSION}" ] || [ -n "${DETECTED_BUNDLE_VERSION}" ]; then
-  log "检测到安装包版本: ${DETECTED_SHORT_VERSION:-N/A} (${DETECTED_BUNDLE_VERSION:-N/A})"
-fi
-log "检测到安装包指纹: sha256=${IPA_SHA256}, md5=${IPA_MD5}"
-write_quality_progress "running" "package" "IPA 包已就绪" 0.8
+  download_ipa "${PACKAGE_URL}" || download_status=$?
+  if [ "${download_status}" != "0" ] && [ -n "${RESOLVED_XCARCHIVE_PATH}" ]; then
+    log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${RESOLVED_XCARCHIVE_PATH}"
+    download_status=0
+    package_ipa_from_xcarchive "${RESOLVED_XCARCHIVE_PATH}" || download_status=$?
+  fi
+  if [ "${download_status}" != "0" ] && [ -n "${ARCHIVE_URL}" ] && [ "${ARCHIVE_URL}" != "${PACKAGE_URL}" ]; then
+    log "PACKAGE_URL 不可用，尝试 ARCHIVE_URL: ${ARCHIVE_URL}"
+    download_status=0
+    download_ipa "${ARCHIVE_URL}" || download_status=$?
+  fi
+  if [ "${download_status}" = "2" ]; then
+    file_desc="$(file "${IPA_FILE}" 2>/dev/null || true)"
+    fail "下载到的文件不是有效 IPA，可能 PACKAGE_URL 是蒲公英页面短链而不是直接下载地址。PACKAGE_URL=${PACKAGE_URL:-N/A} ARCHIVE_URL=${ARCHIVE_URL:-N/A} 文件信息=${file_desc:-N/A}"
+  elif [ "${download_status}" != "0" ]; then
+    fail "无法获取 IPA。请确保 Jenkins 传入 PACKAGE_URL，且该地址可被打包机下载。ARCHIVE_URL=${ARCHIVE_URL:-N/A}"
+  fi
+  compute_ipa_hashes || fail "计算 IPA 指纹失败：${IPA_FILE}"
+  detect_bundle_id_from_ipa || true
+  log "IPA: ${IPA_FILE}"
+  if [ -n "${DETECTED_BUNDLE_ID}" ]; then
+    log "检测到安装包 Bundle ID: ${DETECTED_BUNDLE_ID}"
+  fi
+  if [ -n "${DETECTED_EXECUTABLE_NAME}" ]; then
+    log "检测到安装包可执行名: ${DETECTED_EXECUTABLE_NAME}"
+  fi
+  if [ -n "${DETECTED_SHORT_VERSION}" ] || [ -n "${DETECTED_BUNDLE_VERSION}" ]; then
+    log "检测到安装包版本: ${DETECTED_SHORT_VERSION:-N/A} (${DETECTED_BUNDLE_VERSION:-N/A})"
+  fi
+  log "检测到安装包指纹: sha256=${IPA_SHA256}, md5=${IPA_MD5}"
+  write_quality_progress "running" "package" "IPA 包已就绪" 0.8
 
-if ! install_ipa; then
-  fail "安装 IPA 失败：tidevice 未能完成安装，devicectl 兜底安装也失败。请确认 iPhone 已解锁、已信任此电脑、USB 连接稳定，并查看 ${LOG_FILE}。"
+  if ! install_ipa; then
+    fail "安装 IPA 失败：tidevice 未能完成安装，devicectl 兜底安装也失败。请确认 iPhone 已解锁、已信任此电脑、USB 连接稳定，并查看 ${LOG_FILE}。"
+  fi
+  write_quality_progress "running" "install" "IPA 安装完成" 1.0
+  LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID:-${DETECTED_BUNDLE_ID}}"
 fi
-write_quality_progress "running" "install" "IPA 安装完成" 1.0
-
-LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID:-${DETECTED_BUNDLE_ID}}"
 if [ -n "${APP_BUNDLE_ID}" ] && [ -n "${DETECTED_BUNDLE_ID}" ] && [ "${APP_BUNDLE_ID}" != "${DETECTED_BUNDLE_ID}" ]; then
   log "配置的 APP_BUNDLE_ID=${APP_BUNDLE_ID} 与安装包 Bundle ID=${DETECTED_BUNDLE_ID} 不一致，按配置启动。"
 fi
@@ -3531,7 +3935,10 @@ process_status=0
 check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
 if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
   monkey_status=0
+  touch "${PERFORMANCE_MONKEY_RUNNING_FILE}"
+  start_xctrace_monitor || true
   run_monkey_test || monkey_status=$?
+  stop_xctrace_monitor || true
   load_monkey_result
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
     log "Monkey 结果: ${MONKEY_STATUS:-unknown}，执行 ${MONKEY_EXECUTED_EVENTS:-0} 次，时长 ${MONKEY_DURATION_SECONDS} 秒，${MONKEY_MESSAGE:-}"

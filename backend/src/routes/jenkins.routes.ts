@@ -2167,9 +2167,13 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const branch = normalizeBranchName(String(req.body?.branch || ''));
     const commitHash = String(req.body?.commitHash || '').trim();
     const appVersion = String(req.body?.appVersion || '').trim();
-    const packageUrl = String(req.body?.packageUrl || '').trim();
+    const rawPackageUrl = String(req.body?.packageUrl || '').trim();
     const xcarchivePath = String(req.body?.xcarchivePath || '').trim();
     const archiveUrl = String(req.body?.archiveUrl || '').trim();
+    const skipInstall = req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
+    const defaultAppBundleId = skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im';
+    const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
+    const packageUrl = skipInstall ? `skip-install:${appBundleId}` : rawPackageUrl;
     const rawTestSuite = String(req.body?.testSuite || 'smoke').trim();
     const testSuite = normalizeQualitySuite(rawTestSuite);
     const jenkinsTestSuite = testSuite === 'monkey' ? 'smoke' : testSuite;
@@ -2197,7 +2201,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     if (testSuite === 'monkey' && !QA_MONKEY_DURATION_SECONDS.has(monkeyDurationSeconds)) {
       res.status(400).json({
         success: false,
-        error: `Monkey 执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：0.5小时、1小时、4小时、8小时`,
+        error: `Monkey 执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
       });
       return;
     }
@@ -2256,7 +2260,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       DEVICE_CLOUD: 'LocalMac',
       QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : 'local-ios-device',
       QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : 'local-usb',
-      APP_BUNDLE_ID: getRuntimeEnv('QA_APP_BUNDLE_ID') || 'com.nndev.im',
+      APP_BUNDLE_ID: appBundleId,
+      SKIP_APP_INSTALL: skipInstall ? '1' : '0',
       COLD_START_DETECT_SCREEN: getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1',
       COLD_START_READY_TIMEOUT_SECONDS: getRuntimeEnv('QA_COLD_START_READY_TIMEOUT_SECONDS') || '45',
       COLD_START_READY_TEXT: getRuntimeEnv('QA_COLD_START_READY_TEXT') || '',

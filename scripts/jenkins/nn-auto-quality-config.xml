@@ -91,6 +91,12 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>SKIP_APP_INSTALL</name>
+          <defaultValue>0</defaultValue>
+          <description>1=跳过 IPA 获取和安装，直接启动设备上已安装的 APP_BUNDLE_ID，适用于 TestFlight 已手动安装后的 Monkey 测试。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>QUALITY_RUNNER</name>
           <defaultValue>local-ios-device</defaultValue>
           <trim>true</trim>

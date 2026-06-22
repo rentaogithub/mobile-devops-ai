@@ -20,7 +20,7 @@ import type { DSYMInfo, SymbolicationResult } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
-type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'summary';
+type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'evidence' | 'summary';
 
 const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '蒲公英', value: 'Pgyer' },
@@ -45,6 +45,7 @@ const MONKEY_DURATION_OPTIONS = [
   { label: '8 小时', value: 28800 },
 ];
 
+const PRODUCTION_BUNDLE_ID = 'com.nnhuyu.im';
 const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：nn-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称。';
 
 function normalizeQualityError(err: any) {
@@ -53,6 +54,10 @@ function normalizeQualityError(err: any) {
     return QUALITY_JOB_MISSING_MESSAGE;
   }
   return message || '加载自动质检任务列表失败';
+}
+
+function shouldUseInstalledProductionApp(build?: JenkinsBuild | null) {
+  return build?.publishChannel === 'TestFlight' || build?.publishChannel === 'AppStore';
 }
 
 function isReleaseBranch(branch: string) {
@@ -247,6 +252,7 @@ function PerformanceAnalysisSummary({
   analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
 }) {
   const issues = analysis?.conclusion?.issues || [];
+  const traceSegments = analysis?.trace?.segments || [];
   if (!analysis) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有性能报告" />;
   }
@@ -265,6 +271,13 @@ function PerformanceAnalysisSummary({
         {analysis?.monkeyEventsPerMinute !== undefined && <Tag>速率 {analysis.monkeyEventsPerMinute} 次/分钟</Tag>}
         {analysis?.monkeyDurationMs !== undefined && <Tag>Monkey 耗时 {formatMilliseconds(analysis.monkeyDurationMs)}</Tag>}
         {analysis?.samples?.sampleCount !== undefined && <Tag>采样 {analysis.samples.sampleCount} 条</Tag>}
+        {analysis?.trace?.available && (
+          <Tag color={analysis.trace.sampleRowsExported ? 'blue' : 'gold'}>
+            Trace {analysis.trace.segmentCount && analysis.trace.segmentCount > 1
+              ? `${analysis.trace.segmentCount} 段`
+              : (analysis.trace.durationSeconds ? formatSeconds(Math.round(analysis.trace.durationSeconds)) : '已采集')}
+          </Tag>
+        )}
         {analysis?.samples?.cpu?.avg !== undefined && analysis.samples.cpu.avg !== null && (
           <Tag>CPU 平均 {analysis.samples.cpu.avg}% / 峰值 {analysis.samples.cpu.max ?? '-'}%</Tag>
         )}
@@ -297,6 +310,41 @@ function PerformanceAnalysisSummary({
         />
       ) : (
         analysis?.conclusion?.severity && <Alert showIcon type="success" message="未发现性能风险" />
+      )}
+      {analysis.trace?.available && !analysis.samples?.sampleCount && (
+        <Alert
+          showIcon
+          type="info"
+          message="Trace 已采集，未导出可绘制采样"
+          description={(
+            <Space direction="vertical" size={4}>
+              <Text type="secondary">
+                {[
+                  analysis.trace.templateName ? `模板 ${analysis.trace.templateName}` : '',
+                  analysis.trace.durationSeconds ? `采集 ${formatSeconds(Math.round(analysis.trace.durationSeconds))}` : '',
+                  analysis.trace.segmentCount && analysis.trace.segmentCount > 1 ? `分段 ${analysis.trace.segmentCount} 段` : '',
+                  analysis.trace.endReason ? `结束原因 ${analysis.trace.endReason}` : '',
+                  analysis.trace.terminationReason ? `进程 ${analysis.trace.terminationReason}` : '',
+                ].filter(Boolean).join('，') || 'xctrace 只导出了 trace 元信息，没有 CPU/内存/FPS 明细行。'}
+              </Text>
+            </Space>
+          )}
+        />
+      )}
+      {traceSegments.length > 0 && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>Trace 分段</Text>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            {traceSegments.map((segment, index) => (
+              <Space key={`${segment.path || segment.name || index}`} size={8} wrap>
+                <Tag color={segment.current ? 'blue' : 'default'}>{segment.current ? '当前' : `分段 ${index + 1}`}</Tag>
+                <Text code>{segment.path || segment.name || '-'}</Text>
+                {segment.reason && <Text type="secondary">{segment.reason}</Text>}
+                {segment.finishedAt && <Text type="secondary">{segment.finishedAt}</Text>}
+              </Space>
+            ))}
+          </Space>
+        </Space>
       )}
     </Space>
   );
@@ -389,12 +437,29 @@ function PerformanceDiagnostics({
   samples,
   monkeyPreview,
   monkeyLoading,
+  analysis,
 }: {
   samples: JenkinsQualityPerformanceSamples | null;
   monkeyPreview: JenkinsQualityArtifactPreview | null;
   monkeyLoading: boolean;
+  analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
 }) {
   if (!samples?.samples?.length) {
+    if (analysis?.trace?.available) {
+      return (
+        <Alert
+          showIcon
+          type="info"
+          message="暂无 CPU / 内存 / FPS 明细，无法生成趋势诊断"
+          description={[
+            analysis.trace.templateName ? `Trace 模板：${analysis.trace.templateName}` : '',
+            analysis.trace.durationSeconds ? `采集时长：${formatSeconds(Math.round(analysis.trace.durationSeconds))}` : '',
+            analysis.trace.segmentCount && analysis.trace.segmentCount > 1 ? `Trace 分段：${analysis.trace.segmentCount} 段` : '',
+            analysis.trace.endReason ? `结束原因：${analysis.trace.endReason}` : '',
+          ].filter(Boolean).join('；') || 'xctrace 文件已生成，但当前导出结果没有可解析的采样行。'}
+        />
+      );
+    }
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无性能采样，无法生成诊断" />;
   }
 
@@ -1230,6 +1295,7 @@ export default function CICDPage() {
   const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(14400);
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [qualityDeviceUdids, setQualityDeviceUdids] = useState<string[]>([]);
+  const [qualitySkipInstall, setQualitySkipInstall] = useState(false);
   const [selectedBuildLog, setSelectedBuildLog] = useState<{
     build: JenkinsBuild;
     log: string;
@@ -1315,7 +1381,7 @@ export default function CICDPage() {
   }
 
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
-    const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000];
+    const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
     const previousNumber = previousLatest ? Number(previousLatest) : 0;
     for (const delay of delays) {
       if (delay > 0) {
@@ -1326,9 +1392,6 @@ export default function CICDPage() {
       const latestNumber = latestBuild ? Number(latestBuild.number) : 0;
 
       if (latestNumber && (!previousNumber || latestNumber > previousNumber)) {
-        return;
-      }
-      if (nextData?.builds?.some((build) => isQualityBuildEffectivelyRunning(build))) {
         return;
       }
     }
@@ -1722,6 +1785,7 @@ export default function CICDPage() {
     setQualityMonkeyDurationSeconds(14400);
     setQualityDevicePool(nextPool);
     setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool, nextSuites));
+    setQualitySkipInstall(shouldUseInstalledProductionApp(fallbackBuild));
     setQualityModalOpen(true);
   };
 
@@ -1762,11 +1826,14 @@ export default function CICDPage() {
           devicePool: qualityDevicePool,
           deviceUdid: qualityDeviceUdids[index],
           monkeyDurationSeconds: suite === 'monkey' ? qualityMonkeyDurationSeconds : undefined,
+          skipInstall: qualitySkipInstall,
+          appBundleId: qualitySkipInstall ? PRODUCTION_BUNDLE_ID : undefined,
         })));
       setQualitySubmitMessage('已提交，正在等待 Jenkins 创建任务并刷新列表...');
       message.success(`已触发 ${qualitySuites.length} 个自动质检任务：#${qualityBuild.number}`);
       setQualityModalOpen(false);
       setQualitySubmitMessage('');
+      void refreshQualitySection();
       void refreshQualityBuildsUntilUpdated(previousLatestQualityBuild);
     } catch (err: any) {
       message.error(err?.error || err?.message || '触发自动质检失败');
@@ -2688,7 +2755,9 @@ export default function CICDPage() {
                 label: `#${build.number} ${build.branchName || '-'} ${build.appVersion || ''}`,
               }))}
               onChange={(value) => {
-                setQualityBuild((data?.builds || []).find((build) => build.number === value) || null);
+                const nextBuild = (data?.builds || []).find((build) => build.number === value) || null;
+                setQualityBuild(nextBuild);
+                setQualitySkipInstall(shouldUseInstalledProductionApp(nextBuild));
               }}
             />
           </div>
@@ -2737,6 +2806,15 @@ export default function CICDPage() {
               />
             </div>
           )}
+          <div>
+            <Checkbox
+              checked={qualitySkipInstall}
+              disabled={qualitySubmitting}
+              onChange={(event) => setQualitySkipInstall(event.target.checked)}
+            >
+              使用设备上已安装的 App
+            </Checkbox>
+          </div>
           <div>
             <Text strong>设备池（空闲）</Text>
             {availableQualityDevicePools.length === 0 && (
@@ -2913,25 +2991,10 @@ export default function CICDPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Row gutter={[16, 16]}>
-              <Col xs={24} lg={10}>
-                <Card size="small" title="启动截图">
-                  {qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl ? (
-                    <Image
-                      src={qualityReportBuild.qualitySummary.artifacts.screenshotUrl}
-                      alt="质检截图"
-                      style={{ maxHeight: 420, objectFit: 'contain' }}
-                    />
-                  ) : (
-                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务未归档截图" />
-                  )}
-                </Card>
-              </Col>
-              <Col xs={24} lg={14}>
-                <Card
-                  size="small"
-                  title="质检汇总"
-                  extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
+            <Card
+              size="small"
+              title="质检汇总"
+              extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
                     <Button
                       size="small"
                       type="link"
@@ -2943,8 +3006,8 @@ export default function CICDPage() {
                     >
                       summary.json
                     </Button>
-                  )}
-                >
+              )}
+            >
                   <Space wrap>
                     <Button
                       icon={<FileTextOutlined />}
@@ -2988,6 +3051,17 @@ export default function CICDPage() {
                       }}
                     >
                       崩溃分析
+                    </Button>
+                    <Button
+                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl}
+                      type={activeQualitySummaryView === 'evidence' ? 'primary' : 'default'}
+                      onClick={() => {
+                        setActiveQualitySummaryView('evidence');
+                        setQualityArtifactPreview(null);
+                        setQualityPerformanceReportOpen(false);
+                      }}
+                    >
+                      现场证据
                     </Button>
                   </Space>
                   {activeQualitySummaryView === 'log' && (
@@ -3065,6 +3139,21 @@ export default function CICDPage() {
                       >
                         {qualityArtifactPreview.content || '文件内容为空'}
                       </pre>
+	                    </Card>
+	                  )}
+                  {activeQualitySummaryView === 'evidence' && (
+                    <Card size="small" title="现场证据" style={{ marginTop: 16 }}>
+                      {qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl ? (
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Image
+                            src={qualityReportBuild.qualitySummary.artifacts.screenshotUrl}
+                            alt="质检截图"
+                            style={{ maxHeight: 520, objectFit: 'contain' }}
+                          />
+                        </Space>
+                      ) : (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务未归档截图" />
+                      )}
                     </Card>
                   )}
                   {activeQualitySummaryView === 'performance' && qualityPerformanceReportOpen && (
@@ -3111,14 +3200,22 @@ export default function CICDPage() {
                             samples={qualityPerformanceSamples}
                             monkeyPreview={qualityMonkeyReportDigest}
                             monkeyLoading={qualityMonkeyReportDigestLoading}
+                            analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
                           />
                         </Space>
                         <Space direction="vertical" size={8} style={{ width: '100%' }}>
                           <Text strong>性能分析图</Text>
                           {qualityPerformanceLoading ? (
                             <Alert showIcon type="info" message="正在加载性能采样..." />
-                          ) : qualityPerformanceSamples ? (
+                          ) : qualityPerformanceSamples?.samples?.length ? (
                             <PerformanceSamplesChart data={qualityPerformanceSamples} />
+                          ) : qualityReportBuild.qualitySummary?.performanceAnalysis?.trace?.available ? (
+                            <Alert
+                              showIcon
+                              type="info"
+                              message="Trace 已采集，暂无可绘制指标"
+                              description="当前 xctrace 导出结果没有 CPU、内存或 FPS 明细行，可下载 Trace 用 Instruments 打开继续分析。"
+                            />
                           ) : (
                             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />
                           )}
@@ -3135,9 +3232,7 @@ export default function CICDPage() {
                       description="如果任务刚结束，稍等几秒刷新列表；如果 Jenkins 未完成归档，可先打开 Jenkins 控制台查看原始日志。"
                     />
                   )}
-                </Card>
-              </Col>
-            </Row>
+            </Card>
           </Space>
         )}
       </Modal>
