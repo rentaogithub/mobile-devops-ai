@@ -1060,12 +1060,43 @@ function readLocalQualitySummary(jobName: string, build: any) {
 
 function normalizeQualitySummaryStatus(summary: any) {
   if (!summary || typeof summary !== 'object') return summary;
-  const performanceSeverity = String(summary?.performanceAnalysis?.conclusion?.severity || '').toLowerCase();
+  const testSuite = String(summary?.testSuite || summary?.suite || '').toLowerCase();
+  const isMonkeySuite = testSuite === 'monkey';
+  const includeStutterMetrics = testSuite === 'stutter';
+  const isStutterMetric = (item: any) => /stutter|framestutter|fps|卡顿|帧|hitch/i.test(String(item?.metric || item?.message || ''));
+  const rawPerformanceIssues = Array.isArray(summary?.performanceAnalysis?.conclusion?.issues)
+    ? summary.performanceAnalysis.conclusion.issues
+    : [];
+  const performanceIssues = includeStutterMetrics
+    ? rawPerformanceIssues
+    : rawPerformanceIssues.filter((item: any) => !isStutterMetric(item));
+  const performanceSeverity = performanceIssues.some((item: any) => item?.severity === 'failed')
+    ? 'failed'
+    : (performanceIssues.length > 0 ? 'warning' : 'passed');
   const exceptionSeverity = String(summary?.exceptionAnalysis?.severity || '').toLowerCase();
-  const severeActionCount = Number(summary?.performanceAnalysis?.stutter?.severeActionCount || 0);
-  const severeFrameHitchCount = Number(summary?.performanceAnalysis?.frameStutter?.severeHitchCount || 0);
+  const severeActionCount = includeStutterMetrics ? Number(summary?.performanceAnalysis?.stutter?.severeActionCount || 0) : 0;
+  const severeFrameHitchCount = includeStutterMetrics ? Number(summary?.performanceAnalysis?.frameStutter?.severeHitchCount || 0) : 0;
+  const monkeyStatus = String(summary?.monkeyStatus || '').toLowerCase();
+  const monkeyFailed = isMonkeySuite && ['failed', 'failure'].includes(monkeyStatus);
+  const originalStatus = String(summary?.status || '').toLowerCase();
+  const originalMessage = String(summary?.message || '');
+  const onlyIgnoredPerformanceFailure = isMonkeySuite &&
+    ['failed', 'failure'].includes(originalStatus) &&
+    rawPerformanceIssues.length > 0 &&
+    performanceIssues.length === 0 &&
+    (!originalMessage || /stutter|framestutter|fps|卡顿|帧|hitch/i.test(originalMessage));
   const nextSummary = { ...summary };
-  if (exceptionSeverity === 'failed' || performanceSeverity === 'failed' || severeActionCount > 0 || severeFrameHitchCount > 0) {
+  if (summary?.performanceAnalysis?.conclusion) {
+    nextSummary.performanceAnalysis = {
+      ...summary.performanceAnalysis,
+      conclusion: {
+        ...summary.performanceAnalysis.conclusion,
+        severity: performanceSeverity,
+        issues: performanceIssues,
+      },
+    };
+  }
+  if (exceptionSeverity === 'failed' || monkeyFailed || performanceSeverity === 'failed' || severeActionCount > 0 || severeFrameHitchCount > 0) {
     nextSummary.status = 'failed';
     const crashSample = summary?.exceptionAnalysis?.crashReports?.samples?.[0];
     const watchdogCount = Number(summary?.exceptionAnalysis?.watchdogCount || 0);
@@ -1073,12 +1104,18 @@ function normalizeQualitySummaryStatus(summary: any) {
       ? `检测到 ${crashSample.process || 'App'} ${watchdogCount > 0 || /watchdog|8badf00d/i.test(String(crashSample.exception || crashSample.reason || '')) ? 'Watchdog 卡死' : '崩溃'}：${crashSample.exception || crashSample.reason || crashSample.file || 'crash report'}`
       : '';
     const issueMessage = exceptionMessage ||
-      summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => item?.severity === 'failed')?.message ||
-      summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => /stutter|卡顿|hitch/i.test(String(item?.metric || item?.message || '')))?.message;
+      (monkeyFailed ? (summary.message || 'Monkey 测试失败') : '') ||
+      performanceIssues.find((item: any) => item?.severity === 'failed')?.message ||
+      performanceIssues.find((item: any) => /stutter|卡顿|hitch/i.test(String(item?.metric || item?.message || '')))?.message;
     nextSummary.message = issueMessage || summary.message || '质检失败';
-  } else if (String(nextSummary.status || '').toLowerCase() === 'passed' && performanceSeverity === 'warning') {
+  } else if (onlyIgnoredPerformanceFailure) {
+    nextSummary.status = performanceSeverity === 'warning' ? 'unstable' : 'passed';
+    nextSummary.message = performanceSeverity === 'warning'
+      ? (performanceIssues.find((item: any) => item?.message)?.message || '质检完成，存在基础性能风险')
+      : '质检完成';
+  } else if (['passed', 'success'].includes(String(nextSummary.status || '').toLowerCase()) && performanceSeverity === 'warning') {
     nextSummary.status = 'unstable';
-    const issueMessage = summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => item?.message)?.message;
+    const issueMessage = performanceIssues.find((item: any) => item?.message)?.message;
     nextSummary.message = issueMessage || summary.message || '质检完成，存在性能风险';
   }
   return nextSummary;
@@ -1111,7 +1148,8 @@ async function hasActiveQualityScriptProcess() {
 
 async function buildCompletedOverride(jobName: string, build: any, localSummary?: any | null, localProgress?: any | null) {
   if (!build?.building) return null;
-  const summaryStatus = String(localSummary?.status || '').toLowerCase();
+  const normalizedLocalSummary = normalizeQualitySummaryStatus(localSummary);
+  const summaryStatus = String(normalizedLocalSummary?.status || '').toLowerCase();
   const progressStatus = String(localProgress?.status || '').toLowerCase();
   const status = summaryStatus || (isTerminalQualityProgress(localProgress) ? progressStatus || 'passed' : '');
   if (!['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(status)) return null;
@@ -1125,7 +1163,7 @@ async function buildCompletedOverride(jobName: string, build: any, localSummary?
     result,
     duration: build.duration || Math.max(0, Date.now() - Number(build.timestamp || Date.now())),
     description: [build.description, '本机检测到质检 summary 已生成，Jenkins 构建状态未及时刷新，已按本地报告纠偏。'].filter(Boolean).join('\n'),
-    completedMessage: localSummary?.message || localProgress?.message || (result === 'SUCCESS' ? '质检完成' : '质检失败'),
+    completedMessage: normalizedLocalSummary?.message || localProgress?.message || (result === 'SUCCESS' ? '质检完成' : '质检失败'),
   };
 }
 

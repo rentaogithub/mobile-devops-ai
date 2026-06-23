@@ -935,8 +935,9 @@ def analyze_frame_stutters(path):
         "samples": [],
     }
 
-def build_performance_conclusions(performance, samples, thresholds):
+def build_performance_conclusions(performance, samples, thresholds, test_suite=""):
     issues = []
+    include_stutter_metrics = str(test_suite or "").lower() == "stutter"
     cold_ms = performance.get("coldStartReadyMs")
     if cold_ms is not None:
         if cold_ms > thresholds["coldStartSlowMs"]:
@@ -953,11 +954,11 @@ def build_performance_conclusions(performance, samples, thresholds):
         issues.append({"severity": "warning", "metric": "memory.max", "message": f"内存峰值 {mem_max}MB，超过阈值 {thresholds['memoryPeakWarnMB']}MB"})
 
     fps_avg = ((samples or {}).get("fps") or {}).get("avg")
-    if fps_avg is not None and fps_avg < thresholds["fpsAvgWarn"]:
+    if include_stutter_metrics and fps_avg is not None and fps_avg < thresholds["fpsAvgWarn"]:
         issues.append({"severity": "warning", "metric": "fps.avg", "message": f"FPS 平均 {fps_avg}，低于阈值 {thresholds['fpsAvgWarn']}"})
 
     fps_min = ((samples or {}).get("fps") or {}).get("min")
-    if fps_min is not None and fps_min < thresholds["fpsMinWarn"]:
+    if include_stutter_metrics and fps_min is not None and fps_min < thresholds["fpsMinWarn"]:
         issues.append({"severity": "warning", "metric": "fps.min", "message": f"FPS 最低 {fps_min}，低于阈值 {thresholds['fpsMinWarn']}"})
 
     stutter = performance.get("stutter") or {}
@@ -966,19 +967,19 @@ def build_performance_conclusions(performance, samples, thresholds):
     stuck_page_count = int(stutter.get("stuckPageCount") or 0)
     wda_recovery_count = int(stutter.get("wdaRecoveryCount") or 0)
     target_app_recovery_count = int(stutter.get("targetAppRecoveryCount") or 0)
-    if severe_action_count > 0:
+    if include_stutter_metrics and severe_action_count > 0:
         issues.append({"severity": "failed", "metric": "stutter.severeActionCount", "message": f"检测到 {severe_action_count} 次严重交互卡顿，单次动作耗时超过 {thresholds['stutterActionSevereMs']}ms"})
-    elif slow_action_count >= thresholds["stutterCountWarn"]:
+    elif include_stutter_metrics and slow_action_count >= thresholds["stutterCountWarn"]:
         issues.append({"severity": "warning", "metric": "stutter.slowActionCount", "message": f"检测到 {slow_action_count} 次交互卡顿，超过阈值 {thresholds['stutterCountWarn']} 次"})
-    if stuck_page_count > 0:
+    if include_stutter_metrics and stuck_page_count > 0:
         issues.append({"severity": "warning", "metric": "stutter.stuckPageCount", "message": f"Monkey 检测到 {stuck_page_count} 次页面疑似停留不变，可能存在卡住或回退困难"})
-    if wda_recovery_count > 0:
+    if include_stutter_metrics and wda_recovery_count > 0:
         issues.append({"severity": "warning", "metric": "stutter.wdaRecoveryCount", "message": f"WDA 恢复 {wda_recovery_count} 次，可能是设备连接或 UI 自动化响应不稳定"})
-    if target_app_recovery_count > 0:
+    if include_stutter_metrics and target_app_recovery_count > 0:
         issues.append({"severity": "warning", "metric": "stutter.targetAppRecoveryCount", "message": f"Monkey 检测到被测 App 离开前台 {target_app_recovery_count} 次，已尝试重新拉起目标 App"})
 
     frame_stutter = performance.get("frameStutter") or {}
-    if frame_stutter.get("available"):
+    if include_stutter_metrics and frame_stutter.get("available"):
         frame_hitch_count = int(frame_stutter.get("hitchCount") or 0)
         frame_severe_count = int(frame_stutter.get("severeHitchCount") or 0)
         if frame_severe_count > 0:
@@ -1174,6 +1175,7 @@ data["performanceAnalysis"]["conclusion"] = build_performance_conclusions(
     data["performanceAnalysis"],
     data["performanceAnalysis"].get("samples"),
     thresholds,
+    test_suite,
 )
 performance_severity = (data.get("performanceAnalysis") or {}).get("conclusion", {}).get("severity")
 exception_severity = (data.get("exceptionAnalysis") or {}).get("severity")
@@ -2287,6 +2289,7 @@ start_performance_sampling() {
 }
 
 start_pymobiledevice3_performance_sampling() {
+  local append_mode="${1:-0}"
   if ! command -v pymobiledevice3 >/dev/null 2>&1; then
     log "未找到 pymobiledevice3，无法使用 DVT sysmon 采样。"
     return 1
@@ -2298,9 +2301,13 @@ start_pymobiledevice3_performance_sampling() {
 
   local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
   local perf_log="${RESULT_DIR}/performance-pymobiledevice3.log"
-  : > "${PERFORMANCE_SAMPLE_FILE}"
-  : > "${perf_log}"
-  log "启动性能采样: pymobiledevice3 dvt sysmon -> ${PERFORMANCE_SAMPLE_FILE}"
+  if [ "${append_mode}" != "1" ]; then
+    : > "${PERFORMANCE_SAMPLE_FILE}"
+    : > "${perf_log}"
+  fi
+  local append_label=""
+  [ "${append_mode}" = "1" ] && append_label=" (append)"
+  log "启动性能采样: pymobiledevice3 dvt sysmon${append_label} -> ${PERFORMANCE_SAMPLE_FILE}"
   (
     pymobiledevice3 developer dvt sysmon process monitor process \
       --udid "${SELECTED_DEVICE}" \
@@ -2321,14 +2328,19 @@ start_pymobiledevice3_performance_sampling() {
 }
 
 start_tidevice_performance_sampling() {
+  local append_mode="${1:-0}"
   if [ -z "${TIDEVICE_CMD:-}" ] || [ ! -x "${TIDEVICE_CMD}" ]; then
     log "未找到 tidevice，无法使用 tidevice perf。"
     return 1
   fi
 
   local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
-  : > "${PERFORMANCE_SAMPLE_FILE}"
-  log "启动性能采样: ${PERFORMANCE_SAMPLE_TYPES} -> ${PERFORMANCE_SAMPLE_FILE}"
+  if [ "${append_mode}" != "1" ]; then
+    : > "${PERFORMANCE_SAMPLE_FILE}"
+  fi
+  local append_label=""
+  [ "${append_mode}" = "1" ] && append_label=" (append)"
+  log "启动性能采样: ${PERFORMANCE_SAMPLE_TYPES}${append_label} -> ${PERFORMANCE_SAMPLE_FILE}"
   (
     "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" perf -B "${LAUNCH_BUNDLE_ID}" -o "${PERFORMANCE_SAMPLE_TYPES}" --json >>"${PERFORMANCE_SAMPLE_FILE}" 2>>"${LOG_FILE}"
   ) &
@@ -3171,6 +3183,40 @@ stop_performance_sampling() {
 	  stop_xctrace_sampling || true
 }
 
+restart_process_metric_sampling() {
+  if [ "${PERFORMANCE_SAMPLING}" != "1" ] || [ -z "${LAUNCH_BUNDLE_ID:-}" ]; then
+    return 1
+  fi
+  local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
+  local pid ios_major
+  pid="$(cat "${perf_pid_file}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill "${pid}" >/dev/null 2>&1 || true
+    wait "${pid}" >/dev/null 2>&1 || true
+  fi
+  rm -f "${perf_pid_file}"
+  ios_major="$(ios_major_version "${DEVICE_IOS_VERSION}")"
+  if [ "${ios_major}" -ge 17 ] 2>/dev/null; then
+    start_pymobiledevice3_performance_sampling 1
+  else
+    start_tidevice_performance_sampling 1
+  fi
+}
+
+ensure_process_metric_sampling_alive() {
+  if [ "${PERFORMANCE_SAMPLING}" != "1" ]; then
+    return 0
+  fi
+  local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
+  local pid
+  pid="$(cat "${perf_pid_file}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    return 0
+  fi
+  log "检测到进程指标采样已结束，Monkey 仍在运行，准备重新采集 CPU/内存。"
+  restart_process_metric_sampling || log "进程指标采样重启失败，稍后继续尝试。"
+}
+
 start_xctrace_monitor() {
   if [ "${PERFORMANCE_ACTIVE_SAMPLER:-}" != "xctrace" ] && [ ! -f "${RESULT_DIR}/performance-xctrace.pid" ]; then
     return 0
@@ -3184,6 +3230,7 @@ start_xctrace_monitor() {
   fi
   (
     local last_restart_at=0
+    local last_metric_restart_at=0
     while [ -f "${PERFORMANCE_MONKEY_RUNNING_FILE}" ]; do
       sleep 10
       [ -f "${PERFORMANCE_MONKEY_RUNNING_FILE}" ] || break
@@ -3192,6 +3239,12 @@ start_xctrace_monitor() {
         pid="$(cat "${RESULT_DIR}/performance-xctrace.pid" 2>/dev/null || true)"
       fi
       if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+        local metric_now
+        metric_now="$(date +%s)"
+        if [ $((metric_now - last_metric_restart_at)) -ge 20 ]; then
+          ensure_process_metric_sampling_alive || true
+          last_metric_restart_at="${metric_now}"
+        fi
         continue
       fi
       if [ -z "${pid}" ] && [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
@@ -3208,6 +3261,7 @@ start_xctrace_monitor() {
       last_restart_at="${now}"
       if start_xctrace_sampling; then
         log "xctrace 已重新开始采集。"
+        restart_process_metric_sampling || log "xctrace 重启后进程指标采样重启失败，稍后继续尝试。"
       else
         log "xctrace 重新采集失败，稍后继续尝试。"
       fi
@@ -3272,20 +3326,26 @@ stop_xctrace_sampling() {
         export_xctrace_performance_samples || true
       fi
       if [ ! -s "${PERFORMANCE_STUTTER_FILE}" ]; then
-        export_xctrace_frame_stutters || true
+        if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+          export_xctrace_frame_stutters || true
+        fi
       fi
       if [ ! -s "${PERFORMANCE_STACK_FILE}" ]; then
-        export_xctrace_stutter_stacks || true
+        if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+          export_xctrace_stutter_stacks || true
+        fi
       fi
     done
   fi
   PERFORMANCE_TRACE_FILE="${original_trace_file}"
   if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
     export_xctrace_performance_samples || true
-    if [ ! -s "${PERFORMANCE_STUTTER_FILE}" ]; then
+    if [ "${REQUESTED_TEST_SUITE}" = "stutter" ] && [ ! -s "${PERFORMANCE_STUTTER_FILE}" ]; then
       export_xctrace_frame_stutters || true
     fi
-    export_xctrace_stutter_stacks || true
+    if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+      export_xctrace_stutter_stacks || true
+    fi
   fi
   if [ -d "${PERFORMANCE_TRACE_FILE}" ] || [ -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
     if package_performance_trace; then
