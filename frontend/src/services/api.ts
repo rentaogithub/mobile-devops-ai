@@ -1270,7 +1270,7 @@ export interface JenkinsBuildLogResult {
   thirdSdkError?: string;
 }
 
-export type JenkinsQualitySuite = 'smoke' | 'login' | 'im' | 'rtc' | 'monkey' | 'full';
+export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'full';
 
 export interface JenkinsQualityBuild {
   number: number;
@@ -1286,8 +1286,10 @@ export interface JenkinsQualityBuild {
     sourceBuildNumber?: string;
     branch?: string;
     commitHash?: string;
+    publishChannel?: string;
     appVersion?: string;
     testSuite?: string;
+    stutterScenario?: string;
     devicePool?: string;
     devicePoolLabel?: string;
     deviceUdid?: string;
@@ -1343,6 +1345,48 @@ export interface JenkinsQualityBuild {
           crashedThread?: string;
         }>;
       };
+      hangStackAnalysis?: Array<{
+        file?: string;
+        type?: string;
+        bugType?: string;
+        code?: string;
+        event?: string;
+        reason?: string;
+        captureTime?: string;
+        process?: string;
+        bundleId?: string;
+        version?: string;
+        buildVersion?: string;
+        mainThread?: {
+          index?: number;
+          name?: string;
+          queue?: string;
+          summary?: string;
+          frames?: Array<{
+            image?: string;
+            symbol?: string;
+            offset?: number;
+          }>;
+        };
+        symbolication?: {
+          source?: string;
+          archivePath?: string;
+          dsymPath?: string;
+          uuid?: string;
+          message?: string;
+        };
+        suspiciousThreads?: Array<{
+          index?: number;
+          name?: string;
+          queue?: string;
+          frames?: Array<{
+            image?: string;
+            symbol?: string;
+            offset?: number;
+          }>;
+        }>;
+        suggestions?: string[];
+      }>;
     };
     performanceAnalysis?: {
       launchDurationMs?: number;
@@ -1352,6 +1396,105 @@ export interface JenkinsQualityBuild {
       monkeyExecutedEvents?: number;
       monkeyEventsPerMinute?: number;
       monkeyStatus?: string;
+      stutter?: {
+        enabled?: boolean;
+        method?: string;
+        thresholds?: {
+          actionWarnMs?: number;
+          actionSevereMs?: number;
+        };
+        slowActionCount?: number;
+        severeActionCount?: number;
+        stuckPageCount?: number;
+        wdaRecoveryCount?: number;
+        targetAppRecoveryCount?: number;
+        longestAction?: {
+          index?: number;
+          type?: string;
+          reason?: string;
+          actionDurationMs?: number;
+          elapsedSeconds?: number;
+          page?: {
+            fingerprint?: string;
+            summary?: {
+              text?: string[];
+              nodeTypes?: string[];
+            };
+          };
+        } | null;
+        samples?: Array<{
+          index?: number;
+          type?: string;
+          reason?: string;
+          actionDurationMs?: number;
+          elapsedSeconds?: number;
+          page?: {
+            fingerprint?: string;
+            summary?: {
+              text?: string[];
+              nodeTypes?: string[];
+            };
+          };
+        }>;
+      };
+      frameStutter?: {
+        enabled?: boolean;
+        method?: string;
+        available?: boolean;
+        template?: string;
+        message?: string;
+        thresholds?: {
+          frameWarnMs?: number;
+          frameSevereMs?: number;
+        };
+        schemas?: string[];
+        hitchCount?: number;
+        severeHitchCount?: number;
+        longestHitch?: {
+          schema?: string;
+          row?: number;
+          durationMs?: number;
+          severity?: string;
+          timeSeconds?: number | null;
+          raw?: string[];
+        } | null;
+        samples?: Array<{
+          schema?: string;
+          row?: number;
+          durationMs?: number;
+          severity?: string;
+          timeSeconds?: number | null;
+          raw?: string[];
+        }>;
+      };
+      stackAnalysis?: {
+        enabled?: boolean;
+        available?: boolean;
+        method?: string;
+        template?: string;
+        message?: string;
+        schemas?: string[];
+        stutterSampleCount?: number;
+        samples?: Array<{
+          index?: number;
+          type?: string;
+          elapsedSeconds?: number;
+          actionDurationMs?: number;
+          message?: string;
+          page?: {
+            fingerprint?: string;
+            summary?: {
+              text?: string[];
+              nodeTypes?: string[];
+            };
+          };
+          matchedFrames?: Array<{
+            schema?: string;
+            row?: number;
+            frame?: string;
+          }>;
+        }>;
+      };
       samples?: {
         sampleCount?: number;
         cpu?: { avg?: number | null; max?: number | null; min?: number | null };
@@ -1396,6 +1539,8 @@ export interface JenkinsQualityBuild {
       processesUrl?: string;
       monkeyReportUrl?: string;
       performanceSamplesUrl?: string;
+      performanceStuttersUrl?: string;
+      performanceStacksUrl?: string;
       performanceTraceUrl?: string;
       crashReportsUrl?: string;
       junitUrl?: string;
@@ -1632,8 +1777,13 @@ export const jenkinsApi = {
     return response.data;
   },
 
-  stopQualityBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/quality/builds/${buildNumber}/stop`);
+  stopQualityBuild: async (buildNumber: number, payload?: { deviceUdid?: string }): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/quality/builds/${buildNumber}/stop`, payload || {});
+    return response.data;
+  },
+
+  cleanupQualityWda: async (payload?: { deviceUdid?: string }): Promise<ApiResponse<{ deviceUdid?: string; terminatedDeviceProcesses: number }>> => {
+    const response = await api.post<ApiResponse<{ deviceUdid?: string; terminatedDeviceProcesses: number }>>('/jenkins/nn/quality/wda/cleanup', payload || {});
     return response.data;
   },
 
@@ -1700,10 +1850,12 @@ export const jenkinsApi = {
     packageUrl?: string;
     xcarchivePath?: string;
     archiveUrl?: string;
+    publishChannel?: string;
     testSuite: JenkinsQualitySuite;
     devicePool: string;
     deviceUdid?: string;
     monkeyDurationSeconds?: number;
+    stutterScenario?: string;
     skipInstall?: boolean;
     appBundleId?: string;
   }): Promise<ApiResponse<{

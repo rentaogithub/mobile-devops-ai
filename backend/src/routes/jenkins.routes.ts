@@ -5,6 +5,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import podDepsResolver from '../services/PodDependencyResolver';
 
 const router = Router();
@@ -15,9 +16,13 @@ const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
-const QA_TEST_SUITES = new Set(['smoke', 'login', 'im', 'rtc', 'monkey', 'full']);
+const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'full']);
+const QA_STUTTER_SCENARIOS = new Set(['community', 'im', 'voice_room']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
-const RELEASE_BUILD_LIST_LIMIT = Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 8);
+const RELEASE_BUILD_LIST_LIMIT = Math.min(
+  200,
+  Math.max(20, Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 50) || 50),
+);
 const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
 const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
 const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 3 * 60 * 1000);
@@ -25,6 +30,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
+const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -57,8 +63,8 @@ function normalizeQualitySuite(value?: string) {
   const text = String(value || 'smoke').trim();
   const lower = text.toLowerCase();
   if (/monkey|随机|猴子/i.test(text)) return 'monkey';
+  if (/卡顿|stutter|hitch|jank/i.test(text)) return 'stutter';
   if (/冒烟|smoke/i.test(text)) return 'smoke';
-  if (/登录|login/i.test(text)) return 'login';
   if (/^im$|im\s*基础/i.test(text)) return 'im';
   if (/^rtc$|rtc\s*基础/i.test(text)) return 'rtc';
   if (/全量|full/i.test(text)) return 'full';
@@ -321,6 +327,33 @@ function isTerminalQualityProgress(progress: any) {
   const percent = Number(progress?.progressPercent);
   const remaining = Number(progress?.remainingSeconds);
   return Number.isFinite(percent) && percent >= 100 && (!Number.isFinite(remaining) || remaining <= 0);
+}
+
+function reconcileQualityProgress(build: any, summary: any, progress?: any | null) {
+  const currentProgress = progress || summary?.progress || null;
+  const summaryStatus = String(summary?.status || '').toLowerCase();
+  const buildResult = String(build?.result || '').toUpperCase();
+  const finalStatus = summaryStatus ||
+    (buildResult === 'SUCCESS' ? 'passed' : (buildResult === 'UNSTABLE' ? 'unstable' : (buildResult === 'FAILURE' ? 'failed' : (buildResult === 'ABORTED' ? 'aborted' : ''))));
+  if (!finalStatus || build?.building) return currentProgress;
+  if (!['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(finalStatus)) return currentProgress;
+
+  const progressStatus = String(currentProgress?.status || '').toLowerCase();
+  const shouldOverride = !currentProgress ||
+    progressStatus === 'running' ||
+    (['failed', 'unstable', 'aborted'].includes(finalStatus) && !['failed', 'unstable', 'aborted', 'canceled', 'cancelled'].includes(progressStatus));
+  if (!shouldOverride) return currentProgress;
+
+  const failed = finalStatus === 'failed';
+  const aborted = ['aborted', 'canceled', 'cancelled'].includes(finalStatus);
+  return {
+    ...(currentProgress || {}),
+    status: finalStatus,
+    phase: failed ? 'failed' : (aborted ? 'aborted' : 'complete'),
+    message: summary?.message || currentProgress?.message || (failed ? '质检失败' : (aborted ? '质检已取消' : '质检完成')),
+    progressPercent: Math.max(100, Number(currentProgress?.progressPercent || 0)),
+    remainingSeconds: 0,
+  };
 }
 
 function findActiveQualityBuildOnDevice(deviceKey: string) {
@@ -617,6 +650,256 @@ function readJsonFile(filePath: string): any | null {
   }
 }
 
+function parseIpsJson(content: string) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+  const attempts = [
+    text,
+    text.split(/\r?\n/).slice(1).join('\n'),
+  ];
+  for (const attempt of attempts) {
+    if (!attempt.trim().startsWith('{')) continue;
+    try {
+      return JSON.parse(attempt);
+    } catch {
+      // .ips 常见第一行是 metadata JSON，第二段才是报告主体。
+    }
+  }
+  return null;
+}
+
+function usedImageName(image: any) {
+  return String(image?.name || path.basename(String(image?.path || '')) || '');
+}
+
+function normalizeUuid(value?: string) {
+  return String(value || '').trim().replace(/-/g, '').toUpperCase();
+}
+
+function findMainAppImage(report: any) {
+  const images = Array.isArray(report?.usedImages) ? report.usedImages : [];
+  const procName = String(report?.procName || report?.app_name || 'NNIM');
+  return images.find((image: any) => {
+    const name = usedImageName(image);
+    const imagePath = String(image?.path || '');
+    return name === procName && new RegExp(`/${procName}\\.app/${procName}$`).test(imagePath);
+  }) || images.find((image: any) => usedImageName(image) === procName);
+}
+
+async function extractDsymUuid(dsymPath: string) {
+  try {
+    const { stdout } = await execFileAsync('dwarfdump', ['--uuid', dsymPath], {
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+    });
+    return stdout.match(/UUID:\s*([0-9a-f-]+)/i)?.[1] || '';
+  } catch {
+    return '';
+  }
+}
+
+function findDsymBinaryPath(dsymPath: string) {
+  const dwarfDir = path.join(dsymPath, 'Contents', 'Resources', 'DWARF');
+  if (!fs.existsSync(dwarfDir)) return '';
+  const entries = fs.readdirSync(dwarfDir, { withFileTypes: true }).filter((entry) => entry.isFile());
+  const preferredName = path.basename(dsymPath).replace(/\.dSYM$/i, '').replace(/\.app$/i, '');
+  const preferred = entries.find((entry) => entry.name === preferredName) || entries[0];
+  return preferred ? path.join(dwarfDir, preferred.name) : '';
+}
+
+function listDsymDirectories(rootDir: string, limit = 80) {
+  const results: string[] = [];
+  const visit = (dir: string, depth: number) => {
+    if (results.length >= limit || depth > 5 || !fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const filePath = path.join(dir, entry.name);
+      if (!entry.isDirectory()) continue;
+      if (entry.name.endsWith('.dSYM')) {
+        results.push(filePath);
+        continue;
+      }
+      visit(filePath, depth + 1);
+    }
+  };
+  visit(rootDir, 0);
+  return results;
+}
+
+async function findDsymInArchiveByUuid(archivePath: string, uuid: string) {
+  const dsymsDir = archivePath ? path.join(archivePath, 'dSYMs') : '';
+  if (!dsymsDir || !fs.existsSync(dsymsDir)) return null;
+  const targetUuid = normalizeUuid(uuid);
+  for (const dsymPath of listDsymDirectories(dsymsDir)) {
+    const dsymUuid = await extractDsymUuid(dsymPath);
+    if (normalizeUuid(dsymUuid) === targetUuid) {
+      const binaryPath = findDsymBinaryPath(dsymPath);
+      if (binaryPath) return { dsymPath, binaryPath, uuid: dsymUuid };
+    }
+  }
+  return null;
+}
+
+function frameDisplayName(report: any, frame: any) {
+  const images = Array.isArray(report?.usedImages) ? report.usedImages : [];
+  const image = Number.isInteger(frame?.imageIndex) ? images[frame.imageIndex] : null;
+  const name = usedImageName(image) || String(frame?.imageName || '');
+  const symbol = String(frame?.symbol || '').trim();
+  const offset = Number(frame?.imageOffset);
+  return {
+    image: name || 'unknown',
+    symbol: symbol || (Number.isFinite(offset) ? `${name || 'binary'} + ${offset}` : 'unknown'),
+    offset: Number.isFinite(offset) ? offset : undefined,
+  };
+}
+
+async function symbolicateIpsFramesWithDsym(report: any, frames: any[], image: any, dsymBinaryPath: string) {
+  const base = Number(image?.base);
+  if (!Number.isFinite(base)) return [];
+  const addresses = frames
+    .filter((frame) => Number.isInteger(frame?.imageIndex) && Number.isFinite(Number(frame?.imageOffset)))
+    .map((frame) => `0x${(base + Number(frame.imageOffset)).toString(16)}`);
+  if (addresses.length === 0) return [];
+  const arch = String(image?.arch || 'arm64');
+  const { stdout } = await execFileAsync('atos', ['-arch', arch, '-o', dsymBinaryPath, '-l', `0x${base.toString(16)}`, ...addresses], {
+    timeout: 15000,
+    maxBuffer: 1024 * 1024,
+  });
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  let index = 0;
+  return frames.map((frame) => {
+    if (!Number.isInteger(frame?.imageIndex) || !Number.isFinite(Number(frame?.imageOffset))) {
+      return frameDisplayName(report, frame);
+    }
+    const fallback = frameDisplayName(report, frame);
+    const symbol = lines[index++] || fallback.symbol;
+    return {
+      ...fallback,
+      symbol,
+    };
+  });
+}
+
+async function resolveSourceArchivePath(summary: any) {
+  const directArchivePath = String(summary?.xcarchivePath || summary?.archivePath || '').trim();
+  if (directArchivePath && fs.existsSync(directArchivePath)) return directArchivePath;
+  const sourceBuildNumber = Number(summary?.sourceBuildNumber || summary?.buildNumber || 0);
+  if (!Number.isFinite(sourceBuildNumber) || sourceBuildNumber <= 0) return '';
+  const metadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), sourceBuildNumber);
+  return metadata.xcarchivePath && fs.existsSync(metadata.xcarchivePath) ? metadata.xcarchivePath : '';
+}
+
+async function analyzeIpsHangStack(ipsPath: string, summary: any) {
+  const stat = fs.statSync(ipsPath);
+  const cacheKey = `${ipsPath}:${stat.mtimeMs}:${summary?.sourceBuildNumber || ''}`;
+  if (QUALITY_HANG_ANALYSIS_CACHE.has(cacheKey)) return QUALITY_HANG_ANALYSIS_CACHE.get(cacheKey);
+
+  const report = parseIpsJson(fs.readFileSync(ipsPath, 'utf-8'));
+  if (!report) return null;
+  const terminationReasons = Array.isArray(report?.termination?.reasons) ? report.termination.reasons.map(String) : [];
+  const isWatchdog = /8BADF00D|watchdog/i.test(JSON.stringify(report?.termination || {})) || String(report?.bug_type || report?.bugType) === '309';
+  if (!isWatchdog) return null;
+
+  const images = Array.isArray(report?.usedImages) ? report.usedImages : [];
+  const mainImage = findMainAppImage(report);
+  const faultingThreadIndex = Number.isInteger(report?.faultingThread) ? report.faultingThread : 0;
+  const threads = Array.isArray(report?.threads) ? report.threads : [];
+  const faultingThread = threads[faultingThreadIndex] || threads.find((thread: any) => thread?.triggered) || threads[0];
+  const mainFrames = (Array.isArray(faultingThread?.frames) ? faultingThread.frames : []).slice(0, 36);
+  const appFrames = mainImage
+    ? mainFrames.filter((frame: any) => Number.isInteger(frame?.imageIndex) && images[frame.imageIndex]?.uuid === mainImage.uuid)
+    : [];
+  const archivePath = await resolveSourceArchivePath(summary);
+  const dsymMatch = mainImage?.uuid ? await findDsymInArchiveByUuid(archivePath, mainImage.uuid) : null;
+  const symbolicatedAppFrames = dsymMatch && appFrames.length > 0
+    ? await symbolicateIpsFramesWithDsym(report, appFrames, mainImage, dsymMatch.binaryPath)
+    : [];
+  const appFrameByOffset = new Map(symbolicatedAppFrames.map((frame: any) => [frame.offset, frame.symbol]));
+  const topFrames = mainFrames.slice(0, 24).map((frame: any) => {
+    const display = frameDisplayName(report, frame);
+    return {
+      ...display,
+      symbol: appFrameByOffset.get(display.offset) || display.symbol,
+    };
+  });
+  const suspiciousThreads = threads
+    .map((thread: any, index: number) => {
+      const frames = Array.isArray(thread?.frames) ? thread.frames : [];
+      const hasSyncWait = frames.some((frame: any) => /DISPATCH_WAIT|dispatch_sync|ulock_wait/i.test(String(frame?.symbol || '')));
+      const hasReachability = frames.some((frame: any) => /Reachability|PingHelper/i.test(String(frame?.symbol || '')));
+      const queue = String(thread?.queue || '');
+      if (!hasSyncWait && !hasReachability && !/heartbeat/i.test(queue)) return null;
+      return {
+        index,
+        name: thread?.name || '',
+        queue,
+        frames: frames.slice(0, 10).map((frame: any) => frameDisplayName(report, frame)),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+
+  const analysis = {
+    file: path.basename(ipsPath),
+    type: 'watchdog',
+    bugType: String(report?.bug_type || report?.bugType || ''),
+    code: '0x8BADF00D',
+    event: terminationReasons.find((reason: string) => /WatchdogEvent/i.test(reason))?.replace(/^WatchdogEvent:\s*/i, '') || 'scene-update',
+    reason: terminationReasons.find((reason: string) => /watchdog transgression|exhausted real/i.test(reason)) || '',
+    captureTime: report?.captureTime || report?.timestamp || '',
+    process: report?.procName || report?.app_name || 'NNIM',
+    bundleId: report?.bundleID || report?.bundleId || '',
+    version: report?.bundleShortVersion || report?.app_version || '',
+    buildVersion: report?.bundleVersion || report?.build_version || '',
+    mainThread: {
+      index: faultingThreadIndex,
+      name: faultingThread?.name || '',
+      queue: faultingThread?.queue || '',
+      summary: '主线程卡在 UIKit Accessibility hitTest / UITableViewAccessibility / CALayer 坐标转换，WDA 查询 UI 树时超过系统 10 秒 scene-update 限制。',
+      frames: topFrames,
+    },
+    symbolication: {
+      source: dsymMatch ? 'jenkins-xcarchive' : 'not-found',
+      archivePath,
+      dsymPath: dsymMatch?.dsymPath || '',
+      uuid: mainImage?.uuid || '',
+      message: dsymMatch ? '已使用当前 Jenkins 源构建 archive 内 dSYM 自动符号化' : '未在当前 Jenkins 源构建 archive 中找到匹配 dSYM',
+    },
+    suspiciousThreads,
+    suggestions: [
+      '检查当前页面 UITableView / 自定义 Cell / accessibilityElements 是否存在递归、过深层级或触发布局。',
+      '检查 accessibilityFrame、hitTest、pointInside、layoutSubviews 中是否有同步等待或耗时逻辑。',
+      '检查 RealReachability / PingHelper 的 dispatch_sync 等待链路，避免和主线程或串行队列互等。',
+    ],
+  };
+  QUALITY_HANG_ANALYSIS_CACHE.set(cacheKey, analysis);
+  return analysis;
+}
+
+async function enrichQualitySummaryWithHangStack(summary: any, summaryFile?: string) {
+  if (!summary?.exceptionAnalysis?.crashReports?.files?.length || !summaryFile) return summary;
+  const summaryDir = path.dirname(summaryFile);
+  const analyses = [];
+  for (const crashFile of summary.exceptionAnalysis.crashReports.files) {
+    if (!String(crashFile).toLowerCase().endsWith('.ips')) continue;
+    const ipsPath = path.join(summaryDir, crashFile);
+    if (!fs.existsSync(ipsPath)) continue;
+    try {
+      const analysis = await analyzeIpsHangStack(ipsPath, summary);
+      if (analysis) analyses.push(analysis);
+    } catch {
+      // 单个 ips 解析失败不影响质检列表展示。
+    }
+  }
+  if (analyses.length === 0) return summary;
+  return {
+    ...summary,
+    exceptionAnalysis: {
+      ...summary.exceptionAnalysis,
+      hangStackAnalysis: analyses,
+    },
+  };
+}
+
 function isPathInside(parentDir: string, candidatePath: string) {
   const relative = path.relative(path.resolve(parentDir), path.resolve(candidatePath));
   return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
@@ -650,6 +933,8 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
     monkeyReportUrl: artifactUrl(summary?.artifacts?.monkeyReport),
     performanceSamplesUrl: firstArtifactUrl(summary?.artifacts?.performanceSamples, 'performance-samples.jsonl'),
+    performanceStuttersUrl: firstArtifactUrl(summary?.artifacts?.performanceStutters, 'performance-stutters.json'),
+    performanceStacksUrl: firstArtifactUrl(summary?.artifacts?.performanceStacks, 'performance-stack-analysis.json'),
     performanceTraceUrl: firstArtifactUrl(summary?.artifacts?.performanceTrace, 'performance.trace.zip', 'performance.trace'),
     crashReportsUrl: artifactUrl(summary?.artifacts?.crashReports),
     junitUrl: artifactUrl(summary?.artifacts?.junit || 'junit.xml'),
@@ -758,6 +1043,11 @@ function readLocalQualityProgress(jobName: string, build: any) {
   return progressFile ? readJsonFile(progressFile) : null;
 }
 
+function readLocalQualityMetadata(jobName: string, build: any) {
+  const metadataFile = findLatestQualityFile(jobName, 'metadata.json', Number(build?.timestamp || 0), Number(build?.number || 0));
+  return metadataFile ? readJsonFile(metadataFile) : null;
+}
+
 function readLocalQualitySummaryWithPath(jobName: string, build: any) {
   const summaryFile = findLatestQualityFile(jobName, 'summary.json', Number(build?.timestamp || 0), Number(build?.number || 0));
   const summary = summaryFile ? readJsonFile(summaryFile) : null;
@@ -766,6 +1056,48 @@ function readLocalQualitySummaryWithPath(jobName: string, build: any) {
 
 function readLocalQualitySummary(jobName: string, build: any) {
   return readLocalQualitySummaryWithPath(jobName, build)?.summary || null;
+}
+
+function normalizeQualitySummaryStatus(summary: any) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const performanceSeverity = String(summary?.performanceAnalysis?.conclusion?.severity || '').toLowerCase();
+  const exceptionSeverity = String(summary?.exceptionAnalysis?.severity || '').toLowerCase();
+  const severeActionCount = Number(summary?.performanceAnalysis?.stutter?.severeActionCount || 0);
+  const severeFrameHitchCount = Number(summary?.performanceAnalysis?.frameStutter?.severeHitchCount || 0);
+  const nextSummary = { ...summary };
+  if (exceptionSeverity === 'failed' || performanceSeverity === 'failed' || severeActionCount > 0 || severeFrameHitchCount > 0) {
+    nextSummary.status = 'failed';
+    const crashSample = summary?.exceptionAnalysis?.crashReports?.samples?.[0];
+    const watchdogCount = Number(summary?.exceptionAnalysis?.watchdogCount || 0);
+    const exceptionMessage = crashSample
+      ? `检测到 ${crashSample.process || 'App'} ${watchdogCount > 0 || /watchdog|8badf00d/i.test(String(crashSample.exception || crashSample.reason || '')) ? 'Watchdog 卡死' : '崩溃'}：${crashSample.exception || crashSample.reason || crashSample.file || 'crash report'}`
+      : '';
+    const issueMessage = exceptionMessage ||
+      summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => item?.severity === 'failed')?.message ||
+      summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => /stutter|卡顿|hitch/i.test(String(item?.metric || item?.message || '')))?.message;
+    nextSummary.message = issueMessage || summary.message || '质检失败';
+  } else if (String(nextSummary.status || '').toLowerCase() === 'passed' && performanceSeverity === 'warning') {
+    nextSummary.status = 'unstable';
+    const issueMessage = summary?.performanceAnalysis?.conclusion?.issues?.find((item: any) => item?.message)?.message;
+    nextSummary.message = issueMessage || summary.message || '质检完成，存在性能风险';
+  }
+  return nextSummary;
+}
+
+async function enrichQualitySummaryWithSourceBuild(summary: any) {
+  if (!summary || typeof summary !== 'object') return summary;
+  const sourceBuildNumber = Number(summary.sourceBuildNumber || summary.buildNumber || 0);
+  if (!Number.isFinite(sourceBuildNumber) || sourceBuildNumber <= 0) return summary;
+  if (summary.publishChannel) return summary;
+  try {
+    const metadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), sourceBuildNumber);
+    return {
+      ...summary,
+      publishChannel: metadata.publishChannel || summary.publishChannel || '',
+    };
+  } catch {
+    return summary;
+  }
 }
 
 async function hasActiveQualityScriptProcess() {
@@ -785,7 +1117,9 @@ async function buildCompletedOverride(jobName: string, build: any, localSummary?
   if (!['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(status)) return null;
   const buildNumber = Number(build.number);
   if (!Number.isFinite(buildNumber)) return null;
-  const result = status === 'failed' ? 'FAILURE' : (status === 'canceled' || status === 'cancelled' || status === 'aborted' ? 'ABORTED' : 'SUCCESS');
+  const result = status === 'failed'
+    ? 'FAILURE'
+    : (status === 'unstable' ? 'UNSTABLE' : (status === 'canceled' || status === 'cancelled' || status === 'aborted' ? 'ABORTED' : 'SUCCESS'));
   return {
     building: false,
     result,
@@ -832,14 +1166,61 @@ async function stopJenkinsBuild(jobName: string, buildNumber: number) {
   return jobPath;
 }
 
-async function cleanupLocalQualityProcesses() {
-  const patterns = [
-    'scripts/sonic/ios-quality.sh',
-    'WebDriverAgentRunner',
-    'xcodebuild.*WebDriverAgentRunner',
-    'iproxy.*8100',
-    'tidevice.*perf',
-  ];
+async function cleanupDeviceWebDriverAgent(deviceUdid?: string) {
+  const udid = String(deviceUdid || '').trim();
+  if (!udid) return 0;
+  const outputPath = path.join(os.tmpdir(), `nn-quality-device-processes-${Date.now()}.json`);
+  let terminated = 0;
+  try {
+    await execFileAsync('xcrun', ['devicectl', 'device', 'info', 'processes', '--device', udid, '--json-output', outputPath, '--quiet'], { timeout: 10000 });
+    const data = JSON.parse(fs.readFileSync(outputPath, 'utf-8'));
+    const processes = Array.isArray(data?.result?.runningProcesses) ? data.result.runningProcesses : [];
+    for (const processInfo of processes) {
+      const text = JSON.stringify(processInfo);
+      const pid = Number(processInfo?.processIdentifier);
+      if (!pid || !/WebDriverAgent|WebDriverAgentRunner|xctrunner|AutomationModeUI|automationmode-writer/i.test(text)) continue;
+      try {
+        await execFileAsync('xcrun', ['devicectl', 'device', 'process', 'terminate', '--device', udid, '--pid', String(pid), '--kill', '--quiet'], { timeout: 10000 });
+        terminated += 1;
+      } catch {
+        // 设备进程可能已退出，忽略。
+      }
+    }
+  } catch {
+    // devicectl 不可用或设备离线时只做本机进程清理。
+  } finally {
+    try {
+      fs.rmSync(outputPath, { force: true });
+    } catch {
+      // ignore
+    }
+  }
+  return terminated;
+}
+
+function escapeProcessPattern(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function cleanupLocalQualityProcesses(deviceUdid?: string) {
+  const udid = String(deviceUdid || '').trim();
+  const escapedUdid = escapeProcessPattern(udid);
+  const patterns = udid
+    ? [
+        `iproxy.*${escapedUdid}.*8100|iproxy.*8100.*${escapedUdid}`,
+        `xcodebuild.*${escapedUdid}.*WebDriverAgentRunner|xcodebuild.*WebDriverAgentRunner.*${escapedUdid}`,
+        `xcodebuild.*${escapedUdid}.*xctrunner|xcodebuild.*xctrunner.*${escapedUdid}`,
+        `tidevice.*${escapedUdid}.*perf|tidevice.*perf.*${escapedUdid}`,
+      ]
+    : [
+        'scripts/sonic/ios-quality.sh',
+        'WebDriverAgentRunner',
+        'xctrunner',
+        'xcodebuild.*WebDriverAgentRunner',
+        'xcodebuild.*xctrunner',
+        'iproxy.*8100',
+        'tidevice.*perf',
+      ];
   await Promise.all(patterns.map(async (pattern) => {
     try {
       await execFileAsync('pkill', ['-f', pattern], { timeout: 1500 });
@@ -847,6 +1228,8 @@ async function cleanupLocalQualityProcesses() {
       // 没有匹配进程时 pkill 会返回非 0，忽略即可。
     }
   }));
+  const terminatedDeviceProcesses = await cleanupDeviceWebDriverAgent(deviceUdid);
+  return { terminatedDeviceProcesses };
 }
 
 function parseBuildDescription(description?: string | null) {
@@ -875,6 +1258,64 @@ function normalizeDeployTarget(value?: string) {
 
 function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(branch.trim());
+}
+
+function releaseVersionParts(branch: string) {
+  const match = normalizeBranchName(branch).match(/^release\/(\d+(?:\.\d+){2,})$/);
+  return match ? match[1].split('.').map((item) => Number(item)) : [];
+}
+
+function branchVersionParts(branch: string) {
+  const match = normalizeBranchName(branch).match(/^(?:release|feature)\/(\d+(?:\.\d+){2,})(?:[_/-].*)?$/);
+  return match ? match[1].split('.').map((item) => Number(item)) : [];
+}
+
+function compareReleaseBranchesDesc(a: string, b: string) {
+  const av = releaseVersionParts(a);
+  const bv = releaseVersionParts(b);
+  const len = Math.max(av.length, bv.length);
+  for (let index = 0; index < len; index += 1) {
+    const diff = (bv[index] || 0) - (av[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return normalizeBranchName(a).localeCompare(normalizeBranchName(b));
+}
+
+function compareBranchVersionsDesc(a: string, b: string) {
+  const normalizedA = normalizeBranchName(a);
+  const normalizedB = normalizeBranchName(b);
+  const av = branchVersionParts(normalizedA);
+  const bv = branchVersionParts(normalizedB);
+  const hasVersionA = av.length > 0;
+  const hasVersionB = bv.length > 0;
+  if (hasVersionA && hasVersionB) {
+    const len = Math.max(av.length, bv.length);
+    for (let index = 0; index < len; index += 1) {
+      const diff = (bv[index] || 0) - (av[index] || 0);
+      if (diff !== 0) return diff;
+    }
+  } else if (hasVersionA) {
+    return -1;
+  } else if (hasVersionB) {
+    return 1;
+  }
+  return normalizedA.localeCompare(normalizedB);
+}
+
+function compareBranchOptions(a: string, b: string) {
+  const normalizedA = normalizeBranchName(a);
+  const normalizedB = normalizeBranchName(b);
+  if (normalizedA === 'develop') return -1;
+  if (normalizedB === 'develop') return 1;
+  const aIsRelease = isReleaseBranch(normalizedA);
+  const bIsRelease = isReleaseBranch(normalizedB);
+  if (aIsRelease && bIsRelease) return compareReleaseBranchesDesc(normalizedA, normalizedB);
+  if (aIsRelease) return -1;
+  if (bIsRelease) return 1;
+  const aIsFeature = normalizedA.startsWith('feature/');
+  const bIsFeature = normalizedB.startsWith('feature/');
+  if (aIsFeature && bIsFeature) return compareBranchVersionsDesc(normalizedA, normalizedB);
+  return normalizedA.localeCompare(normalizedB);
 }
 
 function normalizeBranchName(branch: string) {
@@ -933,13 +1374,48 @@ function parseConsoleMetadata(consoleText: string) {
     plainConsoleText.match(/IPA文件[:：]\s*([^\r\n]+?\.ipa)\b/i)?.[1] ||
     ''
   ).trim();
-  const buildNumber =
+  const pgyerBuildNumber =
+    plainConsoleText.match(/蒲公英版本[:：][^\n\r]*?build\s*\[([0-9]+)\]/i)?.[1] ||
+    plainConsoleText.match(/BUILD_DESCRIPTION\s*=\s*Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
+    plainConsoleText.match(/Description set:\s*Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
+    '';
+  const testFlightBuildNumber =
+    plainConsoleText.match(/TestFlight渠道构建号[:：]\s*([0-9]+)/i)?.[1] ||
+    '';
+  const appStoreBuildNumber =
+    plainConsoleText.match(/AppStore渠道构建号[:：]\s*([0-9]+)/i)?.[1] ||
+    plainConsoleText.match(/苹果商店渠道构建号[:：]\s*([0-9]+)/i)?.[1] ||
+    '';
+  const testFlightAscVersion =
+    plainConsoleText.match(/TestFlight渠道\s*ASC\s*版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/i)?.[1] ||
+    '';
+  const appStoreAscVersion =
+    plainConsoleText.match(/AppStore渠道\s*ASC\s*版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/i)?.[1] ||
+    plainConsoleText.match(/苹果商店渠道\s*ASC\s*版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/i)?.[1] ||
+    '';
+  const projectBuildNumber =
+    plainConsoleText.match(/Build号[:：]\s*([0-9]+)/)?.[1] ||
+    plainConsoleText.match(/CURRENT_PROJECT_VERSION:\s*[^→\n]*→\s*([0-9]+)/)?.[1] ||
+    plainConsoleText.match(/CURRENT_PROJECT_VERSION\s*=\s*([0-9]+)/)?.[1] ||
+    '';
+  const matchedTestFlightBuildNumber = testFlightAscVersion && appVersion && testFlightAscVersion !== appVersion
+    ? ''
+    : testFlightBuildNumber;
+  const matchedAppStoreBuildNumber = appStoreAscVersion && appVersion && appStoreAscVersion !== appVersion
+    ? ''
+    : appStoreBuildNumber;
+  const appleBuildNumber =
+    matchedTestFlightBuildNumber ||
+    matchedAppStoreBuildNumber ||
     plainConsoleText.match(/CHANNEL_BUILD_NUMBER\s*=\s*([0-9]+)/)?.[1] ||
     plainConsoleText.match(/渠道构建号[:：]\s*([0-9]+)/)?.[1] ||
-    plainConsoleText.match(/(?:蒲公英|Pgyer|TestFlight|AppStore|苹果商店)\s*构建号[:：]\s*([0-9]+)/i)?.[1] ||
-    plainConsoleText.match(/CURRENT_PROJECT_VERSION:\s*[^→\n]*→\s*([0-9]+)/)?.[1] ||
-    (packageUrl ? plainConsoleText.match(/build\s*\[([0-9]+)\]\((https?:\/\/[^)\s]+)\)/i)?.[1] : '') ||
+    projectBuildNumber ||
     '';
+  const buildNumber = publishChannel === 'Pgyer'
+    ? pgyerBuildNumber
+    : (publishChannel === 'TestFlight'
+      ? (matchedTestFlightBuildNumber || projectBuildNumber || appleBuildNumber)
+      : (publishChannel === 'AppStore' ? (matchedAppStoreBuildNumber || projectBuildNumber || appleBuildNumber) : appleBuildNumber));
   const archivePath = (
     plainConsoleText.match(/-archivePath\s+(.+?\.xcarchive)/)?.[1] ||
     plainConsoleText.match(/archivePath\s+(.+?\.xcarchive)/)?.[1] ||
@@ -1071,8 +1547,7 @@ async function fetchQualitySummary(jobPath: string, build: any) {
   const summaryArtifact = (
     summaryArtifacts.find((artifact: any) => String(artifact?.relativePath || '').includes(`/qa-${buildNumber}-`)) ||
     summaryArtifacts.find((artifact: any) => String(artifact?.relativePath || '').startsWith(`quality-results/qa-${buildNumber}-`)) ||
-    summaryArtifacts.find((artifact: any) => consoleSummary?.resultDirName && String(artifact?.relativePath || '') === `quality-results/${consoleSummary.resultDirName}/summary.json`) ||
-    summaryArtifacts[summaryArtifacts.length - 1]
+    summaryArtifacts.find((artifact: any) => consoleSummary?.resultDirName && String(artifact?.relativePath || '') === `quality-results/${consoleSummary.resultDirName}/summary.json`)
   );
 
   if (summaryArtifact?.relativePath) {
@@ -1095,7 +1570,7 @@ async function fetchQualitySummary(jobPath: string, build: any) {
         mergedSummary.status = 'failed';
         mergedSummary.message = consoleSummary.message || mergedSummary.message;
       }
-      return {
+      return normalizeQualitySummaryStatus({
         ...mergedSummary,
         artifacts: {
           summaryUrl,
@@ -1103,13 +1578,15 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
           monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
-          performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples || 'performance-samples.jsonl'),
-          performanceTraceUrl: artifactUrl(summary.artifacts?.performanceTrace || 'performance.trace.zip' || 'performance.trace'),
+                    performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples || 'performance-samples.jsonl'),
+                    performanceStuttersUrl: artifactUrl(summary.artifacts?.performanceStutters || 'performance-stutters.json'),
+                    performanceStacksUrl: artifactUrl(summary.artifacts?.performanceStacks || 'performance-stack-analysis.json'),
+                    performanceTraceUrl: artifactUrl(summary.artifacts?.performanceTrace || 'performance.trace.zip' || 'performance.trace'),
           crashReportsUrl: artifactUrl(summary.artifacts?.crashReports),
           junitUrl: artifactUrl(summary.artifacts?.junit || 'junit.xml'),
           qualityLogUrl: artifactUrl(summary.artifacts?.qualityLog || 'quality.log'),
         },
-      };
+      });
     } catch {
       // summary artifact 读取失败时继续走 console 兜底。
     }
@@ -1121,9 +1598,13 @@ async function fetchQualitySummary(jobPath: string, build: any) {
       artifacts: {},
     };
   } catch {
+    const result = String(build.result || '').toUpperCase();
+    const status = result === 'SUCCESS'
+      ? 'passed'
+      : (result === 'UNSTABLE' ? 'unstable' : (result === 'FAILURE' ? 'failed' : (result === 'ABORTED' ? 'aborted' : '')));
     return {
-      status: build.result === 'SUCCESS' ? 'passed' : (build.result === 'FAILURE' ? 'failed' : ''),
-      message: build.result === 'SUCCESS' ? '质检成功' : '',
+      status,
+      message: result === 'SUCCESS' ? '质检成功' : (result === 'ABORTED' ? '质检已取消或中断，未生成本次质检汇总' : (result === 'FAILURE' ? '质检失败，未生成本次质检汇总' : '')),
       artifacts: {},
     };
   }
@@ -1225,6 +1706,41 @@ function normalizeMemoryMegabytes(value: number) {
   return value;
 }
 
+function normalizePerformanceMemoryMegabytes(keyPath: string, value: number) {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const key = String(keyPath || '').toLowerCase();
+  if (/virtual|vmsize|address|startabstime|procage|energyscore/.test(key)) return null;
+  if (!/physfootprint|resident|resident_size|residentmemory|memresident|memrprvt|memrshrd|memanon|memcompressed|memory|rss/.test(key)) {
+    return null;
+  }
+  return Number(normalizeMemoryMegabytes(value).toFixed(2));
+}
+
+function extractPerformanceMemoryMegabytes(item: any, values: Array<{ path: string; value: number }>) {
+  const preferredKeys = [
+    'physFootprint',
+    'physicalFootprint',
+    'memResidentSize',
+    'residentSize',
+    'residentMemory',
+    'rss',
+    'memRPrvt',
+    'memAnon',
+  ];
+  for (const key of preferredKeys) {
+    const directValue = item?.[key];
+    if (typeof directValue === 'number' && Number.isFinite(directValue)) {
+      const memoryMB = normalizePerformanceMemoryMegabytes(key, directValue);
+      if (memoryMB !== null) return memoryMB;
+    }
+  }
+  for (const { path: keyPath, value } of values) {
+    const memoryMB = normalizePerformanceMemoryMegabytes(keyPath, value);
+    if (memoryMB !== null) return memoryMB;
+  }
+  return null;
+}
+
 function summarizePerformanceSeries(values: Array<number | null | undefined>) {
   const validValues = values.filter((value): value is number => Number.isFinite(Number(value)));
   if (!validValues.length) return { avg: null, max: null, min: null };
@@ -1272,10 +1788,7 @@ function parsePerformanceSamplesJsonl(content: string, maxSamples = 5000) {
     const values = flattenNumericValues(item);
     const cpu = values.find(({ path: keyPath, value }) => keyPath.includes('cpu') && value >= 0 && value <= 1000)?.value ?? null;
     const fps = values.find(({ path: keyPath, value }) => /fps|frame/.test(keyPath) && value >= 0 && value <= 240)?.value ?? null;
-    const memory = values.find(({ path: keyPath, value }) => (
-      /memory|mem|resident|rss/.test(keyPath) && value > 0
-    ))?.value ?? null;
-    const memoryMB = memory === null ? null : Number(normalizeMemoryMegabytes(memory).toFixed(2));
+    const memoryMB = extractPerformanceMemoryMegabytes(item, values);
     if (cpu !== null) cpuValues.push(cpu);
     if (memoryMB !== null) memoryValues.push(memoryMB);
     if (fps !== null) fpsValues.push(fps);
@@ -1415,13 +1928,7 @@ router.get('/nn/branches', async (_req: Request, res: Response) => {
       .map((line) => line.match(/refs\/heads\/(.+)$/)?.[1])
       .filter((branch): branch is string => Boolean(branch))
       .filter((branch) => !branch.includes('HEAD'))
-      .sort((a, b) => {
-        if (a === 'develop') return -1;
-        if (b === 'develop') return 1;
-        if (a.startsWith('release/') && !b.startsWith('release/')) return -1;
-        if (!a.startsWith('release/') && b.startsWith('release/')) return 1;
-        return b.localeCompare(a);
-      });
+      .sort(compareBranchOptions);
 
     res.json({
       success: true,
@@ -1712,12 +2219,13 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
         ? buildLocalQualityArtifactLinks(localSummaryResult.filePath, localSummary)
         : {};
       const localProgress = readLocalQualityProgress(DEFAULT_QA_JOB_NAME, build);
+      const localMetadata = readLocalQualityMetadata(DEFAULT_QA_JOB_NAME, build);
       const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary, localProgress);
       const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
       const stateOverride = completedOverride || interruptedOverride;
       const normalizedBuild = stateOverride ? { ...build, ...stateOverride } : build;
       const qualitySummary = job.localFallback ? {
-        status: normalizedBuild.result === 'SUCCESS' || normalizedBuild.result === 'UNSTABLE' ? 'passed' : (normalizedBuild.result === 'FAILURE' ? 'failed' : ''),
+        status: normalizedBuild.result === 'SUCCESS' ? 'passed' : (normalizedBuild.result === 'UNSTABLE' ? 'unstable' : (normalizedBuild.result === 'FAILURE' ? 'failed' : '')),
         message: normalizedBuild.result === 'UNSTABLE' ? '质检完成，Jenkins 标记为 UNSTABLE' : '',
         artifacts: {},
       } : await fetchQualitySummary(jobPath, normalizedBuild);
@@ -1729,6 +2237,7 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
           }
         : {
             ...qualitySummary,
+            ...(localMetadata || {}),
             ...(localSummary || {}),
             artifacts: {
               ...(localSummary?.artifacts || {}),
@@ -1737,13 +2246,31 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
             },
             message: completedOverride?.completedMessage || localSummary?.message || qualitySummary.message,
           };
+      const normalizedQualitySummary = normalizeQualitySummaryStatus(
+        await enrichQualitySummaryWithSourceBuild(
+          await enrichQualitySummaryWithHangStack(mergedQualitySummary, localSummaryResult?.filePath),
+        ),
+      );
+      const outputQualitySummary = (!localSummary && normalizedBuild.result === 'ABORTED')
+        ? {
+            ...normalizedQualitySummary,
+            status: 'aborted',
+            message: normalizedQualitySummary.message || '质检已取消或中断，未生成本次质检汇总',
+          }
+        : (!localSummary && normalizedBuild.result === 'FAILURE'
+            ? {
+                ...normalizedQualitySummary,
+                status: 'failed',
+                message: normalizedQualitySummary.message || '质检失败，未生成本次质检汇总',
+              }
+            : normalizedQualitySummary);
       return {
         ...normalizedBuild,
         url: normalizeJenkinsUrl(normalizedBuild.url),
         artifacts: [],
         qualitySummary: {
-          ...mergedQualitySummary,
-          progress: localProgress || mergedQualitySummary.progress,
+          ...outputQualitySummary,
+          progress: reconcileQualityProgress(normalizedBuild, outputQualitySummary, localProgress),
         },
       };
     }));
@@ -2142,6 +2669,7 @@ router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Respons
     }
 
     await stopJenkinsBuild(DEFAULT_QA_JOB_NAME, buildNumber);
+    await cleanupLocalQualityProcesses(String(req.body?.deviceUdid || req.body?.device_udid || '').trim());
 
     res.json({
       success: true,
@@ -2159,6 +2687,25 @@ router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Respons
   }
 });
 
+router.post('/nn/quality/wda/cleanup', async (req: Request, res: Response) => {
+  try {
+    const deviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
+    const result = await cleanupLocalQualityProcesses(deviceUdid);
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        deviceUdid,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: error.message || '清理 WDA 失败',
+    });
+  }
+});
+
 router.post('/nn/quality', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
@@ -2170,17 +2717,24 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const rawPackageUrl = String(req.body?.packageUrl || '').trim();
     const xcarchivePath = String(req.body?.xcarchivePath || '').trim();
     const archiveUrl = String(req.body?.archiveUrl || '').trim();
-    const skipInstall = req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
+    const publishChannel = normalizeDeployTarget(String(req.body?.publishChannel || req.body?.deployTarget || ''));
+    const forceInstalledProductionApp = publishChannel === 'TestFlight' || publishChannel === 'AppStore';
+    const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
     const defaultAppBundleId = skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im';
     const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
     const packageUrl = skipInstall ? `skip-install:${appBundleId}` : rawPackageUrl;
     const rawTestSuite = String(req.body?.testSuite || 'smoke').trim();
     const testSuite = normalizeQualitySuite(rawTestSuite);
-    const jenkinsTestSuite = testSuite === 'monkey' ? 'smoke' : testSuite;
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
     const requestedDeviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
     const rawMonkeyDurationSeconds = String(req.body?.monkeyDurationSeconds || '').trim();
-    const monkeyDurationSeconds = testSuite === 'monkey'
+    const rawStutterScenario = String(req.body?.stutterScenario || req.body?.scenario || 'community').trim().toLowerCase();
+    const normalizedStutterScenario = ['rtc', 'room', 'voice', 'voice-room', 'voiceroom', '语音房'].includes(rawStutterScenario)
+      ? 'voice_room'
+      : rawStutterScenario;
+    const stutterScenario = QA_STUTTER_SCENARIOS.has(normalizedStutterScenario) ? normalizedStutterScenario : 'community';
+    const timedQualitySuite = testSuite === 'monkey' || testSuite === 'stutter';
+    const monkeyDurationSeconds = timedQualitySuite
       ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400')
       : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400');
 
@@ -2198,10 +2752,10 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       });
       return;
     }
-    if (testSuite === 'monkey' && !QA_MONKEY_DURATION_SECONDS.has(monkeyDurationSeconds)) {
+    if (timedQualitySuite && !QA_MONKEY_DURATION_SECONDS.has(monkeyDurationSeconds)) {
       res.status(400).json({
         success: false,
-        error: `Monkey 执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
+        error: `执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
       });
       return;
     }
@@ -2237,9 +2791,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       return;
     }
 
-    const devicePoolLabel = testSuite === 'monkey'
-      ? `${selectedDevicePool.label} [suite:monkey]`
-      : selectedDevicePool.label;
+    const devicePoolLabel = selectedDevicePool.label;
     const crumb = await getCrumb();
     const params = new URLSearchParams({
       SOURCE_JOB: DEFAULT_JOB_NAME,
@@ -2250,7 +2802,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       PACKAGE_URL: packageUrl,
       XCARCHIVE_PATH: xcarchivePath,
       ARCHIVE_URL: archiveUrl,
-      TEST_SUITE: jenkinsTestSuite,
+      TEST_SUITE: testSuite,
       REQUESTED_TEST_SUITE: testSuite,
       RUN_MONKEY: testSuite === 'monkey' ? '1' : '0',
       DEVICE_POOL: devicePool,
@@ -2258,11 +2810,11 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       DEVICE_UDID: deviceKey,
       DEVICE_SELECTOR: deviceKey,
       DEVICE_CLOUD: 'LocalMac',
-      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : 'local-ios-device',
-      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : 'local-usb',
+      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : (testSuite === 'stutter' ? 'local-ios-device-stutter' : 'local-ios-device'),
+      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : (testSuite === 'stutter' ? 'local-usb-stutter' : 'local-usb'),
       APP_BUNDLE_ID: appBundleId,
       SKIP_APP_INSTALL: skipInstall ? '1' : '0',
-      COLD_START_DETECT_SCREEN: getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1',
+      COLD_START_DETECT_SCREEN: testSuite === 'stutter' ? '0' : (getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1'),
       COLD_START_READY_TIMEOUT_SECONDS: getRuntimeEnv('QA_COLD_START_READY_TIMEOUT_SECONDS') || '45',
       COLD_START_READY_TEXT: getRuntimeEnv('QA_COLD_START_READY_TEXT') || '',
       WDA_URL: wdaUrl,
@@ -2276,11 +2828,12 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       WDA_XCODEBUILD_EXTRA_ARGS: getRuntimeEnv('QA_WDA_XCODEBUILD_EXTRA_ARGS') || '',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
       MONKEY_DURATION_SECONDS: monkeyDurationSeconds,
-      MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.35',
+      STUTTER_SCENARIO: testSuite === 'stutter' ? stutterScenario : '',
+      MONKEY_INTERVAL_SECONDS: getRuntimeEnv('QA_MONKEY_INTERVAL_SECONDS') || '0.45',
       MONKEY_MAX_REPORTED_EVENTS: getRuntimeEnv('QA_MONKEY_MAX_REPORTED_EVENTS') || '1000',
       MONKEY_BACK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_BACK_INTERVAL_EVENTS') || '25',
       MONKEY_STUCK_EVENTS: getRuntimeEnv('QA_MONKEY_STUCK_EVENTS') || '18',
-      MONKEY_STUCK_CHECK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_STUCK_CHECK_INTERVAL_EVENTS') || '5',
+      MONKEY_STUCK_CHECK_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_STUCK_CHECK_INTERVAL_EVENTS') || '12',
       MONKEY_BACK_ACTION_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_ACTION_PROBABILITY') || '0.12',
       MONKEY_BACK_TAP_PROBABILITY: getRuntimeEnv('QA_MONKEY_BACK_TAP_PROBABILITY') || '0.35',
       MONKEY_AVOID_TOP_BAR: getRuntimeEnv('QA_MONKEY_AVOID_TOP_BAR') || '1',
@@ -2292,13 +2845,21 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       PERFORMANCE_SAMPLING: getRuntimeEnv('QA_PERFORMANCE_SAMPLING') || '1',
       PERFORMANCE_SAMPLER: getRuntimeEnv('QA_PERFORMANCE_SAMPLER') || 'auto',
       PERFORMANCE_SAMPLE_TYPES: getRuntimeEnv('QA_PERFORMANCE_SAMPLE_TYPES') || 'cpu,memory,fps',
-      PERFORMANCE_XCTRACE_TEMPLATE: getRuntimeEnv('QA_PERFORMANCE_XCTRACE_TEMPLATE') || 'Activity Monitor',
+      PERFORMANCE_XCTRACE_TEMPLATE: testSuite === 'stutter'
+        ? (getRuntimeEnv('QA_STUTTER_XCTRACE_TEMPLATE') || 'Animation Hitches')
+        : (getRuntimeEnv('QA_PERFORMANCE_XCTRACE_TEMPLATE') || 'Time Profiler'),
+      PERFORMANCE_FRAME_XCTRACE: testSuite === 'stutter' ? '0' : (getRuntimeEnv('QA_PERFORMANCE_FRAME_XCTRACE') || '0'),
       PERF_COLD_START_WARN_MS: getRuntimeEnv('QA_PERF_COLD_START_WARN_MS') || '8000',
       PERF_COLD_START_SLOW_MS: getRuntimeEnv('QA_PERF_COLD_START_SLOW_MS') || '15000',
       PERF_CPU_AVG_WARN: getRuntimeEnv('QA_PERF_CPU_AVG_WARN') || '80',
       PERF_MEMORY_PEAK_WARN_MB: getRuntimeEnv('QA_PERF_MEMORY_PEAK_WARN_MB') || '1500',
       PERF_FPS_AVG_WARN: getRuntimeEnv('QA_PERF_FPS_AVG_WARN') || '45',
       PERF_FPS_MIN_WARN: getRuntimeEnv('QA_PERF_FPS_MIN_WARN') || '20',
+      PERF_STUTTER_ACTION_WARN_MS: getRuntimeEnv('QA_PERF_STUTTER_ACTION_WARN_MS') || '2500',
+      PERF_STUTTER_ACTION_SEVERE_MS: getRuntimeEnv('QA_PERF_STUTTER_ACTION_SEVERE_MS') || '5000',
+      PERF_STUTTER_COUNT_WARN: getRuntimeEnv('QA_PERF_STUTTER_COUNT_WARN') || '3',
+      PERF_FRAME_STUTTER_WARN_MS: getRuntimeEnv('QA_PERF_FRAME_STUTTER_WARN_MS') || '16.67',
+      PERF_FRAME_STUTTER_SEVERE_MS: getRuntimeEnv('QA_PERF_FRAME_STUTTER_SEVERE_MS') || '33.34',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
       SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',

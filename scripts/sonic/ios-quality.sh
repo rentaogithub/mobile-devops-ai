@@ -64,7 +64,10 @@ DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
 PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
 PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
+PERFORMANCE_STUTTER_FILE="${RESULT_DIR}/performance-stutters.json"
+PERFORMANCE_STACK_FILE="${RESULT_DIR}/performance-stack-analysis.json"
 PERFORMANCE_TRACE_FILE="${RESULT_DIR}/performance.trace"
+PERFORMANCE_FRAME_TRACE_FILE="${RESULT_DIR}/performance-frame.trace"
 PERFORMANCE_TRACE_SEGMENTS_DIR="${RESULT_DIR}/performance-traces"
 PERFORMANCE_TRACE_MONITOR_PID_FILE="${RESULT_DIR}/performance-xctrace-monitor.pid"
 PERFORMANCE_MONKEY_RUNNING_FILE="${RESULT_DIR}/monkey-running.flag"
@@ -98,11 +101,11 @@ MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
 WDA_READY_ERROR=""
 MONKEY_EVENT_COUNT="${MONKEY_EVENT_COUNT:-30}"
 MONKEY_DURATION_SECONDS="${MONKEY_DURATION_SECONDS:-14400}"
-MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.35}"
+MONKEY_INTERVAL_SECONDS="${MONKEY_INTERVAL_SECONDS:-0.45}"
 MONKEY_MAX_REPORTED_EVENTS="${MONKEY_MAX_REPORTED_EVENTS:-1000}"
 MONKEY_BACK_INTERVAL_EVENTS="${MONKEY_BACK_INTERVAL_EVENTS:-25}"
 MONKEY_STUCK_EVENTS="${MONKEY_STUCK_EVENTS:-18}"
-MONKEY_STUCK_CHECK_INTERVAL_EVENTS="${MONKEY_STUCK_CHECK_INTERVAL_EVENTS:-10}"
+MONKEY_STUCK_CHECK_INTERVAL_EVENTS="${MONKEY_STUCK_CHECK_INTERVAL_EVENTS:-12}"
 MONKEY_BACK_ACTION_PROBABILITY="${MONKEY_BACK_ACTION_PROBABILITY:-0.12}"
 MONKEY_BACK_TAP_PROBABILITY="${MONKEY_BACK_TAP_PROBABILITY:-0.35}"
 MONKEY_AVOID_TOP_BAR="${MONKEY_AVOID_TOP_BAR:-1}"
@@ -110,6 +113,16 @@ MONKEY_HEARTBEAT_INTERVAL_SECONDS="${MONKEY_HEARTBEAT_INTERVAL_SECONDS:-10}"
 MONKEY_WDA_MAX_RECOVERIES="${MONKEY_WDA_MAX_RECOVERIES:-8}"
 MONKEY_WDA_RECOVERY_SLEEP_SECONDS="${MONKEY_WDA_RECOVERY_SLEEP_SECONDS:-12}"
 MONKEY_WDA_RESTART_TIMEOUT_SECONDS="${MONKEY_WDA_RESTART_TIMEOUT_SECONDS:-120}"
+MONKEY_ENFORCE_TARGET_APP="${MONKEY_ENFORCE_TARGET_APP:-1}"
+MONKEY_TARGET_APP_CHECK_INTERVAL_EVENTS="${MONKEY_TARGET_APP_CHECK_INTERVAL_EVENTS:-10}"
+MONKEY_TARGET_APP_MAX_RECOVERIES="${MONKEY_TARGET_APP_MAX_RECOVERIES:-20}"
+STUTTER_SCENARIO="${STUTTER_SCENARIO:-community}"
+if [ -z "${STUTTER_SCENARIO}" ] || [ "${STUTTER_SCENARIO}" = "manual" ]; then
+  STUTTER_SCENARIO="community"
+fi
+if [ "${STUTTER_SCENARIO}" = "rtc" ] || [ "${STUTTER_SCENARIO}" = "room" ] || [ "${STUTTER_SCENARIO}" = "voice" ] || [ "${STUTTER_SCENARIO}" = "voice-room" ] || [ "${STUTTER_SCENARIO}" = "voiceroom" ] || [ "${STUTTER_SCENARIO}" = "语音房" ]; then
+  STUTTER_SCENARIO="voice_room"
+fi
 MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn}"
 MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow}"
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
@@ -121,20 +134,58 @@ MONKEY_EXECUTED_EVENTS="0"
 PERFORMANCE_SAMPLING="${PERFORMANCE_SAMPLING:-1}"
 PERFORMANCE_SAMPLER="${PERFORMANCE_SAMPLER:-auto}"
 PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory,fps}"
-PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_XCTRACE_TEMPLATE:-Activity Monitor}"
+PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_XCTRACE_TEMPLATE:-Time Profiler}"
+PERFORMANCE_FRAME_XCTRACE_TEMPLATE="${PERFORMANCE_FRAME_XCTRACE_TEMPLATE:-Animation Hitches}"
+PERFORMANCE_FRAME_XCTRACE="${PERFORMANCE_FRAME_XCTRACE:-0}"
+PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS="${PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS:-60}"
+PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS="${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS:-120}"
+PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS="${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS:-300}"
 PERF_COLD_START_WARN_MS="${PERF_COLD_START_WARN_MS:-8000}"
 PERF_COLD_START_SLOW_MS="${PERF_COLD_START_SLOW_MS:-15000}"
 PERF_CPU_AVG_WARN="${PERF_CPU_AVG_WARN:-80}"
 PERF_MEMORY_PEAK_WARN_MB="${PERF_MEMORY_PEAK_WARN_MB:-1500}"
 PERF_FPS_AVG_WARN="${PERF_FPS_AVG_WARN:-45}"
 PERF_FPS_MIN_WARN="${PERF_FPS_MIN_WARN:-20}"
+PERF_STUTTER_ACTION_WARN_MS="${PERF_STUTTER_ACTION_WARN_MS:-2500}"
+PERF_STUTTER_ACTION_SEVERE_MS="${PERF_STUTTER_ACTION_SEVERE_MS:-5000}"
+PERF_STUTTER_COUNT_WARN="${PERF_STUTTER_COUNT_WARN:-3}"
+PERF_FRAME_STUTTER_WARN_MS="${PERF_FRAME_STUTTER_WARN_MS:-16.67}"
+PERF_FRAME_STUTTER_SEVERE_MS="${PERF_FRAME_STUTTER_SEVERE_MS:-33.34}"
 
 mkdir -p "${RESULT_DIR}"
-rm -f "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid"
+rm -f "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid" "${RESULT_DIR}/performance-frame-xctrace.pid"
+
+cleanup_wda_automation_session() {
+  if [ -z "${SELECTED_DEVICE:-}" ]; then
+    return 0
+  fi
+  local pid_file pid wda_port
+  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid"; do
+    if [ ! -f "${pid_file}" ]; then
+      continue
+    fi
+    pid="$(cat "${pid_file}" 2>/dev/null || true)"
+    if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+      kill "${pid}" >/dev/null 2>&1 || true
+      wait "${pid}" >/dev/null 2>&1 || true
+    fi
+    rm -f "${pid_file}"
+  done
+  wda_port="$(wda_url_part port 2>/dev/null || printf '%s' "8100")"
+  if [ -n "${wda_port}" ]; then
+    pkill -f "iproxy.*${SELECTED_DEVICE}.*${wda_port}:8100" >/dev/null 2>&1 || true
+    pkill -f "iproxy.*${wda_port}:8100.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
+  fi
+  pkill -f "xcodebuild.*${WDA_SCHEME:-WebDriverAgentRunner}.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
+  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}" || true
+  sleep 1
+  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}" || true
+  terminate_device_process_matching "AutomationModeUI|automationmode-writer" || true
+}
 
 cleanup_started_processes() {
   local pid_file pid
-  for pid_file in "${RESULT_DIR}/wda-xcodebuild.pid" "${RESULT_DIR}/wda-iproxy.pid" "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid" "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"; do
+  for pid_file in "${RESULT_DIR}/performance-sampler.pid" "${RESULT_DIR}/performance-xctrace.pid" "${RESULT_DIR}/performance-frame-xctrace.pid" "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"; do
     if [ ! -f "${pid_file}" ]; then
       continue
     fi
@@ -146,16 +197,7 @@ cleanup_started_processes() {
     rm -f "${pid_file}"
   done
   rm -f "${PERFORMANCE_MONKEY_RUNNING_FILE}"
-  if [ -n "${SELECTED_DEVICE:-}" ]; then
-    local wda_port
-    wda_port="$(wda_url_part port 2>/dev/null || printf '%s' "8100")"
-    if [ -n "${wda_port}" ]; then
-      pkill -f "iproxy.*${SELECTED_DEVICE}.*${wda_port}:8100" >/dev/null 2>&1 || true
-      pkill -f "iproxy.*${wda_port}:8100.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
-    fi
-    pkill -f "xcodebuild.*${WDA_SCHEME:-WebDriverAgentRunner}.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
-    terminate_device_process_matching "WebDriverAgentRunner" || true
-  fi
+  cleanup_wda_automation_session || true
 }
 
 trap cleanup_started_processes EXIT
@@ -303,6 +345,29 @@ except subprocess.TimeoutExpired:
 PY
 }
 
+wait_pid_with_timeout() {
+  local pid="$1"
+  local timeout_seconds="${2:-30}"
+  local label="${3:-process}"
+  local waited=0
+  while kill -0 "${pid}" >/dev/null 2>&1; do
+    if [ "${waited}" -ge "${timeout_seconds}" ]; then
+      log "${label} 停止超时 ${timeout_seconds}s，强制结束。"
+      kill -TERM "${pid}" >/dev/null 2>&1 || true
+      sleep 3
+      if kill -0 "${pid}" >/dev/null 2>&1; then
+        kill -KILL "${pid}" >/dev/null 2>&1 || true
+      fi
+      wait "${pid}" >/dev/null 2>&1 || true
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "${pid}" >/dev/null 2>&1 || true
+  return 0
+}
+
 compute_ipa_hashes() {
   if [ ! -s "${IPA_FILE}" ]; then
     return 1
@@ -443,7 +508,7 @@ write_summary() {
     "${MONKEY_STATUS:-}" "${MONKEY_MESSAGE:-}" "${MONKEY_EXECUTED_EVENTS:-}" "${MONKEY_EVENT_COUNT:-}" "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL:-}}" \
     "${RESULT_DIR:-}" "${SCREENSHOT_FILE:-}" "${DEVICE_LOG_FILE:-}" "${PROCESS_FILE:-}" "${MONKEY_REPORT_FILE:-}" "${PERFORMANCE_SAMPLE_FILE:-}" "${PERFORMANCE_TRACE_ARCHIVE_FILE:-}" "${PERFORMANCE_TRACE_FILE:-}" "${CRASH_REPORT_DIR:-}" \
     "${PERF_COLD_START_WARN_MS:-8000}" "${PERF_COLD_START_SLOW_MS:-15000}" "${PERF_CPU_AVG_WARN:-80}" "${PERF_MEMORY_PEAK_WARN_MB:-1500}" "${PERF_FPS_AVG_WARN:-45}" "${PERF_FPS_MIN_WARN:-20}" \
-    "${QUALITY_STARTED_AT_EPOCH:-}" "${QUALITY_STARTED_AT_ISO:-}" <<'PY'
+    "${QUALITY_STARTED_AT_EPOCH:-}" "${QUALITY_STARTED_AT_ISO:-}" "${STUTTER_SCENARIO:-community}" <<'PY'
 import json
 import os
 import re
@@ -491,7 +556,8 @@ summary_path = sys.argv[1]
     fps_min_warn,
     quality_started_at_epoch,
     quality_started_at_iso,
-) = sys.argv[2:40]
+    stutter_scenario,
+) = sys.argv[2:41]
 
 def to_int(value):
     try:
@@ -571,6 +637,20 @@ def first_json_metadata(text):
         except Exception:
             return {}
     return {}
+
+def watchdog_reason(text, metadata):
+    bug_type = str(metadata.get("bug_type") or "")
+    if bug_type != "309" and "0x8BADF00D" not in text and "watchdog" not in text.lower():
+        return ""
+    for pattern in (
+        r"explanation:([^\"\\n]+)",
+        r"scene-update watchdog transgression:[^\"\\n]+",
+        r"WatchdogEvent:\s*([^\",\\n]+)",
+    ):
+        match = re.search(pattern, text, re.I)
+        if match:
+            return re.sub(r"\s+", " ", match.group(0)).strip()[:300]
+    return "Watchdog 0x8BADF00D"
 
 def in_quality_window(timestamp):
     started = to_float(quality_started_at_epoch)
@@ -674,14 +754,16 @@ def analyze_crash_reports(crash_dir, bundle_id):
             reason = re.search(r"^(?:Exception Reason|Termination Reason|reason):\s*(.+)$", text, re.M)
             crashed_thread = re.search(r"^(?:Crashed Thread|crashedThread):\s*(.+)$", text, re.M)
             event = re.search(r"^(?:Event):\s*(.+)$", text, re.M)
+            watchdog = watchdog_reason(text, metadata)
             sample = {
                 "file": rel_path,
                 "process": (proc or command).group(1).strip()[:160] if (proc or command) else report_app,
-                "exception": exception.group(1).strip()[:160] if exception else "",
-                "reason": reason.group(1).strip()[:240] if reason else (event.group(1).strip()[:240] if event else ""),
+                "exception": exception.group(1).strip()[:160] if exception else ("Watchdog 0x8BADF00D" if watchdog else ""),
+                "reason": reason.group(1).strip()[:240] if reason else (watchdog or (event.group(1).strip()[:240] if event else "")),
                 "crashedThread": crashed_thread.group(1).strip()[:80] if crashed_thread else "",
                 "timestamp": timestamp.isoformat() if timestamp else "",
                 "kind": report_kind,
+                "bugType": bug_type,
             }
             if report_kind == "resource":
                 resource_files.append(rel_path)
@@ -801,12 +883,14 @@ def analyze_performance(launch_ms, cold_ms, monkey_report_path, thresholds):
     monkey_events = None
     monkey_events_per_minute = None
     monkey_status = ""
+    stutter = {"enabled": False, "method": "monkey_action_latency"}
     if monkey_report_path and os.path.exists(monkey_report_path):
         try:
             report = json.load(open(monkey_report_path, encoding="utf-8"))
             monkey_duration_ms = report.get("durationMs")
             monkey_events = report.get("executedEvents")
             monkey_status = str(report.get("status") or "")
+            stutter = report.get("stutter") or stutter
             if monkey_duration_ms and monkey_events is not None:
                 minutes = max(float(monkey_duration_ms) / 60000.0, 0.001)
                 monkey_events_per_minute = round(float(monkey_events) / minutes, 2)
@@ -821,6 +905,34 @@ def analyze_performance(launch_ms, cold_ms, monkey_report_path, thresholds):
         "monkeyExecutedEvents": monkey_events,
         "monkeyEventsPerMinute": monkey_events_per_minute,
         "monkeyStatus": monkey_status,
+        "stutter": stutter,
+    }
+
+def analyze_frame_stutters(path):
+    if not path or not os.path.exists(path):
+        return {
+            "enabled": True,
+            "method": "xctrace_frame_hitches",
+            "available": False,
+            "message": "未生成帧级卡顿文件",
+            "hitchCount": 0,
+            "severeHitchCount": 0,
+            "samples": [],
+        }
+    try:
+        data = json.load(open(path, encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {
+        "enabled": True,
+        "method": "xctrace_frame_hitches",
+        "available": False,
+        "message": "帧级卡顿文件解析失败",
+        "hitchCount": 0,
+        "severeHitchCount": 0,
+        "samples": [],
     }
 
 def build_performance_conclusions(performance, samples, thresholds):
@@ -847,6 +959,32 @@ def build_performance_conclusions(performance, samples, thresholds):
     fps_min = ((samples or {}).get("fps") or {}).get("min")
     if fps_min is not None and fps_min < thresholds["fpsMinWarn"]:
         issues.append({"severity": "warning", "metric": "fps.min", "message": f"FPS 最低 {fps_min}，低于阈值 {thresholds['fpsMinWarn']}"})
+
+    stutter = performance.get("stutter") or {}
+    slow_action_count = int(stutter.get("slowActionCount") or 0)
+    severe_action_count = int(stutter.get("severeActionCount") or 0)
+    stuck_page_count = int(stutter.get("stuckPageCount") or 0)
+    wda_recovery_count = int(stutter.get("wdaRecoveryCount") or 0)
+    target_app_recovery_count = int(stutter.get("targetAppRecoveryCount") or 0)
+    if severe_action_count > 0:
+        issues.append({"severity": "failed", "metric": "stutter.severeActionCount", "message": f"检测到 {severe_action_count} 次严重交互卡顿，单次动作耗时超过 {thresholds['stutterActionSevereMs']}ms"})
+    elif slow_action_count >= thresholds["stutterCountWarn"]:
+        issues.append({"severity": "warning", "metric": "stutter.slowActionCount", "message": f"检测到 {slow_action_count} 次交互卡顿，超过阈值 {thresholds['stutterCountWarn']} 次"})
+    if stuck_page_count > 0:
+        issues.append({"severity": "warning", "metric": "stutter.stuckPageCount", "message": f"Monkey 检测到 {stuck_page_count} 次页面疑似停留不变，可能存在卡住或回退困难"})
+    if wda_recovery_count > 0:
+        issues.append({"severity": "warning", "metric": "stutter.wdaRecoveryCount", "message": f"WDA 恢复 {wda_recovery_count} 次，可能是设备连接或 UI 自动化响应不稳定"})
+    if target_app_recovery_count > 0:
+        issues.append({"severity": "warning", "metric": "stutter.targetAppRecoveryCount", "message": f"Monkey 检测到被测 App 离开前台 {target_app_recovery_count} 次，已尝试重新拉起目标 App"})
+
+    frame_stutter = performance.get("frameStutter") or {}
+    if frame_stutter.get("available"):
+        frame_hitch_count = int(frame_stutter.get("hitchCount") or 0)
+        frame_severe_count = int(frame_stutter.get("severeHitchCount") or 0)
+        if frame_severe_count > 0:
+            issues.append({"severity": "failed", "metric": "frameStutter.severeHitchCount", "message": f"检测到 {frame_severe_count} 次严重帧级卡顿，帧耗时超过 {thresholds['frameStutterSevereMs']}ms"})
+        elif frame_hitch_count > 0:
+            issues.append({"severity": "warning", "metric": "frameStutter.hitchCount", "message": f"检测到 {frame_hitch_count} 次帧级卡顿，帧耗时超过 {thresholds['frameStutterWarnMs']}ms"})
 
     severity = "passed"
     if any(item["severity"] == "failed" for item in issues):
@@ -877,6 +1015,53 @@ def summarize_series(values):
         "min": round(min(values), 2),
     }
 
+def normalize_memory_mb(key_path, number):
+    if number is None or number <= 0:
+        return None
+    key = str(key_path or "").lower()
+    if any(token in key for token in ("virtual", "vmsize", "address", "startabstime", "procage", "energyscore")):
+        return None
+    allowed = (
+        "physfootprint",
+        "resident",
+        "resident_size",
+        "residentmemory",
+        "memresident",
+        "memrprvt",
+        "memrshrd",
+        "memanon",
+        "memcompressed",
+        "memory",
+        "rss",
+    )
+    if not any(token in key for token in allowed):
+        return None
+    return round(number / 1024 / 1024, 2) if number > 1024 * 1024 else round(number, 2)
+
+def memory_sample_mb(item):
+    preferred_keys = (
+        "physFootprint",
+        "physicalFootprint",
+        "memResidentSize",
+        "residentSize",
+        "residentMemory",
+        "rss",
+        "memRPrvt",
+        "memAnon",
+    )
+    lower_map = {str(key).lower(): value for key, value in item.items()} if isinstance(item, dict) else {}
+    for key in preferred_keys:
+        value = lower_map.get(key.lower())
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            converted = normalize_memory_mb(key, float(value))
+            if converted is not None:
+                return converted
+    for key_path, number in collect_numbers(item):
+        converted = normalize_memory_mb(key_path, number)
+        if converted is not None:
+            return converted
+    return None
+
 def analyze_performance_samples(path):
     cpu_values = []
     memory_values = []
@@ -900,13 +1085,14 @@ def analyze_performance_samples(path):
                 except Exception:
                     continue
                 sample_count += 1
+                memory_mb = memory_sample_mb(item)
+                if memory_mb is not None:
+                    memory_values.append(memory_mb)
                 for key_path, number in collect_numbers(item):
                     if "cpu" in key_path and 0 <= number <= 1000:
                         cpu_values.append(number)
                     elif "fps" in key_path and 0 <= number <= 240:
                         fps_values.append(number)
-                    elif any(token in key_path for token in ("memory", "mem", "resident", "rss")) and number > 0:
-                        memory_values.append(number / 1024 / 1024 if number > 1024 * 1024 else number)
     except Exception:
         pass
     return {
@@ -925,6 +1111,7 @@ data = {
     "commitHash": commit_hash,
     "appVersion": app_version,
     "testSuite": test_suite,
+    "stutterScenario": stutter_scenario,
     "devicePool": device_pool,
     "devicePoolLabel": device_pool_label,
     "deviceUdid": device_udid,
@@ -945,6 +1132,8 @@ data = {
         "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
         "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
+        "performanceStutters": rel(os.path.join(result_dir, "performance-stutters.json")) if os.path.exists(os.path.join(result_dir, "performance-stutters.json")) else "",
+        "performanceStacks": rel(os.path.join(result_dir, "performance-stack-analysis.json")) if os.path.exists(os.path.join(result_dir, "performance-stack-analysis.json")) else "",
         "performanceTrace": rel(performance_trace_archive_file) if os.path.exists(performance_trace_archive_file) else "",
         "crashReports": rel(crash_report_dir) if os.path.isdir(crash_report_dir) else "",
         "junit": "junit.xml",
@@ -958,6 +1147,11 @@ thresholds = {
     "memoryPeakWarnMB": to_float(memory_peak_warn_mb, 1500),
     "fpsAvgWarn": to_float(fps_avg_warn, 45),
     "fpsMinWarn": to_float(fps_min_warn, 20),
+    "stutterActionWarnMs": to_float(os.environ.get("PERF_STUTTER_ACTION_WARN_MS"), 2500),
+    "stutterActionSevereMs": to_float(os.environ.get("PERF_STUTTER_ACTION_SEVERE_MS"), 5000),
+    "stutterCountWarn": to_float(os.environ.get("PERF_STUTTER_COUNT_WARN"), 3),
+    "frameStutterWarnMs": to_float(os.environ.get("PERF_FRAME_STUTTER_WARN_MS"), 16.67),
+    "frameStutterSevereMs": to_float(os.environ.get("PERF_FRAME_STUTTER_SEVERE_MS"), 33.34),
 }
 data["exceptionAnalysis"] = analyze_exceptions(device_log_file, os.path.join(result_dir, "quality.log"), launch_bundle_id or detected_bundle_id)
 data["exceptionAnalysis"]["crashReports"] = analyze_crash_reports(crash_report_dir, launch_bundle_id or detected_bundle_id)
@@ -971,6 +1165,8 @@ data["performanceAnalysis"] = analyze_performance(
     thresholds,
 )
 data["performanceAnalysis"]["samples"] = analyze_performance_samples(performance_sample_file)
+data["performanceAnalysis"]["frameStutter"] = analyze_frame_stutters(os.path.join(result_dir, "performance-stutters.json"))
+data["performanceAnalysis"]["stackAnalysis"] = analyze_frame_stutters(os.path.join(result_dir, "performance-stack-analysis.json"))
 data["performanceAnalysis"]["trace"] = analyze_trace_metadata(result_dir)
 data["performanceAnalysis"]["trace"]["sampleRowsExported"] = data["performanceAnalysis"]["samples"].get("sampleCount", 0)
 data["performanceAnalysis"]["thresholds"] = thresholds
@@ -979,6 +1175,24 @@ data["performanceAnalysis"]["conclusion"] = build_performance_conclusions(
     data["performanceAnalysis"].get("samples"),
     thresholds,
 )
+performance_severity = (data.get("performanceAnalysis") or {}).get("conclusion", {}).get("severity")
+exception_severity = (data.get("exceptionAnalysis") or {}).get("severity")
+if exception_severity == "failed" or performance_severity == "failed":
+    data["status"] = "failed"
+    issue_messages = [
+        item.get("message")
+        for item in ((data.get("performanceAnalysis") or {}).get("conclusion") or {}).get("issues") or []
+        if item.get("severity") == "failed" and item.get("message")
+    ]
+    data["message"] = issue_messages[0] if issue_messages else (data.get("message") or "质检失败")
+elif data.get("status") == "passed" and performance_severity == "warning":
+    data["status"] = "unstable"
+    issue_messages = [
+        item.get("message")
+        for item in ((data.get("performanceAnalysis") or {}).get("conclusion") or {}).get("issues") or []
+        if item.get("message")
+    ]
+    data["message"] = issue_messages[0] if issue_messages else (data.get("message") or "质检完成，存在性能风险")
 with open(summary_path, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
 PY
@@ -1705,6 +1919,102 @@ finally:
 PY
 }
 
+ensure_target_app_foreground_for_evidence() {
+  local bundle_id="${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-${APP_BUNDLE_ID:-}}}"
+  if [ "${MONKEY_ENFORCE_TARGET_APP:-1}" != "1" ] || [ -z "${bundle_id}" ]; then
+    return 0
+  fi
+  if ! check_wda_ready "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"; then
+    return 1
+  fi
+  python3 - "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}" "${bundle_id}" <<'PY'
+import json
+import sys
+import time
+import urllib.request
+
+base_url = sys.argv[1].rstrip("/")
+bundle_id = sys.argv[2]
+session_id = ""
+
+def request(method, path, payload=None, timeout=8):
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(base_url + path, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        return json.loads(body) if body else {}
+
+def value_of(response):
+    return response.get("value", response)
+
+def get_session_id(response):
+    value = value_of(response)
+    return response.get("sessionId") or (value.get("sessionId") if isinstance(value, dict) else "") or ""
+
+def active_bundle(session):
+    paths = [
+        f"/session/{session}/wda/activeAppInfo" if session else "",
+        "/wda/activeAppInfo",
+    ]
+    for path in paths:
+        if not path:
+            continue
+        try:
+            value = value_of(request("GET", path, timeout=5))
+            if isinstance(value, dict):
+                return str(value.get("bundleId") or value.get("bundleID") or value.get("bundleIdentifier") or "")
+        except Exception:
+            pass
+    return ""
+
+def launch_app(session):
+    payloads = [
+        (f"/session/{session}/wda/apps/launch", {"bundleId": bundle_id}) if session else ("", {}),
+        ("/wda/apps/launch", {"bundleId": bundle_id}),
+        (f"/session/{session}/appium/device/activate_app", {"bundleId": bundle_id}) if session else ("", {}),
+    ]
+    last_error = ""
+    for path, payload in payloads:
+        if not path:
+            continue
+        try:
+            request("POST", path, payload, timeout=15)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)[:200]
+    return False, last_error
+
+try:
+    request("GET", "/status", timeout=5)
+    session_response = request("POST", "/session", {"capabilities": {"alwaysMatch": {}, "firstMatch": [{}]}}, timeout=15)
+    session_id = get_session_id(session_response)
+    current = active_bundle(session_id)
+    if current == bundle_id:
+        print(f"target_app_foreground:{bundle_id}")
+        sys.exit(0)
+    ok, error = launch_app(session_id)
+    if not ok:
+        print(f"target_app_launch_failed: current={current or '-'}, target={bundle_id}, error={error}")
+        sys.exit(2)
+    time.sleep(1.5)
+    current = active_bundle(session_id)
+    if current and current != bundle_id:
+        print(f"target_app_still_not_foreground: current={current}, target={bundle_id}")
+        sys.exit(3)
+    print(f"target_app_relaunched:{bundle_id}")
+    sys.exit(0)
+finally:
+    if session_id:
+        try:
+            request("DELETE", f"/session/{session_id}", timeout=5)
+        except Exception:
+            pass
+PY
+}
+
 wait_cold_start_ready() {
   if [ -z "${LAUNCH_STARTED_AT_MS}" ]; then
     log "未记录启动开始时间，跳过冷启动首屏耗时检测。"
@@ -1849,6 +2159,14 @@ capture_screenshot() {
   local screenshot_log="${RESULT_DIR}/screenshot-error.log"
   log "采集启动截图..."
 
+  if ensure_target_app_foreground_for_evidence >"${screenshot_log}" 2>&1; then
+    if [ -s "${screenshot_log}" ]; then
+      log "现场证据前台校验: $(tail -n 1 "${screenshot_log}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    fi
+  elif [ -s "${screenshot_log}" ]; then
+    log "现场证据前台校验失败，仍尝试截图。原因：$(tail -n 1 "${screenshot_log}" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+  fi
+
   if capture_wda_screenshot >"${screenshot_log}" 2>&1; then
     log "截图: ${SCREENSHOT_FILE}"
     return 0
@@ -1931,10 +2249,25 @@ start_performance_sampling() {
   case "${sampler}" in
     xctrace)
       if start_xctrace_sampling; then
+        log "xctrace 负责 Trace/调用栈，另行启动进程指标采样。"
+        if [ "${PERFORMANCE_FRAME_XCTRACE:-0}" = "1" ]; then
+          start_frame_xctrace_sampling || log "帧级 xctrace 采样启动失败，本次仅保留主 xctrace Trace。"
+        else
+          log "帧级 xctrace 采样默认关闭，避免与 Time Profiler 抢占 kperf 导致设备开发通道不稳定。"
+        fi
+        if [ "${ios_major}" -ge 17 ] 2>/dev/null; then
+          start_pymobiledevice3_performance_sampling || log "pymobiledevice3 DVT 采样启动失败，仅保留 xctrace Trace。"
+        else
+          start_tidevice_performance_sampling || log "tidevice perf 侧路采样启动失败，仅保留 xctrace Trace。"
+        fi
         return 0
       fi
-      log "xctrace 性能采样启动失败，尝试 tidevice perf 兜底。"
-      start_tidevice_performance_sampling || true
+      log "xctrace 性能采样启动失败，尝试进程指标采样兜底。"
+      if [ "${ios_major}" -ge 17 ] 2>/dev/null; then
+        start_pymobiledevice3_performance_sampling || true
+      else
+        start_tidevice_performance_sampling || true
+      fi
       return 0
       ;;
     tidevice)
@@ -1951,6 +2284,40 @@ start_performance_sampling() {
       return 0
       ;;
   esac
+}
+
+start_pymobiledevice3_performance_sampling() {
+  if ! command -v pymobiledevice3 >/dev/null 2>&1; then
+    log "未找到 pymobiledevice3，无法使用 DVT sysmon 采样。"
+    return 1
+  fi
+  if ! pgrep -f "pymobiledevice3.*remote tunneld" >/dev/null 2>&1; then
+    log "未检测到 pymobiledevice3 tunneld，iOS 17+ DVT 采样需要先启动：sudo pymobiledevice3 remote tunneld --daemonize --host 127.0.0.1 --port 49151 --protocol tcp"
+    return 1
+  fi
+
+  local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
+  local perf_log="${RESULT_DIR}/performance-pymobiledevice3.log"
+  : > "${PERFORMANCE_SAMPLE_FILE}"
+  : > "${perf_log}"
+  log "启动性能采样: pymobiledevice3 dvt sysmon -> ${PERFORMANCE_SAMPLE_FILE}"
+  (
+    pymobiledevice3 developer dvt sysmon process monitor process \
+      --udid "${SELECTED_DEVICE}" \
+      --tunnel '' \
+      -f "name=${DETECTED_EXECUTABLE_NAME:-NNIM}" \
+      --choose first \
+      --interval 1000 \
+      -o "${PERFORMANCE_SAMPLE_FILE}" >>"${perf_log}" 2>&1
+  ) &
+  echo $! > "${perf_pid_file}"
+  sleep 2
+  if ! kill -0 "$(cat "${perf_pid_file}")" >/dev/null 2>&1; then
+    log "pymobiledevice3 DVT 性能采样启动失败，日志: ${perf_log}"
+    rm -f "${perf_pid_file}"
+    return 1
+  fi
+  return 0
 }
 
 start_tidevice_performance_sampling() {
@@ -2068,6 +2435,47 @@ start_xctrace_sampling() {
 	  return 0
 }
 
+start_frame_xctrace_sampling() {
+  if [ "${PERFORMANCE_FRAME_XCTRACE:-0}" != "1" ]; then
+    return 1
+  fi
+  if [ "${PERFORMANCE_FRAME_XCTRACE_TEMPLATE:-}" = "${PERFORMANCE_XCTRACE_TEMPLATE:-}" ]; then
+    return 1
+  fi
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find xctrace >/dev/null 2>&1; then
+    return 1
+  fi
+  local app_pid frame_pid_file frame_log remaining_seconds
+  app_pid="$(resolve_app_pid_with_devicectl || true)"
+  if [ -z "${app_pid}" ]; then
+    log "未能通过 devicectl 获取 App PID，跳过帧级 xctrace 采样。"
+    return 1
+  fi
+  frame_pid_file="${RESULT_DIR}/performance-frame-xctrace.pid"
+  frame_log="${RESULT_DIR}/performance-frame-xctrace.log"
+  rm -rf "${PERFORMANCE_FRAME_TRACE_FILE}"
+  touch "${frame_log}"
+  remaining_seconds="${MONKEY_DURATION_SECONDS:-0}"
+  log "启动帧级 xctrace 采样: template=${PERFORMANCE_FRAME_XCTRACE_TEMPLATE}, pid=${app_pid}, timeLimit=${remaining_seconds}s -> ${PERFORMANCE_FRAME_TRACE_FILE}"
+  if [ "${remaining_seconds:-0}" != "0" ]; then
+    (
+      xcrun xctrace record --template "${PERFORMANCE_FRAME_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --time-limit "${remaining_seconds}s" --output "${PERFORMANCE_FRAME_TRACE_FILE}" --no-prompt >>"${frame_log}" 2>&1
+    ) &
+  else
+    (
+      xcrun xctrace record --template "${PERFORMANCE_FRAME_XCTRACE_TEMPLATE}" --device "${SELECTED_DEVICE}" --attach "${app_pid}" --output "${PERFORMANCE_FRAME_TRACE_FILE}" --no-prompt >>"${frame_log}" 2>&1
+    ) &
+  fi
+  echo $! > "${frame_pid_file}"
+  sleep 2
+  if ! kill -0 "$(cat "${frame_pid_file}")" >/dev/null 2>&1 && [ ! -d "${PERFORMANCE_FRAME_TRACE_FILE}" ]; then
+    log "帧级 xctrace 采样启动失败，详情见 ${frame_log}。"
+    rm -f "${frame_pid_file}"
+    return 1
+  fi
+  return 0
+}
+
 wait_current_xctrace_trace_ready() {
   if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
     return 1
@@ -2103,7 +2511,7 @@ finalize_current_xctrace_segment() {
 }
 
 package_performance_trace() {
-	  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ] && [ ! -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
+	  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ] && [ ! -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ] && [ ! -d "${PERFORMANCE_FRAME_TRACE_FILE}" ]; then
 	    return 1
 	  fi
 	  rm -f "${PERFORMANCE_TRACE_ARCHIVE_FILE}"
@@ -2115,20 +2523,40 @@ package_performance_trace() {
 	    if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
 	      cp -R "${PERFORMANCE_TRACE_FILE}" "${package_dir}/performance.trace"
 	    fi
+	    if [ -d "${PERFORMANCE_FRAME_TRACE_FILE}" ]; then
+	      cp -R "${PERFORMANCE_FRAME_TRACE_FILE}" "${package_dir}/performance-frame.trace"
+	    fi
 	    cp -R "${PERFORMANCE_TRACE_SEGMENTS_DIR}" "${package_dir}/performance-traces"
 	    if command -v ditto >/dev/null 2>&1; then
-	      ditto -c -k --keepParent "${package_dir}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+	      run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" ditto -c -k --keepParent "${package_dir}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
 	    elif command -v zip >/dev/null 2>&1; then
 	      (
-	        cd "${RESULT_DIR}" && zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${package_dir}")"
+	        cd "${RESULT_DIR}" && run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${package_dir}")"
+	      ) || true
+	    fi
+	    rm -rf "${package_dir}"
+	  elif [ -d "${PERFORMANCE_FRAME_TRACE_FILE}" ]; then
+	    local package_dir
+	    package_dir="${RESULT_DIR}/performance-trace-package"
+	    rm -rf "${package_dir}"
+	    mkdir -p "${package_dir}"
+	    if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
+	      cp -R "${PERFORMANCE_TRACE_FILE}" "${package_dir}/performance.trace"
+	    fi
+	    cp -R "${PERFORMANCE_FRAME_TRACE_FILE}" "${package_dir}/performance-frame.trace"
+	    if command -v ditto >/dev/null 2>&1; then
+	      run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" ditto -c -k --keepParent "${package_dir}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+	    elif command -v zip >/dev/null 2>&1; then
+	      (
+	        cd "${RESULT_DIR}" && run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${package_dir}")"
 	      ) || true
 	    fi
 	    rm -rf "${package_dir}"
 	  elif command -v ditto >/dev/null 2>&1; then
-	    ditto -c -k --keepParent "${PERFORMANCE_TRACE_FILE}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
+	    run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" ditto -c -k --keepParent "${PERFORMANCE_TRACE_FILE}" "${PERFORMANCE_TRACE_ARCHIVE_FILE}" >/dev/null 2>&1 || true
 	  elif command -v zip >/dev/null 2>&1; then
     (
-      cd "${RESULT_DIR}" && zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${PERFORMANCE_TRACE_FILE}")"
+      cd "${RESULT_DIR}" && run_with_timeout "${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS}" zip -qry "$(basename "${PERFORMANCE_TRACE_ARCHIVE_FILE}")" "$(basename "${PERFORMANCE_TRACE_FILE}")"
     ) || true
   fi
 	  [ -s "${PERFORMANCE_TRACE_ARCHIVE_FILE}" ]
@@ -2154,7 +2582,7 @@ export_xctrace_performance_samples() {
     rm -f "${export_xml}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] export attempt ${attempt}: activity-monitor-process-live"
-      xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "/trace-toc/run[@number='1']/data/table[@schema='activity-monitor-process-live']" --output "${export_xml}"
+      run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "/trace-toc/run[@number='1']/data/table[@schema='activity-monitor-process-live']" --output "${export_xml}"
     } >>"${export_log}" 2>&1
     if [ -s "${export_xml}" ]; then
       exported=1
@@ -2164,7 +2592,7 @@ export_xctrace_performance_samples() {
     rm -f "${export_xml}"
     {
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] export attempt ${attempt}: fallback schema lookup"
-      xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "//table[@schema='activity-monitor-process-live']" --output "${export_xml}"
+      run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "//table[@schema='activity-monitor-process-live']" --output "${export_xml}"
     } >>"${export_log}" 2>&1
     if [ -s "${export_xml}" ]; then
       exported=1
@@ -2176,13 +2604,13 @@ export_xctrace_performance_samples() {
 
   if [ "${exported}" != "1" ]; then
     rm -f "${toc_xml}"
-    xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
+    run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
     log "xctrace 性能数据导出失败。"
     log "xctrace 导出日志: ${export_log}"
     return 1
   fi
   rm -f "${toc_xml}"
-  xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
+  run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
   python3 - "${export_xml}" "${PERFORMANCE_SAMPLE_FILE}" <<'PY'
 import json
 import sys
@@ -2253,6 +2681,475 @@ PY
   return 1
 }
 
+export_xctrace_frame_stutters() {
+  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    return 1
+  fi
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find xctrace >/dev/null 2>&1; then
+    return 1
+  fi
+  if ! printf '%s' "${PERFORMANCE_XCTRACE_TEMPLATE}" | grep -Eiq 'animation|hitch|core.?animation|fps|display'; then
+    python3 - "${PERFORMANCE_STUTTER_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" <<'PY'
+import json
+import sys
+output_path, template = sys.argv[1:3]
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "method": "xctrace_frame_hitches",
+        "available": False,
+        "template": template,
+        "message": "当前 Trace 模板不包含可靠的帧级/FPS 卡顿表，未进行帧级卡顿判定",
+        "hitchCount": 0,
+        "severeHitchCount": 0,
+        "samples": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    log "xctrace 当前模板不包含可靠帧级卡顿表，跳过帧级卡顿判定。"
+    return 1
+  fi
+
+  local toc_xml="${RESULT_DIR}/performance-xctrace-toc.xml"
+  local export_log="${RESULT_DIR}/performance-stutters-export.log"
+  local frames_dir="${RESULT_DIR}/performance-frame-tables"
+  : > "${export_log}"
+  rm -rf "${frames_dir}"
+  mkdir -p "${frames_dir}"
+  run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
+  if [ ! -s "${toc_xml}" ]; then
+    python3 - "${PERFORMANCE_STUTTER_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" "${export_log}" <<'PY'
+import json
+import sys
+output_path, template, export_log = sys.argv[1:4]
+reason = "xctrace TOC 导出失败"
+try:
+    text = open(export_log, encoding="utf-8", errors="replace").read()
+    if "Document Missing Template Error" in text:
+        reason = "xctrace 导出失败：Trace 缺少当前 Xcode 可识别的模板信息"
+    elif text.strip():
+        reason = "xctrace 导出失败：" + " ".join(text.strip().splitlines()[-2:])
+except Exception:
+    pass
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "method": "xctrace_frame_hitches",
+        "available": False,
+        "template": template,
+        "message": reason,
+        "hitchCount": 0,
+        "severeHitchCount": 0,
+        "samples": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    log "xctrace 帧级卡顿 TOC 导出失败。"
+    return 1
+  fi
+
+  python3 - "${toc_xml}" <<'PY' >"${frames_dir}/schemas.txt"
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+toc_path = sys.argv[1]
+try:
+    root = ET.parse(toc_path).getroot()
+except Exception:
+    root = ET.Element("empty")
+seen = set()
+for table in root.iter("table"):
+    schema = table.attrib.get("schema") or ""
+    text = " ".join(str(value or "") for value in table.attrib.values())
+    haystack = f"{schema} {text}".lower()
+    if not schema or schema in seen:
+        continue
+    if re.search(r"hitch|hang|frame|fps|display|animation|core-animation", haystack):
+        seen.add(schema)
+        print(schema)
+PY
+
+  local schema index table_xml exported
+  exported=0
+  index=0
+  while IFS= read -r schema; do
+    [ -n "${schema}" ] || continue
+    index=$((index + 1))
+    table_xml="${frames_dir}/table-${index}.xml"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] export frame schema: ${schema}"
+      run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "//table[@schema='${schema}']" --output "${table_xml}"
+    } >>"${export_log}" 2>&1 || true
+    if [ -s "${table_xml}" ]; then
+      exported=1
+    fi
+  done <"${frames_dir}/schemas.txt"
+
+  if [ "${exported}" != "1" ]; then
+    python3 - "${PERFORMANCE_STUTTER_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" <<'PY'
+import json
+import sys
+output_path, template = sys.argv[1:3]
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "method": "xctrace_frame_hitches",
+        "available": False,
+        "template": template,
+        "message": "Trace 未导出帧率或 Animation Hitches 明细表",
+        "hitchCount": 0,
+        "severeHitchCount": 0,
+        "samples": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    log "xctrace 未导出帧级卡顿表，已记录不可用状态。"
+    return 1
+  fi
+
+  python3 - "${frames_dir}" "${PERFORMANCE_STUTTER_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" "${PERF_FRAME_STUTTER_WARN_MS:-16.67}" "${PERF_FRAME_STUTTER_SEVERE_MS:-33.34}" <<'PY'
+import json
+import math
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+frames_dir, output_path, template, warn_ms, severe_ms = sys.argv[1:6]
+warn_ms = float(warn_ms or 16.67)
+severe_ms = float(severe_ms or 33.34)
+
+def numeric(value):
+    if value is None:
+        return None
+    text = str(value).replace(",", "").strip()
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+def normalize_duration_ms(value):
+    if value is None or not math.isfinite(value) or value <= 0:
+        return None
+    # xctrace 常见时间单位可能是 ns/us/s/ms；按数量级做保守归一。
+    if value > 1_000_000:
+        return value / 1_000_000.0
+    if value > 10_000:
+        return value / 1000.0
+    if value <= 10:
+        return value * 1000.0
+    return value
+
+def value_of(element, id_values):
+    ref = element.attrib.get("ref")
+    if ref:
+        return id_values.get(ref)
+    text = (element.text or "").strip()
+    value = text if text else None
+    element_id = element.attrib.get("id")
+    if element_id:
+        id_values[element_id] = value
+    return value
+
+samples = []
+schema_names = []
+for name in sorted(os.listdir(frames_dir)):
+    if not name.endswith(".xml"):
+        continue
+    path = os.path.join(frames_dir, name)
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        continue
+    schemas = {table.attrib.get("schema") for table in root.iter("table") if table.attrib.get("schema")}
+    schema_name = next(iter(schemas), name)
+    schema_names.extend(sorted(schemas))
+    id_values = {}
+    for row_index, row in enumerate(root.iter("row"), start=1):
+        raw_values = [value_of(child, id_values) for child in list(row)]
+        numbers = [numeric(value) for value in raw_values]
+        numbers = [value for value in numbers if value is not None and math.isfinite(value)]
+        if not numbers:
+            continue
+        normalized = [normalize_duration_ms(value) for value in numbers]
+        candidates = [value for value in normalized if value is not None and warn_ms <= value <= 60_000]
+        if not candidates:
+            continue
+        duration_ms = max(candidates)
+        start_candidates = [value for value in numbers if value and value > 1_000_000_000]
+        time_seconds = min(start_candidates) / 1_000_000_000.0 if start_candidates else None
+        samples.append({
+            "schema": schema_name,
+            "row": row_index,
+            "durationMs": round(duration_ms, 2),
+            "severity": "severe" if duration_ms >= severe_ms else "warning",
+            "timeSeconds": round(time_seconds, 2) if time_seconds is not None else None,
+            "raw": [str(value) for value in raw_values[:8] if value is not None],
+        })
+
+samples.sort(key=lambda item: item.get("durationMs", 0), reverse=True)
+available = len(samples) > 0
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "method": "xctrace_frame_hitches",
+        "available": available,
+        "template": template,
+        "thresholds": {
+            "frameWarnMs": warn_ms,
+            "frameSevereMs": severe_ms,
+        },
+        "schemas": sorted(set(schema_names)),
+        "hitchCount": len(samples),
+        "severeHitchCount": len([item for item in samples if item.get("severity") == "severe"]),
+        "longestHitch": samples[0] if samples else None,
+        "samples": samples[:20],
+        "message": "已解析帧级卡顿明细" if available else "导出的帧级表中未发现超过阈值的卡顿",
+    }, f, ensure_ascii=False, indent=2)
+PY
+
+  if [ -s "${PERFORMANCE_STUTTER_FILE}" ]; then
+    log "xctrace 帧级卡顿分析: ${PERFORMANCE_STUTTER_FILE}"
+    return 0
+  fi
+  return 1
+}
+
+export_xctrace_stutter_stacks() {
+  if [ ! -s "${MONKEY_REPORT_FILE}" ]; then
+    return 1
+  fi
+  if [ ! -d "${PERFORMANCE_TRACE_FILE}" ]; then
+    python3 - "${PERFORMANCE_STACK_FILE}" <<'PY'
+import json, sys
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "available": False,
+        "method": "xctrace_time_profiler_stutter_stack",
+        "message": "未生成 xctrace Trace，无法分析卡顿调用栈",
+        "samples": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    return 1
+  fi
+  if ! command -v xcrun >/dev/null 2>&1 || ! xcrun --find xctrace >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local stack_dir stack_log toc_xml
+  stack_dir="${RESULT_DIR}/performance-stack-tables"
+  stack_log="${RESULT_DIR}/performance-stack-export.log"
+  toc_xml="${RESULT_DIR}/performance-stack-toc.xml"
+  rm -rf "${stack_dir}"
+  mkdir -p "${stack_dir}"
+  : > "${stack_log}"
+
+  run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${stack_log}" 2>&1 || true
+  if [ ! -s "${toc_xml}" ]; then
+    python3 - "${PERFORMANCE_STACK_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" "${stack_log}" <<'PY'
+import json, sys
+output_path, template, log_path = sys.argv[1:4]
+reason = "xctrace TOC 导出失败，无法读取 Time Profiler 调用栈"
+try:
+    text = open(log_path, encoding="utf-8", errors="replace").read().strip()
+    if "Document Missing Template Error" in text:
+        reason = "xctrace 导出失败：Trace 缺少当前 Xcode 可识别的模板信息"
+    elif text:
+        reason = "xctrace 导出失败：" + " ".join(text.splitlines()[-2:])
+except Exception:
+    pass
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "available": False,
+        "method": "xctrace_time_profiler_stutter_stack",
+        "template": template,
+        "message": reason,
+        "samples": [],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    log "xctrace 卡顿调用栈 TOC 导出失败。"
+    return 1
+  fi
+
+  python3 - "${toc_xml}" <<'PY' >"${stack_dir}/schemas.txt"
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+toc_path = sys.argv[1]
+try:
+    root = ET.parse(toc_path).getroot()
+except Exception:
+    root = ET.Element("empty")
+seen = set()
+for table in root.iter("table"):
+    schema = table.attrib.get("schema") or ""
+    text = " ".join(str(value or "") for value in table.attrib.values())
+    haystack = f"{schema} {text}".lower()
+    if not schema or schema in seen:
+        continue
+    if re.search(r"time.?profiler|call.?tree|backtrace|stack|sample|thread", haystack):
+        seen.add(schema)
+        print(schema)
+PY
+
+  local schema index table_xml exported
+  exported=0
+  index=0
+  while IFS= read -r schema; do
+    [ -n "${schema}" ] || continue
+    index=$((index + 1))
+    [ "${index}" -le 12 ] || break
+    table_xml="${stack_dir}/table-${index}.xml"
+    {
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] export stack schema: ${schema}"
+      run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --xpath "//table[@schema='${schema}']" --output "${table_xml}"
+    } >>"${stack_log}" 2>&1 || true
+    if [ -s "${table_xml}" ]; then
+      exported=1
+    fi
+  done <"${stack_dir}/schemas.txt"
+
+  python3 - "${MONKEY_REPORT_FILE}" "${stack_dir}" "${PERFORMANCE_STACK_FILE}" "${PERFORMANCE_XCTRACE_TEMPLATE}" "${stack_log}" <<'PY'
+import json
+import os
+import re
+import sys
+import xml.etree.ElementTree as ET
+
+monkey_path, stack_dir, output_path, template, log_path = sys.argv[1:6]
+try:
+    monkey = json.load(open(monkey_path, encoding="utf-8"))
+except Exception:
+    monkey = {}
+stutter = monkey.get("stutter") or {}
+thresholds = stutter.get("thresholds") or {}
+severe_ms = float(thresholds.get("actionSevereMs") or 5000)
+samples = [
+    item for item in (stutter.get("samples") or [])
+    if float(item.get("actionDurationMs") or 0) >= severe_ms
+]
+samples = samples[:8]
+
+schema_names = []
+rows = []
+for name in sorted(os.listdir(stack_dir)) if os.path.isdir(stack_dir) else []:
+    if not name.endswith(".xml"):
+        continue
+    path = os.path.join(stack_dir, name)
+    try:
+        root = ET.parse(path).getroot()
+    except Exception:
+        continue
+    schemas = sorted({table.attrib.get("schema") for table in root.iter("table") if table.attrib.get("schema")})
+    schema_names.extend(schemas)
+    for row_index, row in enumerate(root.iter("row"), start=1):
+        values = []
+        for child in list(row):
+            text = " ".join(" ".join(child.itertext()).split())
+            if text:
+                values.append(text)
+            for value in child.attrib.values():
+                if value and not re.fullmatch(r"\d+", str(value)):
+                    values.append(str(value))
+        raw = " ".join(values)
+        if not raw:
+            continue
+        numbers = []
+        for match in re.finditer(r"\b\d+(?:\.\d+)?\b", raw):
+            try:
+                numbers.append(float(match.group(0)))
+            except Exception:
+                pass
+        rows.append({
+            "schema": schemas[0] if schemas else name,
+            "row": row_index,
+            "raw": raw[:1200],
+            "numbers": numbers[:20],
+        })
+
+def score_row(row, elapsed):
+    raw = row["raw"]
+    score = 0
+    if re.search(r"NNIM|NNApperance|NNLibrary|UIKit|Swift|Objective|main", raw, re.I):
+        score += 4
+    if re.search(r"0x[0-9a-f]+|\\+\\s*\\d+|\\[|\\]", raw, re.I):
+        score += 2
+    for number in row.get("numbers") or []:
+        candidate = number
+        if number > 1_000_000_000:
+            continue
+        if number > 100_000:
+            candidate = number / 1_000_000_000.0
+        if abs(candidate - elapsed) <= 3:
+            score += 6
+        elif abs(candidate - elapsed) <= 10:
+            score += 3
+    return score
+
+result_samples = []
+for item in samples:
+    elapsed = float(item.get("elapsedSeconds") or 0)
+    ranked = sorted(
+        ((score_row(row, elapsed), row) for row in rows),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    matched = [
+        {
+            "schema": row["schema"],
+            "row": row["row"],
+            "frame": row["raw"],
+        }
+        for score, row in ranked
+        if score > 0
+    ][:12]
+    result_samples.append({
+        "index": item.get("index"),
+        "type": item.get("type"),
+        "elapsedSeconds": item.get("elapsedSeconds"),
+        "actionDurationMs": item.get("actionDurationMs"),
+        "page": item.get("page"),
+        "matchedFrames": matched,
+        "message": "已匹配 Time Profiler 附近调用栈" if matched else "未在导出的 Time Profiler 表中匹配到该卡顿时间点的调用栈",
+    })
+
+available = any(item.get("matchedFrames") for item in result_samples)
+message = "已按严重交互卡顿时间点匹配 Time Profiler 调用栈" if available else "未解析到卡顿调用栈"
+if not rows:
+    message = "未从 Trace 导出 Time Profiler 调用栈表，请确认模板为 Time Profiler 或自定义模板包含调用栈采样"
+    try:
+        text = open(log_path, encoding="utf-8", errors="replace").read().strip()
+        if text:
+            message += "；" + " ".join(text.splitlines()[-2:])
+    except Exception:
+        pass
+elif not samples:
+    message = "本次没有严重交互卡顿样本，无需匹配调用栈"
+
+with open(output_path, "w", encoding="utf-8") as f:
+    json.dump({
+        "enabled": True,
+        "available": available,
+        "method": "xctrace_time_profiler_stutter_stack",
+        "template": template,
+        "message": message,
+        "schemas": sorted(set(schema_names)),
+        "stutterSampleCount": len(samples),
+        "samples": result_samples,
+    }, f, ensure_ascii=False, indent=2)
+PY
+
+  if [ -s "${PERFORMANCE_STACK_FILE}" ]; then
+    log "xctrace 卡顿调用栈分析: ${PERFORMANCE_STACK_FILE}"
+    return 0
+  fi
+  return 1
+}
+
 stop_performance_sampling() {
   local perf_pid_file="${RESULT_DIR}/performance-sampler.pid"
   if [ ! -f "${perf_pid_file}" ]; then
@@ -2269,7 +3166,7 @@ stop_performance_sampling() {
   if [ -s "${PERFORMANCE_SAMPLE_FILE}" ]; then
     log "性能采样: ${PERFORMANCE_SAMPLE_FILE}"
   else
-    log "性能采样为空，可能设备不支持 tidevice perf 或采样时间过短。"
+    log "性能采样为空，可能采样器不可用、App 进程未匹配或采样时间过短。"
   fi
 	  stop_xctrace_sampling || true
 }
@@ -2334,18 +3231,61 @@ stop_xctrace_monitor() {
   rm -f "${PERFORMANCE_TRACE_MONITOR_PID_FILE}"
 }
 
+stop_frame_xctrace_sampling() {
+  local frame_pid_file="${RESULT_DIR}/performance-frame-xctrace.pid"
+  local pid original_trace_file original_template
+  pid="$(cat "${frame_pid_file}" 2>/dev/null || true)"
+  if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
+    kill -INT "${pid}" >/dev/null 2>&1 || true
+    wait_pid_with_timeout "${pid}" "${PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS}" "frame xctrace" || true
+  fi
+  rm -f "${frame_pid_file}"
+  if [ -d "${PERFORMANCE_FRAME_TRACE_FILE}" ]; then
+    original_trace_file="${PERFORMANCE_TRACE_FILE}"
+    original_template="${PERFORMANCE_XCTRACE_TEMPLATE}"
+    PERFORMANCE_TRACE_FILE="${PERFORMANCE_FRAME_TRACE_FILE}"
+    PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_FRAME_XCTRACE_TEMPLATE}"
+    export_xctrace_frame_stutters || true
+    PERFORMANCE_TRACE_FILE="${original_trace_file}"
+    PERFORMANCE_XCTRACE_TEMPLATE="${original_template}"
+  fi
+}
+
 stop_xctrace_sampling() {
   local xctrace_pid_file="${RESULT_DIR}/performance-xctrace.pid"
   local pid
   pid="$(cat "${xctrace_pid_file}" 2>/dev/null || true)"
   if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
     kill -INT "${pid}" >/dev/null 2>&1 || true
-    wait "${pid}" >/dev/null 2>&1 || true
+    wait_pid_with_timeout "${pid}" "${PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS}" "xctrace" || true
   fi
   rm -f "${xctrace_pid_file}"
+  stop_frame_xctrace_sampling || true
   wait_current_xctrace_trace_ready || true
+  local original_trace_file trace_candidate
+  original_trace_file="${PERFORMANCE_TRACE_FILE}"
+  if [ -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
+    for trace_candidate in "${PERFORMANCE_TRACE_SEGMENTS_DIR}"/performance-*.trace; do
+      [ -d "${trace_candidate}" ] || continue
+      PERFORMANCE_TRACE_FILE="${trace_candidate}"
+      if [ ! -s "${PERFORMANCE_SAMPLE_FILE}" ]; then
+        export_xctrace_performance_samples || true
+      fi
+      if [ ! -s "${PERFORMANCE_STUTTER_FILE}" ]; then
+        export_xctrace_frame_stutters || true
+      fi
+      if [ ! -s "${PERFORMANCE_STACK_FILE}" ]; then
+        export_xctrace_stutter_stacks || true
+      fi
+    done
+  fi
+  PERFORMANCE_TRACE_FILE="${original_trace_file}"
   if [ -d "${PERFORMANCE_TRACE_FILE}" ]; then
     export_xctrace_performance_samples || true
+    if [ ! -s "${PERFORMANCE_STUTTER_FILE}" ]; then
+      export_xctrace_frame_stutters || true
+    fi
+    export_xctrace_stutter_stacks || true
   fi
   if [ -d "${PERFORMANCE_TRACE_FILE}" ] || [ -d "${PERFORMANCE_TRACE_SEGMENTS_DIR}" ]; then
     if package_performance_trace; then
@@ -2371,12 +3311,136 @@ collect_crash_reports() {
   fi
   if [ "${status}" != "0" ]; then
     log "崩溃报告采集失败或当前 tidevice 不支持 crashreport，已记录到 ${crash_log}。"
-    return 1
+    sleep "${CRASH_REPORT_LOCAL_FALLBACK_DELAY_SECONDS:-5}"
   fi
+  collect_local_crash_reports || true
   local count
   count="$(find "${CRASH_REPORT_DIR}" -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.log' \) 2>/dev/null | wc -l | tr -d ' ')"
-  log "崩溃报告: ${CRASH_REPORT_DIR} (${count:-0} 个文件)"
-  return 0
+  if [ "${count:-0}" -gt 0 ]; then
+    log "崩溃报告: ${CRASH_REPORT_DIR} (${count:-0} 个文件)"
+    return 0
+  fi
+  log "崩溃报告: ${CRASH_REPORT_DIR} (0 个文件)"
+  return 1
+}
+
+collect_local_crash_reports() {
+  python3 - "${CRASH_REPORT_DIR}" "${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-}}" "${QUALITY_STARTED_AT_EPOCH:-}" "${CRASH_REPORT_LOCAL_DIRS:-}" <<'PY'
+import json
+import os
+import re
+import shutil
+import sys
+import time
+from datetime import datetime
+
+output_dir, bundle_id, started_epoch, configured_dirs = sys.argv[1:5]
+bundle_id = bundle_id or ""
+try:
+    started = float(started_epoch)
+except Exception:
+    started = 0
+home = os.path.expanduser("~")
+scan_dirs = [item for item in configured_dirs.split(":") if item] if configured_dirs else [
+    os.path.join(home, "Downloads"),
+    os.path.join(home, "Library", "Logs", "CrashReporter"),
+    os.path.join(home, "Library", "Logs", "DiagnosticReports"),
+]
+now = time.time()
+window_start = started - 60 if started else now - 3600
+window_end = now + 600
+
+def parse_dt(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    candidates = [text, re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)]
+    formats = [
+        "%Y-%m-%d %H:%M:%S.%f %z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ]
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).timestamp()
+            except Exception:
+                pass
+    return None
+
+def read_head(path, limit=512 * 1024):
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+def metadata_of(text):
+    first = (text.splitlines() or [""])[0].strip()
+    if first.startswith("{"):
+        try:
+            return json.loads(first)
+        except Exception:
+            return {}
+    return {}
+
+copied = []
+os.makedirs(output_dir, exist_ok=True)
+for root_dir in scan_dirs:
+    if not root_dir or not os.path.isdir(root_dir):
+        continue
+    for root, _dirs, names in os.walk(root_dir):
+        for name in names:
+            if not re.search(r"\.(ips|crash|log)$", name, re.I):
+                continue
+            if "NNIM" not in name and bundle_id not in name:
+                continue
+            path = os.path.join(root, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except Exception:
+                mtime = 0
+            if mtime and (mtime < window_start or mtime > window_end):
+                continue
+            text = read_head(path)
+            metadata = metadata_of(text)
+            report_bundle = str(metadata.get("bundleID") or metadata.get("bundle_id") or "")
+            report_app = str(metadata.get("app_name") or metadata.get("name") or "")
+            timestamp = parse_dt(metadata.get("timestamp") or metadata.get("captureTime"))
+            if timestamp is None:
+                for pattern in (r'"timestamp"\s*:\s*"([^"]+)"', r'"captureTime"\s*:\s*"([^"]+)"'):
+                    match = re.search(pattern, text)
+                    if match:
+                        timestamp = parse_dt(match.group(1))
+                        break
+            if timestamp is not None and (timestamp < window_start or timestamp > window_end):
+                continue
+            is_target = (
+                (bundle_id and (report_bundle == bundle_id or bundle_id in text))
+                or report_app == "NNIM"
+                or name.startswith("NNIM")
+            )
+            if not is_target:
+                continue
+            dest = os.path.join(output_dir, os.path.basename(path))
+            if os.path.abspath(path) != os.path.abspath(dest):
+                base, ext = os.path.splitext(dest)
+                next_dest = dest
+                index = 2
+                while os.path.exists(next_dest):
+                    try:
+                        if os.path.getsize(next_dest) == os.path.getsize(path):
+                            break
+                    except Exception:
+                        pass
+                    next_dest = f"{base}-{index}{ext}"
+                    index += 1
+                shutil.copy2(path, next_dest)
+                dest = next_dest
+            copied.append(dest)
+print(len(copied))
+PY
 }
 
 check_process_alive() {
@@ -2874,6 +3938,8 @@ PY
   monkey_wda_project="$(find_wda_project || true)"
   monkey_wda_port="$(wda_url_part port)"
   export MONKEY_WDA_MAX_RECOVERIES MONKEY_WDA_RECOVERY_SLEEP_SECONDS MONKEY_WDA_RESTART_TIMEOUT_SECONDS
+  export MONKEY_ENFORCE_TARGET_APP MONKEY_TARGET_APP_CHECK_INTERVAL_EVENTS MONKEY_TARGET_APP_MAX_RECOVERIES
+  export MONKEY_TARGET_BUNDLE_ID="${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-${APP_BUNDLE_ID:-}}}"
   export MONKEY_WDA_PROJECT_PATH="${monkey_wda_project}"
   export MONKEY_WDA_PORT="${monkey_wda_port}"
   export MONKEY_WDA_BIND_HOST="${WDA_BIND_HOST}"
@@ -2937,6 +4003,12 @@ wda_iproxy_log = os.environ.get("MONKEY_WDA_IPROXY_LOG", "")
 wda_xcodebuild_log = os.environ.get("MONKEY_WDA_XCODEBUILD_LOG", "")
 wda_iproxy_pid_file = os.environ.get("MONKEY_WDA_IPROXY_PID_FILE", "")
 wda_xcodebuild_pid_file = os.environ.get("MONKEY_WDA_XCODEBUILD_PID_FILE", "")
+target_bundle_id = os.environ.get("MONKEY_TARGET_BUNDLE_ID", "")
+enforce_target_app = os.environ.get("MONKEY_ENFORCE_TARGET_APP", "1") == "1" and bool(target_bundle_id)
+target_app_check_interval_events = max(1, int(float(os.environ.get("MONKEY_TARGET_APP_CHECK_INTERVAL_EVENTS", "10"))))
+target_app_max_recoveries = max(0, int(float(os.environ.get("MONKEY_TARGET_APP_MAX_RECOVERIES", "20"))))
+stutter_action_warn_ms = max(1, int(float(os.environ.get("PERF_STUTTER_ACTION_WARN_MS", "2500"))))
+stutter_action_severe_ms = max(stutter_action_warn_ms, int(float(os.environ.get("PERF_STUTTER_ACTION_SEVERE_MS", "5000"))))
 
 events = []
 session_id = ""
@@ -2947,6 +4019,9 @@ tap_safe_top = 96
 safe_bottom = 80
 safe_left = 20
 safe_right = 20
+current_action_started_at = None
+target_app_recoveries = 0
+last_target_app_check_index = -999
 
 def request(method, path, payload=None, timeout=8):
     data = None
@@ -3292,6 +4367,114 @@ def get_source(session):
     except Exception:
         return ""
 
+def active_app_info(session):
+    paths = [
+        f"/session/{session}/wda/activeAppInfo" if session else "",
+        "/wda/activeAppInfo",
+    ]
+    last_error = ""
+    for path in paths:
+        if not path:
+            continue
+        try:
+            value = value_of(request("GET", path, timeout=2))
+            if isinstance(value, dict):
+                return {
+                    "bundleId": str(value.get("bundleId") or value.get("bundleID") or value.get("bundleIdentifier") or ""),
+                    "name": str(value.get("name") or value.get("processName") or ""),
+                    "pid": value.get("pid") or value.get("processIdentifier"),
+                }
+        except Exception as exc:
+            last_error = str(exc)[:200]
+    return {"bundleId": "", "error": last_error}
+
+def launch_target_app_with_devicectl():
+    if not selected_device or not target_bundle_id:
+        return False, "缺少设备 UDID 或 Bundle ID"
+    try:
+        subprocess.run(
+            [
+                "xcrun", "devicectl", "device", "process", "launch",
+                "--device", selected_device,
+                "--timeout", "8",
+                "--activate",
+                "--quiet",
+                target_bundle_id,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=True,
+        )
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:200]
+
+def launch_target_app(session):
+    ok, error = launch_target_app_with_devicectl()
+    if ok:
+        return True, ""
+    last_error = error
+    payloads = [
+        (f"/session/{session}/wda/apps/launch", {"bundleId": target_bundle_id}) if session else ("", {}),
+        ("/wda/apps/launch", {"bundleId": target_bundle_id}),
+        (f"/session/{session}/appium/device/activate_app", {"bundleId": target_bundle_id}) if session else ("", {}),
+    ]
+    for path, payload in payloads:
+        if not path:
+            continue
+        try:
+            request("POST", path, payload, timeout=6)
+            return True, ""
+        except Exception as exc:
+            last_error = str(exc)[:200]
+    return False, last_error
+
+def ensure_target_app_foreground(session, event_index, source=""):
+    global target_app_recoveries, last_target_app_check_index
+    if not enforce_target_app:
+        return True
+    if event_index - last_target_app_check_index < target_app_check_interval_events:
+        return True
+    last_target_app_check_index = event_index
+    info = active_app_info(session)
+    current_bundle = info.get("bundleId") or ""
+    if current_bundle == target_bundle_id:
+        return True
+    target_app_recoveries += 1
+    event = {
+        "index": event_index + 1,
+        "type": "targetAppRecovery",
+        "reason": "targetAppNotForeground",
+        "targetBundleId": target_bundle_id,
+        "activeBundleId": current_bundle,
+        "activeAppName": info.get("name") or "",
+        "activePid": info.get("pid"),
+        "recoveryIndex": target_app_recoveries,
+    }
+    if info.get("error"):
+        event["activeAppInfoError"] = info.get("error")
+    if target_app_max_recoveries and target_app_recoveries > target_app_max_recoveries:
+        record_event(event, source)
+        raise RuntimeError(
+            f"被测 App 多次离开前台，已超过恢复上限 {target_app_max_recoveries} 次；"
+            f"当前前台 {current_bundle or '-'}，目标 {target_bundle_id}"
+        )
+    ok, error = launch_target_app(session)
+    event["relaunchTargetApp"] = ok
+    if error:
+        event["relaunchError"] = error
+    record_event(event, source)
+    print(
+        f"Monkey target app recovery {target_app_recoveries}: current={current_bundle or '-'}, target={target_bundle_id}, relaunch={ok}",
+        flush=True,
+    )
+    write_progress("running", f"检测到离开被测 App，已尝试拉回 {target_bundle_id}", event)
+    if not ok:
+        raise RuntimeError(f"被测 App 不在前台，且拉回失败：current={current_bundle or '-'}, target={target_bundle_id}, error={error}")
+    time.sleep(1.2)
+    return False
+
 def get_forbidden_regions(session, width, height):
     source = get_source(session)
     regions = parse_ratio_regions(width, height)
@@ -3350,11 +4533,73 @@ def record_event(event, source=""):
     now = time.time()
     event["startedAtMs"] = int(now * 1000)
     event["elapsedSeconds"] = round(now - started_at, 3)
+    action_started_at = event.pop("_actionStartedAt", None)
+    if action_started_at is None:
+        action_started_at = current_action_started_at
+    if action_started_at:
+        duration_ms = max(0, int((now - float(action_started_at)) * 1000))
+        event["actionDurationMs"] = duration_ms
+        if duration_ms >= stutter_action_severe_ms:
+            event["stutterSeverity"] = "severe"
+        elif duration_ms >= stutter_action_warn_ms:
+            event["stutterSeverity"] = "warning"
     context = current_page_context(source)
     if context:
         event["page"] = context
     events.append(event)
     return event
+
+def summarize_stutters():
+    user_action_types = {
+        "tap",
+        "swipe",
+        "edgeBack",
+        "tapBack",
+        "dismissAlert",
+    }
+    slow_events = [
+        event for event in events
+        if event.get("type") in user_action_types
+        if isinstance(event.get("actionDurationMs"), int) and event.get("actionDurationMs", 0) >= stutter_action_warn_ms
+    ]
+    severe_events = [
+        event for event in slow_events
+        if event.get("actionDurationMs", 0) >= stutter_action_severe_ms
+    ]
+    stuck_events_found = [
+        event for event in events
+        if str(event.get("reason") or "").startswith("stuck:")
+    ]
+    wda_recover_events = [
+        event for event in events
+        if event.get("type") == "wdaRecover"
+    ]
+    target_app_recover_events = [
+        event for event in events
+        if event.get("type") == "targetAppRecovery"
+    ]
+    longest = max(slow_events, key=lambda item: item.get("actionDurationMs", 0), default=None)
+    return {
+        "enabled": True,
+        "method": "monkey_action_latency",
+        "thresholds": {
+            "actionWarnMs": stutter_action_warn_ms,
+            "actionSevereMs": stutter_action_severe_ms,
+        },
+        "slowActionCount": len(slow_events),
+        "severeActionCount": len(severe_events),
+        "stuckPageCount": len(stuck_events_found),
+        "wdaRecoveryCount": len(wda_recover_events),
+        "targetAppRecoveryCount": len(target_app_recover_events),
+        "automationRecoveryCount": len(wda_recover_events) + len(target_app_recover_events),
+        "longestAction": longest,
+        "samples": sorted(slow_events, key=lambda item: item.get("actionDurationMs", 0), reverse=True)[:8],
+        "automationSamples": sorted(
+            wda_recover_events + target_app_recover_events,
+            key=lambda item: item.get("actionDurationMs", 0),
+            reverse=True,
+        )[:8],
+    }
 
 def safe_random_point(left, top, right, bottom, forbidden_regions):
     left = min(left, right)
@@ -3429,6 +4674,53 @@ def collect_numbers(value, path=""):
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         yield path.lower(), float(value)
 
+def normalize_memory_mb(key_path, number):
+    if number is None or number <= 0:
+        return None
+    key = str(key_path or "").lower()
+    if any(token in key for token in ("virtual", "vmsize", "address", "startabstime", "procage", "energyscore")):
+        return None
+    allowed = (
+        "physfootprint",
+        "resident",
+        "resident_size",
+        "residentmemory",
+        "memresident",
+        "memrprvt",
+        "memrshrd",
+        "memanon",
+        "memcompressed",
+        "memory",
+        "rss",
+    )
+    if not any(token in key for token in allowed):
+        return None
+    return round(number / 1024 / 1024, 2) if number > 1024 * 1024 else round(number, 2)
+
+def memory_sample_mb(item):
+    preferred_keys = (
+        "physFootprint",
+        "physicalFootprint",
+        "memResidentSize",
+        "residentSize",
+        "residentMemory",
+        "rss",
+        "memRPrvt",
+        "memAnon",
+    )
+    lower_map = {str(key).lower(): value for key, value in item.items()} if isinstance(item, dict) else {}
+    for key in preferred_keys:
+        value = lower_map.get(key.lower())
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            converted = normalize_memory_mb(key, float(value))
+            if converted is not None:
+                return converted
+    for key_path, number in collect_numbers(item):
+        converted = normalize_memory_mb(key_path, number)
+        if converted is not None:
+            return converted
+    return None
+
 def summarize_recent_performance(path, max_lines=200):
     result = {"sampleCount": 0, "cpu": None, "memoryMB": None, "fps": None}
     if not path or not os.path.exists(path):
@@ -3450,13 +4742,14 @@ def summarize_recent_performance(path, max_lines=200):
         except Exception:
             continue
         result["sampleCount"] += 1
+        memory_mb = memory_sample_mb(item)
+        if memory_mb is not None:
+            memory_values.append(memory_mb)
         for key_path, number in collect_numbers(item):
             if "cpu" in key_path and 0 <= number <= 1000:
                 cpu_values.append(number)
             elif "fps" in key_path and 0 <= number <= 240:
                 fps_values.append(number)
-            elif any(token in key_path for token in ("memory", "mem", "resident", "rss")) and number > 0:
-                memory_values.append(number / 1024 / 1024 if number > 1024 * 1024 else number)
     if cpu_values:
         result["cpu"] = round(sum(cpu_values) / len(cpu_values), 2)
     if memory_values:
@@ -3518,6 +4811,10 @@ report = {
         "forbiddenTexts": forbidden_terms,
         "forbiddenRegionRatio": forbidden_region_ratio,
         "forbiddenPadding": forbidden_padding,
+        "targetBundleId": target_bundle_id,
+        "enforceTargetApp": enforce_target_app,
+        "targetAppCheckIntervalEvents": target_app_check_interval_events,
+        "targetAppMaxRecoveries": target_app_max_recoveries,
     },
     "executedEvents": 0,
     "events": events,
@@ -3544,7 +4841,18 @@ try:
             break
 
         try:
+            global_action_started_at = time.time()
+            current_action_started_at = global_action_started_at
             current_source = ""
+            if not ensure_target_app_foreground(session_id, index):
+                same_page_events = 0
+                last_fingerprint = ""
+                last_forbidden_refresh_index = -999
+                report["executedEvents"] = index + 1
+                report["stutter"] = summarize_stutters()
+                index += 1
+                time.sleep(interval_seconds)
+                continue
             should_refresh_source = index - last_forbidden_refresh_index >= stuck_check_interval_events
             if should_refresh_source:
                 current_source = get_source(session_id)
@@ -3685,6 +4993,7 @@ try:
             last_forbidden_refresh_index = -999
             continue
         report["executedEvents"] = index + 1
+        report["stutter"] = summarize_stutters()
         now = time.time()
         if heartbeat_interval_seconds and now - last_heartbeat_at >= heartbeat_interval_seconds:
             elapsed = int(now - started_at)
@@ -3710,6 +5019,7 @@ try:
         report["message"] = f"Monkey completed {report['executedEvents']} random events in {int(duration_seconds)} seconds"
     else:
         report["message"] = f"Monkey completed {event_count} random events"
+    report["stutter"] = summarize_stutters()
     write_progress("passed", report["message"])
 except Exception as exc:
     message = str(exc)
@@ -3729,6 +5039,7 @@ except Exception as exc:
             f"仍失败时请检查 WebDriverAgent、iproxy、USB 连接和设备锁屏状态。原始错误：{message}"
         )
     report["message"] = message
+    report["stutter"] = summarize_stutters()
     write_progress("failed", message)
 finally:
     if session_id:
@@ -3737,11 +5048,541 @@ finally:
         except Exception:
             pass
     report["durationMs"] = int((time.time() - started_at) * 1000)
+    report["stutter"] = summarize_stutters()
     with open(report_file, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
 print(report["message"])
 sys.exit(0 if report["status"] == "passed" else 1)
+PY
+}
+
+run_stutter_scenario_test() {
+  local scenario="$1"
+  local duration_seconds="$2"
+  rm -f "${MONKEY_REPORT_FILE}"
+  if [ -z "${scenario}" ] || [ "${scenario}" = "manual" ]; then
+    scenario="community"
+  fi
+  log "开始自动场景卡顿检测: scenario=${scenario}, duration=${duration_seconds}s, WDA=${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"
+  write_quality_progress "running" "performance" "准备自动场景卡顿检测" 2.0 0 0 "${duration_seconds}"
+  if ! ensure_wda_ready; then
+    local message
+    message="${WDA_READY_ERROR:-WDA 准备失败：${WDA_URL} 不可访问。}"
+    python3 - "$MONKEY_REPORT_FILE" "$WDA_URL" "$scenario" "$duration_seconds" "$message" <<'PY'
+import json
+import sys
+report_file, wda_url, scenario, duration_seconds, message = sys.argv[1:6]
+with open(report_file, "w", encoding="utf-8") as f:
+    json.dump({
+        "status": "failed",
+        "message": message,
+        "scenario": scenario,
+        "wdaUrl": wda_url,
+        "requestedDurationSeconds": int(float(duration_seconds or "0")),
+        "durationMs": 0,
+        "executedEvents": 0,
+        "events": [],
+        "stutter": {"enabled": True, "method": "scenario_action_latency", "slowActionCount": 0, "severeActionCount": 0, "samples": []},
+    }, f, ensure_ascii=False, indent=2)
+PY
+    return 1
+  fi
+  export MONKEY_TARGET_BUNDLE_ID="${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-${APP_BUNDLE_ID:-}}}"
+  python3 - "$MONKEY_RUNTIME_WDA_URL" "$scenario" "$duration_seconds" "$MONKEY_INTERVAL_SECONDS" "$MONKEY_REPORT_FILE" "$PROGRESS_FILE" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+import urllib.request
+
+wda_url, scenario, duration_seconds, interval_seconds, report_file, progress_file = sys.argv[1:7]
+wda_url = wda_url.rstrip("/")
+scenario = (scenario or "community").strip().lower()
+if scenario in ("rtc", "room", "voice", "voice-room", "voiceroom", "语音房"):
+    scenario = "voice_room"
+duration_seconds = max(1.0, float(duration_seconds or "300"))
+interval_seconds = max(0.8, float(interval_seconds or "1.2"))
+target_bundle_id = os.environ.get("MONKEY_TARGET_BUNDLE_ID", "")
+stutter_action_warn_ms = max(1, int(float(os.environ.get("PERF_STUTTER_ACTION_WARN_MS", "2500"))))
+stutter_action_severe_ms = max(stutter_action_warn_ms, int(float(os.environ.get("PERF_STUTTER_ACTION_SEVERE_MS", "5000"))))
+
+SCENARIO_KEYWORDS = {
+    "community": ["社区", "动态", "广场", "发现"],
+    "im": ["消息", "聊天", "会话", "IM"],
+    "voice_room": ["语音房", "房间", "直播", "开黑", "大厅", "RTC", "语音", "视频", "通话"],
+}
+COMMUNITY_DETAIL_KEYWORDS = ["评论", "点赞", "分享", "关注", "回复", "查看全文", "详情"]
+COMMUNITY_SWITCH_KEYWORDS = ["推荐", "热门", "最新", "同城", "附近", "广场", "动态"]
+COMMUNITY_FOLLOW_TAB_KEYWORDS = ["关注"]
+COMMUNITY_SEARCH_KEYWORDS = ["搜索", "搜一搜", "Search"]
+IM_CONVERSATION_HINTS = ["输入", "发送", "语音", "表情", "更多", "按住说话"]
+BACK_KEYWORDS = ["返回", "Back", "back"]
+SCENARIO_LABELS = {
+    "community": "社区",
+    "im": "IM",
+    "voice_room": "语音房",
+}
+
+events = []
+session_id = ""
+width = 390
+height = 844
+started_at = time.time()
+
+def request(method, path, payload=None, timeout=8):
+    data = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(f"{wda_url}{path}", data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", errors="replace")
+        return json.loads(body) if body else {}
+
+def value_of(response):
+    return response.get("value", response)
+
+def create_session():
+    response = request("POST", "/session", {"capabilities": {"alwaysMatch": {}, "firstMatch": [{}]}}, timeout=15)
+    value = value_of(response)
+    sid = response.get("sessionId") or (value.get("sessionId") if isinstance(value, dict) else "")
+    if not sid:
+        raise RuntimeError(f"WDA did not return sessionId: {response}")
+    try:
+        request("POST", f"/session/{sid}/appium/settings", {"settings": {"waitForIdleTimeout": 1}}, timeout=5)
+    except Exception:
+        pass
+    return sid
+
+def refresh_size():
+    global width, height
+    try:
+        size = value_of(request("GET", f"/session/{session_id}/window/size", timeout=8))
+        if isinstance(size, dict):
+            width = int(size.get("width") or width)
+            height = int(size.get("height") or height)
+    except Exception:
+        pass
+
+def get_source():
+    try:
+        return str(value_of(request("GET", f"/session/{session_id}/source", timeout=8)) or "")
+    except Exception:
+        return ""
+
+def text_attr(node, attr):
+    match = re.search(rf'\b{attr}="([^"]*)"', node)
+    return match.group(1).strip() if match else ""
+
+def summarize_source(source, limit=8):
+    texts = []
+    for match in re.finditer(r'<[^>]+>', source or ""):
+        node = match.group(0)
+        for attr in ("label", "name", "value"):
+            text = text_attr(node, attr)
+            if text and text not in texts and len(text) <= 80:
+                texts.append(text)
+        if len(texts) >= limit:
+            break
+    return texts[:limit]
+
+def page_context(source):
+    if not source:
+        return {}
+    return {
+        "fingerprint": hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest(),
+        "summary": {"text": summarize_source(source)},
+    }
+
+def record_event(event, source, action_started_at):
+    now = time.time()
+    event["startedAtMs"] = int(now * 1000)
+    event["elapsedSeconds"] = round(now - started_at, 3)
+    duration_ms = event.pop("_durationMs", None)
+    if duration_ms is None:
+        duration_ms = max(0, int((now - action_started_at) * 1000))
+    else:
+        duration_ms = max(0, int(duration_ms))
+    event["actionDurationMs"] = duration_ms
+    event["scenario"] = scenario
+    if duration_ms >= stutter_action_severe_ms:
+        event["stutterSeverity"] = "severe"
+    elif duration_ms >= stutter_action_warn_ms:
+        event["stutterSeverity"] = "warning"
+    context = page_context(source)
+    if context:
+        event["page"] = context
+    events.append(event)
+    return event
+
+def write_progress(message, percent, executed=0):
+    if not progress_file:
+        return
+    elapsed = max(0, int(time.time() - started_at))
+    remaining = max(0, int(duration_seconds - elapsed))
+    payload = {
+        "status": "running",
+        "phase": "performance",
+        "message": message,
+        "progressPercent": round(min(99.0, max(1.0, percent)), 2),
+        "executedEvents": executed,
+        "elapsedSeconds": elapsed,
+        "remainingSeconds": remaining,
+        "requestedDurationSeconds": int(duration_seconds),
+        "updatedAt": int(time.time() * 1000),
+    }
+    try:
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def pointer_actions(points):
+    actions = [{"type": "pointerMove", "duration": 0, "x": points[0][0], "y": points[0][1]}, {"type": "pointerDown", "button": 0}]
+    for x, y, duration in points[1:]:
+        actions.append({"type": "pointerMove", "duration": duration, "x": x, "y": y})
+    actions.append({"type": "pointerUp", "button": 0})
+    return {"actions": [{"type": "pointer", "id": "finger1", "parameters": {"pointerType": "touch"}, "actions": actions}]}
+
+def tap_xy(x, y):
+    try:
+        request("POST", f"/session/{session_id}/wda/tap/0", {"x": int(x), "y": int(y)}, timeout=8)
+    except Exception:
+        request("POST", f"/session/{session_id}/actions", pointer_actions([(int(x), int(y)), (int(x), int(y), 80)]), timeout=8)
+
+def swipe_vertical(up=True):
+    x = width // 2
+    if up:
+        start_y, end_y = int(height * 0.76), int(height * 0.28)
+    else:
+        start_y, end_y = int(height * 0.32), int(height * 0.74)
+    request("POST", f"/session/{session_id}/actions", pointer_actions([(x, start_y), (x, end_y, 520)]), timeout=10)
+
+def element_rect_from_node(node):
+    values = {}
+    for key in ("x", "y", "width", "height"):
+        match = re.search(rf'\b{key}="([0-9.]+)"', node)
+        if not match:
+            return None
+        values[key] = int(float(match.group(1)))
+    if values["width"] <= 0 or values["height"] <= 0:
+        return None
+    return values
+
+def tap_text(source, keywords):
+    source_lower = source.lower()
+    for keyword in keywords:
+        keyword_lower = keyword.lower()
+        for match in re.finditer(r'<[^>]+>', source):
+            node = match.group(0)
+            node_lower = node.lower()
+            if keyword_lower not in node_lower:
+                continue
+            rect = element_rect_from_node(node)
+            if not rect:
+                continue
+            tap_xy(rect["x"] + rect["width"] // 2, rect["y"] + rect["height"] // 2)
+            return keyword
+    if not any(keyword.lower() in source_lower for keyword in keywords):
+        return ""
+    return ""
+
+def tap_text_in_region(source, keywords, top_ratio=0.0, bottom_ratio=1.0):
+    top_limit = int(height * top_ratio)
+    bottom_limit = int(height * bottom_ratio)
+    for keyword in keywords:
+        keyword_lower = keyword.lower()
+        for match in re.finditer(r'<[^>]+>', source):
+            node = match.group(0)
+            if keyword_lower not in node.lower():
+                continue
+            rect = element_rect_from_node(node)
+            if not rect:
+                continue
+            center_y = rect["y"] + rect["height"] // 2
+            if center_y < top_limit or center_y > bottom_limit:
+                continue
+            tap_xy(rect["x"] + rect["width"] // 2, center_y)
+            return keyword
+    return ""
+
+def tap_content_card(source):
+    candidates = []
+    for match in re.finditer(r'<[^>]+>', source or ""):
+        node = match.group(0)
+        rect = element_rect_from_node(node)
+        if not rect:
+            continue
+        center_x = rect["x"] + rect["width"] // 2
+        center_y = rect["y"] + rect["height"] // 2
+        if center_y < int(height * 0.18) or center_y > int(height * 0.82):
+            continue
+        if rect["width"] < int(width * 0.35) and rect["height"] < 36:
+            continue
+        text = " ".join(text_attr(node, attr) for attr in ("label", "name", "value")).strip()
+        if any(word in text for word in ["首页", "社区", "消息", "我的", "返回", "搜索", "发布", "发送"]):
+            continue
+        candidates.append((rect["width"] * rect["height"], center_x, center_y, text[:40]))
+    if candidates:
+        _, x, y, text = sorted(candidates, reverse=True)[0]
+        tap_xy(x, y)
+        return text or "内容卡片"
+    tap_xy(width // 2, int(height * 0.42))
+    return "兜底内容区域"
+
+def tap_top_back(source):
+    tapped = tap_text_in_region(source, BACK_KEYWORDS, 0.0, 0.22)
+    if tapped:
+        return tapped
+    tap_xy(max(28, int(width * 0.08)), max(48, int(height * 0.08)))
+    return "左上返回"
+
+def tap_community_top_tab(source, keywords):
+    tapped = tap_text_in_region(source, keywords, 0.08, 0.32)
+    if tapped:
+        return tapped
+    return ""
+
+def tap_community_search(source):
+    tapped = tap_text_in_region(source, COMMUNITY_SEARCH_KEYWORDS, 0.0, 0.28)
+    if tapped:
+        return tapped
+    # 搜索入口常在右上角，兜底只进入搜索，不输入内容，避免真实业务副作用。
+    tap_xy(int(width * 0.88), max(52, int(height * 0.09)))
+    return "右上搜索入口"
+
+def page_has_hint(source, hints):
+    source_lower = (source or "").lower()
+    return any(hint.lower() in source_lower for hint in hints)
+
+def run_community_action(iteration, source_before):
+    phase = iteration % 12
+    if iteration == 1:
+        tapped = tap_text(source_before, SCENARIO_KEYWORDS["community"])
+        if tapped:
+            time.sleep(1.0)
+            return "scenarioEnter", f"进入社区:{tapped}"
+        swipe_vertical(up=True)
+        return "scenarioExplore", "社区入口未匹配，滑动探索"
+    if phase == 2:
+        tapped = tap_community_top_tab(source_before, COMMUNITY_SWITCH_KEYWORDS)
+        if tapped:
+            time.sleep(0.8)
+            return "scenarioCommunitySwitch", f"切换社区:{tapped}"
+        swipe_vertical(up=True)
+        return "scenarioCommunitySwitch", "未匹配社区切换入口，滑动探索"
+    if phase == 3:
+        tapped = tap_community_top_tab(source_before, COMMUNITY_FOLLOW_TAB_KEYWORDS)
+        if tapped:
+            time.sleep(0.8)
+            return "scenarioCommunityFollow", f"进入社区关注流:{tapped}"
+        swipe_vertical(up=True)
+        return "scenarioCommunityFollow", "未匹配关注流入口，继续浏览"
+    if phase in (4, 6, 9):
+        swipe_vertical(up=True)
+        return "scenarioListScroll", "社区列表上滑浏览"
+    if phase == 5:
+        label = tap_content_card(source_before)
+        time.sleep(1.0)
+        return "scenarioOpenDetail", f"打开社区内容:{label}"
+    if phase == 7:
+        if page_has_hint(source_before, COMMUNITY_DETAIL_KEYWORDS):
+            swipe_vertical(up=True)
+            return "scenarioDetailScroll", "社区详情页滑动"
+        swipe_vertical(up=False)
+        return "scenarioListScroll", "社区列表下滑回看"
+    if phase == 8:
+        if page_has_hint(source_before, COMMUNITY_DETAIL_KEYWORDS):
+            label = tap_top_back(source_before)
+            time.sleep(0.8)
+            return "scenarioBack", f"社区详情返回:{label}"
+        swipe_vertical(up=False)
+        return "scenarioListScroll", "社区列表下滑回看"
+    if phase == 10:
+        tapped = tap_community_search(source_before)
+        time.sleep(1.0)
+        return "scenarioCommunitySearch", f"进入社区搜索:{tapped}"
+    if phase == 11:
+        label = tap_top_back(source_before)
+        time.sleep(0.8)
+        return "scenarioBack", f"退出社区搜索:{label}"
+    if phase == 0:
+        tapped = tap_community_top_tab(source_before, COMMUNITY_SWITCH_KEYWORDS)
+        if tapped:
+            time.sleep(0.8)
+            return "scenarioCommunitySwitch", f"切换社区:{tapped}"
+        swipe_vertical(up=False)
+        return "scenarioListScroll", "社区列表下滑回看"
+    swipe_vertical(up=True)
+    return "scenarioListScroll", "社区列表浏览"
+
+def run_im_action(iteration, source_before):
+    phase = iteration % 8
+    if iteration == 1:
+        tapped = tap_text(source_before, SCENARIO_KEYWORDS["im"])
+        if tapped:
+            time.sleep(1.0)
+            return "scenarioEnter", f"进入IM:{tapped}"
+        swipe_vertical(up=True)
+        return "scenarioExplore", "IM入口未匹配，滑动探索"
+    in_conversation = page_has_hint(source_before, IM_CONVERSATION_HINTS)
+    if in_conversation:
+        if phase in (2, 3, 4, 5):
+            swipe_vertical(up=True)
+            return "scenarioConversationScroll", "会话页消息区滑动"
+        label = tap_top_back(source_before)
+        time.sleep(0.8)
+        return "scenarioBack", f"退出会话:{label}"
+    if phase in (2, 3, 6):
+        swipe_vertical(up=True)
+        return "scenarioListScroll", "会话列表滑动"
+    if phase in (4, 5, 7, 0):
+        label = tap_content_card(source_before)
+        time.sleep(1.0)
+        return "scenarioOpenConversation", f"打开会话:{label}"
+    swipe_vertical(up=True)
+    return "scenarioListScroll", "会话列表浏览"
+
+def run_generic_action(iteration, source_before, keywords):
+    tapped = ""
+    if iteration == 1:
+        tapped = tap_text(source_before, keywords)
+        if tapped:
+            time.sleep(1.0)
+            return "scenarioTap", f"进入{SCENARIO_LABELS.get(scenario, scenario)}:{tapped}"
+        swipe_vertical(up=True)
+        return "scenarioSwipe", f"{SCENARIO_LABELS.get(scenario, scenario)}入口未匹配，执行滑动探索"
+    if scenario == "voice_room" and iteration % 5 == 0:
+        tapped = tap_text(source_before, keywords)
+        if tapped:
+            time.sleep(0.8)
+            return "scenarioTap", f"点击{tapped}"
+    swipe_vertical(up=iteration % 7 != 0)
+    return "scenarioSwipe", SCENARIO_LABELS.get(scenario, scenario)
+
+def foreground_target_app():
+    if not target_bundle_id:
+        return
+    try:
+        request("POST", f"/session/{session_id}/wda/apps/launch", {"bundleId": target_bundle_id}, timeout=6)
+    except Exception:
+        pass
+
+def summarize_stutters():
+    slow_events = [
+        event for event in events
+        if isinstance(event.get("actionDurationMs"), int) and event.get("actionDurationMs", 0) >= stutter_action_warn_ms
+    ]
+    severe_events = [
+        event for event in slow_events
+        if event.get("actionDurationMs", 0) >= stutter_action_severe_ms
+    ]
+    longest = max(slow_events, key=lambda item: item.get("actionDurationMs", 0), default=None)
+    return {
+        "enabled": True,
+        "method": "scenario_action_latency",
+        "scenario": scenario,
+        "thresholds": {
+            "actionWarnMs": stutter_action_warn_ms,
+            "actionSevereMs": stutter_action_severe_ms,
+        },
+        "slowActionCount": len(slow_events),
+        "severeActionCount": len(severe_events),
+        "stuckPageCount": 0,
+        "wdaRecoveryCount": 0,
+        "targetAppRecoveryCount": 0,
+        "automationRecoveryCount": 0,
+        "longestAction": longest,
+        "samples": sorted(slow_events, key=lambda item: item.get("actionDurationMs", 0), reverse=True)[:8],
+        "automationSamples": [],
+    }
+
+def save_report(status="passed", message=""):
+    duration_ms = int((time.time() - started_at) * 1000)
+    report = {
+        "status": status,
+        "message": message or f"{SCENARIO_LABELS.get(scenario, scenario)} 自动场景卡顿检测完成",
+        "scenario": scenario,
+        "wdaUrl": wda_url,
+        "requestedDurationSeconds": int(duration_seconds),
+        "durationMs": duration_ms,
+        "executedEvents": len(events),
+        "events": events,
+        "stutter": summarize_stutters(),
+    }
+    with open(report_file, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+
+try:
+    session_id = create_session()
+    refresh_size()
+    foreground_target_app()
+    keywords = SCENARIO_KEYWORDS.get(scenario, SCENARIO_KEYWORDS["community"])
+    deadline = started_at + duration_seconds
+    iteration = 0
+    while time.time() < deadline:
+        iteration += 1
+        source_read_started = time.time()
+        source_before = get_source()
+        source_before_ms = int((time.time() - source_read_started) * 1000)
+        action_started = time.time()
+        try:
+            if scenario == "community":
+                action_type, reason = run_community_action(iteration, source_before)
+            elif scenario == "im":
+                action_type, reason = run_im_action(iteration, source_before)
+            else:
+                action_type, reason = run_generic_action(iteration, source_before, keywords)
+            action_duration_ms = int((time.time() - action_started) * 1000)
+            source_read_started = time.time()
+            source_after = get_source()
+            source_after_ms = int((time.time() - source_read_started) * 1000)
+            event = {
+                "index": iteration,
+                "type": action_type,
+                "reason": reason,
+                "_durationMs": action_duration_ms,
+                "sourceBeforeDurationMs": source_before_ms,
+                "sourceAfterDurationMs": source_after_ms,
+            }
+            record_event(event, source_after or source_before, action_started)
+        except Exception as exc:
+            action_duration_ms = int((time.time() - action_started) * 1000)
+            source_read_started = time.time()
+            source_after = get_source()
+            source_after_ms = int((time.time() - source_read_started) * 1000)
+            record_event({
+                "index": iteration,
+                "type": "scenarioError",
+                "reason": str(exc)[:300],
+                "_durationMs": action_duration_ms,
+                "sourceBeforeDurationMs": source_before_ms,
+                "sourceAfterDurationMs": source_after_ms,
+            }, source_after or source_before, action_started)
+        percent = ((time.time() - started_at) / duration_seconds) * 100
+        write_progress(f"{SCENARIO_LABELS.get(scenario, scenario)}场景卡顿检测中", percent, len(events))
+        time.sleep(interval_seconds)
+    save_report("passed")
+except Exception as exc:
+    events.append({
+        "index": len(events) + 1,
+        "type": "scenarioFatal",
+        "reason": str(exc)[:300],
+        "startedAtMs": int(time.time() * 1000),
+        "elapsedSeconds": round(time.time() - started_at, 3),
+        "scenario": scenario,
+    })
+    save_report("failed", f"自动场景卡顿检测失败：{str(exc)[:300]}")
+    raise
+finally:
+    try:
+        if session_id:
+            request("DELETE", f"/session/{session_id}", timeout=3)
+    except Exception:
+        pass
 PY
 }
 
@@ -3808,6 +5649,7 @@ cat > "${META_FILE}" <<JSON
   "xcarchivePath": "${XCARCHIVE_PATH}",
   "archiveUrl": "${ARCHIVE_URL}",
   "testSuite": "${REQUESTED_TEST_SUITE}",
+  "stutterScenario": "${STUTTER_SCENARIO}",
   "devicePool": "${DEVICE_POOL}",
   "devicePoolLabel": "${DEVICE_POOL_LABEL_DISPLAY}",
   "deviceUdid": "${DEVICE_UDID}",
@@ -3824,6 +5666,9 @@ log "分支: ${BRANCH:-N/A}"
 log "Commit: ${COMMIT_HASH:-N/A}"
 log "APP版本: ${APP_VERSION:-N/A}"
 log "测试套件: ${REQUESTED_TEST_SUITE}"
+if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+  log "卡顿检测场景: ${STUTTER_SCENARIO}"
+fi
 if [ "${REQUESTED_TEST_SUITE}" != "${TEST_SUITE}" ]; then
   log "Jenkins TEST_SUITE: ${TEST_SUITE}"
 fi
@@ -3933,6 +5778,16 @@ start_performance_sampling || true
 
 process_status=0
 check_process_alive "${LAUNCH_BUNDLE_ID}" "${DETECTED_EXECUTABLE_NAME}" || process_status=$?
+if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+  stutter_duration="${MONKEY_DURATION_SECONDS:-300}"
+  if [ "${stutter_duration:-0}" = "0" ]; then
+    stutter_duration="300"
+  fi
+  log "开始卡顿检测: 持续 ${stutter_duration} 秒，场景=${STUTTER_SCENARIO}, template=${PERFORMANCE_XCTRACE_TEMPLATE}"
+  run_stutter_scenario_test "${STUTTER_SCENARIO}" "${stutter_duration}" || fail "自动场景卡顿检测失败，请查看 ${MONKEY_REPORT_FILE} 和 ${LOG_FILE}"
+  load_monkey_result
+  write_quality_progress "passed" "performance" "卡顿检测采集完成" 100 "${MONKEY_EXECUTED_EVENTS:-0}" "${stutter_duration}" 0
+fi
 if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
   monkey_status=0
   touch "${PERFORMANCE_MONKEY_RUNNING_FILE}"
@@ -3949,15 +5804,22 @@ if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[
     fail "Monkey 测试失败：${MONKEY_MESSAGE:-请确认 WDA 已启动并可访问 ${WDA_URL}}"
   fi
 fi
+if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+  log "卡顿检测不采集 WDA 截图，避免触碰 UI 自动化通道。"
+else
+  capture_screenshot || true
+fi
+cleanup_wda_automation_session || true
 stop_performance_sampling || true
-capture_screenshot || true
 capture_device_log || true
 collect_crash_reports || true
 if [ "${process_status}" = "1" ]; then
   log "警告: 启动后未确认 App 进程：${LAUNCH_BUNDLE_ID}。本次已完成安装和启动，按启动成功通过。"
 fi
 
-if [ "${MONKEY_STATUS}" = "passed" ]; then
+if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
+  write_summary "passed" "自动场景卡顿检测完成，场景 ${STUTTER_SCENARIO}，已采集 ${MONKEY_DURATION_SECONDS:-300} 秒性能 Trace"
+elif [ "${MONKEY_STATUS}" = "passed" ]; then
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
     write_summary "passed" "安装、启动、Monkey 测试完成，冷启动首屏耗时 ${COLD_START_READY_MS:-N/A}ms，Monkey 持续 ${MONKEY_DURATION_SECONDS} 秒，执行 ${MONKEY_EXECUTED_EVENTS} 次通过"
   else
@@ -3968,8 +5830,36 @@ elif [ -n "${COLD_START_READY_MS}" ]; then
 else
   write_summary "passed" "安装、启动完成，已采集可用日志"
 fi
-if [ "${MONKEY_STATUS}" != "passed" ]; then
-  write_quality_progress "passed" "complete" "质检完成" 100 "${MONKEY_EXECUTED_EVENTS:-0}" 0 0
+final_summary_status="$(python3 - "$SUMMARY_FILE" <<'PY'
+import json
+import sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    data = {}
+print(str(data.get("status") or "passed"))
+print(str(data.get("message") or ""))
+PY
+)"
+FINAL_SUMMARY_STATUS="$(printf '%s\n' "${final_summary_status}" | sed -n '1p')"
+FINAL_SUMMARY_MESSAGE="$(printf '%s\n' "${final_summary_status}" | sed -n '2,$p')"
+if [ "${FINAL_SUMMARY_STATUS}" = "failed" ]; then
+  write_quality_progress "failed" "failed" "${FINAL_SUMMARY_MESSAGE:-质检失败}" 100 "${MONKEY_EXECUTED_EVENTS:-0}" "" 0
+elif [ "${FINAL_SUMMARY_STATUS}" = "unstable" ]; then
+  write_quality_progress "unstable" "complete" "${FINAL_SUMMARY_MESSAGE:-质检完成，存在风险}" 100 "${MONKEY_EXECUTED_EVENTS:-0}" "" 0
+else
+  write_quality_progress "passed" "complete" "${FINAL_SUMMARY_MESSAGE:-质检完成}" 100 "${MONKEY_EXECUTED_EVENTS:-0}" "" 0
+fi
+if [ "${FINAL_SUMMARY_STATUS}" = "failed" ]; then
+  write_report 1 "${FINAL_SUMMARY_MESSAGE:-质检失败}"
+  write_standard_monkey_outputs || true
+  log "质检结果目录: ${RESULT_DIR}"
+  log "JUnit报告: ${REPORT_FILE}"
+  log "质检摘要: ${SUMMARY_FILE}"
+  log "标准结果: ${RESULT_DIR}/result.json"
+  log "标准问题: ${RESULT_DIR}/issues.json"
+  log "HTML报告: ${RESULT_DIR}/report.html"
+  exit 1
 fi
 write_report 0
 write_standard_monkey_outputs || true

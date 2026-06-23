@@ -50,7 +50,7 @@
         <hudson.model.StringParameterDefinition>
           <name>TEST_SUITE</name>
           <defaultValue>smoke</defaultValue>
-          <description>质检套件：smoke、login、im、rtc、monkey、full。</description>
+          <description>质检套件：smoke、im、rtc、monkey、stutter、full。stutter 为独立卡顿检测，不执行 Monkey 随机操作。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -63,6 +63,12 @@
           <name>RUN_MONKEY</name>
           <defaultValue>0</defaultValue>
           <description>设为 1 时执行 Monkey 随机测试。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>STUTTER_SCENARIO</name>
+          <defaultValue>community</defaultValue>
+          <description>卡顿检测自动化场景：community、im、voice_room。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -192,8 +198,8 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_INTERVAL_SECONDS</name>
-          <defaultValue>0.35</defaultValue>
-          <description>Monkey 两次随机事件之间的间隔秒数。</description>
+          <defaultValue>0.45</defaultValue>
+          <description>Monkey 两次随机事件之间的间隔秒数。默认略放缓，降低 WDA 在复杂页面上的请求压力。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -216,7 +222,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_STUCK_CHECK_INTERVAL_EVENTS</name>
-          <defaultValue>5</defaultValue>
+          <defaultValue>12</defaultValue>
           <description>每隔多少次事件采集一次 UI source 指纹，避免长时间 Monkey 过度拉取页面树。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
@@ -288,8 +294,14 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>PERFORMANCE_XCTRACE_TEMPLATE</name>
-          <defaultValue>Activity Monitor</defaultValue>
-          <description>tidevice perf 不可用时的 xctrace 兜底模板。Activity Monitor 可录 CPU/内存原始 trace；如需图形/FPS 可改为 Game Performance 试运行。</description>
+          <defaultValue>Time Profiler</defaultValue>
+          <description>xctrace 主采样模板。默认 Time Profiler，用于调用栈和卡顿热点分析。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PERFORMANCE_FRAME_XCTRACE</name>
+          <defaultValue>0</defaultValue>
+          <description>是否并发启动 Animation Hitches 帧级采样。默认关闭，避免与 Time Profiler 抢占 kperf 导致 WDA/设备开发通道不稳定；需要精准帧级诊断时可单独开启。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -393,7 +405,7 @@ bash scripts/sonic/ios-quality.sh</command>
       <allowEmptyResults>true</allowEmptyResults>
     </hudson.tasks.junit.JUnitResultArchiver>
     <hudson.tasks.ArtifactArchiver>
-      <artifacts>quality-results/**</artifacts>
+      <artifacts>quality-results/qa-${BUILD_NUMBER}-*/**</artifacts>
       <allowEmptyArchive>true</allowEmptyArchive>
       <onlyIfSuccessful>false</onlyIfSuccessful>
       <fingerprint>false</fingerprint>

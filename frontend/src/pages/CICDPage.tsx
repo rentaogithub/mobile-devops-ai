@@ -21,6 +21,7 @@ import type { DSYMInfo, SymbolicationResult } from '../types';
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
 type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'evidence' | 'summary';
+type QualityReportKind = 'monkey' | 'stutter' | 'generic';
 
 const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '蒲公英', value: 'Pgyer' },
@@ -28,13 +29,29 @@ const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '苹果商店', value: 'AppStore' },
 ];
 
+function publishChannelLabel(channel?: string) {
+  const option = DEPLOY_TARGET_OPTIONS.find((item) => item.value === channel);
+  return option?.label || channel || '';
+}
+
 const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
   { label: 'Monkey 测试', value: 'monkey' },
+  { label: '卡顿检测', value: 'stutter' },
   { label: '冒烟测试', value: 'smoke' },
-  { label: '登录测试', value: 'login' },
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
   { label: '全量回归', value: 'full' },
+];
+
+const QUALITY_SUITE_GROUPS: { title: string; options: { label: string; value: JenkinsQualitySuite }[] }[] = [
+  {
+    title: '稳定性&性能压测：',
+    options: QUALITY_SUITE_OPTIONS.filter((option) => option.value === 'monkey' || option.value === 'stutter'),
+  },
+  {
+    title: '业务核心链路压测：',
+    options: QUALITY_SUITE_OPTIONS.filter((option) => !['monkey', 'stutter'].includes(option.value)),
+  },
 ];
 
 const MONKEY_DURATION_OPTIONS = [
@@ -44,6 +61,20 @@ const MONKEY_DURATION_OPTIONS = [
   { label: '4 小时', value: 14400 },
   { label: '8 小时', value: 28800 },
 ];
+
+const STUTTER_SCENARIO_OPTIONS = [
+  { label: '社区', value: 'community' },
+  { label: 'IM', value: 'im' },
+  { label: '语音房', value: 'voice_room' },
+];
+
+function stutterScenarioLabel(value?: string) {
+  if (['rtc', 'room', 'voice', 'voice-room', 'voiceroom', 'voice_room', '语音房'].includes(String(value || '').toLowerCase())) {
+    return '语音房';
+  }
+  const option = STUTTER_SCENARIO_OPTIONS.find((item) => item.value === value);
+  return option?.label || value || '';
+}
 
 const PRODUCTION_BUNDLE_ID = 'com.nnhuyu.im';
 const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：nn-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称。';
@@ -60,12 +91,31 @@ function shouldUseInstalledProductionApp(build?: JenkinsBuild | null) {
   return build?.publishChannel === 'TestFlight' || build?.publishChannel === 'AppStore';
 }
 
+function getQualityReportKind(build?: JenkinsQualityBuild | null): QualityReportKind {
+  const suite = String(build?.qualitySummary?.testSuite || '').toLowerCase();
+  if (suite === 'stutter') return 'stutter';
+  if (suite === 'monkey') return 'monkey';
+  return 'generic';
+}
+
+function getQualityReportTitle(build?: JenkinsQualityBuild | null) {
+  const kind = getQualityReportKind(build);
+  if (kind === 'stutter') return '卡顿检测报告';
+  if (kind === 'monkey') return 'Monkey 质检报告';
+  return '质检汇总';
+}
+
 function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(branch.trim());
 }
 
 function getReleaseVersion(branch: string) {
   const match = branch.trim().replace(/^origin\//, '').match(/^release\/(\d+(?:\.\d+){2,})$/);
+  return match ? match[1].split('.').map((item) => Number(item)) : [];
+}
+
+function getBranchVersion(branch: string) {
+  const match = branch.trim().replace(/^origin\//, '').match(/^(?:release|feature)\/(\d+(?:\.\d+){2,})(?:[_/-].*)?$/);
   return match ? match[1].split('.').map((item) => Number(item)) : [];
 }
 
@@ -78,6 +128,41 @@ function compareReleaseBranches(a: string, b: string) {
     if (diff !== 0) return diff;
   }
   return a.localeCompare(b);
+}
+
+function compareBranchVersionsDesc(a: string, b: string) {
+  const av = getBranchVersion(a);
+  const bv = getBranchVersion(b);
+  const hasVersionA = av.length > 0;
+  const hasVersionB = bv.length > 0;
+  if (hasVersionA && hasVersionB) {
+    const len = Math.max(av.length, bv.length);
+    for (let i = 0; i < len; i += 1) {
+      const diff = (bv[i] || 0) - (av[i] || 0);
+      if (diff !== 0) return diff;
+    }
+  } else if (hasVersionA) {
+    return -1;
+  } else if (hasVersionB) {
+    return 1;
+  }
+  return a.localeCompare(b);
+}
+
+function compareBranchOptions(a: string, b: string) {
+  const normalizedA = a.trim().replace(/^origin\//, '');
+  const normalizedB = b.trim().replace(/^origin\//, '');
+  if (normalizedA === 'develop') return -1;
+  if (normalizedB === 'develop') return 1;
+  const aIsRelease = isReleaseBranch(normalizedA);
+  const bIsRelease = isReleaseBranch(normalizedB);
+  if (aIsRelease && bIsRelease) return compareReleaseBranches(normalizedB, normalizedA);
+  if (aIsRelease) return -1;
+  if (bIsRelease) return 1;
+  const aIsFeature = normalizedA.startsWith('feature/');
+  const bIsFeature = normalizedB.startsWith('feature/');
+  if (aIsFeature && bIsFeature) return compareBranchVersionsDesc(normalizedA, normalizedB);
+  return normalizedA.localeCompare(normalizedB);
 }
 
 function getHighestReleaseBranch(list: string[]) {
@@ -124,13 +209,6 @@ function analysisSeverityColor(severity?: string) {
   return 'default';
 }
 
-function performanceGradeColor(grade?: string) {
-  if (grade === 'good') return 'green';
-  if (grade === 'warning') return 'orange';
-  if (grade === 'slow') return 'red';
-  return 'default';
-}
-
 function formatSeconds(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(Number(value))) return '-';
   const seconds = Math.max(0, Math.floor(Number(value)));
@@ -145,13 +223,48 @@ function formatSeconds(value?: number | null) {
 function progressElapsedSeconds(build: JenkinsQualityBuild) {
   const progress = build.qualitySummary?.progress;
   const progressElapsed = Number(progress?.elapsedSeconds || 0);
+  const requestedDuration = Number(progress?.requestedDurationSeconds || 0);
+  const progressPercentValue = Number(progress?.progressPercent || 0);
+  const progressStatusValue = String(progress?.status || build.qualitySummary?.status || '').toLowerCase();
+  const isTerminal = progressPercentValue >= 100 ||
+    ['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(progressStatusValue);
+  if (requestedDuration > 0 && isTerminal) {
+    return requestedDuration;
+  }
   if (build.building && progress?.updatedAt && progressElapsed >= 0) {
     const sinceUpdate = Math.max(0, Math.floor((Date.now() - Number(progress.updatedAt)) / 1000));
-    return progressElapsed + sinceUpdate;
+    const liveElapsed = progressElapsed + sinceUpdate;
+    return requestedDuration > 0 ? Math.min(requestedDuration, liveElapsed) : liveElapsed;
   }
-  if (progressElapsed > 0) return progressElapsed;
+  if (progressElapsed > 0) {
+    return requestedDuration > 0 ? Math.min(requestedDuration, progressElapsed) : progressElapsed;
+  }
+  const monkeyDurationMs = Number(build.qualitySummary?.performanceAnalysis?.monkeyDurationMs || 0);
+  if (Number.isFinite(monkeyDurationMs) && monkeyDurationMs > 0) {
+    const monkeySeconds = Math.round(monkeyDurationMs / 1000);
+    return requestedDuration > 0 ? Math.min(requestedDuration, monkeySeconds) : monkeySeconds;
+  }
   if (build.duration > 0) return Math.round(build.duration / 1000);
   return progressElapsed;
+}
+
+function formatQualityDuration(build: JenkinsQualityBuild) {
+  const seconds = progressElapsedSeconds(build);
+  if (seconds > 0) return formatSeconds(seconds);
+  return formatDuration(build.duration, build.building);
+}
+
+function formatMonkeyExecutionSummary(build: JenkinsQualityBuild) {
+  const summary = build.qualitySummary;
+  const executedEvents = Number(summary?.monkeyExecutedEvents || 0);
+  const requestedDurationSeconds = Number(summary?.progress?.requestedDurationSeconds || 0);
+  const monkeyDurationMs = Number(summary?.performanceAnalysis?.monkeyDurationMs || 0);
+  const durationSeconds = requestedDurationSeconds > 0
+    ? requestedDurationSeconds
+    : (Number.isFinite(monkeyDurationMs) && monkeyDurationMs > 0 ? Math.round(monkeyDurationMs / 1000) : 0);
+  if (durationSeconds > 0) return `${executedEvents} 次 / ${formatSeconds(durationSeconds)}`;
+  const requestedEvents = Number(summary?.monkeyEventCount || 0);
+  return requestedEvents > 0 ? `${executedEvents}/${requestedEvents} 次` : `${executedEvents} 次`;
 }
 
 function progressRemainingSeconds(build: JenkinsQualityBuild) {
@@ -179,7 +292,8 @@ function isQualityBuildEffectivelyRunning(build: JenkinsQualityBuild) {
 }
 
 function progressStatus(build: JenkinsQualityBuild) {
-  if (build.result === 'FAILURE') return 'exception';
+  const status = String(build.qualitySummary?.status || build.qualitySummary?.progress?.status || '').toLowerCase();
+  if (build.result === 'FAILURE' || ['failed', 'failure'].includes(status)) return 'exception';
   if (isQualityBuildEffectivelyRunning(build)) return 'active';
   return 'success';
 }
@@ -221,6 +335,9 @@ function qualityResultTag(build: JenkinsQualityBuild) {
   if (isQualityBuildEffectivelyRunning(build)) {
     return <Tag color="processing">运行中</Tag>;
   }
+  if (build.building && progressPercent(build) >= 100) {
+    return <Tag color="blue">收尾中</Tag>;
+  }
   const status = String(build.qualitySummary?.status || build.qualitySummary?.progress?.status || '').toLowerCase();
   if (['passed', 'success'].includes(status)) {
     return <Tag color="green">通过</Tag>;
@@ -228,10 +345,56 @@ function qualityResultTag(build: JenkinsQualityBuild) {
   if (['failed', 'failure'].includes(status)) {
     return <Tag color="red">失败</Tag>;
   }
+  if (['unstable', 'warning'].includes(status)) {
+    return <Tag color="orange">需关注</Tag>;
+  }
   if (['canceled', 'cancelled', 'aborted'].includes(status)) {
     return <Tag color="default">已取消</Tag>;
   }
   return resultTag(build);
+}
+
+const QUALITY_PHASE_LABELS: Record<string, string> = {
+  preparing: '准备阶段',
+  package: '包获取阶段',
+  install: '安装阶段',
+  wda: 'WDA 阶段',
+  launch: 'App 启动阶段',
+  coldstart: '冷启动阶段',
+  cold_start: '冷启动阶段',
+  performance: '性能采样阶段',
+  monkey: 'Monkey 执行阶段',
+  report: '报告生成阶段',
+  cleanup: '清理阶段',
+  failed: '失败收尾',
+};
+
+function inferQualityPhase(build: JenkinsQualityBuild) {
+  const summary = build.qualitySummary;
+  const rawPhase = String(summary?.progress?.phase || '').trim().toLowerCase();
+  if (rawPhase && rawPhase !== 'failed') return rawPhase;
+
+  const failed = build.result === 'FAILURE' || ['failed', 'failure'].includes(String(summary?.status || summary?.progress?.status || '').toLowerCase());
+  if (!failed && rawPhase) return rawPhase;
+
+  const text = [
+    summary?.message,
+    summary?.monkeyMessage,
+    summary?.progress?.message,
+  ].filter(Boolean).join('\n');
+
+  if (/安装|install|provisioning|0xe8008015|0xe800801f/i.test(text)) return 'install';
+  if (/wda|webdriveragent|iproxy|8100|8156/i.test(text)) return 'wda';
+  if (/启动|launch|bundle identifier|bundle id/i.test(text)) return 'launch';
+  if (/xctrace|性能|performance|trace/i.test(text)) return 'performance';
+  if (/monkey|connection reset|broken pipe/i.test(text)) return 'monkey';
+  if (/包|ipa|package|artifact|download/i.test(text)) return 'package';
+  return rawPhase || (failed ? 'failed' : '');
+}
+
+function qualityPhaseLabel(build: JenkinsQualityBuild) {
+  const phase = inferQualityPhase(build);
+  return phase ? (QUALITY_PHASE_LABELS[phase] || phase) : '';
 }
 
 function getChannelBuildNumber(build: JenkinsBuild) {
@@ -246,71 +409,395 @@ function openPerformanceTrace(url?: string) {
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
+type QualityPerformanceAnalysis = NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
+
+function performanceSeverityMeta(severity?: string, reportKind: QualityReportKind = 'generic') {
+  if (severity === 'failed') return { alertType: 'error' as const, label: '高风险', summary: '检测到阻塞级性能风险，建议发布前确认。' };
+  if (severity === 'warning') return {
+    alertType: 'warning' as const,
+    label: '需关注',
+    summary: reportKind === 'monkey' ? '性能数据有可疑变化，建议结合 Monkey 动作和页面进一步确认。' : '性能数据有可疑变化，建议结合采样时间点、Trace 和页面状态进一步确认。',
+  };
+  if (severity === 'passed') return { alertType: 'success' as const, label: '通过', summary: '本次采样未触发已配置阈值，整体性能表现可接受。' };
+  return { alertType: 'info' as const, label: '待判断', summary: '本次报告缺少完整结论，需要结合采样数据人工判断。' };
+}
+
+function performanceConclusionSummary(analysis?: QualityPerformanceAnalysis, reportKind: QualityReportKind = 'generic') {
+  const severity = performanceSeverityMeta(analysis?.conclusion?.severity, reportKind);
+  const failedIssue = analysis?.conclusion?.issues?.find((issue) => issue.severity === 'failed' && issue.message);
+  const warningIssue = analysis?.conclusion?.issues?.find((issue) => issue.message);
+  if (failedIssue?.message) return `高风险来自：${failedIssue.message}`;
+  if (warningIssue?.message) return `风险来自：${warningIssue.message}`;
+  return severity.summary;
+}
+
+function gradeLabel(grade?: string) {
+  if (grade === 'good') return '良好';
+  if (grade === 'warning') return '偏慢';
+  if (grade === 'slow') return '慢';
+  return grade || '未知';
+}
+
+function metricText(value?: number | null, suffix = '') {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return '-';
+  return `${value}${suffix}`;
+}
+
+function buildPerformanceHighlights(analysis?: QualityPerformanceAnalysis, reportKind: QualityReportKind = 'generic') {
+  if (!analysis) return [];
+  const trace = analysis.trace;
+  const samples = analysis.samples;
+  const stutter = analysis.stutter;
+  const frameStutter = analysis.frameStutter;
+  const stackAnalysis = analysis.stackAnalysis;
+  return [
+    analysis.coldStartReadyMs !== undefined ? `首屏稳定 ${formatMilliseconds(analysis.coldStartReadyMs)}，评级 ${gradeLabel(analysis.coldStartGrade)}` : '',
+    analysis.launchDurationMs !== undefined ? `启动命令耗时 ${formatMilliseconds(analysis.launchDurationMs)}` : '',
+    samples?.sampleCount !== undefined ? `采样 ${samples.sampleCount} 条` : '',
+    samples?.cpu?.avg !== undefined && samples.cpu.avg !== null ? `CPU 平均 ${samples.cpu.avg}% / 峰值 ${metricText(samples.cpu.max, '%')}` : '',
+    samples?.memoryMB?.avg !== undefined && samples.memoryMB.avg !== null ? `内存平均 ${samples.memoryMB.avg}MB / 峰值 ${metricText(samples.memoryMB.max, 'MB')}` : '',
+    samples?.fps?.avg !== undefined && samples.fps.avg !== null ? `FPS 平均 ${samples.fps.avg} / 最低 ${metricText(samples.fps.min)}` : '',
+    frameStutter?.available ? `帧级卡顿 ${frameStutter.hitchCount || 0} 次 / 严重 ${frameStutter.severeHitchCount || 0} 次` : '',
+    stackAnalysis?.enabled ? `调用栈 ${stackAnalysis.available ? '已匹配' : '未匹配'}` : '',
+    stutter?.enabled ? `交互卡顿 ${stutter.slowActionCount || 0} 次 / 严重 ${stutter.severeActionCount || 0} 次` : '',
+    stutter?.targetAppRecoveryCount ? `离开被测 App ${stutter.targetAppRecoveryCount} 次` : '',
+    reportKind === 'monkey' && analysis.monkeyDurationMs !== undefined ? `Monkey 执行 ${formatMilliseconds(analysis.monkeyDurationMs)}，${analysis.monkeyExecutedEvents || 0} 次动作` : '',
+    trace?.available ? `Trace ${trace.segmentCount && trace.segmentCount > 1 ? `${trace.segmentCount} 段` : '已采集'}${trace.durationSeconds ? `，${formatSeconds(Math.round(trace.durationSeconds))}` : ''}` : '',
+  ].filter(Boolean);
+}
+
+function buildPerformanceSuggestions(analysis?: QualityPerformanceAnalysis, reportKind: QualityReportKind = 'generic') {
+  const isMonkeyReport = reportKind === 'monkey';
+  if (!analysis) return [isMonkeyReport ? '缺少性能分析数据，建议重新执行一次包含性能采样的 Monkey 任务。' : '缺少性能分析数据，建议重新执行一次卡顿检测任务。'];
+  const suggestions: string[] = [];
+  const thresholds = analysis.thresholds || {};
+  const cpuAvg = analysis.samples?.cpu?.avg;
+  const cpuMax = analysis.samples?.cpu?.max;
+  const memoryMax = analysis.samples?.memoryMB?.max;
+  const fpsAvg = analysis.samples?.fps?.avg;
+  const fpsMin = analysis.samples?.fps?.min;
+  const stutter = analysis.stutter;
+  const frameStutter = analysis.frameStutter;
+  const stackAnalysis = analysis.stackAnalysis;
+
+  if (analysis.coldStartGrade === 'warning' || analysis.coldStartGrade === 'slow') {
+    suggestions.push('首屏耗时偏高，优先检查启动链路中的同步初始化、首屏接口等待和图片/资源加载。');
+  }
+  if (cpuAvg !== null && cpuAvg !== undefined && thresholds.cpuAvgWarn && cpuAvg >= thresholds.cpuAvgWarn) {
+    suggestions.push('CPU 平均值超过阈值，建议排查循环计算、频繁刷新、日志输出或动画/音视频处理。');
+  } else if (cpuMax !== null && cpuMax !== undefined && cpuMax >= 80) {
+    suggestions.push(isMonkeyReport
+      ? 'CPU 峰值较高，建议结合峰值附近 Monkey 动作确认是否是页面切换、列表渲染或音视频场景触发。'
+      : 'CPU 峰值较高，建议结合峰值时间点、Trace 调用栈和当时页面确认是否由渲染、音视频或密集计算触发。');
+  }
+  if (memoryMax !== null && memoryMax !== undefined && thresholds.memoryPeakWarnMB && memoryMax >= thresholds.memoryPeakWarnMB) {
+    suggestions.push('内存峰值超过阈值，建议检查大图、缓存、房间/聊天页面资源释放和循环引用。');
+  }
+  if (
+    (fpsAvg !== null && fpsAvg !== undefined && thresholds.fpsAvgWarn && fpsAvg < thresholds.fpsAvgWarn) ||
+    (fpsMin !== null && fpsMin !== undefined && thresholds.fpsMinWarn && fpsMin > 0 && fpsMin < thresholds.fpsMinWarn)
+  ) {
+    suggestions.push('FPS 表现偏低，建议定位采样低点附近的页面和动作，重点看主线程阻塞、布局重算和批量刷新。');
+  }
+  if (analysis.trace?.available && !analysis.samples?.sampleCount) {
+    suggestions.push('Trace 文件已生成但未导出采样行，可下载 Trace 用 Instruments 查看 Time Profiler / Activity Monitor 明细。');
+  }
+  if (analysis.samples?.sampleCount && (fpsAvg === null || fpsAvg === undefined) && (fpsMin === null || fpsMin === undefined)) {
+    suggestions.push(frameStutter?.available
+      ? '本次已解析 xctrace 帧级卡顿，可优先查看最长帧耗时和样本区间。'
+      : (isMonkeyReport
+        ? '本次 xctrace 样本未包含 FPS/帧时间数据，帧级卡顿暂未产出；可先参考 Monkey 交互延迟卡顿结果。'
+        : '本次 xctrace 样本未包含 FPS/帧时间数据，帧级卡顿暂未产出；建议下载 Trace 在 Instruments 中查看。'));
+  }
+  if (frameStutter?.available && Number(frameStutter.hitchCount || 0) > 0) {
+    suggestions.push('已检测到帧级卡顿，建议下载 Trace 用 Instruments 打开对应 Animation Hitches/Frame 表继续定位主线程或渲染原因。');
+  }
+  if (stutter?.enabled && Number(stutter.slowActionCount || 0) > 0) {
+    suggestions.push(isMonkeyReport
+      ? '已检测到交互卡顿，建议优先查看最长动作和典型样本附近的 Monkey 页面线索。'
+      : '已检测到交互卡顿，建议优先查看最长动作、卡顿样本和对应 Trace 调用栈。');
+  }
+  if (stutter?.enabled && Number(stutter.targetAppRecoveryCount || 0) > 0) {
+    suggestions.push(isMonkeyReport
+      ? '测试过程中被测 App 离开过前台，建议优先结合崩溃/卡顿 IPS、Watchdog、系统弹窗和最后几次 Monkey 动作确认 App 是否被杀或切后台。'
+      : '检测过程中被测 App 离开过前台，建议优先结合崩溃/卡顿 IPS、Watchdog、系统弹窗和 Trace 结束原因确认 App 是否被杀或切后台。');
+  }
+  if (stutter?.enabled && Number(stutter.severeActionCount || 0) > 0) {
+    suggestions.push(stackAnalysis?.available
+      ? '已匹配严重卡顿附近的 Time Profiler 调用栈，优先查看“卡顿调用栈”定位主线程热点。'
+      : '严重交互卡顿需要 Time Profiler 调用栈辅助定位；若本次未匹配，建议确认 Trace 模板为 Time Profiler 后重跑。');
+  }
+  if (suggestions.length === 0) {
+    suggestions.push(isMonkeyReport ? '当前没有触发阈值类风险，可保留本次报告作为 TestFlight/线上包 Monkey 基线。' : '当前没有触发阈值类风险，可保留本次报告作为卡顿检测性能基线。');
+  }
+  return suggestions;
+}
+
+function PerformanceDataCoverage({ analysis }: { analysis: QualityPerformanceAnalysis }) {
+  const sampleCount = analysis.samples?.sampleCount || 0;
+  const hasCpu = analysis.samples?.cpu?.avg !== null && analysis.samples?.cpu?.avg !== undefined;
+  const hasMemory = analysis.samples?.memoryMB?.avg !== null && analysis.samples?.memoryMB?.avg !== undefined;
+  const hasFps = analysis.samples?.fps?.avg !== null && analysis.samples?.fps?.avg !== undefined;
+  const hasInteractionStutter = !!analysis.stutter?.enabled;
+  const hasFrameStutter = !!analysis.frameStutter?.available;
+  const hasStackAnalysis = !!analysis.stackAnalysis?.available;
+  const missing = [
+    !hasFps ? 'FPS' : '',
+    !hasInteractionStutter ? '交互卡顿' : '',
+    !hasFrameStutter ? '帧级卡顿' : '',
+    analysis.stutter?.severeActionCount && !hasStackAnalysis ? '调用栈' : '',
+  ].filter(Boolean);
+
+  return (
+    <Alert
+      showIcon
+      type={missing.length > 0 ? 'info' : 'success'}
+      message="数据覆盖"
+      description={(
+        <Space direction="vertical" size={6}>
+          <Space wrap>
+            <Tag color={hasCpu ? 'green' : 'default'}>CPU {hasCpu ? '已采集' : '未采集'}</Tag>
+            <Tag color={hasMemory ? 'green' : 'default'}>内存 {hasMemory ? '已采集' : '未采集'}</Tag>
+            <Tag color={hasFps ? 'green' : 'gold'}>FPS {hasFps ? '已采集' : '未采集'}</Tag>
+            <Tag color={hasInteractionStutter ? 'green' : 'gold'}>交互卡顿 {hasInteractionStutter ? '已检测' : '未接入'}</Tag>
+            <Tag color={hasFrameStutter ? 'green' : 'gold'}>帧级卡顿 {hasFrameStutter ? '已解析' : '未解析'}</Tag>
+            <Tag color={hasStackAnalysis ? 'green' : 'gold'}>调用栈 {hasStackAnalysis ? '已匹配' : '未匹配'}</Tag>
+            {sampleCount > 0 && <Tag>样本 {sampleCount} 条</Tag>}
+          </Space>
+          {missing.length > 0 && (
+            <Text type="secondary">
+              {sampleCount > 0
+                ? '本次已有进程采样，可分析 CPU/内存趋势；FPS 和精准帧级卡顿依赖 xctrace Animation Hitches/Frame 明细表。'
+                : '本次 xctrace Trace 已采集，但 Animation Hitches 模板未导出 CPU/内存/FPS 明细；后续任务会同时启动 tidevice perf 侧路采样补齐 CPU/内存。'}
+            </Text>
+          )}
+        </Space>
+      )}
+    />
+  );
+}
+
+function PerformanceStackAnalysis({ analysis }: { analysis: QualityPerformanceAnalysis }) {
+  const stackAnalysis = analysis.stackAnalysis;
+  if (!stackAnalysis?.enabled && !analysis.stutter?.severeActionCount) return null;
+  const samples = stackAnalysis?.samples || [];
+  const hasFrames = samples.some((sample) => (sample.matchedFrames || []).length > 0);
+  return (
+    <Alert
+      showIcon
+      type={hasFrames ? 'success' : 'info'}
+      message={hasFrames ? '卡顿调用栈已匹配' : '卡顿调用栈未匹配'}
+      description={(
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Text type="secondary">
+            {stackAnalysis?.message || '严重交互卡顿需要 Time Profiler Trace 才能定位调用栈。'}
+          </Text>
+          {stackAnalysis?.template && <Tag>Trace 模板 {stackAnalysis.template}</Tag>}
+          {samples.length > 0 && (
+            <Collapse
+              size="small"
+              items={samples.slice(0, 6).map((sample, index) => ({
+                key: `${sample.index || index}-${sample.actionDurationMs || 0}`,
+                label: `#${sample.index || '-'} ${eventTypeLabel(sample.type)} ${sample.actionDurationMs || '-'}ms${sample.elapsedSeconds ? ` / ${Math.round(sample.elapsedSeconds)}s` : ''}`,
+                children: (
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    {sample.page?.summary?.text?.length ? (
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        页面线索：{sample.page.summary.text.slice(0, 6).join(' / ')}
+                      </Text>
+                    ) : null}
+                    {(sample.matchedFrames || []).length > 0 ? (
+                      <pre
+                        style={{
+                          margin: 0,
+                          maxHeight: 300,
+                          overflow: 'auto',
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word',
+                          fontSize: 12,
+                          lineHeight: 1.5,
+                          background: '#fafafa',
+                          padding: 12,
+                          border: '1px solid #f0f0f0',
+                          borderRadius: 4,
+                        }}
+                      >
+                        {(sample.matchedFrames || []).slice(0, 12).map((frame, frameIndex) => (
+                          `${frameIndex + 1}. [${frame.schema || 'stack'}:${frame.row || '-'}] ${frame.frame || ''}`
+                        )).join('\n')}
+                      </pre>
+                    ) : (
+                      <Text type="secondary">{sample.message || '未匹配到该卡顿时间点的调用栈。'}</Text>
+                    )}
+                  </Space>
+                ),
+              }))}
+            />
+          )}
+        </Space>
+      )}
+    />
+  );
+}
+
+type QualityPerformanceIssue = NonNullable<NonNullable<QualityPerformanceAnalysis['conclusion']>['issues']>[number];
+
+function compactPageHints(text?: string[]) {
+  const hints = Array.from(new Set((text || []).filter(Boolean))).slice(0, 6);
+  return hints.length > 0 ? hints.join(' / ') : '';
+}
+
+function stackAnalysisStatusText(analysis: QualityPerformanceAnalysis) {
+  const stackAnalysis = analysis.stackAnalysis;
+  const severeCount = Number(analysis.stutter?.severeActionCount || 0);
+  if (severeCount <= 0) return '';
+  if (stackAnalysis?.available) {
+    const matchedCount = (stackAnalysis.samples || []).filter((sample) => (sample.matchedFrames || []).length > 0).length;
+    return `调用栈状态：已匹配 ${matchedCount || stackAnalysis.samples?.length || 0} 个严重卡顿样本，可在“卡顿调用栈”中查看热点堆栈。`;
+  }
+  if (stackAnalysis?.enabled) {
+    return `调用栈状态：未匹配。${stackAnalysis.message || 'Trace 中没有找到严重卡顿时间点附近的 Time Profiler 调用栈。'}`;
+  }
+  return '调用栈状态：本次没有生成 Time Profiler 调用栈数据，需要重新执行开启性能采样的任务后定位。';
+}
+
+function renderPerformanceIssueDetail(issue: QualityPerformanceIssue, analysis: QualityPerformanceAnalysis, reportKind: QualityReportKind = 'generic') {
+  const stutter = analysis.stutter;
+  const isMonkeyReport = reportKind === 'monkey';
+  if (issue.metric === 'stutter.severeActionCount') {
+    const longestAction = stutter?.longestAction;
+    const threshold = stutter?.thresholds?.actionSevereMs || 5000;
+    const pageHint = compactPageHints(longestAction?.page?.summary?.text);
+    return (
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Text strong>严重交互卡顿：{stutter?.severeActionCount || 0} 次，阈值 {threshold}ms</Text>
+        {longestAction ? (
+          <Text type="secondary">
+            最长动作：#{longestAction.index || '-'} {eventTypeLabel(longestAction.type)}
+            {longestAction.reason ? ` / ${longestAction.reason}` : ''}
+            ，耗时 {longestAction.actionDurationMs ? formatMilliseconds(longestAction.actionDurationMs) : '-'}
+            {longestAction.elapsedSeconds ? `，发生在 ${formatSeconds(Math.round(longestAction.elapsedSeconds))}` : ''}
+          </Text>
+        ) : (
+          <Text type="secondary">{issue.message || '检测到严重交互卡顿，但缺少最长动作明细。'}</Text>
+        )}
+        {pageHint && <Text type="secondary">页面线索：{pageHint}</Text>}
+        <Text type="secondary">{stackAnalysisStatusText(analysis)}</Text>
+      </Space>
+    );
+  }
+
+  if (issue.metric === 'stutter.stuckPageCount') {
+    const stuckSamples = (stutter?.samples || []).slice(0, 4);
+    return (
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Text strong>页面疑似停留不变：{stutter?.stuckPageCount || 0} 次</Text>
+        <Text type="secondary">
+          判定依据是{isMonkeyReport ? '连续 Monkey 动作后' : '连续检测样本中'}页面指纹变化很小，常见原因包括页面卡死、返回困难、弹窗遮挡、重复回到同一页面，或 WDA 响应变慢。
+        </Text>
+        {stuckSamples.length > 0 && (
+          <Space direction="vertical" size={2}>
+            {stuckSamples.map((sample, index) => {
+              const pageHint = compactPageHints(sample.page?.summary?.text);
+              return (
+                <Text key={`${sample.index || index}-${sample.actionDurationMs || 0}`} type="secondary">
+                  样本 {index + 1}：#{sample.index || '-'} {eventTypeLabel(sample.type)}
+                  {sample.actionDurationMs ? `，动作 ${formatMilliseconds(sample.actionDurationMs)}` : ''}
+                  {sample.elapsedSeconds ? `，${formatSeconds(Math.round(sample.elapsedSeconds))}` : ''}
+                  {pageHint ? `，页面：${pageHint}` : ''}
+                </Text>
+              );
+            })}
+          </Space>
+        )}
+      </Space>
+    );
+  }
+
+  if (issue.metric === 'stutter.targetAppRecoveryCount') {
+    const recoveryCount = stutter?.targetAppRecoveryCount || 0;
+    return (
+      <Space direction="vertical" size={6} style={{ width: '100%' }}>
+        <Text strong>被测 App 离开前台：{recoveryCount} 次</Text>
+        <Text type="secondary">
+          {isMonkeyReport ? 'Monkey 过程中' : '检测过程中'}检测到当前前台不是目标 Bundle，脚本已尝试重新拉起被测 App。出现这种情况时，需要优先确认是否被系统弹窗、返回手势、崩溃、Watchdog 或进程被杀触发。
+        </Text>
+      </Space>
+    );
+  }
+
+  return (
+    <Text type="secondary">
+      {issue.message || issue.metric}
+    </Text>
+  );
+}
+
 function PerformanceAnalysisSummary({
   analysis,
+  reportKind = 'generic',
 }: {
-  analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
+  analysis?: QualityPerformanceAnalysis;
+  reportKind?: QualityReportKind;
 }) {
   const issues = analysis?.conclusion?.issues || [];
   const traceSegments = analysis?.trace?.segments || [];
+  const severity = performanceSeverityMeta(analysis?.conclusion?.severity, reportKind);
+  const highlights = buildPerformanceHighlights(analysis, reportKind);
+  const suggestions = buildPerformanceSuggestions(analysis, reportKind);
   if (!analysis) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有性能报告" />;
   }
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
-      <Space wrap>
-        {analysis?.coldStartGrade && (
-          <Tag color={performanceGradeColor(analysis.coldStartGrade)}>
-            冷启动 {analysis.coldStartGrade}
-          </Tag>
+      <Alert
+        showIcon
+        type={severity.alertType}
+        message={`性能结论：${severity.label}`}
+        description={(
+          <Space direction="vertical" size={6}>
+            <Text type="secondary">{performanceConclusionSummary(analysis, reportKind)}</Text>
+            {highlights.length > 0 && (
+              <Space wrap>
+                {highlights.map((item) => <Tag key={item}>{item}</Tag>)}
+              </Space>
+            )}
+          </Space>
         )}
-        {analysis?.launchDurationMs !== undefined && <Tag>启动命令 {formatMilliseconds(analysis.launchDurationMs)}</Tag>}
-        {analysis?.coldStartReadyMs !== undefined && <Tag>首屏 {formatMilliseconds(analysis.coldStartReadyMs)}</Tag>}
-        {analysis?.monkeyExecutedEvents !== undefined && <Tag>Monkey {analysis.monkeyExecutedEvents} 次</Tag>}
-        {analysis?.monkeyEventsPerMinute !== undefined && <Tag>速率 {analysis.monkeyEventsPerMinute} 次/分钟</Tag>}
-        {analysis?.monkeyDurationMs !== undefined && <Tag>Monkey 耗时 {formatMilliseconds(analysis.monkeyDurationMs)}</Tag>}
-        {analysis?.samples?.sampleCount !== undefined && <Tag>采样 {analysis.samples.sampleCount} 条</Tag>}
-        {analysis?.trace?.available && (
-          <Tag color={analysis.trace.sampleRowsExported ? 'blue' : 'gold'}>
-            Trace {analysis.trace.segmentCount && analysis.trace.segmentCount > 1
-              ? `${analysis.trace.segmentCount} 段`
-              : (analysis.trace.durationSeconds ? formatSeconds(Math.round(analysis.trace.durationSeconds)) : '已采集')}
-          </Tag>
-        )}
-        {analysis?.samples?.cpu?.avg !== undefined && analysis.samples.cpu.avg !== null && (
-          <Tag>CPU 平均 {analysis.samples.cpu.avg}% / 峰值 {analysis.samples.cpu.max ?? '-'}%</Tag>
-        )}
-        {analysis?.samples?.memoryMB?.avg !== undefined && analysis.samples.memoryMB.avg !== null && (
-          <Tag>内存平均 {analysis.samples.memoryMB.avg}MB / 峰值 {analysis.samples.memoryMB.max ?? '-'}MB</Tag>
-        )}
-        {analysis?.samples?.fps?.avg !== undefined && analysis.samples.fps.avg !== null && (
-          <Tag>FPS 平均 {analysis.samples.fps.avg} / 最低 {analysis.samples.fps.min ?? '-'}</Tag>
-        )}
-        {analysis?.conclusion?.severity && (
-          <Tag color={analysisSeverityColor(analysis.conclusion.severity)}>
-            结论 {analysis.conclusion.severity}
-          </Tag>
-        )}
-      </Space>
+      />
+      <PerformanceDataCoverage analysis={analysis} />
+      <PerformanceStackAnalysis analysis={analysis} />
       {issues.length > 0 ? (
         <Alert
           showIcon
           type="warning"
-          message="性能风险"
+          message="已识别风险"
           description={(
-            <Space direction="vertical" size={4}>
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
               {issues.map((issue, index) => (
-                <Text key={`${issue.metric || 'metric'}-${index}`} type="secondary">
-                  {issue.message || issue.metric}
-                </Text>
+                <div key={`${issue.metric || 'metric'}-${index}`}>
+                  {renderPerformanceIssueDetail(issue, analysis, reportKind)}
+                </div>
               ))}
             </Space>
           )}
         />
       ) : (
-        analysis?.conclusion?.severity && <Alert showIcon type="success" message="未发现性能风险" />
+        analysis?.conclusion?.severity && <Alert showIcon type="success" message="未发现阈值类性能风险" />
       )}
+      <Alert
+        showIcon
+        type="info"
+        message="建议动作"
+        description={(
+          <Space direction="vertical" size={4}>
+            {suggestions.map((item, index) => (
+              <Text key={index} type="secondary">{index + 1}. {item}</Text>
+            ))}
+          </Space>
+        )}
+      />
       {analysis.trace?.available && !analysis.samples?.sampleCount && (
         <Alert
           showIcon
@@ -346,6 +833,158 @@ function PerformanceAnalysisSummary({
           </Space>
         </Space>
       )}
+    </Space>
+  );
+}
+
+function StutterReportSummary({
+  analysis,
+}: {
+  analysis?: QualityPerformanceAnalysis;
+}) {
+  if (!analysis) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有卡顿报告" />;
+  }
+  const stutter = analysis.stutter;
+  const frameStutter = analysis.frameStutter;
+  const stackAnalysis = analysis.stackAnalysis;
+  const slowActionCount = Number(stutter?.slowActionCount || 0);
+  const severeActionCount = Number(stutter?.severeActionCount || 0);
+  const stuckPageCount = Number(stutter?.stuckPageCount || 0);
+  const frameHitchCount = Number(frameStutter?.hitchCount || 0);
+  const severeFrameHitchCount = Number(frameStutter?.severeHitchCount || 0);
+  const hasStackFrames = !!stackAnalysis?.samples?.some((sample) => (sample.matchedFrames || []).length > 0);
+  const hasAnyStutter = slowActionCount > 0 || frameHitchCount > 0 || stuckPageCount > 0;
+  const hasSevereStutter = severeActionCount > 0 || severeFrameHitchCount > 0;
+  const alertType = hasSevereStutter ? 'error' : (hasAnyStutter ? 'warning' : 'success');
+  const alertTitle = hasSevereStutter ? '发现严重卡顿' : (hasAnyStutter ? '发现卡顿风险' : '未发现卡顿问题');
+  const issues = (analysis.conclusion?.issues || []).filter((issue) => /stutter|hitch|卡顿|fps|frame/i.test(String(issue.metric || issue.message || '')));
+  const stutterSamples = stutter?.samples || [];
+  const frameSamples = frameStutter?.samples || [];
+  const traceSegments = analysis.trace?.segments || [];
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Alert
+        showIcon
+        type={alertType}
+        message={`卡顿结论：${alertTitle}`}
+        description={(
+          <Space wrap>
+            <Tag color={stutter?.enabled ? 'green' : 'gold'}>动作卡顿 {stutter?.enabled ? '已检测' : '未检测'}</Tag>
+            <Tag color={frameStutter?.available ? 'green' : 'gold'}>帧级卡顿 {frameStutter?.available ? '已解析' : '未解析'}</Tag>
+            <Tag color={hasStackFrames ? 'green' : 'gold'}>调用栈 {hasStackFrames ? '已匹配' : '未匹配'}</Tag>
+            {analysis.trace?.available && <Tag color="blue">Trace 已采集</Tag>}
+          </Space>
+        )}
+      />
+      <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+        <Descriptions.Item label="交互卡顿">
+          {stutter?.enabled ? `${slowActionCount} 次 / 严重 ${severeActionCount} 次` : '未检测'}
+        </Descriptions.Item>
+        <Descriptions.Item label="最长交互卡顿">
+          {stutter?.longestAction?.actionDurationMs
+            ? `${formatMilliseconds(stutter.longestAction.actionDurationMs)} / #${stutter.longestAction.index || '-'} ${eventTypeLabel(stutter.longestAction.type)}`
+            : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="页面疑似卡住">
+          {stutter?.enabled ? `${stuckPageCount} 次` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="帧级卡顿">
+          {frameStutter?.available ? `${frameHitchCount} 次 / 严重 ${severeFrameHitchCount} 次` : '未解析'}
+        </Descriptions.Item>
+        <Descriptions.Item label="最长帧级卡顿">
+          {frameStutter?.longestHitch?.durationMs
+            ? `${formatMilliseconds(frameStutter.longestHitch.durationMs)}${frameStutter.longestHitch.timeSeconds ? ` / ${formatSeconds(Math.round(frameStutter.longestHitch.timeSeconds))}` : ''}`
+            : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="调用栈">
+          {hasStackFrames ? '已匹配' : (stackAnalysis?.enabled ? '未匹配' : '未生成')}
+        </Descriptions.Item>
+      </Descriptions>
+      {issues.length > 0 ? (
+        <Alert
+          showIcon
+          type="warning"
+          message="已识别卡顿问题"
+          description={(
+            <Space direction="vertical" size={10} style={{ width: '100%' }}>
+              {issues.map((issue, index) => (
+                <div key={`${issue.metric || 'metric'}-${index}`}>
+                  {renderPerformanceIssueDetail(issue, analysis, 'stutter')}
+                </div>
+              ))}
+            </Space>
+          )}
+        />
+      ) : (
+        <Alert showIcon type="success" message="未发现阈值类卡顿问题" />
+      )}
+      {stutterSamples.length > 0 && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>交互卡顿样本</Text>
+          <Collapse
+            size="small"
+            items={stutterSamples.slice(0, 8).map((sample, index) => ({
+              key: `${sample.index || index}-${sample.actionDurationMs || 0}`,
+              label: `#${sample.index || '-'} ${eventTypeLabel(sample.type)} ${sample.actionDurationMs || '-'}ms${sample.reason ? ` / ${sample.reason}` : ''}`,
+              children: (
+                <Space direction="vertical" size={4}>
+                  {sample.elapsedSeconds !== undefined && <Text type="secondary">发生时间：{formatSeconds(Math.round(sample.elapsedSeconds))}</Text>}
+                  {sample.page?.summary?.text?.length ? (
+                    <Text type="secondary">页面线索：{sample.page.summary.text.slice(0, 8).join(' / ')}</Text>
+                  ) : (
+                    <Text type="secondary">暂无页面线索</Text>
+                  )}
+                </Space>
+              ),
+            }))}
+          />
+        </Space>
+      )}
+      {frameSamples.length > 0 && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>帧级卡顿样本</Text>
+          <Space wrap>
+            {frameSamples.slice(0, 8).map((sample, index) => (
+              <Tag key={`${sample.row || index}-${sample.durationMs || 0}`} color={sample.severity === 'severe' ? 'red' : 'orange'}>
+                {sample.durationMs || '-'}ms{sample.timeSeconds ? ` / ${formatSeconds(Math.round(sample.timeSeconds))}` : ''}
+              </Tag>
+            ))}
+          </Space>
+        </Space>
+      )}
+      <PerformanceStackAnalysis analysis={analysis} />
+      {!frameStutter?.available && (
+        <Alert
+          showIcon
+          type="info"
+          message="帧级卡顿未解析"
+          description={frameStutter?.message || '本次没有导出可解析的帧级卡顿数据，可下载 Trace 用 Instruments 继续查看。'}
+        />
+      )}
+      {traceSegments.length > 0 && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>Trace 证据</Text>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            {traceSegments.map((segment, index) => (
+              <Space key={`${segment.path || segment.name || index}`} size={8} wrap>
+                <Tag color={segment.current ? 'blue' : 'default'}>{segment.current ? '当前' : `分段 ${index + 1}`}</Tag>
+                <Text code>{segment.path || segment.name || '-'}</Text>
+                {segment.reason && <Text type="secondary">{segment.reason}</Text>}
+              </Space>
+            ))}
+          </Space>
+        </Space>
+      )}
+      <Alert
+        showIcon
+        type="info"
+        message="建议动作"
+        description={hasAnyStutter
+          ? '优先查看严重卡顿样本、页面线索和调用栈；如果调用栈未匹配，下载 Trace 用 Instruments 定位主线程阻塞或渲染耗时。'
+          : '本次未触发卡顿阈值，可作为该场景的卡顿基线；如果现场仍感知卡顿，建议切换到自动场景或延长检测时长重跑。'}
+      />
     </Space>
   );
 }
@@ -438,11 +1077,13 @@ function PerformanceDiagnostics({
   monkeyPreview,
   monkeyLoading,
   analysis,
+  reportKind = 'generic',
 }: {
   samples: JenkinsQualityPerformanceSamples | null;
   monkeyPreview: JenkinsQualityArtifactPreview | null;
   monkeyLoading: boolean;
-  analysis?: NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
+  analysis?: QualityPerformanceAnalysis;
+  reportKind?: QualityReportKind;
 }) {
   if (!samples?.samples?.length) {
     if (analysis?.trace?.available) {
@@ -464,9 +1105,11 @@ function PerformanceDiagnostics({
   }
 
   const monkeyReport = parseJsonPreview<QualityMonkeyReport>(monkeyPreview);
+  const shouldShowMonkeyCorrelation = reportKind === 'monkey';
   const validCpuSamples = samples.samples.filter((sample) => sample.cpu !== null);
   const validMemorySamples = samples.samples.filter((sample) => sample.memoryMB !== null);
   const validFpsSamples = samples.samples.filter((sample) => sample.fps !== null);
+  const hasFpsSamples = validFpsSamples.length > 0;
   const maxCpuSample = validCpuSamples.reduce<typeof validCpuSamples[number] | null>(
     (max, sample) => (!max || Number(sample.cpu) > Number(max.cpu) ? sample : max),
     null
@@ -499,6 +1142,34 @@ function PerformanceDiagnostics({
     }
   }
   const highCpuSamples = validCpuSamples.filter((sample) => Number(sample.cpu) >= 70);
+  let longestHighCpuRun = 0;
+  let currentHighCpuRun = 0;
+  for (const sample of validCpuSamples) {
+    if (Number(sample.cpu) >= 70) {
+      currentHighCpuRun += 1;
+      longestHighCpuRun = Math.max(longestHighCpuRun, currentHighCpuRun);
+    } else {
+      currentHighCpuRun = 0;
+    }
+  }
+  const cpuAvg = samples.summary.cpu.avg;
+  const cpuMax = samples.summary.cpu.max;
+  const memoryAvg = samples.summary.memoryMB.avg;
+  const memoryMax = samples.summary.memoryMB.max;
+  const fpsAvg = samples.summary.fps.avg;
+  const fpsMin = samples.summary.fps.min;
+  const stutter = analysis?.stutter;
+  const frameStutter = analysis?.frameStutter;
+  const hasInteractionStutter = !!stutter?.enabled;
+  const hasFrameStutter = !!frameStutter?.available;
+  const slowActionCount = Number(stutter?.slowActionCount || 0);
+  const severeActionCount = Number(stutter?.severeActionCount || 0);
+  const stuckPageCount = Number(stutter?.stuckPageCount || 0);
+  const wdaRecoveryCount = Number(stutter?.wdaRecoveryCount || 0);
+  const longestAction = stutter?.longestAction;
+  const frameHitchCount = Number(frameStutter?.hitchCount || 0);
+  const severeFrameHitchCount = Number(frameStutter?.severeHitchCount || 0);
+  const longestFrameHitch = frameStutter?.longestHitch;
   const cpuPeakEvents = nearestMonkeyEvents(
     maxCpuSample?.index,
     samples.returnedSampleCount || samples.sampleCount,
@@ -518,16 +1189,44 @@ function PerformanceDiagnostics({
   const jumpAttention = !!biggestMemoryJump && biggestMemoryJump.delta >= 8;
   const cpuAttention = !!maxCpuSample && Number(maxCpuSample.cpu) >= 80;
   const fpsAttention = !!minFpsSample && Number(minFpsSample.fps) > 0 && Number(minFpsSample.fps) < 45;
+  const sampleDurationSeconds = samples.samples.length > 0
+    ? Math.max(...samples.samples.map((sample) => Number(sample.timeSeconds || 0)))
+    : 0;
   const attentionItems = [
     memoryAttention ? `内存从 ${firstMemory}MB 增长到 ${lastMemory}MB，净增长 ${memoryDelta}MB，建议确认是否进入高资源页面后未回收。` : '',
     jumpAttention && biggestMemoryJump ? `#${biggestMemoryJump.index} 附近内存单次上升 ${biggestMemoryJump.delta}MB，是最明显的资源切换点。` : '',
     cpuAttention && maxCpuSample ? `CPU 在 #${maxCpuSample.index} 达到 ${maxCpuSample.cpu}%，可结合附近动作判断是否触发重渲染、页面初始化或密集计算。` : '',
     highCpuSamples.length >= 3 ? `CPU >= 70% 的采样有 ${highCpuSamples.length} 条，建议关注是否存在连续高负载。` : '',
     fpsAttention && minFpsSample ? `FPS 最低 ${minFpsSample.fps}，可检查该采样附近是否有卡顿动作。` : '',
+    slowActionCount > 0 ? `检测到 ${slowActionCount} 次交互卡顿，其中严重 ${severeActionCount} 次，最长动作耗时 ${longestAction?.actionDurationMs || '-'}ms。` : '',
+    frameHitchCount > 0 ? `检测到 ${frameHitchCount} 次帧级卡顿，其中严重 ${severeFrameHitchCount} 次，最长帧耗时 ${longestFrameHitch?.durationMs || '-'}ms。` : '',
+    stuckPageCount > 0 ? `检测到 ${stuckPageCount} 次页面疑似停留不变，可能是页面卡住、弹层拦截或回退困难。` : '',
+    wdaRecoveryCount > 0 ? `WDA 恢复 ${wdaRecoveryCount} 次，会影响自动化响应耗时，需和真实 App 卡顿区分。` : '',
   ].filter(Boolean);
+  const likelyReasons = [
+    cpuAttention ? 'CPU 峰值通常和页面初始化、列表批量渲染、图片解码、日志密集输出或音视频处理有关。' : '',
+    memoryAttention ? '内存持续增长更像资源未释放；如果只在页面切换后短暂上涨，可能是缓存或新页面资源加载。' : '',
+    jumpAttention ? '内存阶跃更适合结合动作定位：关注跳转、打开房间、进入聊天、加载媒体等资源密集场景。' : '',
+    longestHighCpuRun >= 3 ? `CPU 连续高位最长 ${longestHighCpuRun} 个采样点，若采样间隔约 1 秒，则可能存在持续负载而不是瞬时尖峰。` : '',
+    fpsAttention ? 'FPS 低点需要结合主线程耗时和页面动作确认，单独看 FPS 不能直接判断根因。' : '',
+    frameHitchCount > 0 ? '帧级卡顿来自 xctrace 的帧/Animation Hitches 明细，比 Monkey 动作耗时更接近真实渲染卡顿。' : '',
+    slowActionCount > 0 ? '交互卡顿基于 Monkey 动作响应耗时，可能来自 App 主线程忙、页面动画过长、网络等待、WDA/USB 抖动或系统弹窗。' : '',
+  ].filter(Boolean);
+  const diagnosisLevel = attentionItems.length >= 3 ? '高关注' : (attentionItems.length > 0 ? '需观察' : '正常');
+  const diagnosisType = attentionItems.length >= 3 ? 'warning' : (attentionItems.length > 0 ? 'info' : 'success');
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Alert
+        showIcon
+        type={diagnosisType}
+        message={`诊断结论：${diagnosisLevel}`}
+        description={attentionItems.length > 0
+          ? (shouldShowMonkeyCorrelation
+            ? '本次诊断已经把性能变化点和 Monkey 动作做了关联，可优先查看下方峰值、阶跃和页面线索。'
+            : '本次诊断已提取性能变化点，可优先查看下方峰值、阶跃、卡顿样本和 Trace 线索。')
+          : `CPU、内存${hasFpsSamples ? '、FPS' : ''}${hasFrameStutter ? '、帧级卡顿' : ''}${hasInteractionStutter ? '、交互卡顿' : ''}没有明显异常趋势，本次可作为同版本后续对比的基线。`}
+      />
       {attentionItems.length > 0 ? (
         <Alert
           showIcon
@@ -544,9 +1243,44 @@ function PerformanceDiagnostics({
       ) : (
         <Alert showIcon type="success" message="未发现明显的性能异常趋势" />
       )}
+      {likelyReasons.length > 0 && (
+        <Alert
+          showIcon
+          type="info"
+          message="可能原因"
+          description={(
+            <Space direction="vertical" size={4}>
+              {likelyReasons.map((item, index) => (
+                <Text key={index} type="secondary">{item}</Text>
+              ))}
+            </Space>
+          )}
+        />
+      )}
+      {!hasFpsSamples && (
+        <Alert
+          showIcon
+          type="info"
+          message="FPS / 帧级卡顿数据未采集"
+          description={hasFrameStutter
+            ? '本次没有 FPS 指标，但已从 xctrace 帧级表解析卡顿区间。'
+            : (frameStutter?.message || (shouldShowMonkeyCorrelation
+              ? '本次样本没有 FPS 或帧耗时字段，因此不能判断掉帧和帧级卡顿区间。当前已使用 Monkey 交互延迟做卡顿检测。'
+              : '本次样本没有 FPS 或帧耗时字段，因此不能判断掉帧和帧级卡顿区间。'))}
+        />
+      )}
       <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+        <Descriptions.Item label="采样覆盖">
+          {samples.sampleCount} 条 / {sampleDurationSeconds ? formatSeconds(Math.round(sampleDurationSeconds)) : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="CPU 平均/峰值">
+          {metricText(cpuAvg, '%')} / {metricText(cpuMax, '%')}
+        </Descriptions.Item>
         <Descriptions.Item label="CPU 峰值">
           {maxCpuSample ? `${maxCpuSample.cpu}% / #${maxCpuSample.index} / ${Math.round(maxCpuSample.timeSeconds)}s` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="内存平均/峰值">
+          {metricText(memoryAvg, 'MB')} / {metricText(memoryMax, 'MB')}
         </Descriptions.Item>
         <Descriptions.Item label="内存峰值">
           {maxMemorySample ? `${maxMemorySample.memoryMB}MB / #${maxMemorySample.index}` : '-'}
@@ -558,46 +1292,92 @@ function PerformanceDiagnostics({
           {biggestMemoryJump ? `+${biggestMemoryJump.delta}MB / #${biggestMemoryJump.index}` : '-'}
         </Descriptions.Item>
         <Descriptions.Item label="高 CPU 采样">
-          {highCpuSamples.length} 条
+          {highCpuSamples.length} 条{longestHighCpuRun ? ` / 最长连续 ${longestHighCpuRun} 条` : ''}
+        </Descriptions.Item>
+        <Descriptions.Item label="FPS 平均/最低">
+          {hasFpsSamples ? `${metricText(fpsAvg)} / ${metricText(fpsMin)}` : '未采集'}
         </Descriptions.Item>
         <Descriptions.Item label="FPS 低点">
-          {minFpsSample?.fps !== null && minFpsSample?.fps !== undefined ? `${minFpsSample.fps} / #${minFpsSample.index}` : '-'}
+          {minFpsSample?.fps !== null && minFpsSample?.fps !== undefined ? `${minFpsSample.fps} / #${minFpsSample.index}` : '未采集'}
+        </Descriptions.Item>
+        <Descriptions.Item label="卡顿判断">
+          {hasFrameStutter
+            ? `${frameHitchCount} 次帧级卡顿 / 严重 ${severeFrameHitchCount} 次`
+            : (hasInteractionStutter ? `${slowActionCount} 次交互卡顿 / 严重 ${severeActionCount} 次` : (hasFpsSamples ? '可按 FPS 低点辅助判断' : '未接入'))}
+        </Descriptions.Item>
+        <Descriptions.Item label="最长帧级卡顿">
+          {longestFrameHitch?.durationMs ? `${longestFrameHitch.durationMs}ms${longestFrameHitch.timeSeconds ? ` / ${Math.round(longestFrameHitch.timeSeconds)}s` : ''}` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="最长卡顿">
+          {longestAction?.actionDurationMs ? `${longestAction.actionDurationMs}ms / #${longestAction.index || '-'} ${eventTypeLabel(longestAction.type)}` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="页面疑似卡住">
+          {hasInteractionStutter ? `${stuckPageCount} 次` : '-'}
+        </Descriptions.Item>
+        <Descriptions.Item label="WDA 恢复">
+          {hasInteractionStutter ? `${wdaRecoveryCount} 次` : '-'}
         </Descriptions.Item>
       </Descriptions>
-      <Space direction="vertical" size={6} style={{ width: '100%' }}>
-        <Text strong>动作关联</Text>
-        {monkeyLoading ? (
-          <Alert showIcon type="info" message="正在加载 Monkey 动作数据..." />
-        ) : monkeyReport?.events?.length ? (
-          <Space direction="vertical" size={4}>
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              匹配方式：{hasTimedMonkeyEvents ? '按事件时间戳精确匹配' : '按事件序号近似匹配'}
-            </Text>
-            {maxCpuSample && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                CPU 峰值附近：{cpuPeakEvents.length > 0 ? cpuPeakEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
-              </Text>
-            )}
-            {cpuPeakPageHint && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                CPU 峰值页面线索：{cpuPeakPageHint}
-              </Text>
-            )}
-            {biggestMemoryJump && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                内存阶跃附近：{memoryJumpEvents.length > 0 ? memoryJumpEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
-              </Text>
-            )}
-            {memoryJumpPageHint && (
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                内存阶跃页面线索：{memoryJumpPageHint}
-              </Text>
-            )}
+      {frameStutter?.samples?.length ? (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>帧级卡顿样本</Text>
+          <Space wrap>
+            {frameStutter.samples.slice(0, 6).map((item, index) => (
+              <Tag key={`${item.row || index}-${item.durationMs || 0}`} color={item.severity === 'severe' ? 'red' : 'orange'}>
+                {item.durationMs || '-'}ms{item.timeSeconds ? ` / ${Math.round(item.timeSeconds)}s` : ''}
+              </Tag>
+            ))}
           </Space>
-        ) : (
-          <Alert showIcon type="info" message="未加载到 Monkey 动作数据，暂不能关联动作区间" />
-        )}
-      </Space>
+        </Space>
+      ) : null}
+      {stutter?.samples?.length ? (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>卡顿样本</Text>
+          <Space wrap>
+            {stutter.samples.slice(0, 6).map((item, index) => (
+              <Tag key={`${item.index || index}-${item.actionDurationMs || 0}`} color={Number(item.actionDurationMs || 0) >= Number(stutter.thresholds?.actionSevereMs || 5000) ? 'red' : 'orange'}>
+                #{item.index || '-'} {eventTypeLabel(item.type)} {item.actionDurationMs || '-'}ms
+              </Tag>
+            ))}
+          </Space>
+        </Space>
+      ) : null}
+      {shouldShowMonkeyCorrelation && (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>动作关联</Text>
+          {monkeyLoading ? (
+            <Alert showIcon type="info" message="正在加载 Monkey 动作数据..." />
+          ) : monkeyReport?.events?.length ? (
+            <Space direction="vertical" size={4}>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                匹配方式：{hasTimedMonkeyEvents ? '按事件时间戳精确匹配' : '按事件序号近似匹配'}
+              </Text>
+              {maxCpuSample && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  CPU 峰值附近：{cpuPeakEvents.length > 0 ? cpuPeakEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
+                </Text>
+              )}
+              {cpuPeakPageHint && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  CPU 峰值页面线索：{cpuPeakPageHint}
+                </Text>
+              )}
+              {biggestMemoryJump && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  内存阶跃附近：{memoryJumpEvents.length > 0 ? memoryJumpEvents.map(formatMonkeyEvent).join('、') : '未匹配到动作'}
+                </Text>
+              )}
+              {memoryJumpPageHint && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  内存阶跃页面线索：{memoryJumpPageHint}
+                </Text>
+              )}
+            </Space>
+          ) : (
+            <Alert showIcon type="info" message="未加载到 Monkey 动作数据，暂不能关联动作区间" />
+          )}
+        </Space>
+      )}
     </Space>
   );
 }
@@ -605,20 +1385,98 @@ function PerformanceDiagnostics({
 function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamples }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
   const hasMetric = data.samples.some((sample) => sample.cpu !== null || sample.memoryMB !== null || sample.fps !== null);
+  const validCpuSamples = data.samples.filter((sample) => sample.cpu !== null);
+  const validMemorySamples = data.samples.filter((sample) => sample.memoryMB !== null);
+  const validFpsSamples = data.samples.filter((sample) => sample.fps !== null);
+  const hasCpuSamples = validCpuSamples.length > 0;
+  const hasMemorySamples = validMemorySamples.length > 0;
+  const hasFpsSamples = validFpsSamples.length > 0;
+  const maxCpuSample = validCpuSamples.reduce<typeof validCpuSamples[number] | null>(
+    (max, sample) => (!max || Number(sample.cpu) > Number(max.cpu) ? sample : max),
+    null
+  );
+  const maxMemorySample = validMemorySamples.reduce<typeof validMemorySamples[number] | null>(
+    (max, sample) => (!max || Number(sample.memoryMB) > Number(max.memoryMB) ? sample : max),
+    null
+  );
+  const minFpsSample = validFpsSamples.reduce<typeof validFpsSamples[number] | null>(
+    (min, sample) => (!min || Number(sample.fps) < Number(min.fps) ? sample : min),
+    null
+  );
 
   useEffect(() => {
     if (!chartRef.current || !hasMetric) return;
     const chart = echarts.init(chartRef.current);
-    const labels = data.samples.map((sample) => `#${sample.index}`);
+    const labels = data.samples.map((sample) => `${Math.round(sample.timeSeconds || 0)}s`);
+    const sampleLabel = (sample?: JenkinsQualityPerformanceSamples['samples'][number] | null) => {
+      if (!sample) return '';
+      const position = data.samples.findIndex((item) => item.index === sample.index);
+      return labels[position >= 0 ? position : 0] || '';
+    };
+    const markPointStyle = {
+      symbolSize: 48,
+      label: { fontSize: 10 },
+    };
+    const legendItems = [
+      hasCpuSamples ? 'CPU %' : '',
+      hasMemorySamples ? '内存 MB' : '',
+      hasFpsSamples ? 'FPS' : '',
+    ].filter(Boolean);
+    const series: echarts.EChartsOption['series'] = [
+      hasCpuSamples ? {
+        name: 'CPU %',
+        type: 'line',
+        showSymbol: false,
+        connectNulls: true,
+        data: data.samples.map((sample) => sample.cpu),
+        markPoint: maxCpuSample ? {
+          ...markPointStyle,
+          data: [{ name: 'CPU 峰值', coord: [sampleLabel(maxCpuSample), Number(maxCpuSample.cpu)], value: Number(maxCpuSample.cpu) }],
+        } : undefined,
+      } : null,
+      hasMemorySamples ? {
+        name: '内存 MB',
+        type: 'line',
+        showSymbol: false,
+        connectNulls: true,
+        yAxisIndex: 1,
+        data: data.samples.map((sample) => sample.memoryMB),
+        markPoint: maxMemorySample ? {
+          ...markPointStyle,
+          data: [{ name: '内存峰值', coord: [sampleLabel(maxMemorySample), Number(maxMemorySample.memoryMB)], value: Number(maxMemorySample.memoryMB) }],
+        } : undefined,
+      } : null,
+      hasFpsSamples ? {
+        name: 'FPS',
+        type: 'line',
+        showSymbol: false,
+        connectNulls: true,
+        data: data.samples.map((sample) => sample.fps),
+        markPoint: minFpsSample ? {
+          ...markPointStyle,
+          data: [{ name: 'FPS 低点', coord: [sampleLabel(minFpsSample), Number(minFpsSample.fps)], value: Number(minFpsSample.fps) }],
+        } : undefined,
+      } : null,
+    ].filter(Boolean) as echarts.EChartsOption['series'];
     const option: echarts.EChartsOption = {
       color: ['#1677ff', '#52c41a', '#fa8c16'],
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (value) => (value === null || value === undefined ? '-' : String(value)),
+        axisPointer: { type: 'cross' },
+        formatter: (params: any) => {
+          const list = Array.isArray(params) ? params : [params];
+          const first = list[0];
+          const sample = data.samples[first?.dataIndex || 0];
+          const lines = [
+            `时间：${formatSeconds(Math.round(sample?.timeSeconds || 0))} / 样本 #${sample?.index ?? '-'}`,
+            ...list.map((item: any) => `${item.marker || ''}${item.seriesName}: ${item.value === null || item.value === undefined ? '-' : item.value}`),
+          ];
+          return lines.join('<br/>');
+        },
       },
       legend: {
         top: 0,
-        data: ['CPU %', '内存 MB', 'FPS'],
+        data: legendItems,
       },
       grid: {
         top: 48,
@@ -630,6 +1488,9 @@ function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamp
         type: 'category',
         boundaryGap: false,
         data: labels,
+        axisLabel: {
+          formatter: (value: string) => value,
+        },
       },
       yAxis: [
         {
@@ -650,30 +1511,7 @@ function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamp
         { type: 'inside' },
         { type: 'slider', height: 18, bottom: 8 },
       ],
-      series: [
-        {
-          name: 'CPU %',
-          type: 'line',
-          showSymbol: false,
-          connectNulls: true,
-          data: data.samples.map((sample) => sample.cpu),
-        },
-        {
-          name: '内存 MB',
-          type: 'line',
-          showSymbol: false,
-          connectNulls: true,
-          yAxisIndex: 1,
-          data: data.samples.map((sample) => sample.memoryMB),
-        },
-        {
-          name: 'FPS',
-          type: 'line',
-          showSymbol: false,
-          connectNulls: true,
-          data: data.samples.map((sample) => sample.fps),
-        },
-      ],
+      series,
     };
     chart.setOption(option);
     const resize = () => chart.resize();
@@ -682,7 +1520,7 @@ function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamp
       window.removeEventListener('resize', resize);
       chart.dispose();
     };
-  }, [data, hasMetric]);
+  }, [data, hasMetric, hasCpuSamples, hasMemorySamples, hasFpsSamples, maxCpuSample, maxMemorySample, minFpsSample]);
 
   if (!data.sampleCount || !hasMetric) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />;
@@ -692,11 +1530,17 @@ function PerformanceSamplesChart({ data }: { data: JenkinsQualityPerformanceSamp
     <Space direction="vertical" style={{ width: '100%' }} size={12}>
       <Space wrap>
         <Tag>采样 {data.sampleCount} 条</Tag>
+        {data.samples.length > 0 && <Tag>覆盖 {formatSeconds(Math.round(Math.max(...data.samples.map((sample) => sample.timeSeconds || 0))))}</Tag>}
         {data.summary.cpu.avg !== null && <Tag>CPU 平均 {data.summary.cpu.avg}% / 峰值 {data.summary.cpu.max ?? '-'}%</Tag>}
         {data.summary.memoryMB.avg !== null && <Tag>内存平均 {data.summary.memoryMB.avg}MB / 峰值 {data.summary.memoryMB.max ?? '-'}MB</Tag>}
         {data.summary.fps.avg !== null && <Tag>FPS 平均 {data.summary.fps.avg} / 最低 {data.summary.fps.min ?? '-'}</Tag>}
+        {data.summary.fps.avg === null && <Tag color="gold">FPS 未采集</Tag>}
+        <Tag color="gold">帧级卡顿未采集</Tag>
         {(data.truncated || data.sourceTruncated) && <Tag color="orange">已截断</Tag>}
       </Space>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        横轴为采样时间，图中标记已采集指标的峰值或低点；可拖动底部滑块放大某段 Monkey 执行过程。
+      </Text>
       <div ref={chartRef} style={{ width: '100%', height: 360 }} />
     </Space>
   );
@@ -1052,7 +1896,9 @@ function CrashAnalysisSummary({
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有异常分析结果" />;
   }
   const logSamples = analysis.samples || [];
+  const hangStackAnalysis = analysis.hangStackAnalysis || [];
   const crashFileName = (file?: string) => (file || '').split('/').filter(Boolean).at(-1) || '';
+  const autoHangAnalysisByFile = new Map(hangStackAnalysis.map((item) => [crashFileName(item.file), item]));
   const crashFileUrl = (file?: string) => {
     const fileName = crashFileName(file);
     if (!fileName || !crashReportsUrl) return '';
@@ -1139,6 +1985,85 @@ function CrashAnalysisSummary({
       }));
     }
   };
+  const renderHangStackAnalysis = (hang: NonNullable<typeof hangStackAnalysis[number]>) => (
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <Text>{hang.mainThread?.summary || hang.reason || '检测到 Watchdog 卡顿。'}</Text>
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: 'main-thread',
+            label: `主线程堆栈 ${hang.mainThread?.queue || hang.mainThread?.name || ''}`,
+            children: (
+              <pre
+                style={{
+                  margin: 0,
+                  maxHeight: 320,
+                  overflow: 'auto',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  background: '#fafafa',
+                  padding: 12,
+                  border: '1px solid #f0f0f0',
+                  borderRadius: 4,
+                }}
+              >
+                {(hang.mainThread?.frames || []).slice(0, 24).map((frame, frameIndex) => (
+                  `${frameIndex.toString().padStart(2, ' ')} ${frame.image || ''} ${frame.symbol || ''}`
+                )).join('\n')}
+              </pre>
+            ),
+          },
+          {
+            key: 'suspicious',
+            label: `可疑同步等待线程 ${hang.suspiciousThreads?.length || 0}`,
+            children: (hang.suspiciousThreads?.length || 0) > 0 ? (
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {(hang.suspiciousThreads || []).map((thread) => (
+                  <pre
+                    key={`${thread.index}-${thread.queue || thread.name || 'thread'}`}
+                    style={{
+                      margin: 0,
+                      maxHeight: 220,
+                      overflow: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      background: '#fafafa',
+                      padding: 12,
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 4,
+                    }}
+                  >
+                    {[
+                      `Thread ${thread.index ?? '-'} ${thread.queue || thread.name || ''}`,
+                      ...(thread.frames || []).map((frame, frameIndex) => `${frameIndex.toString().padStart(2, ' ')} ${frame.image || ''} ${frame.symbol || ''}`),
+                    ].join('\n')}
+                  </pre>
+                ))}
+              </Space>
+            ) : (
+              <Text type="secondary">未发现明显同步等待线程。</Text>
+            ),
+          },
+          {
+            key: 'suggestions',
+            label: '排查建议',
+            children: (
+              <Space direction="vertical" size={4}>
+                {(hang.suggestions || []).map((item) => (
+                  <Text key={item} type="secondary">{item}</Text>
+                ))}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Space>
+  );
   return (
     <Space direction="vertical" size={10} style={{ width: '100%' }}>
       <Space wrap>
@@ -1157,76 +2082,86 @@ function CrashAnalysisSummary({
           description={(
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               {crashFiles.slice(0, 5).map((file) => (
-                <Space key={file} direction="vertical" size={6} style={{ width: '100%' }}>
-                  <Space size={8} wrap>
-                    <Text type="secondary" style={{ fontSize: 12 }}>{file}</Text>
-                    {crashFileUrl(file) && (
-                      <Button size="small" type="link" onClick={() => downloadCrashIps(file)}>
-                        下载 ips
-                      </Button>
-                    )}
-                    <Button
-                      size="small"
-                      type="link"
-                      disabled={!crashFileUrl(file)}
-                      loading={symbolicationByFile[file]?.loading}
-                      onClick={() => handleSymbolicateCrash(file)}
-                    >
-                      符号化解析
-                    </Button>
-                  </Space>
-                  {symbolicationByFile[file]?.error && (
-                    <Alert showIcon type="warning" message={symbolicationByFile[file]?.error} />
-                  )}
-                  {symbolicationByFile[file]?.result && (
-                    <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                      <Space wrap>
-                        {symbolicationByFile[file]?.metadata?.appName && <Tag>{symbolicationByFile[file]?.metadata?.appName}</Tag>}
-                        {symbolicationByFile[file]?.metadata?.version && <Tag color="purple">版本 {symbolicationByFile[file]?.metadata?.version}</Tag>}
-                        {symbolicationByFile[file]?.metadata?.bundleId && <Tag>{symbolicationByFile[file]?.metadata?.bundleId}</Tag>}
-                        <Tag color={symbolicationByFile[file]?.matchType === 'uuid' ? 'green' : 'blue'}>
-                          dSYM {symbolicationByFile[file]?.usedUUIDs?.length || 0} 个
-                        </Tag>
-                        {symbolicationByFile[file]?.result?.fromHistory && <Tag color="cyan">历史结果</Tag>}
-                        {symbolicationByFile[file]?.result?.fromCache && <Tag color="cyan">缓存结果</Tag>}
+                (() => {
+                  const autoHangAnalysis = autoHangAnalysisByFile.get(file);
+                  return (
+                    <Space key={file} direction="vertical" size={6} style={{ width: '100%' }}>
+                      <Space size={8} wrap>
+                        <Text type="secondary" style={{ fontSize: 12 }}>{file}</Text>
+                        {crashFileUrl(file) && (
+                          <Button size="small" type="link" onClick={() => downloadCrashIps(file)}>
+                            下载 ips
+                          </Button>
+                        )}
+                        {autoHangAnalysis ? (
+                          <Tag color="green">已自动解析</Tag>
+                        ) : (
+                          <Button
+                            size="small"
+                            type="link"
+                            disabled={!crashFileUrl(file)}
+                            loading={symbolicationByFile[file]?.loading}
+                            onClick={() => handleSymbolicateCrash(file)}
+                          >
+                            符号化解析
+                          </Button>
+                        )}
                       </Space>
-                      {symbolicationByFile[file]?.result?.warning && (
-                        <Alert showIcon type="warning" message={symbolicationByFile[file]?.result?.warning} />
+                      {autoHangAnalysis && renderHangStackAnalysis(autoHangAnalysis)}
+                      {!autoHangAnalysis && symbolicationByFile[file]?.error && (
+                        <Alert showIcon type="warning" message={symbolicationByFile[file]?.error} />
                       )}
-                      <SymbolicatedCrashAnalysisDigest
-                        analysis={symbolicationByFile[file]?.result?.aiAnalysis || symbolicationByFile[file]?.result?.analysis}
-                      />
-                      <Collapse
-                        size="small"
-                        items={[
-                          {
-                            key: 'symbolicated-log',
-                            label: '查看符号化日志',
-                            children: (
-                              <pre
-                                style={{
-                                  margin: 0,
-                                  maxHeight: 360,
-                                  overflow: 'auto',
-                                  whiteSpace: 'pre-wrap',
-                                  wordBreak: 'break-word',
-                                  fontSize: 12,
-                                  lineHeight: 1.5,
-                                  background: '#fafafa',
-                                  padding: 12,
-                                  border: '1px solid #f0f0f0',
-                                  borderRadius: 4,
-                                }}
-                              >
-                                {tailLines(symbolicationByFile[file]?.result?.symbolicatedLog || '', 180)}
-                              </pre>
-                            ),
-                          },
-                        ]}
-                      />
+                      {!autoHangAnalysis && symbolicationByFile[file]?.result && (
+                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                          <Space wrap>
+                            {symbolicationByFile[file]?.metadata?.appName && <Tag>{symbolicationByFile[file]?.metadata?.appName}</Tag>}
+                            {symbolicationByFile[file]?.metadata?.version && <Tag color="purple">版本 {symbolicationByFile[file]?.metadata?.version}</Tag>}
+                            {symbolicationByFile[file]?.metadata?.bundleId && <Tag>{symbolicationByFile[file]?.metadata?.bundleId}</Tag>}
+                            <Tag color={symbolicationByFile[file]?.matchType === 'uuid' ? 'green' : 'blue'}>
+                              dSYM {symbolicationByFile[file]?.usedUUIDs?.length || 0} 个
+                            </Tag>
+                            {symbolicationByFile[file]?.result?.fromHistory && <Tag color="cyan">历史结果</Tag>}
+                            {symbolicationByFile[file]?.result?.fromCache && <Tag color="cyan">缓存结果</Tag>}
+                          </Space>
+                          {symbolicationByFile[file]?.result?.warning && (
+                            <Alert showIcon type="warning" message={symbolicationByFile[file]?.result?.warning} />
+                          )}
+                          <SymbolicatedCrashAnalysisDigest
+                            analysis={symbolicationByFile[file]?.result?.aiAnalysis || symbolicationByFile[file]?.result?.analysis}
+                          />
+                          <Collapse
+                            size="small"
+                            items={[
+                              {
+                                key: 'symbolicated-log',
+                                label: '查看符号化日志',
+                                children: (
+                                  <pre
+                                    style={{
+                                      margin: 0,
+                                      maxHeight: 360,
+                                      overflow: 'auto',
+                                      whiteSpace: 'pre-wrap',
+                                      wordBreak: 'break-word',
+                                      fontSize: 12,
+                                      lineHeight: 1.5,
+                                      background: '#fafafa',
+                                      padding: 12,
+                                      border: '1px solid #f0f0f0',
+                                      borderRadius: 4,
+                                    }}
+                                  >
+                                    {tailLines(symbolicationByFile[file]?.result?.symbolicatedLog || '', 180)}
+                                  </pre>
+                                ),
+                              },
+                            ]}
+                          />
+                        </Space>
+                      )}
                     </Space>
-                  )}
-                </Space>
+                  );
+                })()
               ))}
             </Space>
           )}
@@ -1256,6 +2191,7 @@ export default function CICDPage() {
   const [publishing, setPublishing] = useState(false);
   const [stoppingBuild, setStoppingBuild] = useState<number | null>(null);
   const [stoppingQualityBuild, setStoppingQualityBuild] = useState<number | null>(null);
+  const [cleaningQualityWda, setCleaningQualityWda] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [qualityError, setQualityError] = useState('');
   const [qualityData, setQualityData] = useState<JenkinsQualityListResult | null>(null);
@@ -1291,8 +2227,9 @@ export default function CICDPage() {
   const [qualityPerformanceLoading, setQualityPerformanceLoading] = useState(false);
   const [qualityMonkeyReportDigest, setQualityMonkeyReportDigest] = useState<JenkinsQualityArtifactPreview | null>(null);
   const [qualityMonkeyReportDigestLoading, setQualityMonkeyReportDigestLoading] = useState(false);
-  const [qualitySuites, setQualitySuites] = useState<JenkinsQualitySuite[]>(['monkey']);
+  const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('monkey');
   const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(14400);
+  const [qualityStutterScenario, setQualityStutterScenario] = useState('community');
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [qualityDeviceUdids, setQualityDeviceUdids] = useState<string[]>([]);
   const [qualitySkipInstall, setQualitySkipInstall] = useState(false);
@@ -1379,6 +2316,25 @@ export default function CICDPage() {
     ]);
     return qualityResult;
   }
+
+  const openQualityReport = async (record: JenkinsQualityBuild) => {
+    setQualityReportBuild(record);
+    setQualityArtifactPreview(null);
+    setQualityLogDigest(null);
+    setQualityPerformanceReportOpen(false);
+    setQualityPerformanceSamples(null);
+
+    const nextData = await loadQualityBuilds({ silent: true });
+    const latestBuild = nextData?.builds?.find((build) => build.number === record.number);
+    const displayBuild = latestBuild || record;
+    const reportKind = getQualityReportKind(displayBuild);
+    setQualityReportBuild(displayBuild);
+    if (reportKind === 'stutter') {
+      await openQualityPerformanceReport(displayBuild.qualitySummary?.artifacts?.performanceSamplesUrl);
+    } else {
+      setActiveQualitySummaryView('log');
+    }
+  };
 
   const refreshQualityBuildsUntilUpdated = async (previousLatest?: number | string) => {
     const delays = [0, 1000, 1500, 2000, 3000, 4000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000, 5000];
@@ -1682,16 +2638,33 @@ export default function CICDPage() {
     }
   };
 
-  const stopQualityBuild = async (buildNumber: number) => {
+  const stopQualityBuild = async (buildNumber: number, deviceUdid?: string) => {
     setStoppingQualityBuild(buildNumber);
     try {
-      await jenkinsApi.stopQualityBuild(buildNumber);
+      await jenkinsApi.stopQualityBuild(buildNumber, deviceUdid ? { deviceUdid } : undefined);
       message.success(`已停止质检任务 #${buildNumber}`);
       await refreshQualitySection({ silent: true });
     } catch (err: any) {
       message.error(err?.error || err?.message || '停止质检任务失败');
     } finally {
       setStoppingQualityBuild(null);
+    }
+  };
+
+  const cleanupQualityWda = async (deviceUdid?: string) => {
+    const cleanupKey = deviceUdid || '__all__';
+    setCleaningQualityWda(cleanupKey);
+    try {
+      const response = await jenkinsApi.cleanupQualityWda(deviceUdid ? { deviceUdid } : undefined);
+      const terminated = response.data?.terminatedDeviceProcesses || 0;
+      message.success(deviceUdid
+        ? `已清理设备 WDA：${deviceUdid.slice(0, 12)}...${terminated ? `，终止设备进程 ${terminated} 个` : ''}`
+        : `已清理本机 WDA/iproxy/xctrace${terminated ? `，终止设备进程 ${terminated} 个` : ''}`);
+      await refreshQualitySection({ silent: true });
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '清理 WDA 失败');
+    } finally {
+      setCleaningQualityWda(null);
     }
   };
 
@@ -1777,14 +2750,14 @@ export default function CICDPage() {
 
   const openQualityModal = (build?: JenkinsBuild) => {
     const fallbackBuild = build || data?.builds?.find((item) => item.result === 'SUCCESS') || data?.builds?.[0] || null;
-    const nextSuites: JenkinsQualitySuite[] = ['monkey'];
     const nextPool = sonicDevicePools.find((pool) => (pool.stats?.idle || 0) > 0)?.value || sonicDevicePools[0]?.value || 'ios-default';
     setQualitySubmitMessage('');
     setQualityBuild(fallbackBuild);
-    setQualitySuites(nextSuites);
+    setQualitySuite('monkey');
     setQualityMonkeyDurationSeconds(14400);
+    setQualityStutterScenario('community');
     setQualityDevicePool(nextPool);
-    setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool, nextSuites));
+    setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool));
     setQualitySkipInstall(shouldUseInstalledProductionApp(fallbackBuild));
     setQualityModalOpen(true);
   };
@@ -1792,10 +2765,6 @@ export default function CICDPage() {
   const triggerQuality = async () => {
     if (!qualityBuild) {
       message.warning('请选择需要质检的构建');
-      return;
-    }
-    if (qualitySuites.length === 0) {
-      message.warning('请至少选择一个测试套件');
       return;
     }
     if (!selectedQualityPool || availableQualityDevices.length === 0) {
@@ -1806,31 +2775,29 @@ export default function CICDPage() {
       message.warning('请至少选择一台空闲设备');
       return;
     }
-    if (qualitySuites.length > qualityDeviceUdids.length) {
-      message.warning(`已选择 ${qualitySuites.length} 个测试套件，请至少选择 ${qualitySuites.length} 台空闲设备`);
-      return;
-    }
     setQualitySubmitting(true);
     setQualitySubmitMessage('正在提交 Jenkins 质检任务...');
     const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
     try {
-      await Promise.all(qualitySuites.map((suite, index) => jenkinsApi.triggerQuality({
-          buildNumber: qualityBuild.number,
-          branch: qualityBuild.branchName,
-          commitHash: qualityBuild.commitHash,
-          appVersion: qualityBuild.appVersion,
-          packageUrl: qualityBuild.installPackageUrl || qualityBuild.packageUrl,
-          xcarchivePath: qualityBuild.xcarchivePath,
-          archiveUrl: qualityBuild.archiveUrl,
-          testSuite: suite,
-          devicePool: qualityDevicePool,
-          deviceUdid: qualityDeviceUdids[index],
-          monkeyDurationSeconds: suite === 'monkey' ? qualityMonkeyDurationSeconds : undefined,
-          skipInstall: qualitySkipInstall,
-          appBundleId: qualitySkipInstall ? PRODUCTION_BUNDLE_ID : undefined,
-        })));
+      await jenkinsApi.triggerQuality({
+        buildNumber: qualityBuild.number,
+        branch: qualityBuild.branchName,
+        commitHash: qualityBuild.commitHash,
+        appVersion: qualityBuild.appVersion,
+        packageUrl: qualityBuild.installPackageUrl || qualityBuild.packageUrl,
+        xcarchivePath: qualityBuild.xcarchivePath,
+        archiveUrl: qualityBuild.archiveUrl,
+        publishChannel: qualityBuild.publishChannel,
+        testSuite: qualitySuite,
+        devicePool: qualityDevicePool,
+        deviceUdid: qualityDeviceUdids[0],
+        monkeyDurationSeconds: qualitySuite === 'monkey' || qualitySuite === 'stutter' ? qualityMonkeyDurationSeconds : undefined,
+        stutterScenario: qualitySuite === 'stutter' ? qualityStutterScenario : undefined,
+        skipInstall: qualitySkipInstall,
+        appBundleId: qualitySkipInstall ? PRODUCTION_BUNDLE_ID : undefined,
+      });
       setQualitySubmitMessage('已提交，正在等待 Jenkins 创建任务并刷新列表...');
-      message.success(`已触发 ${qualitySuites.length} 个自动质检任务：#${qualityBuild.number}`);
+      message.success(`已触发自动质检任务：#${qualityBuild.number}`);
       setQualityModalOpen(false);
       setQualitySubmitMessage('');
       void refreshQualitySection();
@@ -1919,15 +2886,35 @@ export default function CICDPage() {
   }, [qualityData, qualityReportBuild]);
 
   useEffect(() => {
+    if (!qualityReportBuild || hasQualityReportArtifact(qualityReportBuild)) {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      loadQualityBuilds({ silent: true });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [
+    qualityReportBuild?.number,
+    qualityReportBuild?.building,
+    qualityReportBuild?.result,
+    qualityReportBuild?.qualitySummary?.artifacts,
+  ]);
+
+  useEffect(() => {
     if (!qualityReportBuild) {
       setQualityLogDigest(null);
       setQualityMonkeyReportDigest(null);
       return;
     }
     loadQualityLogDigest(qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl);
-    loadQualityMonkeyReportDigest(qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
+    if (getQualityReportKind(qualityReportBuild) === 'monkey') {
+      loadQualityMonkeyReportDigest(qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
+    } else {
+      setQualityMonkeyReportDigest(null);
+    }
   }, [
     qualityReportBuild?.number,
+    qualityReportBuild?.qualitySummary?.testSuite,
     qualityReportBuild?.qualitySummary?.artifacts?.qualityLogUrl,
     qualityReportBuild?.qualitySummary?.artifacts?.monkeyReportUrl,
   ]);
@@ -1961,11 +2948,11 @@ export default function CICDPage() {
     [selectedQualityPool],
   );
 
-  const defaultQualityDeviceUdids = (poolValue: string, suites = qualitySuites) => {
+  const defaultQualityDeviceUdids = (poolValue: string) => {
     const pool = sonicDevicePools.find((item) => item.value === poolValue);
     return (pool?.devices || [])
       .filter((device) => device.status === 'idle' && device.udid)
-      .slice(0, suites.length)
+      .slice(0, 1)
       .map((device) => device.udid);
   };
 
@@ -2020,13 +3007,13 @@ export default function CICDPage() {
     setQualityDeviceUdids((current) => {
       const availableUdids = availableQualityDevices.map((device) => device.udid);
       const next = current.filter((udid) => availableUdids.includes(udid));
-      if (next.length > 0 || qualitySuites.length === 0) return next;
-      return availableUdids.slice(0, qualitySuites.length);
+      if (next.length > 0) return next;
+      return availableUdids.slice(0, 1);
     });
-  }, [qualityModalOpen, availableQualityDevices, qualitySuites.length]);
+  }, [qualityModalOpen, availableQualityDevices]);
 
   const publishBranchOptions = useMemo(
-    () => branches.map((branch) => ({ value: branch, label: branch })),
+    () => [...branches].sort(compareBranchOptions).map((branch) => ({ value: branch, label: branch })),
     [branches],
   );
   const releaseBaseBranchOptions = useMemo(() => {
@@ -2041,8 +3028,13 @@ export default function CICDPage() {
   }, [releaseBranchModalOpen, releaseBaseBranchOptions, releaseBranchBase]);
   const pageTitle = activeSection === 'quality' ? '自动质检' : '发布管理';
   const pageDescription = activeSection === 'quality'
-    ? '基于打包机本机 USB 真机执行 iOS 自动化质检，覆盖安装、启动、用例、截图和报告采集。'
+    ? '构建包由 Jenkins 产出，质检任务由独立 Jenkins Job 编排，基于打包机 USB 真机覆盖安装、启动、用例、截图和报告采集。'
     : 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。';
+  const qualityReportKind = getQualityReportKind(qualityReportBuild);
+  const isMonkeyQualityReport = qualityReportKind === 'monkey';
+  const isStutterQualityReport = qualityReportKind === 'stutter';
+  const qualityReportTitle = getQualityReportTitle(qualityReportBuild);
+  const qualityPerformanceButtonLabel = isStutterQualityReport ? '卡顿报告' : '性能报告';
   return (
     <div>
       <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
@@ -2078,6 +3070,18 @@ export default function CICDPage() {
             <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
               设备池
             </Button>
+            <Popconfirm
+              title="清理 WDA？"
+              description="会停止本机质检脚本、WDA、iproxy、xctrace，正在运行的质检会被打断。"
+              okText="清理"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => cleanupQualityWda()}
+            >
+              <Button danger icon={<DeleteOutlined />} loading={cleaningQualityWda === '__all__'}>
+                清理 WDA
+              </Button>
+            </Popconfirm>
             <Button icon={<ReloadOutlined />} onClick={() => refreshQualitySection()} loading={qualityLoading}>
               刷新
             </Button>
@@ -2167,7 +3171,7 @@ export default function CICDPage() {
               dataIndex: 'publishChannel',
               key: 'publishChannel',
               width: 120,
-              render: (value?: string) => value ? <Tag color="blue">{value}</Tag> : <Text type="secondary">-</Text>,
+              render: (value?: string) => value ? <Tag color="blue">{publishChannelLabel(value)}</Tag> : <Text type="secondary">-</Text>,
             },
             {
               title: '分支名',
@@ -2309,13 +3313,6 @@ export default function CICDPage() {
                     style={{ marginBottom: 16 }}
                   />
                 )}
-                <Alert
-                  type="info"
-                  showIcon
-                  message="本机真机自动质检"
-                  description="构建包由 Jenkins 产出，质检任务由独立 Jenkins Job 编排，底层优先使用打包机 USB 连接的 iPhone 执行安装、启动、用例、截图和报告采集。Sonic 可作为后续扩展入口，不再作为平台启动依赖。"
-                  style={{ marginBottom: 16 }}
-                />
                 <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
                   {[
                     { label: '质检任务数', value: qualityData?.stats.total || 0, color: '#1677ff' },
@@ -2444,6 +3441,14 @@ export default function CICDPage() {
                         ) : <Text type="secondary">-</Text>,
                       },
                       {
+                        title: '发布渠道',
+                        key: 'publishChannel',
+                        width: 110,
+                        render: (_, record) => record.qualitySummary?.publishChannel ? (
+                          <Tag>{publishChannelLabel(record.qualitySummary.publishChannel)}</Tag>
+                        ) : <Text type="secondary">-</Text>,
+                      },
+                      {
                         title: 'APP版本',
                         key: 'appVersion',
                         width: 110,
@@ -2470,8 +3475,25 @@ export default function CICDPage() {
                       {
                         title: '状态',
                         key: 'result',
-                        width: 120,
-                        render: (_, record) => qualityResultTag(record),
+                        width: 140,
+                        render: (_, record) => {
+                          const phaseLabel = qualityPhaseLabel(record);
+                          return (
+                            <Space direction="vertical" size={2}>
+                              {qualityResultTag(record)}
+                              {record.qualitySummary?.testSuite === 'stutter' && record.qualitySummary?.stutterScenario && (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  场景：{stutterScenarioLabel(record.qualitySummary.stutterScenario)}
+                                </Text>
+                              )}
+                              {phaseLabel && (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                  {isQualityBuildEffectivelyRunning(record) ? '当前阶段' : '阶段'}：{phaseLabel}
+                                </Text>
+                              )}
+                            </Space>
+                          );
+                        },
                       },
                       {
                         title: '进度',
@@ -2490,7 +3512,7 @@ export default function CICDPage() {
                               <Progress percent={percent} size="small" status={progressStatus(record)} />
                               {progress?.message && (
                                 <Text type="secondary" style={{ fontSize: 12 }}>
-                                  {progress.message}
+                                  {qualityPhaseLabel(record) ? `${qualityPhaseLabel(record)}：` : ''}{progress.message}
                                 </Text>
                               )}
                               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -2519,7 +3541,7 @@ export default function CICDPage() {
                         title: '耗时',
                         key: 'duration',
                         width: 120,
-                        render: (_, record) => formatDuration(record.duration, record.building),
+                        render: (_, record) => formatQualityDuration(record),
                       },
                       {
                         title: '操作',
@@ -2531,12 +3553,7 @@ export default function CICDPage() {
                               size="small"
                               icon={<FileTextOutlined />}
                               onClick={() => {
-                                setQualityReportBuild(record);
-                                setActiveQualitySummaryView('log');
-                                setQualityArtifactPreview(null);
-                                setQualityLogDigest(null);
-                                setQualityPerformanceReportOpen(false);
-                                setQualityPerformanceSamples(null);
+                                void openQualityReport(record);
                               }}
                             >
                               报告
@@ -2548,7 +3565,7 @@ export default function CICDPage() {
                                 okText="停止"
                                 cancelText="关闭"
                                 okButtonProps={{ danger: true }}
-                                onConfirm={() => stopQualityBuild(record.number)}
+                                onConfirm={() => stopQualityBuild(record.number, record.qualitySummary?.deviceUdid)}
                               >
                                 <Button
                                   size="small"
@@ -2557,6 +3574,25 @@ export default function CICDPage() {
                                   loading={stoppingQualityBuild === record.number}
                                 >
                                   停止
+                                </Button>
+                              </Popconfirm>
+                            )}
+                            {record.qualitySummary?.deviceUdid && !isQualityBuildEffectivelyRunning(record) && (
+                              <Popconfirm
+                                title="清理该设备 WDA？"
+                                description={`将清理设备 ${record.qualitySummary.deviceUdid.slice(0, 12)}... 的 WDA/iproxy 残留。`}
+                                okText="清理"
+                                cancelText="取消"
+                                okButtonProps={{ danger: true }}
+                                onConfirm={() => cleanupQualityWda(record.qualitySummary?.deviceUdid)}
+                              >
+                                <Button
+                                  size="small"
+                                  danger
+                                  icon={<DeleteOutlined />}
+                                  loading={cleaningQualityWda === record.qualitySummary.deviceUdid}
+                                >
+                                  清理 WDA
                                 </Button>
                               </Popconfirm>
                             )}
@@ -2737,12 +3773,6 @@ export default function CICDPage() {
               description="Jenkins 创建构建需要一点时间，任务出现在列表后弹窗会自动关闭。"
             />
           )}
-          <Alert
-            type="info"
-            showIcon
-            message="基于本机 USB 真机执行 iOS 自动化质检"
-            description="平台会把构建信息传给 Jenkins 质检 Job，由 Jenkins 在打包机上选择设备池安装 IPA 并执行自动化测试。"
-          />
           <div>
             <Text strong>质检构建</Text>
             <Select
@@ -2752,7 +3782,12 @@ export default function CICDPage() {
               placeholder="请选择构建"
               options={(data?.builds || []).map((build) => ({
                 value: build.number,
-                label: `#${build.number} ${build.branchName || '-'} ${build.appVersion || ''}`,
+                label: [
+                  `#${build.number}`,
+                  publishChannelLabel(build.publishChannel) || '未知渠道',
+                  build.branchName || '-',
+                  build.appVersion || '',
+                ].filter(Boolean).join(' '),
               }))}
               onChange={(value) => {
                 const nextBuild = (data?.builds || []).find((build) => build.number === value) || null;
@@ -2761,40 +3796,41 @@ export default function CICDPage() {
               }}
             />
           </div>
-          {qualityBuild && (
-            <Space wrap>
-              <Tag color="blue">构建 #{qualityBuild.number}</Tag>
-              {qualityBuild.publishChannel && <Tag>{qualityBuild.publishChannel}</Tag>}
-              {qualityBuild.branchName && <Tag>分支 {qualityBuild.branchName}</Tag>}
-              {qualityBuild.commitHash && <Tag color="gold">commit {qualityBuild.commitHash.slice(0, 12)}</Tag>}
-              {qualityBuild.appVersion && <Tag color="purple">APP {qualityBuild.appVersion}</Tag>}
-            </Space>
-          )}
           <div>
             <Text strong>测试套件</Text>
-            <Checkbox.Group
-              options={QUALITY_SUITE_OPTIONS}
-              value={qualitySuites}
+            <Radio.Group
+              value={qualitySuite}
               disabled={qualitySubmitting}
-              onChange={(values) => {
-                const nextSuites = values as JenkinsQualitySuite[];
-                setQualitySuites(nextSuites);
-                setQualityDeviceUdids((current) => {
-                  const stillAvailable = current.filter((udid) => availableQualityDevices.some((device) => device.udid === udid));
-                  if (stillAvailable.length >= nextSuites.length) return stillAvailable.slice(0, nextSuites.length);
-                  const additions = availableQualityDevices
-                    .map((device) => device.udid)
-                    .filter((udid) => !stillAvailable.includes(udid))
-                    .slice(0, nextSuites.length - stillAvailable.length);
-                  return [...stillAvailable, ...additions];
-                });
-              }}
-              style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}
-            />
+              onChange={(event) => setQualitySuite(event.target.value)}
+              style={{ display: 'block', marginTop: 8 }}
+            >
+              <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                {QUALITY_SUITE_GROUPS.map((group) => (
+                  <div
+                    key={group.title}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '132px 1fr',
+                      columnGap: 8,
+                      alignItems: 'start',
+                    }}
+                  >
+                    <Text type="secondary">{group.title}</Text>
+                    <Space wrap size={[16, 8]} align="center">
+                      {group.options.map((option) => (
+                        <Radio key={option.value} value={option.value}>
+                          {option.label}
+                        </Radio>
+                      ))}
+                    </Space>
+                  </div>
+                ))}
+              </Space>
+            </Radio.Group>
           </div>
-          {qualitySuites.includes('monkey') && (
+          {(qualitySuite === 'monkey' || qualitySuite === 'stutter') && (
             <div>
-              <Text strong>Monkey 执行时长</Text>
+              <Text strong>{qualitySuite === 'stutter' ? '卡顿检测时长' : 'Monkey 执行时长'}</Text>
               <Radio.Group
                 optionType="button"
                 buttonStyle="solid"
@@ -2802,6 +3838,20 @@ export default function CICDPage() {
                 value={qualityMonkeyDurationSeconds}
                 disabled={qualitySubmitting}
                 onChange={(event) => setQualityMonkeyDurationSeconds(event.target.value)}
+                style={{ display: 'block', marginTop: 8 }}
+              />
+            </div>
+          )}
+          {qualitySuite === 'stutter' && (
+            <div>
+              <Text strong>卡顿检测场景</Text>
+              <Radio.Group
+                optionType="button"
+                buttonStyle="solid"
+                options={STUTTER_SCENARIO_OPTIONS}
+                value={qualityStutterScenario}
+                disabled={qualitySubmitting}
+                onChange={(event) => setQualityStutterScenario(event.target.value)}
                 style={{ display: 'block', marginTop: 8 }}
               />
             </div>
@@ -2900,13 +3950,21 @@ export default function CICDPage() {
                   {qualityReportBuild.qualitySummary?.sourceBuildNumber && <Tag color="blue">来源构建 #{qualityReportBuild.qualitySummary.sourceBuildNumber}</Tag>}
                   {qualityReportBuild.qualitySummary?.appVersion && <Tag color="purple">APP {qualityReportBuild.qualitySummary.appVersion}</Tag>}
                   {qualityReportBuild.qualitySummary?.testSuite && <Tag>套件 {qualityReportBuild.qualitySummary.testSuite}</Tag>}
+                  {qualityReportBuild.qualitySummary?.testSuite === 'stutter' && qualityReportBuild.qualitySummary?.stutterScenario && (
+                    <Tag color="magenta">场景 {stutterScenarioLabel(qualityReportBuild.qualitySummary.stutterScenario)}</Tag>
+                  )}
+                  {qualityPhaseLabel(qualityReportBuild) && (
+                    <Tag color={qualityReportBuild.result === 'FAILURE' ? 'red' : 'blue'}>
+                      {qualityReportBuild.result === 'FAILURE' ? '失败阶段' : '当前阶段'}：{qualityPhaseLabel(qualityReportBuild)}
+                    </Tag>
+                  )}
                   {qualityReportBuild.qualitySummary?.launchMethod && <Tag color="cyan">启动 {qualityReportBuild.qualitySummary.launchMethod}</Tag>}
                   {qualityReportBuild.qualitySummary?.coldStartReadyMs !== undefined && (
                     <Tag color="geekblue">冷启动 {formatMilliseconds(qualityReportBuild.qualitySummary.coldStartReadyMs)}</Tag>
                   )}
                   {qualityReportBuild.qualitySummary?.monkeyStatus && (
                     <Tag color={qualityReportBuild.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>
-                      Monkey {qualityReportBuild.qualitySummary.monkeyExecutedEvents || 0}/{qualityReportBuild.qualitySummary.monkeyEventCount || 0}
+                      Monkey {formatMonkeyExecutionSummary(qualityReportBuild)}
                     </Tag>
                   )}
                 </Space>
@@ -2949,7 +4007,7 @@ export default function CICDPage() {
             <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
               <Descriptions.Item label="质检任务">#{qualityReportBuild.number}</Descriptions.Item>
               <Descriptions.Item label="状态">{qualityResultTag(qualityReportBuild)}</Descriptions.Item>
-              <Descriptions.Item label="耗时">{formatDuration(qualityReportBuild.duration, qualityReportBuild.building)}</Descriptions.Item>
+              <Descriptions.Item label="耗时">{formatQualityDuration(qualityReportBuild)}</Descriptions.Item>
               <Descriptions.Item label="启动命令耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.launchDurationMs)}</Descriptions.Item>
               <Descriptions.Item label="冷启动稳定耗时">{formatMilliseconds(qualityReportBuild.qualitySummary?.coldStartReadyMs)}</Descriptions.Item>
               <Descriptions.Item label="Monkey 结果">
@@ -2958,7 +4016,7 @@ export default function CICDPage() {
                     <Tag color={qualityReportBuild.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>
                       {qualityReportBuild.qualitySummary.monkeyStatus}
                     </Tag>
-                    <Text>{qualityReportBuild.qualitySummary.monkeyExecutedEvents || 0}/{qualityReportBuild.qualitySummary.monkeyEventCount || 0} 次</Text>
+                    <Text>{formatMonkeyExecutionSummary(qualityReportBuild)}</Text>
                   </Space>
                 ) : '-'}
               </Descriptions.Item>
@@ -2993,7 +4051,7 @@ export default function CICDPage() {
 
             <Card
               size="small"
-              title="质检汇总"
+              title={qualityReportTitle}
               extra={qualityReportBuild.qualitySummary?.artifacts?.summaryUrl && (
                     <Button
                       size="small"
@@ -3021,25 +4079,27 @@ export default function CICDPage() {
                     >
                       质检日志
                     </Button>
-                    <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
-                      loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'Monkey 报告'}
-                      type={activeQualitySummaryView === 'monkey' ? 'primary' : 'default'}
-                      onClick={() => {
-                        setActiveQualitySummaryView('monkey');
-                        setQualityPerformanceReportOpen(false);
-                        previewQualityArtifact('Monkey 报告', qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
-                      }}
-                    >
-                      Monkey 报告
-                    </Button>
+                    {isMonkeyQualityReport && (
+                      <Button
+                        disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
+                        loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === 'Monkey 报告'}
+                        type={activeQualitySummaryView === 'monkey' ? 'primary' : 'default'}
+                        onClick={() => {
+                          setActiveQualitySummaryView('monkey');
+                          setQualityPerformanceReportOpen(false);
+                          previewQualityArtifact('Monkey 报告', qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl);
+                        }}
+                      >
+                        Monkey 报告
+                      </Button>
+                    )}
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.performanceAnalysis && !qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl && !qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl}
                       loading={qualityPerformanceLoading}
                       type={activeQualitySummaryView === 'performance' ? 'primary' : 'default'}
                       onClick={() => openQualityPerformanceReport(qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl)}
                     >
-                      性能报告
+                      {qualityPerformanceButtonLabel}
                     </Button>
                     <Button
                       disabled={!qualityReportBuild.qualitySummary?.exceptionAnalysis}
@@ -3052,17 +4112,19 @@ export default function CICDPage() {
                     >
                       崩溃分析
                     </Button>
-                    <Button
-                      disabled={!qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl}
-                      type={activeQualitySummaryView === 'evidence' ? 'primary' : 'default'}
-                      onClick={() => {
-                        setActiveQualitySummaryView('evidence');
-                        setQualityArtifactPreview(null);
-                        setQualityPerformanceReportOpen(false);
-                      }}
-                    >
-                      现场证据
-                    </Button>
+                    {isMonkeyQualityReport && (
+                      <Button
+                        disabled={!qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl}
+                        type={activeQualitySummaryView === 'evidence' ? 'primary' : 'default'}
+                        onClick={() => {
+                          setActiveQualitySummaryView('evidence');
+                          setQualityArtifactPreview(null);
+                          setQualityPerformanceReportOpen(false);
+                        }}
+                      >
+                        现场证据
+                      </Button>
+                    )}
                   </Space>
                   {activeQualitySummaryView === 'log' && (
                     <Space direction="vertical" size={16} style={{ width: '100%', marginTop: 16 }}>
@@ -3083,7 +4145,7 @@ export default function CICDPage() {
                       />
                     </Card>
                   )}
-                  {activeQualitySummaryView === 'monkey' && (
+                  {activeQualitySummaryView === 'monkey' && isMonkeyQualityReport && (
                     <Card
                       size="small"
                       title="Monkey 报告"
@@ -3141,7 +4203,7 @@ export default function CICDPage() {
                       </pre>
 	                    </Card>
 	                  )}
-                  {activeQualitySummaryView === 'evidence' && (
+                  {activeQualitySummaryView === 'evidence' && isMonkeyQualityReport && (
                     <Card size="small" title="现场证据" style={{ marginTop: 16 }}>
                       {qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl ? (
                         <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -3161,13 +4223,13 @@ export default function CICDPage() {
                       size="small"
                       title={(
                         <Space>
-                          <Text>性能报告</Text>
+                          <Text>{qualityPerformanceButtonLabel}</Text>
                           {qualityPerformanceSamples && <Tag>jsonl</Tag>}
                         </Space>
                       )}
                       extra={(
                         <Space>
-                          {qualityPerformanceSamples?.url && (
+                          {!isStutterQualityReport && qualityPerformanceSamples?.url && (
                             <Button size="small" type="link" onClick={() => window.open(qualityPerformanceSamples.url, '_blank', 'noopener,noreferrer')}>
                               采样原文件
                             </Button>
@@ -3187,49 +4249,59 @@ export default function CICDPage() {
                       )}
                       style={{ marginTop: 16 }}
                     >
-                      <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                          <Text strong>分析总结</Text>
-                          <PerformanceAnalysisSummary
-                            analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
-                          />
-                        </Space>
-                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                          <Text strong>性能诊断</Text>
-                          <PerformanceDiagnostics
-                            samples={qualityPerformanceSamples}
-                            monkeyPreview={qualityMonkeyReportDigest}
-                            monkeyLoading={qualityMonkeyReportDigestLoading}
-                            analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
-                          />
-                        </Space>
-                        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                          <Text strong>性能分析图</Text>
-                          {qualityPerformanceLoading ? (
-                            <Alert showIcon type="info" message="正在加载性能采样..." />
-                          ) : qualityPerformanceSamples?.samples?.length ? (
-                            <PerformanceSamplesChart data={qualityPerformanceSamples} />
-                          ) : qualityReportBuild.qualitySummary?.performanceAnalysis?.trace?.available ? (
-                            <Alert
-                              showIcon
-                              type="info"
-                              message="Trace 已采集，暂无可绘制指标"
-                              description="当前 xctrace 导出结果没有 CPU、内存或 FPS 明细行，可下载 Trace 用 Instruments 打开继续分析。"
+                      {isStutterQualityReport ? (
+                        <StutterReportSummary
+                          analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
+                        />
+                      ) : (
+                        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                            <Text strong>分析总结</Text>
+                            <PerformanceAnalysisSummary
+                              analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
+                              reportKind={qualityReportKind}
                             />
-                          ) : (
-                            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />
-                          )}
+                          </Space>
+                          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                            <Text strong>性能诊断</Text>
+                            <PerformanceDiagnostics
+                              samples={qualityPerformanceSamples}
+                              monkeyPreview={isMonkeyQualityReport ? qualityMonkeyReportDigest : null}
+                              monkeyLoading={isMonkeyQualityReport ? qualityMonkeyReportDigestLoading : false}
+                              analysis={qualityReportBuild.qualitySummary?.performanceAnalysis}
+                              reportKind={qualityReportKind}
+                            />
+                          </Space>
+                          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                            <Text strong>性能分析图</Text>
+                            {qualityPerformanceLoading ? (
+                              <Alert showIcon type="info" message="正在加载性能采样..." />
+                            ) : qualityPerformanceSamples?.samples?.length ? (
+                              <PerformanceSamplesChart data={qualityPerformanceSamples} />
+                            ) : qualityReportBuild.qualitySummary?.performanceAnalysis?.trace?.available ? (
+                              <Alert
+                                showIcon
+                                type="info"
+                                message="Trace 已采集，暂无可绘制指标"
+                                description="当前 xctrace 导出结果没有 CPU、内存或 FPS 明细行，可下载 Trace 用 Instruments 打开继续分析。"
+                              />
+                            ) : (
+                              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />
+                            )}
+                          </Space>
                         </Space>
-                      </Space>
+                      )}
                     </Card>
                   )}
                   {!hasQualityReportArtifact(qualityReportBuild) && (
                     <Alert
-                      type="warning"
+                      type={isQualityBuildEffectivelyRunning(qualityReportBuild) ? 'info' : 'warning'}
                       showIcon
                       style={{ marginTop: 16 }}
-                      message="当前任务暂未发现可展示的质检文件"
-                      description="如果任务刚结束，稍等几秒刷新列表；如果 Jenkins 未完成归档，可先打开 Jenkins 控制台查看原始日志。"
+                      message={isQualityBuildEffectivelyRunning(qualityReportBuild) ? '质检汇总生成中' : '当前任务暂未发现可展示的质检文件'}
+                      description={isQualityBuildEffectivelyRunning(qualityReportBuild)
+                        ? '任务仍在执行或收尾，报告文件生成后会自动刷新展示。'
+                        : '如果任务刚结束，报告文件可能仍在归档，页面会继续自动刷新；也可以打开 Jenkins 控制台查看原始日志。'}
                     />
                   )}
             </Card>
