@@ -58,6 +58,7 @@ export interface SentryIssueSummary {
   maxAppVersion?: string;
   appVersions?: string[];
   excludedAppVersionOnly?: boolean;
+  appVersionLoading?: boolean;
 }
 
 export interface SentryIssueAnalysisResult {

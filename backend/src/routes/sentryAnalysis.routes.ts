@@ -20,6 +20,9 @@ const excludedSentryAppVersions = new Set(
     .map((version) => version.trim())
     .filter(Boolean)
 );
+const defaultSentryIssueQuery = `is:unresolved ${Array.from(excludedSentryAppVersions)
+  .map((version) => `!release:"${version.replace(/"/g, '\\"')}"`)
+  .join(' ')}`.trim();
 
 interface SymbolicationAttemptDetail {
   appVersion: string;
@@ -61,12 +64,16 @@ function getSentryIssueHistoryMap(issues: any[]) {
   ensureSentryIssueHistoryTable();
   const db = getDatabase();
   const lookup = db.prepare(`
-    SELECT history_id FROM sentry_issue_symbolication_history
-    WHERE issue_id = ? OR short_id = ?
-    ORDER BY updated_at DESC
+    SELECT
+      h.history_id,
+      sh.app_version
+    FROM sentry_issue_symbolication_history h
+    LEFT JOIN symbolication_history sh ON sh.id = h.history_id
+    WHERE h.issue_id = ? OR h.short_id = ?
+    ORDER BY h.updated_at DESC
     LIMIT 1
   `);
-  const statuses: Record<string, { historyId: number }> = {};
+  const statuses: Record<string, { historyId: number; appVersion?: string }> = {};
 
   issues.forEach((issue) => {
     const issueId = String(issue?.id || '').trim();
@@ -74,13 +81,17 @@ function getSentryIssueHistoryMap(issues: any[]) {
     if (!issueId && !shortId) {
       return;
     }
-    const row = lookup.get(issueId, shortId) as { history_id?: number } | undefined;
+    const row = lookup.get(issueId, shortId) as { history_id?: number; app_version?: string } | undefined;
     if (row?.history_id) {
+      const status = {
+        historyId: row.history_id,
+        appVersion: row.app_version,
+      };
       if (issueId) {
-        statuses[issueId] = { historyId: row.history_id };
+        statuses[issueId] = status;
       }
       if (shortId) {
-        statuses[shortId] = { historyId: row.history_id };
+        statuses[shortId] = status;
       }
     }
   });
@@ -355,20 +366,20 @@ router.post('/issues', async (req: Request, res: Response) => {
     const {
       period = '24h',
       limit = 10,
-      query = 'is:unresolved',
+      query,
     } = req.body || {};
 
     const issues = await sentryIssueService.listNewIssues({
       period: String(period || '24h'),
       limit: Number(limit || 10),
-      query: String(query || 'is:unresolved'),
+      query: query ? String(query) : undefined,
     });
 
     res.json({
       success: true,
       data: {
         period,
-        query,
+        query: query || defaultSentryIssueQuery,
         total: issues.length,
         issues,
       },
@@ -872,13 +883,13 @@ router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
       apiKey = '',
       period = '24h',
       limit = 5,
-      query = 'is:unresolved',
+      query = defaultSentryIssueQuery,
     } = req.body || {};
 
     const issues = await sentryIssueService.listNewIssues({
       period: String(period || '24h'),
       limit: Number(limit || 5),
-      query: String(query || 'is:unresolved'),
+      query: String(query || defaultSentryIssueQuery),
     });
 
     const results = await Promise.all(issues.map(async (issue) => {

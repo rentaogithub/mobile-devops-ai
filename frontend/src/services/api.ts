@@ -398,20 +398,38 @@ async function sentryProxyGet<T>(path: string): Promise<T> {
 
 async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise<SentryIssueSummary> {
   const versions = [...(issue.appVersions || [])];
-  try {
-    const events = await sentryProxyGet<any[]>(`/api/0/issues/${encodeURIComponent(issue.id)}/events/?limit=20`);
-    if (Array.isArray(events)) {
-      versions.push(...events.flatMap(collectAppVersions));
-    }
-  } catch {
-    // 版本范围是增强信息，失败时保留 issue 原始字段。
+  const eventPath = `/api/0/issues/${encodeURIComponent(issue.id)}/events/?limit=20`;
+  const latestPath = `/api/0/issues/${encodeURIComponent(issue.id)}/events/latest/`;
+  const timeout = <T>(message: string) =>
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), 8000));
+
+  const [eventsResult, latestResult] = await Promise.allSettled([
+    Promise.race([sentryProxyGet<any[]>(eventPath), timeout<any[]>('Sentry events timeout')]),
+    Promise.race([sentryProxyGet<any>(latestPath), timeout<any>('Sentry latest event timeout')]),
+  ]);
+
+  if (eventsResult.status === 'fulfilled' && Array.isArray(eventsResult.value)) {
+    versions.push(...eventsResult.value.flatMap(collectAppVersions));
+  }
+  if (latestResult.status === 'fulfilled') {
+    versions.push(...collectAppVersions(latestResult.value));
   }
 
-  try {
-    const latestEvent = await sentryProxyGet<any>(`/api/0/issues/${encodeURIComponent(issue.id)}/events/latest/`);
-    versions.push(...collectAppVersions(latestEvent));
-  } catch {
-    // 同上。
+  if (versions.length === 0) {
+    const releaseQuery = new URLSearchParams({
+      query: `${issue.shortId || issue.id} !release:"10.0.0"`,
+      field: 'release',
+      per_page: '20',
+    });
+    try {
+      const tagValues = await Promise.race([
+        sentryProxyGet<any[]>(`/api/0/projects/sentry/nn-ios/tags/release/values/?${releaseQuery.toString()}`),
+        timeout<any[]>('Sentry release tag values timeout'),
+      ]);
+      versions.push(...(Array.isArray(tagValues) ? tagValues.map((item) => item.value || item.name || item.key) : []));
+    } catch {
+      // tag values 兜底失败也不阻塞列表。
+    }
   }
 
   const range = buildAppVersionRange(versions);
@@ -425,6 +443,7 @@ async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise
     minAppVersion: range.min,
     maxAppVersion: range.max,
     appVersions: range.versions,
+    excludedAppVersionOnly: range.versions.length === 0,
   };
 }
 
@@ -462,15 +481,13 @@ async function listSentryIssuesFromProxy(params: {
       }
       return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
     });
-  const enrichedIssues = await Promise.all(issues.map(enrichSentryIssueVersionRange));
-
   return {
     success: true,
     data: {
       period,
       query,
-      total: enrichedIssues.length,
-      issues: enrichedIssues,
+      total: issues.length,
+      issues,
     },
   };
 }
@@ -568,13 +585,15 @@ export const sentryAnalysisApi = {
 
   historyStatus: async (params: {
     issues: SentryIssueSummary[];
-  }): Promise<ApiResponse<{ statuses: Record<string, { historyId: number }> }>> => {
-    const response = await api.post<ApiResponse<{ statuses: Record<string, { historyId: number }> }>>(
+  }): Promise<ApiResponse<{ statuses: Record<string, { historyId: number; appVersion?: string }> }>> => {
+    const response = await api.post<ApiResponse<{ statuses: Record<string, { historyId: number; appVersion?: string }> }>>(
       '/sentry-analysis/history-status',
       params
     );
     return response.data;
   },
+
+  enrichIssueVersion: enrichSentryIssueVersionRange,
 
   fetchAndAnalyze: async (params: {
     period: string;

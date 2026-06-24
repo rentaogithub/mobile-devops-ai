@@ -77,7 +77,7 @@ export class SentryIssueService {
     const project = options.project || process.env.SENTRY_PROJECT || 'nn-ios';
     const period = options.period || '24h';
     const limit = Math.min(Math.max(options.limit || 5, 1), 20);
-    const query = options.query || 'is:unresolved';
+    const query = options.query || this.buildDefaultIssueQuery();
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const params = new URLSearchParams({
       query,
@@ -98,7 +98,7 @@ export class SentryIssueService {
 
     const data = JSON.parse(response.body.toString('utf8'));
     const issues = Array.isArray(data) ? data : data?.results || [];
-    const normalizedIssues = issues
+    const normalizedIssues: SentryIssueSummary[] = issues
       .map((issue: any) => this.normalizeIssueSummary(issue))
       .filter((issue: SentryIssueSummary) => {
         if (period !== '7d') {
@@ -107,19 +107,7 @@ export class SentryIssueService {
         return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
       });
 
-    const enrichedIssues = await Promise.all(normalizedIssues.map(async (issue: SentryIssueSummary) => {
-      try {
-        return await this.enrichIssueVersionRange(issue);
-      } catch (error: any) {
-        logger.warn('提取 Sentry issue APP 版本范围失败', {
-          issueId: issue.id,
-          error: error.message,
-        });
-        return issue;
-      }
-    }));
-
-    return enrichedIssues.filter((issue) => !issue.excludedAppVersionOnly);
+    return normalizedIssues.filter((issue) => !issue.excludedAppVersionOnly);
   }
 
   async getLatestEvent(issueId: string): Promise<SentryEventDetail | undefined> {
@@ -553,6 +541,13 @@ export class SentryIssueService {
   private isExcludedOnlyVersionSet(values: string[]) {
     const versions = Array.from(new Set(values.filter(Boolean)));
     return versions.length > 0 && versions.every((version) => this.excludedAppVersions.has(version));
+  }
+
+  private buildDefaultIssueQuery(): string {
+    const excludedReleaseQuery = Array.from(this.excludedAppVersions)
+      .map((version) => `!release:"${version.replace(/"/g, '\\"')}"`)
+      .join(' ');
+    return ['is:unresolved', excludedReleaseQuery].filter(Boolean).join(' ');
   }
 
   private compareVersions(a: string, b: string): number {
