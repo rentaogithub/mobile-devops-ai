@@ -142,14 +142,7 @@ router.post('/:id/analyze', async (req: Request, res: Response) => {
     const { id } = req.params;
     const { apiKey } = req.body;
 
-    if (!apiKey) {
-      return res.status(400).json({
-        success: false,
-        error: '请提供 API Key',
-      });
-    }
-
-    const analysis = await historyService.analyzeHistory(parseInt(id), apiKey);
+    const analysis = await historyService.analyzeHistory(parseInt(id), apiKey || '');
 
     res.json({
       success: true,

@@ -1,4 +1,4 @@
-import { Alert, Button, Card, Input, List, Modal, Space, Spin, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Input, List, Modal, Space, Spin, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import {
   ArrowLeftOutlined,
   BarChartOutlined,
@@ -11,25 +11,87 @@ import {
   ShareAltOutlined,
   TrophyOutlined,
 } from '@ant-design/icons';
-import { useCallback, useState } from 'react';
-import { sentryAnalysisApi } from '../services/api';
-import { SentryIssueSummary, SentrySymbolicateAnalyzeResult } from '../types';
+import { useCallback, useRef, useState } from 'react';
+import { historyApi, sentryAnalysisApi } from '../services/api';
+import { SentryAggregateAnalyzeResult, SentryIssueSummary, SentrySymbolicateAnalyzeResult } from '../types';
 import { downloadTextFile } from '../utils/helpers';
-import AIAnalysisPanel from '../components/AIAnalysisPanel';
 import { shareToWeChatWork } from '../utils/wechatShare';
+import AIAnalysisPanel from '../components/AIAnalysisPanel';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 const SENTRY_SERVICE_URL = '/sentry-service';
+const SENTRY_ORIGIN_URL = 'http://172.31.2.239:9000';
 const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved';
 const TOP_PERIOD = '7d';
 const RECENT_PERIOD = '24h';
 const RECENT_NEW_WINDOW_MS = 24 * 60 * 60 * 1000;
+const EXCLUDED_SENTRY_APP_VERSIONS = new Set(['10.0.0']);
+const SENTRY_SYMBOLICATION_HISTORY_CACHE_KEY = 'nn-sentry-symbolication-history-v1';
 
 type CurrentSentryIssue = Pick<SentryIssueSummary, 'id' | 'title' | 'permalink'>;
 type SentryView = 'overview' | 'top' | 'recent';
+type IssueSymbolicationStatus = {
+  status: 'pending' | 'success' | 'failed' | 'incomplete';
+  historyId?: number;
+  error?: string;
+};
+type SymbolicationAttemptDetail = {
+  appVersion?: unknown;
+  error?: unknown;
+};
+type SentrySymbolicationHistoryCache = Record<string, {
+  historyId: number;
+  updatedAt: number;
+}>;
+
+function getIssueCacheKeys(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
+  return [issue.id, issue.shortId]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function readSentrySymbolicationCache(): SentrySymbolicationHistoryCache {
+  try {
+    return JSON.parse(window.localStorage.getItem(SENTRY_SYMBOLICATION_HISTORY_CACHE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function writeSentrySymbolicationCache(cache: SentrySymbolicationHistoryCache) {
+  window.localStorage.setItem(SENTRY_SYMBOLICATION_HISTORY_CACHE_KEY, JSON.stringify(cache));
+}
+
+function getCachedSentryHistoryId(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
+  const cache = readSentrySymbolicationCache();
+  const cached = getIssueCacheKeys(issue)
+    .map((key) => cache[key]?.historyId)
+    .find((historyId) => typeof historyId === 'number' && historyId > 0);
+  return cached || 0;
+}
+
+function cacheSentryHistoryId(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>, historyId?: number) {
+  if (!historyId) {
+    return;
+  }
+
+  const cache = readSentrySymbolicationCache();
+  getIssueCacheKeys(issue).forEach((key) => {
+    cache[key] = { historyId, updatedAt: Date.now() };
+  });
+  writeSentrySymbolicationCache(cache);
+}
+
+function removeCachedSentryHistoryId(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
+  const cache = readSentrySymbolicationCache();
+  getIssueCacheKeys(issue).forEach((key) => {
+    delete cache[key];
+  });
+  writeSentrySymbolicationCache(cache);
+}
 
 function getInitialIssueId() {
   return new URLSearchParams(window.location.search).get('issue') || '';
@@ -40,8 +102,21 @@ function toLocalIssueURL(issue?: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
   return issueId ? `${SENTRY_SERVICE_URL}?issue=${encodeURIComponent(issueId)}` : SENTRY_SERVICE_URL;
 }
 
-function toSentryIssueURL(issue: Pick<SentryIssueSummary, 'id'>) {
-  return `http://10.1.3.177:3000/organizations/sentry/issues/${encodeURIComponent(issue.id)}/?project=6&query=&referrer=project-issue-stream`;
+function toSentryIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink'>) {
+  if (issue.permalink) {
+    try {
+      const url = new URL(issue.permalink);
+      const publicPath = url.pathname.replace(/^\/sentry(?=\/)/, '');
+      return `${SENTRY_ORIGIN_URL}${publicPath}${url.search}${url.hash}`;
+    } catch {
+      if (issue.permalink.startsWith('/')) {
+        const publicPath = issue.permalink.replace(/^\/sentry(?=\/)/, '');
+        return `${SENTRY_ORIGIN_URL}${publicPath}`;
+      }
+    }
+  }
+
+  return `${SENTRY_ORIGIN_URL}/organizations/sentry/issues/${encodeURIComponent(issue.id)}/?project=6&query=&referrer=project-issue-stream`;
 }
 
 function getIssueTime(issue: SentryIssueSummary) {
@@ -80,9 +155,21 @@ function compareVersions(a: string, b: string) {
 
 function getIssueHighestAppVersion(issue: SentryIssueSummary) {
   return [issue.maxAppVersion, ...(issue.appVersions || [])]
-    .filter((version): version is string => Boolean(version))
+    .filter((version): version is string =>
+      typeof version === 'string' && version.length > 0 && !EXCLUDED_SENTRY_APP_VERSIONS.has(version)
+    )
     .sort(compareVersions)
     .pop() || issue.minAppVersion;
+}
+
+function isExcludedAppVersionOnlyIssue(issue: SentryIssueSummary) {
+  if (issue.excludedAppVersionOnly) {
+    return true;
+  }
+
+  const versions = [issue.minAppVersion, issue.maxAppVersion, ...(issue.appVersions || [])]
+    .filter((version): version is string => typeof version === 'string' && version.length > 0);
+  return versions.length > 0 && versions.every((version) => EXCLUDED_SENTRY_APP_VERSIONS.has(version));
 }
 
 function getIssueAppVersionLabel(issue: SentryIssueSummary) {
@@ -123,6 +210,69 @@ function buildOriginalCrashFileName(crashLog: string, incidentIdentifier?: strin
   return `${sanitizeFilename(incidentId)}.crash`;
 }
 
+function formatApiError(error: any, fallback: string) {
+  const baseMessage = error?.error || error?.message || fallback;
+  const details = error?.details;
+  if (!details) {
+    return baseMessage;
+  }
+
+  if (typeof details === 'string') {
+    return `${baseMessage}\n${details}`;
+  }
+
+  if (Array.isArray(details)) {
+    return `${baseMessage}\n${details.map((detail) => String(detail)).join('\n')}`;
+  }
+
+  const detailLines: string[] = [];
+  if (Array.isArray(details.candidateVersions)) {
+    detailLines.push(`候选版本：${details.candidateVersions.join(', ') || '-'}`);
+  }
+  if (Array.isArray(details.excludedVersions) && details.excludedVersions.length > 0) {
+    detailLines.push(`已排除版本：${details.excludedVersions.join(', ')}`);
+  }
+  if (typeof details.extractedVersion === 'string' && details.extractedVersion) {
+    detailLines.push(`日志识别版本：${details.extractedVersion}`);
+  }
+  if (typeof details.eventId === 'string' && details.eventId) {
+    detailLines.push(`Sentry Event：${details.eventId}`);
+  }
+  if (Array.isArray(details.attempts)) {
+    details.attempts.forEach((attempt: SymbolicationAttemptDetail) => {
+      if (attempt && typeof attempt === 'object') {
+        const appVersion = 'appVersion' in attempt ? String(attempt.appVersion || '-') : '-';
+        const reason = 'error' in attempt ? String(attempt.error || '符号化失败') : '符号化失败';
+        detailLines.push(`${appVersion}：${reason}`);
+      }
+    });
+  }
+  if (typeof details.hint === 'string' && details.hint) {
+    detailLines.push(`建议：${details.hint}`);
+  }
+
+  return detailLines.length > 0
+    ? `${baseMessage}\n${detailLines.join('\n')}`
+    : `${baseMessage}\n${JSON.stringify(details, null, 2)}`;
+}
+
+function isIncompleteSentryEventError(error: any) {
+  const text = [
+    error?.code,
+    error?.error,
+    error?.message,
+    typeof error?.details === 'string' ? error.details : JSON.stringify(error?.details || {}),
+  ].join('\n');
+
+  return text.includes('INVALID_CRASH_LOG') && (
+    text.includes('缺少可符号化信息') ||
+    text.includes('missingStacktraceOrThreads') ||
+    text.includes('missingDebugImages') ||
+    text.includes('does not contain stacktrace/threads') ||
+    text.includes('does not contain debug images')
+  );
+}
+
 export default function SentryServicePage() {
   const [activeView, setActiveView] = useState<SentryView>('overview');
   const [overviewFrameKey, setOverviewFrameKey] = useState(0);
@@ -137,6 +287,70 @@ export default function SentryServicePage() {
   const [analysisTargetIssue, setAnalysisTargetIssue] = useState<SentryIssueSummary | null>(null);
   const [analysisResult, setAnalysisResult] = useState<SentrySymbolicateAnalyzeResult | null>(null);
   const [analysisError, setAnalysisError] = useState('');
+  const [analysisAiError, setAnalysisAiError] = useState('');
+  const [analysisAnalyzing, setAnalysisAnalyzing] = useState(false);
+  const [aggregateModalOpen, setAggregateModalOpen] = useState(false);
+  const [aggregateLoading, setAggregateLoading] = useState(false);
+  const [aggregateResult, setAggregateResult] = useState<SentryAggregateAnalyzeResult | null>(null);
+  const [aggregateError, setAggregateError] = useState('');
+  const [issueSymbolicationStatus, setIssueSymbolicationStatus] = useState<Record<string, IssueSymbolicationStatus>>({});
+  const backgroundSymbolicatedIssueIds = useRef(new Set<string>());
+  const autoAnalyzedHistoryIds = useRef(new Set<number>());
+
+  const symbolicateIssuesInBackground = useCallback(async (issues: SentryIssueSummary[]) => {
+    for (const issue of issues) {
+      if (!issue.id || backgroundSymbolicatedIssueIds.current.has(issue.id)) {
+        continue;
+      }
+
+      backgroundSymbolicatedIssueIds.current.add(issue.id);
+      const cachedHistoryId = getCachedSentryHistoryId(issue);
+      if (cachedHistoryId) {
+        setIssueSymbolicationStatus((statusMap) => ({
+          ...statusMap,
+          [issue.id]: {
+            status: 'success',
+            historyId: cachedHistoryId,
+          },
+        }));
+        continue;
+      }
+
+      setIssueSymbolicationStatus((statusMap) => ({
+        ...statusMap,
+        [issue.id]: { status: 'pending' },
+      }));
+
+      try {
+        const response = await sentryAnalysisApi.symbolicateAndSave({
+          issue,
+        });
+
+        if (!response.success || !response.data?.historyId) {
+          throw response;
+        }
+
+        cacheSentryHistoryId(issue, response.data.historyId);
+        setIssueSymbolicationStatus((statusMap) => ({
+          ...statusMap,
+          [issue.id]: {
+            status: 'success',
+            historyId: response.data?.historyId,
+          },
+        }));
+      } catch (error: any) {
+        const errorMessage = formatApiError(error, '符号化入库失败');
+        const status = isIncompleteSentryEventError(error) ? 'incomplete' : 'failed';
+        setIssueSymbolicationStatus((statusMap) => ({
+          ...statusMap,
+          [issue.id]: {
+            status,
+            error: errorMessage,
+          },
+        }));
+      }
+    }
+  }, []);
 
   const loadIssues = useCallback(async (period: string) => {
     setIssueLoading(true);
@@ -152,12 +366,43 @@ export default function SentryServicePage() {
         throw new Error(response.error || '抓取 Sentry 问题列表失败');
       }
 
-      const nextIssues = [...response.data.issues].sort((a, b) => getIssueTime(b) - getIssueTime(a));
+      const nextIssues = [...response.data.issues]
+        .filter((issue) => !isExcludedAppVersionOnlyIssue(issue))
+        .sort((a, b) => getIssueTime(b) - getIssueTime(a));
       if (period === TOP_PERIOD) {
         setTopIssues(nextIssues);
       } else {
         setRecentIssues(nextIssues);
       }
+
+      try {
+        const statusResponse = await sentryAnalysisApi.historyStatus({ issues: nextIssues });
+        const statuses = statusResponse.data?.statuses || {};
+        const storedStatusMap: Record<string, IssueSymbolicationStatus> = {};
+        nextIssues.forEach((issue) => {
+          const historyId =
+            getCachedSentryHistoryId(issue) ||
+            statuses[issue.id]?.historyId ||
+            (issue.shortId ? statuses[issue.shortId]?.historyId : 0);
+          if (historyId) {
+            cacheSentryHistoryId(issue, historyId);
+            storedStatusMap[issue.id] = {
+              status: 'success',
+              historyId,
+            };
+          }
+        });
+        if (Object.keys(storedStatusMap).length > 0) {
+          setIssueSymbolicationStatus((statusMap) => ({
+            ...statusMap,
+            ...storedStatusMap,
+          }));
+        }
+      } catch (statusError: any) {
+        console.warn('查询 Sentry 入库状态失败', statusError);
+      }
+
+      void symbolicateIssuesInBackground(nextIssues);
       setCurrentIssue((selected) => {
         const initialIssueId = getInitialIssueId();
         const initialIssue = initialIssueId
@@ -182,7 +427,7 @@ export default function SentryServicePage() {
     } finally {
       setIssueLoading(false);
     }
-  }, []);
+  }, [symbolicateIssuesInBackground]);
 
   const updateCurrentIssue = (issue: CurrentSentryIssue | null) => {
     setCurrentIssue(issue?.id ? issue : null);
@@ -234,29 +479,170 @@ export default function SentryServicePage() {
     setAnalysisTargetIssue(issue);
     setAnalysisResult(null);
     setAnalysisError('');
+    setAnalysisAiError('');
     setAnalysisModalOpen(true);
     try {
-      const targetAppVersion = getIssueHighestAppVersion(issue);
-      const response = await sentryAnalysisApi.symbolicateAndAnalyze({
-        issue: {
-          ...issue,
-          maxAppVersion: targetAppVersion,
-        },
-        appVersion: targetAppVersion,
+      const response = await sentryAnalysisApi.symbolicateAndSave({
+        issue,
       });
       if (!response.success || !response.data?.symbolicatedLog) {
-        throw new Error(response.error || '解析 Sentry 问题失败');
+        throw response;
       }
 
-      setAnalysisResult(response.data);
-      message.success('Sentry 问题已解析并生成历史记录');
+      const nextResult = response.data;
+      setAnalysisResult(nextResult);
+      cacheSentryHistoryId(issue, response.data.historyId);
+      setIssueSymbolicationStatus((statusMap) => ({
+        ...statusMap,
+        [issue.id]: {
+          status: 'success',
+          historyId: response.data?.historyId,
+        },
+      }));
+      message.success('Sentry 问题已符号化并生成历史记录');
+      void analyzeHistoryResult(nextResult, { silent: true });
     } catch (error: any) {
-      const errorMessage = error.error || error.message || '解析 Sentry 问题失败';
+      const errorMessage = formatApiError(error, '符号化 Sentry 问题失败');
+      const status = isIncompleteSentryEventError(error) ? 'incomplete' : 'failed';
       setAnalysisError(errorMessage);
+      setIssueSymbolicationStatus((statusMap) => ({
+        ...statusMap,
+        [issue.id]: {
+          status,
+          error: errorMessage,
+        },
+      }));
+      message.error(errorMessage, 8);
+    } finally {
+      setSymbolicatingIssueId('');
+    }
+  };
+
+  const handleOpenStoredDetail = async (issue: SentryIssueSummary, historyId: number) => {
+    setSymbolicatingIssueId(issue.id);
+    setAnalysisTargetIssue(issue);
+    setAnalysisResult(null);
+    setAnalysisError('');
+    setAnalysisAiError('');
+    setAnalysisModalOpen(true);
+    try {
+      const response = await historyApi.detail(historyId);
+      if (!response.success || !response.data) {
+        throw response;
+      }
+
+      const nextResult = {
+        issue,
+        appVersion: response.data.appVersion,
+        originalLog: response.data.originalLog,
+        symbolicatedLog: response.data.symbolicatedLog,
+        matchedUUIDs: response.data.usedUuids || [],
+        historyId: response.data.id,
+        aiAnalysis: response.data.aiAnalysis,
+      };
+      setAnalysisResult(nextResult);
+      void analyzeHistoryResult(nextResult, { silent: true });
+    } catch (error: any) {
+      const errorMessage = error.error || error.message || '获取历史详情失败';
+      removeCachedSentryHistoryId(issue);
+      setAnalysisError(errorMessage);
+      setIssueSymbolicationStatus((statusMap) => ({
+        ...statusMap,
+        [issue.id]: {
+          status: 'failed',
+          error: errorMessage,
+        },
+      }));
       message.error(errorMessage);
     } finally {
       setSymbolicatingIssueId('');
     }
+  };
+
+  const analyzeHistoryResult = async (
+    targetResult: SentrySymbolicateAnalyzeResult,
+    options: { silent?: boolean } = {}
+  ) => {
+    if (!targetResult.historyId) {
+      message.error('历史记录ID不存在，无法进行 AI 分析');
+      return;
+    }
+    if (targetResult.aiAnalysis || autoAnalyzedHistoryIds.current.has(targetResult.historyId)) {
+      return;
+    }
+
+    autoAnalyzedHistoryIds.current.add(targetResult.historyId);
+    const apiKey = window.localStorage.getItem('openai_api_key') || '';
+    setAnalysisAiError('');
+    setAnalysisAnalyzing(true);
+    try {
+      const response = await historyApi.analyzeHistory(targetResult.historyId, apiKey);
+      if (!response.success || !response.data) {
+        throw response;
+      }
+
+      setAnalysisResult((current) => {
+        if (!current || current.historyId !== targetResult.historyId) {
+          return current;
+        }
+        return {
+          ...current,
+          aiAnalysis: response.data,
+        };
+      });
+      if (!options.silent) {
+        message.success('AI 分析完成');
+      }
+    } catch (error: any) {
+      const errorMessage = error.error || error.message || 'AI 分析失败';
+      setAnalysisAiError(errorMessage);
+      message.error(errorMessage, 8);
+      autoAnalyzedHistoryIds.current.delete(targetResult.historyId);
+    } finally {
+      setAnalysisAnalyzing(false);
+    }
+  };
+
+  const handleIssueAction = (issue: SentryIssueSummary, status?: IssueSymbolicationStatus) => {
+    if (status?.status === 'success' && status.historyId) {
+      handleOpenStoredDetail(issue, status.historyId);
+      return;
+    }
+
+    if (status?.status === 'failed' || status?.status === 'incomplete') {
+      setAnalysisTargetIssue(issue);
+      setAnalysisResult(null);
+      setAnalysisError(status.error || (status.status === 'incomplete'
+        ? 'Sentry 原始信息不全，无法符号化'
+        : '符号化入库失败'));
+      setAnalysisModalOpen(true);
+      return;
+    }
+
+    handleSymbolicateIssue(issue);
+  };
+
+  const getIssueActionLabel = (status?: IssueSymbolicationStatus) => {
+    if (status?.status === 'success') {
+      return '详情';
+    }
+    if (status?.status === 'failed' || status?.status === 'incomplete') {
+      return '查看';
+    }
+    return '符号化';
+  };
+
+  const getIssueActionTooltip = (status?: IssueSymbolicationStatus) => {
+    if (status?.status === 'success') {
+      return '查看已入库详情';
+    }
+    if (status?.status === 'incomplete') {
+      return '查看原始信息不全原因';
+    }
+    if (status?.status === 'failed') {
+      return '查看符号化失败原因';
+    }
+    return '拉取 Sentry 记录并符号化入库';
   };
 
   const handleDownloadOriginalCrash = async (issue: SentryIssueSummary) => {
@@ -372,8 +758,67 @@ export default function SentryServicePage() {
     }
   };
 
+  const handleAggregateAnalyze = async () => {
+    const targets = topByEvents.slice(0, 10);
+    if (targets.length === 0) {
+      message.warning('暂无可聚合分析的 Top 问题');
+      return;
+    }
+
+    setAggregateModalOpen(true);
+    setAggregateLoading(true);
+    setAggregateResult(null);
+    setAggregateError('');
+    try {
+      const response = await sentryAnalysisApi.aggregateAnalyze({
+        issues: targets,
+        limit: targets.length,
+      });
+      if (!response.success || !response.data) {
+        throw new Error(response.error || '聚合分析失败');
+      }
+      setAggregateResult(response.data);
+      message.success('聚合分析完成');
+    } catch (error: any) {
+      const errorMessage = error.error || error.message || '聚合分析失败';
+      setAggregateError(errorMessage);
+      message.error(errorMessage);
+    } finally {
+      setAggregateLoading(false);
+    }
+  };
+
+  const getConfidenceColor = (confidence?: string) => {
+    switch (confidence) {
+      case 'high':
+        return 'green';
+      case 'medium':
+        return 'orange';
+      case 'low':
+        return 'red';
+      default:
+        return 'default';
+    }
+  };
+
+  const renderTextList = (items?: string[]) => {
+    const values = (items || []).filter(Boolean);
+    if (values.length === 0) {
+      return <Text type="secondary">暂无</Text>;
+    }
+    return (
+      <List
+        size="small"
+        dataSource={values}
+        renderItem={(item) => <List.Item>{item}</List.Item>}
+      />
+    );
+  };
+
   const renderIssueCard = (issue: SentryIssueSummary) => {
     const selected = currentIssue?.id === issue.id;
+    const symbolicationStatus = issueSymbolicationStatus[issue.id];
+    const isStored = symbolicationStatus?.status === 'success';
     return (
       <List.Item>
         <Card
@@ -395,7 +840,39 @@ export default function SentryServicePage() {
                   <Tag color="magenta">新增</Tag>
                 )}
                 {issue.level && <Tag color={getSeverityColor(issue.level)}>{issue.level}</Tag>}
-                {issue.status && <Tag>{issue.status}</Tag>}
+                {issue.status && !isStored && <Tag>{issue.status}</Tag>}
+                {symbolicationStatus?.status === 'pending' && <Tag color="processing">符号化中</Tag>}
+                {isStored && (
+                  <Tag color="green">已入库 #{symbolicationStatus.historyId || '-'}</Tag>
+                )}
+                {symbolicationStatus?.status === 'incomplete' && (
+                  <Tooltip title={symbolicationStatus.error || 'Sentry 原始信息不全，无法符号化'}>
+                    <Tag
+                      color="gold"
+                      style={{ cursor: 'pointer' }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        message.warning(symbolicationStatus.error || 'Sentry 原始信息不全，无法符号化', 8);
+                      }}
+                    >
+                      信息不全
+                    </Tag>
+                  </Tooltip>
+                )}
+                {symbolicationStatus?.status === 'failed' && (
+                  <Tooltip title={symbolicationStatus.error || '符号化入库失败'}>
+                    <Tag
+                      color="red"
+                      style={{ cursor: 'pointer' }}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        message.error(symbolicationStatus.error || '符号化入库失败', 6);
+                      }}
+                    >
+                      符号化失败
+                    </Tag>
+                  </Tooltip>
+                )}
               </Space>
               <Space>
                 <Text type="secondary">事件 {issue.count || '-'}</Text>
@@ -403,17 +880,19 @@ export default function SentryServicePage() {
                 <Text type="secondary">APP版本范围</Text>
                 <Tag color="blue" style={{ marginInlineEnd: 0 }}>{getIssueAppVersionLabel(issue)}</Tag>
                 <Text type="secondary">最近 {formatIssueTime(issue.lastSeen)}</Text>
-                <Button
-                  size="small"
-                  icon={<FileSearchOutlined />}
-                  loading={symbolicatingIssueId === issue.id}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleSymbolicateIssue(issue);
-                  }}
-                >
-                  解析
-                </Button>
+                <Tooltip title={getIssueActionTooltip(symbolicationStatus)}>
+                  <Button
+                    size="small"
+                    icon={<FileSearchOutlined />}
+                    loading={symbolicatingIssueId === issue.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleIssueAction(issue, symbolicationStatus);
+                    }}
+                  >
+                    {getIssueActionLabel(symbolicationStatus)}
+                  </Button>
+                </Tooltip>
                 <Button
                   size="small"
                   icon={<DownloadOutlined />}
@@ -509,9 +988,18 @@ export default function SentryServicePage() {
                 <span>Top汇总</span>
                 <Tag>最近 7 天</Tag>
               </Space>
-              <Button type="link" onClick={handleShowRecent}>
-                查看最近问题
-              </Button>
+              <Space>
+                <Button
+                  icon={<RobotOutlined />}
+                  loading={aggregateLoading}
+                  onClick={handleAggregateAnalyze}
+                >
+                  聚合分析 Top
+                </Button>
+                <Button type="link" onClick={handleShowRecent}>
+                  查看最近问题
+                </Button>
+              </Space>
             </Space>
           }
         >
@@ -598,7 +1086,111 @@ export default function SentryServicePage() {
       )}
 
       <Modal
-        title={`解析结果 - ${analysisTitle}`}
+        title="Top 崩溃聚合分析"
+        open={aggregateModalOpen}
+        onCancel={() => setAggregateModalOpen(false)}
+        width={1080}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setAggregateModalOpen(false)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        <Spin spinning={aggregateLoading} tip="正在拉取多个 Sentry 样本并进行 AI 聚合分析...">
+          {aggregateError ? (
+            <Alert type="error" message="聚合分析失败" description={aggregateError} showIcon />
+          ) : aggregateResult ? (
+            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+              <Alert
+                type="success"
+                showIcon
+                message={
+                  <Space wrap>
+                    <span>已聚合 {aggregateResult.total} 个 Top issue</span>
+                    <Tag color={getConfidenceColor(aggregateResult.analysis.confidence)}>
+                      置信度 {aggregateResult.analysis.confidence}
+                    </Tag>
+                  </Space>
+                }
+                description={aggregateResult.analysis.summary}
+              />
+
+              <Card size="small" title="结论">
+                <Paragraph style={{ marginBottom: 0 }}>{aggregateResult.analysis.conclusion}</Paragraph>
+              </Card>
+
+              <Card size="small" title="相似崩溃模式">
+                {aggregateResult.analysis.patterns.length === 0 ? (
+                  <Alert type="info" message="未识别出稳定相似模式" showIcon />
+                ) : (
+                  <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    {aggregateResult.analysis.patterns.map((pattern, index) => (
+                      <Card
+                        key={`${pattern.title}-${index}`}
+                        size="small"
+                        title={
+                          <Space wrap>
+                            <span>{pattern.title}</span>
+                            <Tag color={getConfidenceColor(pattern.confidence)}>
+                              {pattern.confidence}
+                            </Tag>
+                          </Space>
+                        }
+                      >
+                        <Space direction="vertical" style={{ width: '100%' }} size="small">
+                          <Text strong>关联 Issue</Text>
+                          <Space wrap>
+                            {pattern.issueIds.map((id) => <Tag key={id}>{id}</Tag>)}
+                          </Space>
+                          <Text strong>可能根因</Text>
+                          <Paragraph style={{ marginBottom: 0 }}>{pattern.possibleRootCause}</Paragraph>
+                          <Text strong>共同现象</Text>
+                          {renderTextList(pattern.sharedSymptoms)}
+                          <Text strong>共同堆栈信号</Text>
+                          {renderTextList(pattern.commonStackSignals)}
+                          <Text strong>证据</Text>
+                          {renderTextList(pattern.evidence)}
+                        </Space>
+                      </Card>
+                    ))}
+                  </Space>
+                )}
+              </Card>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+                  gap: 16,
+                }}
+              >
+                <Card size="small" title="根因假设">
+                  {renderTextList(aggregateResult.analysis.suspectedRootCauses)}
+                </Card>
+                <Card size="small" title="验证步骤">
+                  {renderTextList(aggregateResult.analysis.verificationSteps)}
+                </Card>
+                <Card size="small" title="修复建议">
+                  {renderTextList(aggregateResult.analysis.fixSuggestions)}
+                </Card>
+                <Card size="small" title="还需要的数据">
+                  {renderTextList(aggregateResult.analysis.needsMoreData)}
+                </Card>
+              </div>
+            </Space>
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message="准备聚合分析"
+              description="会选取 Top 事件数前 10 个 issue，拉取各自最新 Sentry event，并让 AI 寻找共同根因。"
+            />
+          )}
+        </Spin>
+      </Modal>
+
+      <Modal
+        title={`符号化结果 - ${analysisTitle}`}
         open={analysisModalOpen}
         onCancel={() => setAnalysisModalOpen(false)}
         width={1080}
@@ -622,9 +1214,18 @@ export default function SentryServicePage() {
           </Button>,
         ]}
       >
-        <Spin spinning={Boolean(symbolicatingIssueId) && !analysisResult && !analysisError} tip="正在符号化并进行 AI 分析...">
+        <Spin spinning={Boolean(symbolicatingIssueId) && !analysisResult && !analysisError} tip="正在符号化并保存历史记录...">
           {analysisError ? (
-            <Alert type="error" message="解析失败" description={analysisError} showIcon />
+            <Alert
+              type="error"
+              message={analysisError.includes('缺少可符号化信息') ? '原始信息不全' : '符号化失败'}
+              description={
+                <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                  {analysisError}
+                </pre>
+              }
+              showIcon
+            />
           ) : analysisResult ? (
             <Space direction="vertical" style={{ width: '100%' }} size="middle">
               <Alert
@@ -632,15 +1233,15 @@ export default function SentryServicePage() {
                 showIcon
                 message={
                   <Space wrap>
-                    <span>已按 APP 版本 {analysisResult.appVersion} 解析</span>
+                    <span>已按 APP 版本 {analysisResult.appVersion} 符号化入库</span>
                     <Text type="secondary">历史记录 #{analysisResult.historyId || '-'}</Text>
                     <Text type="secondary">UUID {analysisResult.matchedUUIDs.length} 个</Text>
                   </Space>
                 }
-                description={analysisResult.aiError || analysisResult.warning}
+                description={analysisResult.warning || '已自动发起 AI 分析，分析完成后会在 AI 分析页展示。'}
               />
               <Tabs
-                defaultActiveKey={analysisResult.aiAnalysis ? 'analysis' : 'symbolicated'}
+                defaultActiveKey="symbolicated"
                 items={[
                   {
                     key: 'analysis',
@@ -650,12 +1251,28 @@ export default function SentryServicePage() {
                         AI 分析
                       </Space>
                     ),
-                    children: (
-                      analysisResult.aiAnalysis ? (
-                        <AIAnalysisPanel analysis={analysisResult.aiAnalysis} loading={false} />
-                      ) : (
-                        <Alert type="warning" message={analysisResult.aiError || '暂无 AI 分析结果'} showIcon />
-                      )
+                    children: analysisResult.aiAnalysis ? (
+                      <AIAnalysisPanel analysis={analysisResult.aiAnalysis} loading={analysisAnalyzing} />
+                    ) : (
+                      <Card size="small">
+                        {analysisAnalyzing ? (
+                          <AIAnalysisPanel analysis={null} loading />
+                        ) : analysisAiError ? (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="AI 分析失败"
+                            description={analysisAiError}
+                          />
+                        ) : (
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="暂无 AI 分析结果"
+                            description="系统会在打开详情后自动发起 AI 分析。"
+                          />
+                        )}
+                      </Card>
                     ),
                   },
                   {
@@ -689,8 +1306,8 @@ export default function SentryServicePage() {
             <Alert
               type="info"
               showIcon
-              message="正在解析 Sentry 问题"
-              description="会自动使用当前列表中的最高 APP 版本匹配主应用和组件库 dSYM，并生成历史记录。"
+              message="正在符号化 Sentry 问题"
+              description="会自动使用当前列表中的最高 APP 版本匹配主应用和组件库 dSYM，只保存符号化历史记录，不自动调用 AI。"
             />
           )}
         </Spin>

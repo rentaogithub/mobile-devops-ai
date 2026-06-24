@@ -35,7 +35,6 @@ export default function HistoryPage() {
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [hasAutoAnalyzed, setHasAutoAnalyzed] = useState(false); // 标记是否已自动分析过
   const [activeTab, setActiveTab] = useState('log'); // 当前激活的标签
   const isAdmin = authUtils.isAdmin();
 
@@ -116,7 +115,6 @@ export default function HistoryPage() {
   const handleViewDetail = (record: HistoryRecord) => {
     setSelectedRecord(record);
     setDetailModalVisible(true);
-    setHasAutoAnalyzed(false); // 重置自动分析标记
     setActiveTab('log'); // 重置为日志标签
   };
 
@@ -188,30 +186,11 @@ export default function HistoryPage() {
 
   const handleAnalyze = () => {
     const savedApiKey = getSavedApiKey();
-    
-    if (savedApiKey) {
-      // 如果有保存的 API Key，直接开始分析
-      startAnalysis(savedApiKey);
-    } else {
-      // 如果没有保存的 API Key，提示用户
-      message.warning('请先在符号化页面设置 OpenAI API Key，或在后端配置默认 Key');
-    }
+    startAnalysis(savedApiKey || '');
   };
 
   const handleTabChange = (activeKey: string) => {
     setActiveTab(activeKey); // 更新当前激活的标签
-    
-    // 当切换到AI分析标签且没有分析结果时
-    if (activeKey === 'analysis' && selectedRecord && !selectedRecord.aiAnalysis && !analyzing && !hasAutoAnalyzed) {
-      const savedApiKey = getSavedApiKey();
-      
-      if (savedApiKey) {
-        // 如果有保存的 API Key，直接开始分析
-        setHasAutoAnalyzed(true); // 标记已自动分析
-        startAnalysis(savedApiKey);
-      }
-      // 如果没有 API Key，不做任何操作，显示空状态页面
-    }
   };
 
   const startAnalysis = async (key: string) => {
@@ -474,7 +453,7 @@ export default function HistoryPage() {
                             <Text type="secondary">AI 正在分析中，请稍候...</Text>
                           </div>
                         </div>
-                      ) : getSavedApiKey() ? (
+                      ) : (
                         <Empty
                           description="暂无 AI 分析结果"
                           style={{ padding: '40px 0' }}
@@ -487,18 +466,6 @@ export default function HistoryPage() {
                             AI 智能分析
                           </Button>
                         </Empty>
-                      ) : (
-                        <Empty
-                          description={
-                            <Space direction="vertical" size="small">
-                              <Text>暂无 AI 分析结果</Text>
-                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                请先在符号化页面设置 OpenAI API Key，或在后端配置默认 Key
-                              </Text>
-                            </Space>
-                          }
-                          style={{ padding: '40px 0' }}
-                        />
                       )}
                     </Card>
                   ),

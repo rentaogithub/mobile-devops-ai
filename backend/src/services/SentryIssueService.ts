@@ -26,6 +26,7 @@ export interface SentryIssueSummary {
   minAppVersion?: string;
   maxAppVersion?: string;
   appVersions?: string[];
+  excludedAppVersionOnly?: boolean;
 }
 
 export interface SentryEventDetail {
@@ -49,6 +50,12 @@ export interface SentryOriginalCrashFile {
 
 export class SentryIssueService {
   private readonly target = (process.env.SENTRY_PROXY_TARGET || 'http://172.31.2.239:9000').replace(/\/+$/, '');
+  private readonly excludedAppVersions = new Set(
+    (process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0')
+      .split(',')
+      .map((version) => version.trim())
+      .filter(Boolean)
+  );
   private readonly autoLogin = process.env.SENTRY_AUTO_LOGIN === 'true';
   private readonly username = process.env.SENTRY_LOGIN_USERNAME || '';
   private readonly password = process.env.SENTRY_LOGIN_PASSWORD || '';
@@ -100,7 +107,7 @@ export class SentryIssueService {
         return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
       });
 
-    return Promise.all(normalizedIssues.map(async (issue: SentryIssueSummary) => {
+    const enrichedIssues = await Promise.all(normalizedIssues.map(async (issue: SentryIssueSummary) => {
       try {
         return await this.enrichIssueVersionRange(issue);
       } catch (error: any) {
@@ -111,6 +118,8 @@ export class SentryIssueService {
         return issue;
       }
     }));
+
+    return enrichedIssues.filter((issue) => !issue.excludedAppVersionOnly);
   }
 
   async getLatestEvent(issueId: string): Promise<SentryEventDetail | undefined> {
@@ -128,13 +137,19 @@ export class SentryIssueService {
       return Array.isArray(data) ? data[0] : data?.[0];
     }
 
+    const latestBody = latestResponse.body.toString('utf8').slice(0, 200);
+    const listBody = listResponse.body.toString('utf8').slice(0, 200);
     logger.warn('获取 Sentry latest event 失败', {
       issueId,
       resolvedIssueId,
       latestStatus: latestResponse.statusCode,
       listStatus: listResponse.statusCode,
+      latestBody,
+      listBody,
     });
-    return undefined;
+    throw new Error(
+      `获取 Sentry latest event 失败：latest=${latestResponse.statusCode} ${latestBody}; events=${listResponse.statusCode} ${listBody}`
+    );
   }
 
   private async resolveIssueId(issueId: string): Promise<string> {
@@ -389,6 +404,7 @@ export class SentryIssueService {
   normalizeIssueSummary(issue: any): SentryIssueSummary {
     const appVersions = this.collectVersionCandidates(issue);
     const versionRange = this.buildVersionRange(appVersions);
+    const excludedAppVersionOnly = this.isExcludedOnlyVersionSet(appVersions);
     return {
       id: String(issue.id || ''),
       shortId: issue.shortId || issue.shortID,
@@ -405,6 +421,7 @@ export class SentryIssueService {
       minAppVersion: versionRange.min || issue.minAppVersion,
       maxAppVersion: versionRange.max || issue.maxAppVersion,
       appVersions: versionRange.versions.length > 0 ? versionRange.versions : issue.appVersions,
+      excludedAppVersionOnly,
     };
   }
 
@@ -423,11 +440,29 @@ export class SentryIssueService {
       latestEvent = JSON.parse(latestResponse.body.toString('utf8'));
     }
 
-    const versionRange = this.buildVersionRange([
+    const rawVersions = [
       ...(issue.appVersions || []),
       ...events.flatMap((event) => this.collectVersionCandidates(event)),
       ...this.collectVersionCandidates(latestEvent),
-    ]);
+    ];
+    const versionRange = this.buildVersionRange(rawVersions);
+
+    if (this.isExcludedOnlyVersionSet(rawVersions)) {
+      logger.info('过滤 Sentry TestFlight 版本 issue', {
+        issueId: issue.id,
+        shortId: issue.shortId,
+        excludedVersions: Array.from(this.excludedAppVersions),
+        rawVersions: Array.from(new Set(rawVersions)),
+      });
+      return {
+        ...issue,
+        appVersionRange: undefined,
+        minAppVersion: undefined,
+        maxAppVersion: undefined,
+        appVersions: [],
+        excludedAppVersionOnly: true,
+      };
+    }
 
     if (versionRange.versions.length === 0) {
       return issue;
@@ -439,6 +474,7 @@ export class SentryIssueService {
       minAppVersion: versionRange.min,
       maxAppVersion: versionRange.max,
       appVersions: versionRange.versions,
+      excludedAppVersionOnly: false,
     };
   }
 
@@ -501,7 +537,9 @@ export class SentryIssueService {
   }
 
   private buildVersionRange(values: string[]) {
-    const versions = Array.from(new Set(values.filter(Boolean))).sort((a, b) => this.compareVersions(a, b));
+    const versions = Array.from(new Set(values.filter((value) =>
+      Boolean(value) && !this.excludedAppVersions.has(value)
+    ))).sort((a, b) => this.compareVersions(a, b));
     const min = versions[0];
     const max = versions[versions.length - 1];
     return {
@@ -510,6 +548,11 @@ export class SentryIssueService {
       max,
       range: min && max ? (min === max ? max : `${min} - ${max}`) : undefined,
     };
+  }
+
+  private isExcludedOnlyVersionSet(values: string[]) {
+    const versions = Array.from(new Set(values.filter(Boolean)));
+    return versions.length > 0 && versions.every((version) => this.excludedAppVersions.has(version));
   }
 
   private compareVersions(a: string, b: string): number {

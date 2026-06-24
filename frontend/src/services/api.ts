@@ -7,10 +7,12 @@ import {
   SentryFetchAnalyzeResult,
   SentryIssueListResult,
   SentryAnalyzeSelectedResult,
+  SentryAggregateAnalyzeResult,
   SentrySymbolicateLogResult,
   SentryOriginalCrashResult,
   SentrySymbolicateAnalyzeResult,
   SentryIssueSummary,
+  HistoryRecord,
 } from '../types';
 import { authUtils } from '../utils/auth';
 
@@ -21,6 +23,8 @@ const api = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+const EXCLUDED_SENTRY_APP_VERSIONS = new Set(['10.0.0']);
 
 // 请求拦截器
 api.interceptors.request.use(
@@ -344,7 +348,9 @@ function collectAppVersions(source: any): string[] {
 }
 
 function buildAppVersionRange(values: string[]) {
-  const versions = Array.from(new Set(values.filter(Boolean))).sort(compareAppVersions);
+  const versions = Array.from(new Set(values.filter((version) =>
+    Boolean(version) && !EXCLUDED_SENTRY_APP_VERSIONS.has(version)
+  ))).sort(compareAppVersions);
   const min = versions[0];
   const max = versions[versions.length - 1];
   return {
@@ -500,6 +506,19 @@ export const sentryAnalysisApi = {
     return response.data;
   },
 
+  aggregateAnalyze: async (params: {
+    issues: SentryIssueSummary[];
+    limit?: number;
+    apiKey?: string;
+  }): Promise<ApiResponse<SentryAggregateAnalyzeResult>> => {
+    const response = await api.post<ApiResponse<SentryAggregateAnalyzeResult>>(
+      '/sentry-analysis/aggregate-analyze',
+      params,
+      { timeout: 240000 }
+    );
+    return response.data;
+  },
+
   buildSymbolicateLog: async (params: {
     issue: SentryIssueSummary;
   }): Promise<ApiResponse<SentrySymbolicateLogResult>> => {
@@ -535,6 +554,28 @@ export const sentryAnalysisApi = {
     return response.data;
   },
 
+  symbolicateAndSave: async (params: {
+    issue: SentryIssueSummary;
+    appVersion?: string;
+  }): Promise<ApiResponse<SentrySymbolicateAnalyzeResult>> => {
+    const response = await api.post<ApiResponse<SentrySymbolicateAnalyzeResult>>(
+      '/sentry-analysis/symbolicate-and-save',
+      params,
+      { timeout: 240000 }
+    );
+    return response.data;
+  },
+
+  historyStatus: async (params: {
+    issues: SentryIssueSummary[];
+  }): Promise<ApiResponse<{ statuses: Record<string, { historyId: number }> }>> => {
+    const response = await api.post<ApiResponse<{ statuses: Record<string, { historyId: number }> }>>(
+      '/sentry-analysis/history-status',
+      params
+    );
+    return response.data;
+  },
+
   fetchAndAnalyze: async (params: {
     period: string;
     limit: number;
@@ -551,6 +592,14 @@ export const sentryAnalysisApi = {
 };
 
 export const historyApi = {
+  /**
+   * 获取历史记录详情
+   */
+  detail: async (id: number): Promise<ApiResponse<HistoryRecord>> => {
+    const response = await api.get<ApiResponse<HistoryRecord>>(`/history/${id}`);
+    return response.data;
+  },
+
   /**
    * 对历史记录进行AI分析
    */

@@ -6,6 +6,7 @@ import historyService from '../services/HistoryService';
 import { AppError, DSYMInfo, ErrorCode } from '../types';
 import { extractCrashInfo } from '../utils/crashLogParser';
 import { extractVersionFromCrashLog } from '../utils/versionExtractor';
+import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import fs from 'fs';
 import path from 'path';
@@ -13,6 +14,79 @@ import path from 'path';
 const router = Router();
 const storage = new StorageService();
 const symbolizer = new SymbolizerService();
+const excludedSentryAppVersions = new Set(
+  (process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0')
+    .split(',')
+    .map((version) => version.trim())
+    .filter(Boolean)
+);
+
+interface SymbolicationAttemptDetail {
+  appVersion: string;
+  error: string;
+}
+
+function ensureSentryIssueHistoryTable() {
+  const db = getDatabase();
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
+      issue_id TEXT PRIMARY KEY,
+      short_id TEXT,
+      history_id INTEGER NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_sentry_issue_history_short_id
+      ON sentry_issue_symbolication_history(short_id);
+  `);
+}
+
+function upsertSentryIssueHistory(issue: any, historyId?: number) {
+  const issueId = String(issue?.id || '').trim();
+  if (!issueId || !historyId) {
+    return;
+  }
+
+  ensureSentryIssueHistoryTable();
+  getDatabase().prepare(`
+    INSERT INTO sentry_issue_symbolication_history (issue_id, short_id, history_id, updated_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(issue_id) DO UPDATE SET
+      short_id = excluded.short_id,
+      history_id = excluded.history_id,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(issueId, issue?.shortId || null, historyId);
+}
+
+function getSentryIssueHistoryMap(issues: any[]) {
+  ensureSentryIssueHistoryTable();
+  const db = getDatabase();
+  const lookup = db.prepare(`
+    SELECT history_id FROM sentry_issue_symbolication_history
+    WHERE issue_id = ? OR short_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `);
+  const statuses: Record<string, { historyId: number }> = {};
+
+  issues.forEach((issue) => {
+    const issueId = String(issue?.id || '').trim();
+    const shortId = String(issue?.shortId || '').trim();
+    if (!issueId && !shortId) {
+      return;
+    }
+    const row = lookup.get(issueId, shortId) as { history_id?: number } | undefined;
+    if (row?.history_id) {
+      if (issueId) {
+        statuses[issueId] = { historyId: row.history_id };
+      }
+      if (shortId) {
+        statuses[shortId] = { historyId: row.history_id };
+      }
+    }
+  });
+
+  return statuses;
+}
 
 function normalizeAppVersion(version?: string): string {
   return String(version || '').trim();
@@ -38,9 +112,25 @@ function getHighestIssueVersion(issue: any): string {
     issue?.appVersionRange?.split(' - ').pop(),
   ]
     .map(normalizeAppVersion)
-    .filter(Boolean);
+    .filter((version) => version && !excludedSentryAppVersions.has(version));
 
   return versions.sort(compareVersions).pop() || '';
+}
+
+function getIssueVersionCandidates(issue: any, extractedVersion?: string, requestedAppVersion?: string): string[] {
+  const rawVersions = [
+    requestedAppVersion,
+    extractedVersion,
+    issue?.maxAppVersion,
+    issue?.minAppVersion,
+    ...(Array.isArray(issue?.appVersions) ? issue.appVersions : []),
+    ...(typeof issue?.appVersionRange === 'string' ? issue.appVersionRange.split(' - ') : []),
+  ];
+
+  return Array.from(new Set(rawVersions
+    .map(normalizeAppVersion)
+    .filter((version) => version && !excludedSentryAppVersions.has(version))))
+    .sort((a, b) => compareVersions(b, a));
 }
 
 async function findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
@@ -124,6 +214,140 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
   });
 
   return filtered.length > 0 ? filtered : dsymInfos.filter((dsym) => hasDWARFFile(dsym.filePath));
+}
+
+function assertSentryCrashLogSymbolicatable(crashLog: string, issue: any, eventId?: string) {
+  const missingStack = crashLog.includes('Sentry event does not contain stacktrace/threads');
+  const missingDebugImages = crashLog.includes('Sentry event does not contain debug images');
+  if (!missingStack && !missingDebugImages) {
+    return;
+  }
+
+  throw new AppError(
+    ErrorCode.INVALID_CRASH_LOG,
+    'Sentry 原始崩溃信息不全，缺少可符号化信息',
+    400,
+    {
+      issueId: issue?.id,
+      shortId: issue?.shortId,
+      eventId,
+      missingStacktraceOrThreads: missingStack,
+      missingDebugImages,
+      hint: '请先确认后端已登录 Sentry 并能拉取 latest event；如果这是 App Hang/Watchdog 类事件，Sentry 可能没有提供可用于 atos/dSYM 符号化的线程栈和 Binary Images。',
+    }
+  );
+}
+
+async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '') {
+  if (!issue?.id) {
+    throw new AppError(ErrorCode.INVALID_CRASH_LOG, '请选择要解析的 Sentry 问题', 400);
+  }
+
+  const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+  const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+  const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
+  const crashLog = originalCrashFile.crashLog;
+  assertSentryCrashLogSymbolicatable(crashLog, normalizedIssue, event?.id);
+  const extractedVersion = extractVersionFromCrashLog(crashLog);
+  const appVersions = getIssueVersionCandidates(normalizedIssue, extractedVersion || undefined, requestedAppVersion);
+  if (appVersions.length === 0) {
+    throw new AppError(
+      ErrorCode.INVALID_CRASH_LOG,
+      '未找到可用于解析的 APP 版本，请先刷新 Sentry 问题列表',
+      400
+    );
+  }
+
+  const attempts: SymbolicationAttemptDetail[] = [];
+  for (const appVersion of appVersions) {
+    try {
+      const dsymInfos = await findDSYMsForAppVersion(appVersion);
+      if (dsymInfos.length === 0) {
+        attempts.push({ appVersion, error: '未找到对应 dSYM' });
+        continue;
+      }
+
+      const crashDSYMInfos = filterDSYMsForCrash(dsymInfos, crashLog);
+      if (crashDSYMInfos.length === 0) {
+        attempts.push({ appVersion, error: 'dSYM 不适用于本次崩溃或缺少 DWARF' });
+        continue;
+      }
+
+      const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
+      const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
+      const existingHistory =
+        historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
+        historyService.findDuplicateByOriginalLog(crashLog, appVersion) ||
+        historyService.findDuplicateByOriginalLog(crashLog);
+
+      if (existingHistory) {
+        upsertSentryIssueHistory(normalizedIssue, existingHistory.id);
+        return {
+          issue: normalizedIssue,
+          eventId: event?.id,
+          incidentIdentifier: originalCrashFile.incidentIdentifier,
+          appVersion: existingHistory.appVersion || appVersion,
+          originalLog: existingHistory.originalLog,
+          symbolicatedLog: existingHistory.symbolicatedLog,
+          matchedUUIDs: existingHistory.usedUuids,
+          historyId: existingHistory.id,
+          fromHistory: true,
+          hasAIAnalysis: !!existingHistory.aiAnalysis,
+        };
+      }
+
+      const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
+      const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
+      const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+      const savedRecord = await historyService.saveHistory({
+        appVersion,
+        versionDetected,
+        crashType: crashInfo.crashType,
+        crashReason: crashInfo.crashReason,
+        lastStackCall: crashInfo.lastStackCall,
+        crashModule: crashInfo.crashModule,
+        crashLocation: crashInfo.crashLocation,
+        originalLog: crashLog,
+        symbolicatedLog: symbolicated.symbolicatedLog,
+        usedUuids: targetUUIDs,
+      });
+
+      upsertSentryIssueHistory(normalizedIssue, savedRecord.id);
+      return {
+        issue: normalizedIssue,
+        eventId: event?.id,
+        incidentIdentifier: originalCrashFile.incidentIdentifier,
+        appVersion,
+        originalLog: crashLog,
+        symbolicatedLog: symbolicated.symbolicatedLog,
+        matchedUUIDs: targetUUIDs,
+        warning: symbolicated.warning,
+        historyId: savedRecord.id,
+        fromHistory: false,
+        hasAIAnalysis: false,
+      };
+    } catch (error: any) {
+      attempts.push({ appVersion, error: error.message || '符号化失败' });
+    }
+  }
+
+  const attemptMessages = attempts.map((attempt) => `${attempt.appVersion}: ${attempt.error}`);
+  throw new AppError(
+    ErrorCode.DSYM_NOT_FOUND,
+    `候选版本均符号化失败：${attemptMessages.join('；')}`,
+    404,
+    {
+      issueId: normalizedIssue.id,
+      shortId: normalizedIssue.shortId,
+      title: normalizedIssue.title,
+      eventId: event?.id,
+      extractedVersion,
+      candidateVersions: appVersions,
+      excludedVersions: Array.from(excludedSentryAppVersions),
+      attempts,
+      hint: '请检查候选版本是否已上传匹配 UUID 的 dSYM，或该 Sentry event 是否包含 Binary Images / debug images。',
+    }
+  );
 }
 
 router.post('/issues', async (req: Request, res: Response) => {
@@ -217,6 +441,58 @@ router.post('/analyze-selected', async (req: Request, res: Response) => {
   }
 });
 
+router.post('/aggregate-analyze', async (req: Request, res: Response) => {
+  try {
+    const {
+      apiKey = '',
+      issues = [],
+      limit = 10,
+    } = req.body || {};
+
+    if (!Array.isArray(issues) || issues.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: '请选择要聚合分析的 Sentry 问题',
+      });
+      return;
+    }
+
+    const selectedIssues = issues.slice(0, Math.min(Math.max(Number(limit || 10), 1), 12));
+    const aggregateInputs = await Promise.all(selectedIssues.map(async (issue: any) => {
+      const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+      const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+      return {
+        id: normalizedIssue.id,
+        shortId: normalizedIssue.shortId,
+        title: normalizedIssue.title,
+        count: normalizedIssue.count,
+        userCount: normalizedIssue.userCount,
+        level: normalizedIssue.level,
+        appVersionRange: normalizedIssue.appVersionRange,
+        eventId: event?.id,
+        analysisLog: sentryIssueService.buildAnalysisLog(normalizedIssue, event),
+      };
+    }));
+
+    const analysis = await aiAnalysisService.analyzeAggregateCrashes(aggregateInputs, apiKey);
+
+    res.json({
+      success: true,
+      data: {
+        total: aggregateInputs.length,
+        issues: aggregateInputs.map(({ analysisLog, ...issue }) => issue),
+        analysis,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Sentry 聚合分析失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Sentry 聚合分析失败',
+    });
+  }
+});
+
 router.post('/symbolicate-log', async (req: Request, res: Response) => {
   try {
     const { issue } = req.body || {};
@@ -276,6 +552,119 @@ router.post('/original-crash', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error.message || '下载 Sentry 原始崩溃文件失败',
+    });
+  }
+});
+
+router.post('/symbolicate-and-save', async (req: Request, res: Response) => {
+  try {
+    const {
+      issue,
+      appVersion: requestedAppVersion = '',
+    } = req.body || {};
+
+    const result = await symbolicateAndSaveSentryIssue(issue, requestedAppVersion);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    logger.error('Sentry 问题符号化入库失败', {
+      code: error.code,
+      error: error.message,
+      details: error.details,
+    });
+
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({
+        success: false,
+        code: error.code,
+        error: error.message,
+        details: error.details,
+      });
+      return;
+    }
+
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Sentry 问题符号化入库失败',
+    });
+  }
+});
+
+router.post('/history-status', async (req: Request, res: Response) => {
+  try {
+    const { issues = [] } = req.body || {};
+    if (!Array.isArray(issues)) {
+      res.status(400).json({
+        success: false,
+        error: 'issues 必须是数组',
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        statuses: getSentryIssueHistoryMap(issues),
+      },
+    });
+  } catch (error: any) {
+    logger.error('查询 Sentry 入库状态失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '查询 Sentry 入库状态失败',
+    });
+  }
+});
+
+router.post('/symbolicate-selected', async (req: Request, res: Response) => {
+  try {
+    const {
+      issues = [],
+      limit = 10,
+    } = req.body || {};
+
+    if (!Array.isArray(issues) || issues.length === 0) {
+      res.status(400).json({
+        success: false,
+        error: '请选择要符号化入库的 Sentry 问题',
+      });
+      return;
+    }
+
+    const selectedIssues = issues.slice(0, Math.min(Math.max(Number(limit || 10), 1), 20));
+    const results = [];
+    for (const issue of selectedIssues) {
+      try {
+        results.push(await symbolicateAndSaveSentryIssue(issue, getHighestIssueVersion(issue)));
+      } catch (error: any) {
+        logger.warn('Sentry 批量符号化单条失败', {
+          issueId: issue?.id,
+          error: error.message,
+        });
+        results.push({
+          issue: sentryIssueService.normalizeIssueSummary(issue),
+          error: error.message || '符号化入库失败',
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        total: results.length,
+        successCount: results.filter((result: any) => !result.error).length,
+        failedCount: results.filter((result: any) => result.error).length,
+        results,
+      },
+    });
+  } catch (error: any) {
+    logger.error('Sentry 批量符号化入库失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Sentry 批量符号化入库失败',
     });
   }
 });

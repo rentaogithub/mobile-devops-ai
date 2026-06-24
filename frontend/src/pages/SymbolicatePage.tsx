@@ -34,9 +34,7 @@ import { downloadTextFile, generateFilename } from '../utils/helpers';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
-const SENTRY_PROXY_BASE_URL = 'http://10.1.3.177:3000';
-const SENTRY_IOS_PROJECT_PATH = '/organizations/sentry/projects/nn-ios/?project=6';
-const SENTRY_IOS_PROJECT_URL = `${SENTRY_PROXY_BASE_URL}${SENTRY_IOS_PROJECT_PATH}`;
+const SENTRY_IOS_PROJECT_URL = '/sentry/organizations/sentry/projects/nn-ios/?project=6';
 
 export default function SymbolicatePage() {
   const [crashLog, setCrashLog] = useState('');

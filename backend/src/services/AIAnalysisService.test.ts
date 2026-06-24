@@ -52,4 +52,20 @@ describe('AIAnalysisService OpenAI configuration', () => {
 
     expect(service.openAIEndpoint).toBe('https://relay.example.com/v1');
   });
+
+  it('uses a longer default timeout for crash analysis', () => {
+    delete process.env.AI_ANALYSIS_TIMEOUT;
+
+    const service = new AIAnalysisService() as any;
+
+    expect(service.timeout).toBe(90000);
+  });
+
+  it('uses a compact default output budget for crash analysis', () => {
+    delete process.env.AI_ANALYSIS_MAX_OUTPUT_TOKENS;
+
+    const service = new AIAnalysisService() as any;
+
+    expect(service.maxOutputTokens).toBe(900);
+  });
 });

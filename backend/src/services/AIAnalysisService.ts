@@ -17,6 +17,39 @@ export interface CrashAnalysis {
   crashLine?: number; // 崩溃行号
 }
 
+export interface AggregateCrashIssueInput {
+  id: string;
+  shortId?: string;
+  title: string;
+  count?: string;
+  userCount?: number;
+  level?: string;
+  appVersionRange?: string;
+  eventId?: string;
+  analysisLog: string;
+}
+
+export interface AggregateCrashPattern {
+  title: string;
+  issueIds: string[];
+  sharedSymptoms: string[];
+  commonStackSignals: string[];
+  possibleRootCause: string;
+  confidence: 'low' | 'medium' | 'high';
+  evidence: string[];
+}
+
+export interface AggregateCrashAnalysis {
+  summary: string;
+  conclusion: string;
+  confidence: 'low' | 'medium' | 'high';
+  patterns: AggregateCrashPattern[];
+  suspectedRootCauses: string[];
+  verificationSteps: string[];
+  fixSuggestions: string[];
+  needsMoreData: string[];
+}
+
 /**
  * OpenAI AI 崩溃分析服务
  */
@@ -25,6 +58,7 @@ export class AIAnalysisService {
   private readonly openAIModel: string;
   private readonly openAIAPIStyle: 'responses' | 'chat_completions';
   private readonly timeout: number;
+  private readonly maxOutputTokens: number;
 
   constructor() {
     this.openAIEndpoint = (
@@ -34,7 +68,8 @@ export class AIAnalysisService {
     ).replace(/\/+$/, '');
     this.openAIModel = process.env.OPENAI_MODEL || 'gpt-5.1';
     this.openAIAPIStyle = this.normalizeOpenAIAPIStyle(process.env.OPENAI_API_STYLE);
-    this.timeout = parseInt(process.env.AI_ANALYSIS_TIMEOUT || '30000', 10);
+    this.timeout = parseInt(process.env.AI_ANALYSIS_TIMEOUT || '90000', 10);
+    this.maxOutputTokens = parseInt(process.env.AI_ANALYSIS_MAX_OUTPUT_TOKENS || '900', 10);
   }
 
   /**
@@ -79,7 +114,8 @@ export class AIAnalysisService {
       // 构建分析提示词（包含崩溃位置信息）
       const prompt = this.buildAnalysisPrompt(symbolicatedLog, {
         crashLocation: basicInfo.crashLocation,
-        crashModule: basicInfo.crashModule
+        crashModule: basicInfo.crashModule,
+        crashStack: basicInfo.crashStack
       });
 
       // 调用 AI API
@@ -108,6 +144,25 @@ export class AIAnalysisService {
       logger.error('AI 分析失败', { error: error.message });
       throw error;
     }
+  }
+
+  async analyzeAggregateCrashes(
+    issues: AggregateCrashIssueInput[],
+    apiKey: string
+  ): Promise<AggregateCrashAnalysis> {
+    const effectiveApiKey = this.getEffectiveAPIKey(apiKey);
+    if (!effectiveApiKey || effectiveApiKey.trim().length === 0) {
+      throw new Error('API Key 不能为空');
+    }
+    if (issues.length === 0) {
+      throw new Error('请选择要聚合分析的 Sentry 问题');
+    }
+
+    logger.info('开始 AI 聚合分析 Sentry 崩溃', { issueCount: issues.length });
+
+    const prompt = this.buildAggregateAnalysisPrompt(issues);
+    const response = await this.callAIAPI(prompt, effectiveApiKey);
+    return this.parseAggregateAIResponse(response);
   }
 
   /**
@@ -449,6 +504,7 @@ export class AIAnalysisService {
   private buildAnalysisPrompt(symbolicatedLog: string, crashInfo?: {
     crashLocation?: string;
     crashModule?: string;
+    crashStack?: string;
   }): string {
     const systemPrompt = `你是一个专业的 iOS 崩溃日志分析专家。你的任务是分析符号化后的崩溃日志，并提供详细的分析结果。
 
@@ -456,8 +512,8 @@ export class AIAnalysisService {
 {
   "summary": "简短的崩溃总结（1-2句话）",
   "crashType": "崩溃类型（如：内存访问错误、程序异常终止等）",
-  "possibleCauses": ["可能原因1", "可能原因2", "可能原因3"],
-  "suggestions": ["修复建议1", "修复建议2", "修复建议3"],
+  "possibleCauses": ["可能原因1", "可能原因2"],
+  "suggestions": ["修复建议1", "修复建议2"],
   "severity": "严重程度（low/medium/high/critical）",
   "affectedComponents": ["受影响的组件1", "受影响的组件2"]
 }
@@ -466,7 +522,7 @@ export class AIAnalysisService {
 1. 识别崩溃类型（EXC_BAD_ACCESS、SIGABRT、SIGSEGV 等）
 2. 分析堆栈信息，找出崩溃发生的位置
 3. 根据异常类型和堆栈推断可能的原因
-4. 提供具体的修复建议
+4. 提供具体的修复建议，每类最多 2 条，避免长篇解释
 5. 评估崩溃的严重程度
 6. 识别受影响的系统组件或模块
 
@@ -483,13 +539,141 @@ export class AIAnalysisService {
       }
     }
 
+    const compactCrashLog = this.buildCompactCrashLogForAI(symbolicatedLog, crashInfo?.crashStack);
+    logger.info('AI 分析输入已压缩', {
+      originalLength: symbolicatedLog.length,
+      compactLength: compactCrashLog.length,
+    });
+
     const userPrompt = `请分析以下符号化后的 iOS 崩溃日志：
 ${crashLocationInfo}
 \`\`\`
-${symbolicatedLog.substring(0, 8000)}
+${compactCrashLog}
 \`\`\`
 
 请返回 JSON 格式的分析结果。`;
+
+    return JSON.stringify({
+      systemPrompt,
+      userPrompt,
+    });
+  }
+
+  private buildCompactCrashLogForAI(symbolicatedLog: string, crashStack?: string): string {
+    const sections: string[] = [];
+    const header = symbolicatedLog
+      .split(/\n\s*\n/)
+      .slice(0, 2)
+      .join('\n\n')
+      .trim();
+    if (header) {
+      sections.push(header.substring(0, 1800));
+    }
+
+    const exceptionBlock = this.extractNamedBlock(symbolicatedLog, [
+      /^Exception Type:/im,
+      /^Exception Codes:/im,
+      /^Termination Reason:/im,
+      /^Triggered by Thread:/im,
+      /^Crashed Thread:/im,
+      /^Last Exception Backtrace:/im,
+    ]);
+    if (exceptionBlock) {
+      sections.push(`异常信息：\n${exceptionBlock}`);
+    }
+
+    if (crashStack) {
+      sections.push(`崩溃线程关键堆栈：\n${crashStack.substring(0, 3500)}`);
+    } else {
+      const crashedThread = this.extractCrashedThreadBlock(symbolicatedLog);
+      if (crashedThread) {
+        sections.push(`崩溃线程关键堆栈：\n${crashedThread.substring(0, 3500)}`);
+      }
+    }
+
+    const binaryImages = symbolicatedLog.match(/Binary Images:\n([\s\S]*)$/i)?.[0];
+    if (binaryImages) {
+      const appImages = binaryImages
+        .split('\n')
+        .filter((line) => /NNIM|nnios|Runner|\.app\//i.test(line))
+        .slice(0, 12)
+        .join('\n');
+      if (appImages) {
+        sections.push(`相关 Binary Images：\n${appImages.substring(0, 1200)}`);
+      }
+    }
+
+    return sections.join('\n\n---\n\n').substring(0, 6000);
+  }
+
+  private extractNamedBlock(crashLog: string, patterns: RegExp[]): string {
+    return crashLog
+      .split('\n')
+      .filter((line) => patterns.some((pattern) => pattern.test(line)))
+      .slice(0, 30)
+      .join('\n');
+  }
+
+  private extractCrashedThreadBlock(crashLog: string): string {
+    const crashedThreadMatch = crashLog.match(/Thread\s+\d+\s+Crashed:[\s\S]*?(?=\n\nThread\s+\d+|\n\nBinary Images:|$)/i);
+    if (crashedThreadMatch) {
+      return crashedThreadMatch[0];
+    }
+
+    const crashedThreadNumber = crashLog.match(/Crashed Thread:\s+(\d+)/i)?.[1];
+    if (!crashedThreadNumber) {
+      return '';
+    }
+
+    return crashLog.match(new RegExp(`Thread\\s+${crashedThreadNumber}[^\\n]*[\\s\\S]*?(?=\\n\\nThread\\s+\\d+|\\n\\nBinary Images:|$)`, 'i'))?.[0] || '';
+  }
+
+  private buildAggregateAnalysisPrompt(issues: AggregateCrashIssueInput[]): string {
+    const systemPrompt = `你是一个资深 iOS 崩溃根因分析专家。你的任务不是逐个分析 issue，而是把多个 Sentry 崩溃样本放在一起做聚合归因。
+
+请重点寻找：
+1. 不同堆栈背后的共同异常类型、共同业务入口、共同线程、共同模块、共同生命周期阶段。
+2. 表面堆栈不同但可能由同一根因触发的模式，例如对象生命周期、异步回调、线程竞态、通知/KVO、容器越界、空对象、资源释放、SDK 初始化顺序、主线程/子线程切换等。
+3. 哪些结论有证据，哪些只是低置信度假设。
+
+请只返回 JSON，格式如下：
+{
+  "summary": "整体聚合摘要，1-3 句话",
+  "conclusion": "最可能的根因结论，如果证据不足要明确说明",
+  "confidence": "low/medium/high",
+  "patterns": [
+    {
+      "title": "相似崩溃模式名称",
+      "issueIds": ["issue id 或 short id"],
+      "sharedSymptoms": ["共同现象"],
+      "commonStackSignals": ["共同堆栈信号"],
+      "possibleRootCause": "该模式的可能根因",
+      "confidence": "low/medium/high",
+      "evidence": ["支持这个判断的证据"]
+    }
+  ],
+  "suspectedRootCauses": ["按可能性排序的根因假设"],
+  "verificationSteps": ["建议如何验证，不要泛泛而谈"],
+  "fixSuggestions": ["建议修复方向"],
+  "needsMoreData": ["还需要哪些日志、字段或样本才能提高置信度"]
+}`;
+
+    const issueBlocks = issues.slice(0, 12).map((issue, index) => {
+      const header = [
+        `样本 ${index + 1}`,
+        `Issue: ${issue.shortId || issue.id}`,
+        `Title: ${issue.title}`,
+        issue.count ? `Events: ${issue.count}` : '',
+        typeof issue.userCount === 'number' ? `Users: ${issue.userCount}` : '',
+        issue.level ? `Level: ${issue.level}` : '',
+        issue.appVersionRange ? `App Version Range: ${issue.appVersionRange}` : '',
+        issue.eventId ? `Event: ${issue.eventId}` : '',
+      ].filter(Boolean).join('\n');
+
+      return `${header}\n关键日志/堆栈：\n${issue.analysisLog.substring(0, 3500)}`;
+    }).join('\n\n---\n\n');
+
+    const userPrompt = `请对以下 ${issues.length} 个 Sentry 崩溃 issue 做聚合根因分析。注意：这些 issue 可能堆栈不同，但请寻找共同根因，不要只给单点结论。\n\n${issueBlocks}`;
 
     return JSON.stringify({
       systemPrompt,
@@ -548,7 +732,7 @@ ${symbolicatedLog.substring(0, 8000)}
               content: userPrompt,
             },
           ],
-          max_output_tokens: 2000,
+          max_output_tokens: this.maxOutputTokens,
         },
         {
           headers: {
@@ -615,7 +799,7 @@ ${symbolicatedLog.substring(0, 8000)}
             },
           ],
           temperature: 0.2,
-          max_tokens: 2000,
+          max_tokens: this.maxOutputTokens,
         },
         {
           headers: {
@@ -713,6 +897,63 @@ ${symbolicatedLog.substring(0, 8000)}
         affectedComponents: ['未知'],
       };
     }
+  }
+
+  private parseAggregateAIResponse(response: string): AggregateCrashAnalysis {
+    try {
+      let jsonStr = response.trim();
+      const jsonMatch = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      if (jsonMatch) {
+        jsonStr = jsonMatch[1];
+      } else {
+        const directJsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+        if (directJsonMatch) {
+          jsonStr = directJsonMatch[0];
+        }
+      }
+
+      const parsed = JSON.parse(jsonStr);
+      const patterns = Array.isArray(parsed.patterns) ? parsed.patterns.map((pattern: any) => ({
+        title: String(pattern.title || '相似崩溃模式'),
+        issueIds: Array.isArray(pattern.issueIds) ? pattern.issueIds.map(String) : [],
+        sharedSymptoms: Array.isArray(pattern.sharedSymptoms) ? pattern.sharedSymptoms.map(String) : [],
+        commonStackSignals: Array.isArray(pattern.commonStackSignals) ? pattern.commonStackSignals.map(String) : [],
+        possibleRootCause: String(pattern.possibleRootCause || '证据不足，暂无法判断'),
+        confidence: this.validateConfidence(pattern.confidence),
+        evidence: Array.isArray(pattern.evidence) ? pattern.evidence.map(String) : [],
+      })) : [];
+
+      return {
+        summary: String(parsed.summary || '未能生成聚合摘要'),
+        conclusion: String(parsed.conclusion || '证据不足，暂无法给出明确根因'),
+        confidence: this.validateConfidence(parsed.confidence),
+        patterns,
+        suspectedRootCauses: Array.isArray(parsed.suspectedRootCauses) ? parsed.suspectedRootCauses.map(String) : [],
+        verificationSteps: Array.isArray(parsed.verificationSteps) ? parsed.verificationSteps.map(String) : [],
+        fixSuggestions: Array.isArray(parsed.fixSuggestions) ? parsed.fixSuggestions.map(String) : [],
+        needsMoreData: Array.isArray(parsed.needsMoreData) ? parsed.needsMoreData.map(String) : [],
+      };
+    } catch (error: any) {
+      logger.error('解析 AI 聚合分析响应失败', { error: error.message, response });
+      return {
+        summary: 'AI 聚合分析结果解析失败',
+        conclusion: '无法解析模型输出，请减少聚合 issue 数量后重试',
+        confidence: 'low',
+        patterns: [],
+        suspectedRootCauses: [],
+        verificationSteps: ['检查 Sentry issue 的 latest event 是否包含有效异常栈', '减少 issue 数量后重新发起聚合分析'],
+        fixSuggestions: ['先按 Top 事件数最高的 3-5 个 issue 做小范围聚合'],
+        needsMoreData: ['模型原始响应', '完整 Sentry event JSON', '符号化后的崩溃栈'],
+      };
+    }
+  }
+
+  private validateConfidence(confidence: any): 'low' | 'medium' | 'high' {
+    const valid = ['low', 'medium', 'high'];
+    if (typeof confidence === 'string' && valid.includes(confidence.toLowerCase())) {
+      return confidence.toLowerCase() as 'low' | 'medium' | 'high';
+    }
+    return 'medium';
   }
 
   /**

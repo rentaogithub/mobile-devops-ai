@@ -57,6 +57,7 @@ export interface SentryIssueSummary {
   minAppVersion?: string;
   maxAppVersion?: string;
   appVersions?: string[];
+  excludedAppVersionOnly?: boolean;
 }
 
 export interface SentryIssueAnalysisResult {
@@ -84,6 +85,42 @@ export interface SentryIssueListResult {
 export interface SentryAnalyzeSelectedResult {
   total: number;
   results: SentryIssueAnalysisResult[];
+}
+
+export interface SentryAggregateCrashPattern {
+  title: string;
+  issueIds: string[];
+  sharedSymptoms: string[];
+  commonStackSignals: string[];
+  possibleRootCause: string;
+  confidence: 'low' | 'medium' | 'high';
+  evidence: string[];
+}
+
+export interface SentryAggregateCrashAnalysis {
+  summary: string;
+  conclusion: string;
+  confidence: 'low' | 'medium' | 'high';
+  patterns: SentryAggregateCrashPattern[];
+  suspectedRootCauses: string[];
+  verificationSteps: string[];
+  fixSuggestions: string[];
+  needsMoreData: string[];
+}
+
+export interface SentryAggregateAnalyzeResult {
+  total: number;
+  issues: Array<{
+    id: string;
+    shortId?: string;
+    title: string;
+    count?: string;
+    userCount?: number;
+    level?: string;
+    appVersionRange?: string;
+    eventId?: string;
+  }>;
+  analysis: SentryAggregateCrashAnalysis;
 }
 
 export interface SentrySymbolicateLogResult {
@@ -114,9 +151,29 @@ export interface SentrySymbolicateAnalyzeResult {
   historyId?: number;
 }
 
+export interface HistoryRecord {
+  id: number;
+  appVersion: string;
+  versionDetected: boolean;
+  crashType?: string;
+  crashReason?: string;
+  lastStackCall?: string;
+  crashModule?: string;
+  crashLocation?: string;
+  originalLog: string;
+  symbolicatedLog: string;
+  usedUuids: string[];
+  aiAnalysis?: CrashAnalysis;
+  isFixed: boolean;
+  fixedVersion?: string;
+  createdAt: string;
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
+  code?: string;
   error?: string;
+  details?: string | string[] | Record<string, unknown>;
   warning?: string;
 }
