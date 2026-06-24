@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-iOS 崩溃日志符号化系统现已集成通义千问 AI 智能分析功能，可以自动分析符号化后的崩溃日志，提供：
+iOS 崩溃日志符号化系统现已集成OpenAI AI 智能分析功能，可以自动分析符号化后的崩溃日志，提供：
 
 - 崩溃类型识别
 - 可能的崩溃原因分析
@@ -11,11 +11,11 @@ iOS 崩溃日志符号化系统现已集成通义千问 AI 智能分析功能，
 - 受影响组件识别
 - AI 生成的总结说明
 
-## 如何获取通义千问 API Key
+## 如何获取OpenAI API Key
 
-1. 访问阿里云百炼平台：https://bailian.console.aliyun.com/
-2. 登录您的阿里云账号
-3. 进入"API-KEY 管理"页面
+1. 访问OpenAI Platform：https://platform.openai.com/api-keys
+2. 登录您的 OpenAI 账号
+3. 进入 API Keys 页面
 4. 创建新的 API Key
 5. 复制生成的 API Key（格式通常为 `sk-xxxxxx`）
 
@@ -24,7 +24,7 @@ iOS 崩溃日志符号化系统现已集成通义千问 AI 智能分析功能，
 ### 1. 在符号化页面输入 API Key
 
 1. 打开"符号化"页面
-2. 在"AI 智能分析（可选）"区域输入您的通义千问 API Key
+2. 在"AI 智能分析（可选）"区域输入您的OpenAI API Key
 3. API Key 仅在当前会话中保存，不会被持久化存储
 4. 页面刷新后需要重新输入
 
@@ -116,10 +116,12 @@ Thread 0 Crashed:
 
 ### API 配置
 
-系统使用以下配置调用通义千问 API：
+系统默认调用 OpenAI Responses API，也支持 OpenAI-compatible 中转站的 Chat Completions API：
 
-- **API 端点**：`https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions`
-- **模型**：`qwen-plus`
+- **API 端点**：`https://api.openai.com/v1/responses`
+- **模型**：`gpt-5.1`
+- **中转站端点**：配置 `OPENAI_API_ENDPOINT` 或 `OPENAI_BASE_URL` 为中转站 `/v1` 地址
+- **中转站模式**：配置 `OPENAI_API_STYLE=chat_completions`
 - **超时时间**：30 秒
 - **Temperature**：0.7
 - **Max Tokens**：2000

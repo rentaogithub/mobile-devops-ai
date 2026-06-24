@@ -18,22 +18,22 @@ export interface CrashAnalysis {
 }
 
 /**
- * 通义千问 AI 崩溃分析服务
+ * OpenAI AI 崩溃分析服务
  */
-export class QwenAIService {
-  private readonly apiEndpoint: string;
-  private readonly model: string;
-  private readonly provider: string;
+export class AIAnalysisService {
   private readonly openAIEndpoint: string;
   private readonly openAIModel: string;
+  private readonly openAIAPIStyle: 'responses' | 'chat_completions';
   private readonly timeout: number;
 
   constructor() {
-    this.apiEndpoint = process.env.QWEN_API_ENDPOINT || 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-    this.model = process.env.QWEN_MODEL || 'qwen-plus';
-    this.provider = (process.env.AI_PROVIDER || '').toLowerCase();
-    this.openAIEndpoint = (process.env.OPENAI_API_ENDPOINT || 'https://api.openai.com/v1').replace(/\/+$/, '');
-    this.openAIModel = process.env.CODEX_MODEL || process.env.OPENAI_MODEL || 'gpt-5.1-codex';
+    this.openAIEndpoint = (
+      process.env.OPENAI_API_ENDPOINT ||
+      process.env.OPENAI_BASE_URL ||
+      'https://api.openai.com/v1'
+    ).replace(/\/+$/, '');
+    this.openAIModel = process.env.OPENAI_MODEL || 'gpt-5.1';
+    this.openAIAPIStyle = this.normalizeOpenAIAPIStyle(process.env.OPENAI_API_STYLE);
     this.timeout = parseInt(process.env.AI_ANALYSIS_TIMEOUT || '30000', 10);
   }
 
@@ -498,99 +498,41 @@ ${symbolicatedLog.substring(0, 8000)}
   }
 
   private getEffectiveAPIKey(apiKey?: string): string {
-    if (this.shouldUseOpenAI()) {
-      return process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || apiKey || '';
-    }
-    return process.env.QWEN_API_KEY || apiKey || '';
+    return process.env.OPENAI_API_KEY || apiKey || '';
   }
 
   hasConfiguredAPIKey(apiKey?: string): boolean {
     return this.getEffectiveAPIKey(apiKey).trim().length > 0;
   }
 
-  private shouldUseOpenAI(): boolean {
-    return this.provider === 'codex' || this.provider === 'openai' ||
-      !!process.env.OPENAI_API_KEY || !!process.env.CODEX_API_KEY;
-  }
-
   private async callAIAPI(prompt: string, apiKey: string): Promise<string> {
-    if (this.shouldUseOpenAI()) {
-      return this.callOpenAIResponsesAPI(prompt, apiKey);
+    if (this.openAIAPIStyle === 'chat_completions') {
+      return this.callOpenAIChatCompletionsAPI(prompt, apiKey);
     }
-    return this.callQwenAPI(prompt, apiKey);
+    return this.callOpenAIResponsesAPI(prompt, apiKey);
+  }
+
+  private normalizeOpenAIAPIStyle(style?: string): 'responses' | 'chat_completions' {
+    const normalized = (style || '').trim().toLowerCase().replace(/[-\s]/g, '_');
+    return normalized === 'chat' || normalized === 'chat_completions' || normalized === 'chat_completions_api'
+      ? 'chat_completions'
+      : 'responses';
   }
 
   /**
-   * 调用通义千问兼容 API
-   */
-  private async callQwenAPI(prompt: string, apiKey: string): Promise<string> {
-    try {
-      const { systemPrompt, userPrompt } = JSON.parse(prompt);
-
-      logger.info('调用 AI API', { provider: 'qwen', model: this.model, hasApiKey: !!apiKey });
-
-      const response = await axios.post(
-        `${this.apiEndpoint}/chat/completions`,
-        {
-          model: this.model,
-          messages: [
-            {
-              role: 'system',
-              content: systemPrompt,
-            },
-            {
-              role: 'user',
-              content: userPrompt,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 2000,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          timeout: this.timeout,
-        }
-      );
-
-      if (!response.data || !response.data.choices || response.data.choices.length === 0) {
-        throw new Error('AI API 返回数据格式错误');
-      }
-
-      const content = response.data.choices[0].message?.content;
-      if (!content) {
-        throw new Error('AI API 返回内容为空');
-      }
-
-      return content;
-    } catch (error: any) {
-      if (axios.isAxiosError(error)) {
-        const axiosError = error as AxiosError;
-        if (axiosError.response?.status === 401) {
-          throw new Error('API Key 无效，请检查您的 AI API Key');
-        }
-        if (axiosError.code === 'ECONNABORTED') {
-          throw new Error('AI 分析超时，请稍后重试');
-        }
-        if (axiosError.response) {
-          throw new Error(`AI API 调用失败: ${axiosError.response.status} ${axiosError.response.statusText}`);
-        }
-        throw new Error('网络连接失败，请检查网络设置');
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * 调用 OpenAI Responses API（Codex/OpenAI）
+   * 调用 OpenAI Responses API
    */
   private async callOpenAIResponsesAPI(prompt: string, apiKey: string): Promise<string> {
     try {
       const { systemPrompt, userPrompt } = JSON.parse(prompt);
 
-      logger.info('调用 AI API', { provider: 'openai', model: this.openAIModel, hasApiKey: !!apiKey });
+      logger.info('调用 AI API', {
+        provider: 'openai',
+        apiStyle: 'responses',
+        endpoint: this.openAIEndpoint,
+        model: this.openAIModel,
+        hasApiKey: !!apiKey,
+      });
 
       const response = await axios.post(
         `${this.openAIEndpoint}/responses`,
@@ -638,6 +580,73 @@ ${symbolicatedLog.substring(0, 8000)}
           throw new Error(`OpenAI API 调用失败: ${axiosError.response.status} ${axiosError.response.statusText} ${detail.slice(0, 200)}`);
         }
         throw new Error('网络连接失败，请检查网络设置');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 调用 OpenAI-compatible Chat Completions API（常见中转站）
+   */
+  private async callOpenAIChatCompletionsAPI(prompt: string, apiKey: string): Promise<string> {
+    try {
+      const { systemPrompt, userPrompt } = JSON.parse(prompt);
+
+      logger.info('调用 AI API', {
+        provider: 'openai',
+        apiStyle: 'chat_completions',
+        endpoint: this.openAIEndpoint,
+        model: this.openAIModel,
+        hasApiKey: !!apiKey,
+      });
+
+      const response = await axios.post(
+        `${this.openAIEndpoint}/chat/completions`,
+        {
+          model: this.openAIModel,
+          messages: [
+            {
+              role: 'system',
+              content: systemPrompt,
+            },
+            {
+              role: 'user',
+              content: userPrompt,
+            },
+          ],
+          temperature: 0.2,
+          max_tokens: 2000,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          timeout: this.timeout,
+        }
+      );
+
+      const content = response.data?.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error('AI API 返回内容为空');
+      }
+      return content;
+    } catch (error: any) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 401) {
+          throw new Error('API Key 无效，请检查您的 OpenAI API Key 或中转站 Token');
+        }
+        if (axiosError.code === 'ECONNABORTED') {
+          throw new Error('AI 分析超时，请稍后重试');
+        }
+        if (axiosError.response) {
+          const detail = typeof axiosError.response.data === 'string'
+            ? axiosError.response.data
+            : JSON.stringify(axiosError.response.data || {});
+          throw new Error(`OpenAI 中转站调用失败: ${axiosError.response.status} ${axiosError.response.statusText} ${detail.slice(0, 200)}`);
+        }
+        throw new Error('网络连接失败，请检查网络或中转站地址');
       }
       throw error;
     }
@@ -733,4 +742,4 @@ ${symbolicatedLog.substring(0, 8000)}
   }
 }
 
-export default new QwenAIService();
+export default new AIAnalysisService();

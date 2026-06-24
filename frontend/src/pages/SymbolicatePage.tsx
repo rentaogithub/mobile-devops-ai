@@ -45,8 +45,8 @@ export default function SymbolicatePage() {
   const [selectedMainAppVersion, setSelectedMainAppVersion] = useState<string | undefined>(undefined);
   const [dsymList, setDsymList] = useState<DSYMInfo[]>([]);
   const [apiKey, setApiKey] = useState(() => {
-    // 从 localStorage 读取保存的 API Key；Sentry 自动分析优先使用后端配置的 Codex/OpenAI Key。
-    return localStorage.getItem('qwen_api_key') || '';
+    // 从 localStorage 读取保存的 API Key；Sentry 自动分析优先使用后端配置的 OpenAI Key。
+    return localStorage.getItem('openai_api_key') || '';
   });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<{
@@ -438,7 +438,7 @@ export default function SymbolicatePage() {
     }
 
     if (!apiKey || apiKey.trim().length === 0) {
-      message.warning('请输入 Codex/OpenAI API Key，或在后端配置默认 Key');
+      message.warning('请输入 OpenAI API Key，或在后端配置默认 Key');
       return;
     }
 
@@ -973,7 +973,7 @@ Binary Images:
               </Space>
               <APIKeyInput value={apiKey} onChange={setApiKey} />
               <Text type="secondary" style={{ fontSize: '12px', marginTop: '4px', display: 'block' }}>
-                提供 Codex/OpenAI API Key 可获得智能崩溃分析。API Key 保存在浏览器本地；Sentry 自动解析可使用后端默认配置。
+                提供 OpenAI API Key 可获得智能崩溃分析。API Key 保存在浏览器本地；Sentry 自动解析可使用后端默认配置。
               </Text>
             </div>
           )}

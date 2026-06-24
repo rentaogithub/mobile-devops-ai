@@ -121,7 +121,7 @@ const handleTabChange = (activeKey: string) => {
 
 ### 没有 API Key
 - 不会自动触发分析
-- 显示提示：`请输入通义千问 API Key`
+- 显示提示：`请输入 OpenAI API Key`
 - 用户需要输入 API Key 后手动点击按钮
 
 ### API 调用失败

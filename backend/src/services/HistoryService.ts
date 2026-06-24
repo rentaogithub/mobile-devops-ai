@@ -398,11 +398,11 @@ export class HistoryService {
   async analyzeHistory(id: number, apiKey: string): Promise<any> {
     const record = this.getHistoryById(id);
 
-    // 动态导入 QwenAIService
-    const { default: qwenAIService } = await import('./QwenAIService');
+    // 动态导入 AI 分析服务，避免历史服务初始化时提前加载外部 API 配置。
+    const { default: aiAnalysisService } = await import('./AIAnalysisService');
 
     // 调用AI分析，使用应用版本作为fallback
-    const analysis = await qwenAIService.analyzeCrashLog(
+    const analysis = await aiAnalysisService.analyzeCrashLog(
       record.symbolicatedLog,
       apiKey,
       record.appVersion

@@ -39,9 +39,9 @@ export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState('log'); // 当前激活的标签
   const isAdmin = authUtils.isAdmin();
 
-  // 从 localStorage 获取保存的 API Key，如果没有则使用默认值
+  // 从 localStorage 获取保存的 OpenAI API Key
   const getSavedApiKey = () => {
-    return localStorage.getItem('qwen_api_key') || 'OS-0t54gp54r23nf5z0';
+    return localStorage.getItem('openai_api_key') || '';
   };
 
   useEffect(() => {
@@ -194,7 +194,7 @@ export default function HistoryPage() {
       startAnalysis(savedApiKey);
     } else {
       // 如果没有保存的 API Key，提示用户
-      message.warning('请先在符号化页面设置通义千问 API Key');
+      message.warning('请先在符号化页面设置 OpenAI API Key，或在后端配置默认 Key');
     }
   };
 
@@ -493,7 +493,7 @@ export default function HistoryPage() {
                             <Space direction="vertical" size="small">
                               <Text>暂无 AI 分析结果</Text>
                               <Text type="secondary" style={{ fontSize: 12 }}>
-                                请先在符号化页面设置通义千问 API Key
+                                请先在符号化页面设置 OpenAI API Key，或在后端配置默认 Key
                               </Text>
                             </Space>
                           }

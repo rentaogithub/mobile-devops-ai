@@ -37,7 +37,7 @@ AI 分析结果包含：
 
 1. 在符号化结果页面
 2. 切换到"AI 智能分析"标签页
-3. 输入通义千问 API Key
+3. 输入OpenAI API Key
 4. 点击"开始分析"
 5. AI 分析完成后，结果自动保存到历史记录
 
@@ -135,7 +135,7 @@ async updateAIAnalysis(id: number, aiAnalysis: any): Promise<void> {
 ```typescript
 // symbolicate.routes.ts
 // 执行 AI 分析
-const analysis = await qwenAIService.analyzeCrashLog(...);
+const analysis = await aiAnalysisService.analyzeCrashLog(...);
 
 // 查找最近的匹配记录
 const recentRecords = historyService.getHistoryByVersion(mainAppVersion);

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { SymbolizerService, StorageService } from '../services';
 import historyService from '../services/HistoryService';
-import qwenAIService from '../services/QwenAIService';
+import aiAnalysisService from '../services/AIAnalysisService';
 import symbolicationCache from '../services/SymbolicationCacheService';
 import { AppError, ErrorCode } from '../types';
 import logger from '../utils/logger';
@@ -454,7 +454,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供符号化后的崩溃日志', 400);
     }
 
-    if (!qwenAIService.hasConfiguredAPIKey(apiKey)) {
+    if (!aiAnalysisService.hasConfiguredAPIKey(apiKey)) {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供 API Key', 400);
     }
 
@@ -496,7 +496,7 @@ router.post('/analyze', async (req: Request, res: Response) => {
     logger.info('最终使用的应用版本', { mainAppVersion });
 
     // 执行 AI 分析
-    const analysis = await qwenAIService.analyzeCrashLog(
+    const analysis = await aiAnalysisService.analyzeCrashLog(
       symbolicatedLog,
       apiKey,
       mainAppVersion

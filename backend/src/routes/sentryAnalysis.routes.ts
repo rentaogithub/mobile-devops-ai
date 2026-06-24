@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import sentryIssueService from '../services/SentryIssueService';
-import qwenAIService from '../services/QwenAIService';
+import aiAnalysisService from '../services/AIAnalysisService';
 import { StorageService, SymbolizerService } from '../services';
 import historyService from '../services/HistoryService';
 import { AppError, DSYMInfo, ErrorCode } from '../types';
@@ -182,7 +182,7 @@ router.post('/analyze-selected', async (req: Request, res: Response) => {
         const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
         const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
         const analysisLog = sentryIssueService.buildAnalysisLog(normalizedIssue, event);
-        const analysis = await qwenAIService.analyzeCrashLog(analysisLog, apiKey);
+        const analysis = await aiAnalysisService.analyzeCrashLog(analysisLog, apiKey);
         return {
           issue: normalizedIssue,
           eventId: event?.id,
@@ -345,7 +345,37 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         issueId: normalizedIssue.id,
         appVersion,
         historyId: existingHistory.id,
+        hasAIAnalysis: !!existingHistory.aiAnalysis,
       });
+
+      let aiAnalysis = existingHistory.aiAnalysis;
+      let aiError: string | undefined = undefined;
+
+      if (!aiAnalysis) {
+        if (aiAnalysisService.hasConfiguredAPIKey(apiKey)) {
+          try {
+            aiAnalysis = await aiAnalysisService.analyzeCrashLog(
+              existingHistory.symbolicatedLog,
+              apiKey,
+              existingHistory.appVersion || appVersion
+            );
+            await historyService.updateAIAnalysis(existingHistory.id, aiAnalysis);
+            logger.info('Sentry 历史记录已补充 AI 分析', {
+              issueId: normalizedIssue.id,
+              historyId: existingHistory.id,
+            });
+          } catch (error: any) {
+            aiError = error.message || 'AI 分析失败';
+            logger.warn('Sentry 历史记录补充 AI 分析失败，保留符号化结果', {
+              issueId: normalizedIssue.id,
+              historyId: existingHistory.id,
+              error: aiError,
+            });
+          }
+        } else {
+          aiError = '未配置 AI API Key';
+        }
+      }
 
       res.json({
         success: true,
@@ -357,7 +387,8 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
           originalLog: existingHistory.originalLog,
           symbolicatedLog: existingHistory.symbolicatedLog,
           matchedUUIDs: existingHistory.usedUuids,
-          aiAnalysis: existingHistory.aiAnalysis,
+          aiAnalysis,
+          aiError,
           historyId: existingHistory.id,
           fromHistory: true,
         },
@@ -373,9 +404,9 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
     let aiAnalysis: any = undefined;
     let aiError: string | undefined = undefined;
-    if (qwenAIService.hasConfiguredAPIKey(apiKey)) {
+    if (aiAnalysisService.hasConfiguredAPIKey(apiKey)) {
       try {
-        aiAnalysis = await qwenAIService.analyzeCrashLog(
+        aiAnalysis = await aiAnalysisService.analyzeCrashLog(
           symbolicated.symbolicatedLog,
           apiKey,
           appVersion
@@ -465,7 +496,7 @@ router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
       try {
         const event = await sentryIssueService.getLatestEvent(issue.id);
         const analysisLog = sentryIssueService.buildAnalysisLog(issue, event);
-        const analysis = await qwenAIService.analyzeCrashLog(analysisLog, apiKey);
+        const analysis = await aiAnalysisService.analyzeCrashLog(analysisLog, apiKey);
         return {
           issue,
           eventId: event?.id,

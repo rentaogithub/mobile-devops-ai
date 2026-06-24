@@ -40,8 +40,12 @@ PORT=3001
 # MAX_FILE_SIZE=524288000
 
 # AI 配置（可选）
-# QWEN_API_KEY=your_api_key
-# QWEN_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# OPENAI_API_KEY=your_openai_api_key_or_relay_token
+# OPENAI_API_ENDPOINT=https://api.openai.com/v1
+# OPENAI_BASE_URL=https://relay.example.com/v1
+# OPENAI_MODEL=gpt-5.1
+# OPENAI_API_STYLE=responses
+# OPENAI_API_STYLE=chat_completions
 
 # 企业微信配置（可选）
 # WECHAT_WORK_WEBHOOK=your_webhook_url
@@ -200,7 +204,7 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 - **后端**：Node.js + Express + TypeScript
 - **数据库**：SQLite (better-sqlite3)
 - **符号化**：Apple symbolicatecrash
-- **AI**：通义千问 API
+- **AI**：OpenAI Responses API
 
 ## 🤝 贡献
 
@@ -209,8 +213,6 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
-
 
 
 
