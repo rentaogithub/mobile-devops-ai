@@ -594,6 +594,70 @@ function normalizeJenkinsUrl(url?: string) {
   }
 }
 
+function getPublicJenkinsBaseUrl(req: Request) {
+  const configured = String(process.env.JENKINS_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+  if (configured) return configured;
+  try {
+    const base = new URL(JENKINS_BASE_URL);
+    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return JENKINS_BASE_URL;
+    const origin = String(req.get('origin') || '').trim();
+    const originHost = origin ? new URL(origin).hostname : '';
+    const requestHost = String(req.get('host') || '').split(':')[0];
+    const publicHost = originHost || requestHost;
+    if (publicHost && !['127.0.0.1', 'localhost', '::1'].includes(publicHost)) {
+      base.hostname = publicHost;
+    }
+    return base.toString().replace(/\/$/, '');
+  } catch {
+    return JENKINS_BASE_URL;
+  }
+}
+
+function publicJenkinsUrl(req: Request, url?: string) {
+  if (!url) return url;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url, JENKINS_BASE_URL);
+    const base = new URL(JENKINS_BASE_URL);
+    const sameJenkinsPort = (parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === (base.port || (base.protocol === 'https:' ? '443' : '80'));
+    const isLocalJenkinsHost = ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
+    const isConfiguredJenkinsHost = parsed.hostname === base.hostname;
+    if (sameJenkinsPort && (isLocalJenkinsHost || isConfiguredJenkinsHost)) {
+      const publicBase = new URL(getPublicJenkinsBaseUrl(req));
+      parsed.protocol = publicBase.protocol;
+      parsed.host = publicBase.host;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function publicJenkinsUrlsInValue(req: Request, value: any): any {
+  if (typeof value === 'string') return publicJenkinsUrl(req, value);
+  if (Array.isArray(value)) return value.map((item) => publicJenkinsUrlsInValue(req, item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, publicJenkinsUrlsInValue(req, item)]));
+  }
+  return value;
+}
+
+function internalJenkinsUrl(req: Request, url: string) {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    const base = new URL(JENKINS_BASE_URL);
+    const publicBase = new URL(getPublicJenkinsBaseUrl(req));
+    if (parsed.origin === publicBase.origin) {
+      parsed.protocol = base.protocol;
+      parsed.host = base.host;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 function buildJenkinsArtifactUrl(jobPath: string, buildNumber: number, relativePath: string) {
   const encodedPath = relativePath
     .split('/')
@@ -2039,9 +2103,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         }
       : job.lastBuild;
 
-    res.json({
-      success: true,
-      data: {
+    const responseData = {
         job: {
           name: job.displayName || DEFAULT_JOB_NAME,
           fullName: job.fullName || DEFAULT_JOB_NAME,
@@ -2057,7 +2119,10 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
           successRate: finished > 0 ? `${Math.round((success / finished) * 100)}%` : '-',
         },
         builds,
-      },
+      };
+    res.json({
+      success: true,
+      data: publicJenkinsUrlsInValue(req, responseData),
     });
   } catch (error: any) {
     res.status(502).json({
@@ -2137,7 +2202,8 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
       res.status(400).json({ success: false, error: 'url 不能为空' });
       return;
     }
-    const parsedUrl = new URL(artifactUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
+    const fetchUrl = internalJenkinsUrl(req, artifactUrl);
+    const parsedUrl = new URL(fetchUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
     const jenkinsUrl = new URL(JENKINS_BASE_URL);
     const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
     if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
@@ -2151,7 +2217,7 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
 
     const preview = isLocalQualityArtifact
       ? await readLocalQualityTextArtifact(String(parsedUrl.searchParams.get('path') || ''))
-      : await fetchJenkinsTextArtifact(artifactUrl);
+      : await fetchJenkinsTextArtifact(fetchUrl);
     let content = preview.content;
     let format: 'text' | 'json' | 'xml' = 'text';
     if (/\.json($|[?#])/i.test(parsedUrl.pathname) || /application\/json/i.test(preview.contentType)) {
@@ -2168,7 +2234,7 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
     res.json({
       success: true,
       data: {
-        url: artifactUrl,
+        url: publicJenkinsUrl(req, artifactUrl),
         content,
         contentType: preview.contentType,
         format,
@@ -2190,7 +2256,8 @@ router.get('/nn/quality/performance-samples', async (req: Request, res: Response
       res.status(400).json({ success: false, error: 'url 不能为空' });
       return;
     }
-    const parsedUrl = new URL(artifactUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
+    const fetchUrl = internalJenkinsUrl(req, artifactUrl);
+    const parsedUrl = new URL(fetchUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
     const jenkinsUrl = new URL(JENKINS_BASE_URL);
     const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
     if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
@@ -2200,13 +2267,13 @@ router.get('/nn/quality/performance-samples', async (req: Request, res: Response
 
     const preview = isLocalQualityArtifact
       ? await readLocalQualityTextArtifact(String(parsedUrl.searchParams.get('path') || ''), 8 * 1024 * 1024)
-      : await fetchJenkinsTextArtifact(artifactUrl, 8 * 1024 * 1024);
+      : await fetchJenkinsTextArtifact(fetchUrl, 8 * 1024 * 1024);
     const parsed = parsePerformanceSamplesJsonl(preview.content);
 
     res.json({
       success: true,
       data: {
-        url: artifactUrl,
+        url: publicJenkinsUrl(req, artifactUrl),
         contentType: preview.contentType,
         sourceTruncated: preview.truncated,
         ...parsed,
@@ -2220,7 +2287,7 @@ router.get('/nn/quality/performance-samples', async (req: Request, res: Response
   }
 });
 
-router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
+router.get('/nn/quality/builds', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
     const tree = [
@@ -2316,9 +2383,7 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
     const success = builds.filter((build: any) => build.result === 'SUCCESS').length;
     const finished = builds.filter((build: any) => !build.building && build.result).length;
 
-    res.json({
-      success: true,
-      data: {
+    const responseData = {
         job: {
           name: job.displayName || DEFAULT_QA_JOB_NAME,
           fullName: job.fullName || DEFAULT_QA_JOB_NAME,
@@ -2333,7 +2398,10 @@ router.get('/nn/quality/builds', async (_req: Request, res: Response) => {
           successRate: finished > 0 ? `${Math.round((success / finished) * 100)}%` : '-',
         },
         builds,
-      },
+      };
+    res.json({
+      success: true,
+      data: publicJenkinsUrlsInValue(req, responseData),
     });
   } catch (error: any) {
     if (error.response?.status === 404) {
@@ -2543,13 +2611,13 @@ router.post('/nn/build', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      data: {
+      data: publicJenkinsUrlsInValue(req, {
         jobName: DEFAULT_JOB_NAME,
         deployTarget,
         branch,
         jenkinsBranch,
         url: `${JENKINS_BASE_URL}/${jobPath}/`,
-      },
+      }),
     });
   } catch (error: any) {
     res.status(502).json({
@@ -2917,13 +2985,13 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      data: {
+      data: publicJenkinsUrlsInValue(req, {
         jobName: DEFAULT_QA_JOB_NAME,
         sourceBuildNumber: buildNumber,
         testSuite,
         devicePool,
         url: `${JENKINS_BASE_URL}/${jobPath}/`,
-      },
+      }),
     });
   } catch (error: any) {
     res.status(502).json({

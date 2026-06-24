@@ -427,9 +427,27 @@ function getChannelBuildNumber(build: JenkinsBuild) {
   return channelBuildNumber;
 }
 
+function normalizeOpenUrl(url?: string) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
+      parsed.hostname = window.location.hostname;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+function openExternalUrl(url?: string) {
+  const normalizedUrl = normalizeOpenUrl(url);
+  if (!normalizedUrl) return;
+  window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
+}
+
 function openPerformanceTrace(url?: string) {
-  if (!url) return;
-  window.open(url, '_blank', 'noopener,noreferrer');
+  openExternalUrl(url);
 }
 
 type QualityPerformanceAnalysis = NonNullable<NonNullable<JenkinsQualityBuild['qualitySummary']>['performanceAnalysis']>;
@@ -3000,7 +3018,7 @@ export default function CICDPage() {
         </div>
         {activeSection === 'release' ? (
           <Space>
-            <Button icon={<ExportOutlined />} onClick={() => window.open(data?.job.url || `${window.location.protocol}//${window.location.hostname}:8080/job/nn/`, '_blank', 'noopener,noreferrer')}>
+            <Button icon={<ExportOutlined />} onClick={() => openExternalUrl(data?.job.url || `${window.location.protocol}//${window.location.hostname}:8080/job/nn/`)}>
               打开 Jenkins
             </Button>
             <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
@@ -3100,7 +3118,7 @@ export default function CICDPage() {
               key: 'number',
               width: 90,
               render: (number: number, record) => (
-                <Button type="link" onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
+                <Button type="link" onClick={() => openExternalUrl(record.url)}>
                   #{number}
                 </Button>
               ),
@@ -3200,7 +3218,7 @@ export default function CICDPage() {
                     size="small"
                     icon={<DownloadOutlined />}
                     disabled={!record.archiveUrl}
-                    onClick={() => record.archiveUrl && window.open(record.archiveUrl, '_blank', 'noopener,noreferrer')}
+                    onClick={() => openExternalUrl(record.archiveUrl)}
                   >
                     下载
                   </Button>
@@ -3366,7 +3384,7 @@ export default function CICDPage() {
                         key: 'number',
                         width: 120,
                         render: (number: number, record) => (
-                          <Button type="link" onClick={() => window.open(record.url, '_blank', 'noopener,noreferrer')}>
+                          <Button type="link" onClick={() => openExternalUrl(record.url)}>
                             #{number}
                           </Button>
                         ),
@@ -3830,14 +3848,14 @@ export default function CICDPage() {
             {qualityReportBuild?.qualitySummary?.artifacts?.qualityLogUrl && (
               <Button
                 icon={<DownloadOutlined />}
-                onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl, '_blank', 'noopener,noreferrer')}
+                onClick={() => openExternalUrl(qualityReportBuild.qualitySummary?.artifacts?.qualityLogUrl)}
               >
                 下载日志
               </Button>
             )}
             {qualityReportBuild?.qualitySummary?.artifacts?.junitUrl && (
               <Button
-                onClick={() => window.open(qualityReportBuild.qualitySummary?.artifacts?.junitUrl, '_blank', 'noopener,noreferrer')}
+                onClick={() => openExternalUrl(qualityReportBuild.qualitySummary?.artifacts?.junitUrl)}
               >
                 下载 JUnit
               </Button>
@@ -3882,7 +3900,7 @@ export default function CICDPage() {
                           Monkey {formatMonkeyExecutionSummary(qualityReportBuild)}
                         </Tag>
                       )}
-                      <Button type="link" size="small" onClick={() => window.open(qualityReportBuild.url, '_blank', 'noopener,noreferrer')}>
+                      <Button type="link" size="small" onClick={() => openExternalUrl(qualityReportBuild.url)}>
                         Jenkins #{qualityReportBuild.number}
                       </Button>
                     </Space>
@@ -3987,7 +4005,7 @@ export default function CICDPage() {
                       size="small"
                       title="Monkey 报告"
                       extra={qualityArtifactPreview?.url && (
-                        <Button size="small" type="link" onClick={() => window.open(qualityArtifactPreview.url, '_blank', 'noopener,noreferrer')}>
+                        <Button size="small" type="link" onClick={() => openExternalUrl(qualityArtifactPreview.url)}>
                           打开原文件
                         </Button>
                       )}
@@ -4011,7 +4029,7 @@ export default function CICDPage() {
                       )}
                       extra={(
                         <Space>
-                          <Button size="small" type="link" onClick={() => window.open(qualityArtifactPreview.url, '_blank', 'noopener,noreferrer')}>
+                          <Button size="small" type="link" onClick={() => openExternalUrl(qualityArtifactPreview.url)}>
                             打开原文件
                           </Button>
                           <Button size="small" type="text" onClick={() => setQualityArtifactPreview(null)}>
@@ -4067,7 +4085,7 @@ export default function CICDPage() {
                       extra={(
                         <Space>
                           {!isStutterQualityReport && qualityPerformanceSamples?.url && (
-                            <Button size="small" type="link" onClick={() => window.open(qualityPerformanceSamples.url, '_blank', 'noopener,noreferrer')}>
+                            <Button size="small" type="link" onClick={() => openExternalUrl(qualityPerformanceSamples.url)}>
                               采样原文件
                             </Button>
                           )}
@@ -4362,7 +4380,7 @@ export default function CICDPage() {
         footer={qrPreview ? (
           <Space>
             <Button onClick={() => setQrPreview(null)}>关闭</Button>
-            <Button type="primary" onClick={() => window.open(qrPreview.url, '_blank', 'noopener,noreferrer')}>
+            <Button type="primary" onClick={() => openExternalUrl(qrPreview.url)}>
               打开地址
             </Button>
           </Space>
@@ -4374,7 +4392,7 @@ export default function CICDPage() {
             {qrPreview?.channel && <Tag color="blue">{qrPreview.channel}</Tag>}
             {qrPreview?.buildNumber && <Tag color="green">渠道构建号 {qrPreview.buildNumber}</Tag>}
           </Space>
-          {qrPreview?.url && <QRCode value={qrPreview.url} size={260} />}
+          {qrPreview?.url && <QRCode value={normalizeOpenUrl(qrPreview.url)} size={260} />}
         </Space>
       </Modal>
     </div>

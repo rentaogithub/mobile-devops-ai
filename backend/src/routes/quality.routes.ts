@@ -32,6 +32,45 @@ function buildAuthConfig() {
   return username && token ? { auth: { username, password: token } } : {};
 }
 
+function getPublicJenkinsBaseUrl(req: Request) {
+  const configured = String(process.env.JENKINS_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
+  if (configured) return configured;
+  try {
+    const base = new URL(JENKINS_BASE_URL);
+    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return JENKINS_BASE_URL;
+    const origin = String(req.get('origin') || '').trim();
+    const originHost = origin ? new URL(origin).hostname : '';
+    const requestHost = String(req.get('host') || '').split(':')[0];
+    const publicHost = originHost || requestHost;
+    if (publicHost && !['127.0.0.1', 'localhost', '::1'].includes(publicHost)) {
+      base.hostname = publicHost;
+    }
+    return base.toString().replace(/\/$/, '');
+  } catch {
+    return JENKINS_BASE_URL;
+  }
+}
+
+function publicJenkinsUrl(req: Request, url?: string) {
+  if (!url) return url;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    const base = new URL(JENKINS_BASE_URL);
+    const sameJenkinsPort = (parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === (base.port || (base.protocol === 'https:' ? '443' : '80'));
+    const isLocalJenkinsHost = ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
+    const isConfiguredJenkinsHost = parsed.hostname === base.hostname;
+    if (sameJenkinsPort && (isLocalJenkinsHost || isConfiguredJenkinsHost)) {
+      const publicBase = new URL(getPublicJenkinsBaseUrl(req));
+      parsed.protocol = publicBase.protocol;
+      parsed.host = publicBase.host;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 async function getCrumb() {
   try {
     const response = await axios.get(`${JENKINS_BASE_URL}/crumbIssuer/api/json`, {
@@ -417,7 +456,7 @@ function selectAvailableDeviceFromPool(pool: any, fallback: string) {
   return { deviceKey: firstDeviceKey, activeTask: findActiveTaskOnDevice(firstDeviceKey), deviceKeys };
 }
 
-async function triggerJenkinsMonkey(payload: any) {
+async function triggerJenkinsMonkey(req: Request, payload: any) {
   const app = payload.app || {};
   const monkey = payload.monkey || {};
   const devicePool = String(monkey.device_pool || payload.devicePool || 'ios-default').trim();
@@ -483,8 +522,8 @@ async function triggerJenkinsMonkey(payload: any) {
   return {
     task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:queued:${Date.now()}`,
     status: 'queued',
-    queue_url: response.headers.location || '',
-    job_url: `${JENKINS_BASE_URL}/${jobPath}/`,
+    queue_url: publicJenkinsUrl(req, response.headers.location || ''),
+    job_url: publicJenkinsUrl(req, `${JENKINS_BASE_URL}/${jobPath}/`),
   };
 }
 
@@ -495,7 +534,7 @@ router.post('/tasks', async (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: '当前仅支持 task_type=ios_monkey' });
       return;
     }
-    const data = await triggerJenkinsMonkey(req.body);
+    const data = await triggerJenkinsMonkey(req, req.body);
     res.json({ success: true, data });
   } catch (error: any) {
     res.status(502).json({ success: false, error: error.message || '创建 Monkey 任务失败' });
@@ -531,7 +570,7 @@ router.post('/tasks/:taskId/rerun', async (req: Request, res: Response) => {
     if (!buildNumber) throw new Error('任务不存在');
     const task = mapBuildToTask(buildNumber);
     const seedStrategy = String(req.body?.seed_strategy || 'reuse');
-    const data = await triggerJenkinsMonkey({
+    const data = await triggerJenkinsMonkey(req, {
       buildNumber: task.build,
       branch: task.summary?.branch,
       commitHash: task.summary?.commitHash,
