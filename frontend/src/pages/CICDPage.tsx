@@ -1663,6 +1663,10 @@ function eventTypeLabel(type?: string) {
     swipe: '滑动',
     edgeBack: '边缘返回',
     tapBack: '点击返回',
+    businessNav: '业务入口切换',
+    businessExplore: '业务探索',
+    businessGuardBack: '业务保护返回',
+    businessGuardSwipe: '业务保护滑动',
   };
   return labels[type || ''] || type || '未知';
 }
@@ -1678,6 +1682,11 @@ function MonkeyReportSummary({
     index?: number;
     type?: string;
     reason?: string;
+    businessDomain?: string;
+    businessPath?: string;
+    pageName?: string;
+    riskLevel?: string;
+    businessGuard?: string;
     x?: number;
     y?: number;
     startX?: number;
@@ -1703,7 +1712,23 @@ function MonkeyReportSummary({
       avoidTopBar?: boolean;
       heartbeatIntervalSeconds?: number;
       forbiddenTexts?: string[];
+      businessAware?: boolean;
+      businessDomains?: string[];
+      guardedActionPolicy?: string;
     };
+    businessAware?: boolean;
+    businessCoverage?: {
+      enabled?: boolean;
+      targetDomains?: string[];
+      guardedActionPolicy?: string;
+      domainCounts?: Record<string, number>;
+      riskCounts?: Record<string, number>;
+      topPaths?: Array<{ businessPath?: string; eventCount?: number }>;
+      matchedClasses?: Record<string, number>;
+      mapLoadError?: string;
+    };
+    dominantBusinessDomain?: string;
+    lastBusinessPath?: string;
     events?: MonkeyEvent[];
   };
 
@@ -1733,6 +1758,15 @@ function MonkeyReportSummary({
   const executedEvents = report.executedEvents ?? events.length;
   const durationSeconds = report.durationMs ? Math.round(report.durationMs / 1000) : report.requestedDurationSeconds;
   const isPassed = report.status === 'passed';
+  const businessCoverage = report.businessCoverage;
+  const businessAware = !!(report.businessAware || businessCoverage?.enabled || report.rules?.businessAware);
+  const domainEntries = Object.entries(businessCoverage?.domainCounts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  const riskEntries = Object.entries(businessCoverage?.riskCounts || {})
+    .filter(([, count]) => Number(count) > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  const guardedEventCount = events.filter((event) => event.businessGuard).length;
 
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -1744,12 +1778,51 @@ function MonkeyReportSummary({
       />
       <Space wrap>
         <Tag color={isPassed ? 'green' : 'red'}>{report.status || 'unknown'}</Tag>
+        {businessAware && <Tag color="blue">业务感知探索</Tag>}
         <Tag>执行 {executedEvents} 次</Tag>
         {report.requestedEvents !== undefined && <Tag>目标 {report.requestedEvents} 次</Tag>}
         {durationSeconds !== undefined && <Tag>耗时 {formatSeconds(durationSeconds)}</Tag>}
         {report.requestedDurationSeconds !== undefined && <Tag>计划 {formatSeconds(report.requestedDurationSeconds)}</Tag>}
         {report.wdaUrl && <Tag>WDA {report.wdaUrl.replace(/^https?:\/\//, '')}</Tag>}
       </Space>
+      {businessAware && (
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Text strong>业务探索覆盖</Text>
+          {businessCoverage?.mapLoadError ? (
+            <Alert showIcon type="warning" message={`业务映射加载失败：${businessCoverage.mapLoadError}`} />
+          ) : null}
+          <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
+            <Descriptions.Item label="主要业务域">{report.dominantBusinessDomain || '-'}</Descriptions.Item>
+            <Descriptions.Item label="最后路径">{report.lastBusinessPath || '-'}</Descriptions.Item>
+            <Descriptions.Item label="保护动作">{guardedEventCount}</Descriptions.Item>
+            <Descriptions.Item label="目标业务">
+              {(businessCoverage?.targetDomains || report.rules?.businessDomains || []).join('、') || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="保护策略">{businessCoverage?.guardedActionPolicy || report.rules?.guardedActionPolicy || '-'}</Descriptions.Item>
+            <Descriptions.Item label="风险分布">
+              {riskEntries.length ? riskEntries.map(([risk, count]) => `${risk} ${count}`).join(' / ') : '-'}
+            </Descriptions.Item>
+          </Descriptions>
+          {domainEntries.length > 0 && (
+            <Space wrap>
+              {domainEntries.map(([domain, count]) => (
+                <Tag key={domain} color={domain === report.dominantBusinessDomain ? 'blue' : 'default'}>
+                  {domain} {count}
+                </Tag>
+              ))}
+            </Space>
+          )}
+          {businessCoverage?.topPaths?.length ? (
+            <Space wrap>
+              {businessCoverage.topPaths.slice(0, 8).map((item) => (
+                <Tag key={item.businessPath || 'unknown'}>
+                  {item.businessPath || 'unknown'} {item.eventCount || 0}
+                </Tag>
+              ))}
+            </Space>
+          ) : null}
+        </Space>
+      )}
       <Descriptions bordered size="small" column={{ xs: 1, sm: 2, md: 3 }}>
         <Descriptions.Item label="点击">{eventCounts.tap || 0}</Descriptions.Item>
         <Descriptions.Item label="滑动">{eventCounts.swipe || 0}</Descriptions.Item>
@@ -1778,6 +1851,8 @@ function MonkeyReportSummary({
               <Text key={event.index} type="secondary" style={{ fontSize: 12 }}>
                 #{event.index} {eventTypeLabel(event.type)}
                 {event.reason ? ` / ${event.reason}` : ''}
+                {event.businessPath ? ` / ${event.businessPath}` : ''}
+                {event.pageName ? ` / ${event.pageName}` : ''}
                 {event.x !== undefined && event.y !== undefined ? ` / (${event.x}, ${event.y})` : ''}
                 {event.startX !== undefined && event.endX !== undefined ? ` / (${event.startX}, ${event.startY}) -> (${event.endX}, ${event.endY})` : ''}
               </Text>

@@ -2899,6 +2899,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
 
     const devicePoolLabel = selectedDevicePool.label;
     const crumb = await getCrumb();
+    const monkeyBusinessMapPath = getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH')
+      || path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json');
     const params = new URLSearchParams({
       SOURCE_JOB: DEFAULT_JOB_NAME,
       SOURCE_BUILD_NUMBER: buildNumber,
@@ -2948,6 +2950,16 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       MONKEY_FORBIDDEN_PAGE_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PAGE_TEXTS') || 'DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow',
       MONKEY_FORBIDDEN_REGION_RATIO: getRuntimeEnv('QA_MONKEY_FORBIDDEN_REGION_RATIO') || '0.78,0.18,1.0,0.72',
       MONKEY_FORBIDDEN_PADDING: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PADDING') || '16',
+      MONKEY_BUSINESS_AWARE: testSuite === 'monkey' ? (getRuntimeEnv('QA_MONKEY_BUSINESS_AWARE') || '1') : '0',
+      MONKEY_BUSINESS_MAP_PATH: monkeyBusinessMapPath,
+      MONKEY_BUSINESS_DOMAINS: getRuntimeEnv('QA_MONKEY_BUSINESS_DOMAINS') || 'login,im,community,voice_room,profile,playwith',
+      MONKEY_GUARDED_ACTION_POLICY: getRuntimeEnv('QA_MONKEY_GUARDED_ACTION_POLICY') || 'read_only',
+      MONKEY_BUSINESS_WEIGHT_CORE: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_CORE') || '40',
+      MONKEY_BUSINESS_WEIGHT_EXPAND: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_EXPAND') || '25',
+      MONKEY_BUSINESS_WEIGHT_RECOVERY: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_RECOVERY') || '20',
+      MONKEY_BUSINESS_WEIGHT_POPUP: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_POPUP') || '10',
+      MONKEY_BUSINESS_WEIGHT_RANDOM: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_RANDOM') || '5',
+      MONKEY_BUSINESS_NAV_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_BUSINESS_NAV_INTERVAL_EVENTS') || '8',
       PERFORMANCE_SAMPLING: getRuntimeEnv('QA_PERFORMANCE_SAMPLING') || '1',
       PERFORMANCE_SAMPLER: getRuntimeEnv('QA_PERFORMANCE_SAMPLER') || 'auto',
       PERFORMANCE_SAMPLE_TYPES: getRuntimeEnv('QA_PERFORMANCE_SAMPLE_TYPES') || 'cpu,memory,fps',

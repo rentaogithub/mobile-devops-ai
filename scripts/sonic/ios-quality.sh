@@ -10,6 +10,9 @@ set -euo pipefail
 # can be integrated by a downstream script later, but platform startup and QA no
 # longer depend on a Sonic Server/Web stack.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLATFORM_ROOT_DIR="${NN_IOS_PLATFORM_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+
 SOURCE_BUILD_NUMBER="${SOURCE_BUILD_NUMBER:-}"
 QUALITY_STARTED_AT_EPOCH="${QUALITY_STARTED_AT_EPOCH:-$(date +%s)}"
 QUALITY_STARTED_AT_ISO="${QUALITY_STARTED_AT_ISO:-$(date '+%Y-%m-%dT%H:%M:%S%z')}"
@@ -127,6 +130,15 @@ MONKEY_FORBIDDEN_TEXTS="${MONKEY_FORBIDDEN_TEXTS:-debug,Debug,DEBUG,调试,调�
 MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow}"
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
 MONKEY_FORBIDDEN_PADDING="${MONKEY_FORBIDDEN_PADDING:-16}"
+MONKEY_BUSINESS_AWARE="${MONKEY_BUSINESS_AWARE:-1}"
+MONKEY_BUSINESS_MAP_PATH="${MONKEY_BUSINESS_MAP_PATH:-${PLATFORM_ROOT_DIR}/config/nnios-business-map.json}"
+MONKEY_BUSINESS_DOMAINS="${MONKEY_BUSINESS_DOMAINS:-login,im,community,voice_room,profile,playwith}"
+MONKEY_GUARDED_ACTION_POLICY="${MONKEY_GUARDED_ACTION_POLICY:-read_only}"
+MONKEY_BUSINESS_WEIGHT_CORE="${MONKEY_BUSINESS_WEIGHT_CORE:-40}"
+MONKEY_BUSINESS_WEIGHT_EXPAND="${MONKEY_BUSINESS_WEIGHT_EXPAND:-25}"
+MONKEY_BUSINESS_WEIGHT_RECOVERY="${MONKEY_BUSINESS_WEIGHT_RECOVERY:-20}"
+MONKEY_BUSINESS_WEIGHT_POPUP="${MONKEY_BUSINESS_WEIGHT_POPUP:-10}"
+MONKEY_BUSINESS_WEIGHT_RANDOM="${MONKEY_BUSINESS_WEIGHT_RANDOM:-5}"
 MONKEY_SEED="${MONKEY_SEED:-}"
 MONKEY_STATUS="skipped"
 MONKEY_MESSAGE=""
@@ -4069,6 +4081,23 @@ target_app_check_interval_events = max(1, int(float(os.environ.get("MONKEY_TARGE
 target_app_max_recoveries = max(0, int(float(os.environ.get("MONKEY_TARGET_APP_MAX_RECOVERIES", "20"))))
 stutter_action_warn_ms = max(1, int(float(os.environ.get("PERF_STUTTER_ACTION_WARN_MS", "2500"))))
 stutter_action_severe_ms = max(stutter_action_warn_ms, int(float(os.environ.get("PERF_STUTTER_ACTION_SEVERE_MS", "5000"))))
+business_aware = os.environ.get("MONKEY_BUSINESS_AWARE", "1") == "1"
+business_map_path = os.environ.get("MONKEY_BUSINESS_MAP_PATH", "")
+business_domains = [
+    item.strip() for item in os.environ.get(
+        "MONKEY_BUSINESS_DOMAINS",
+        "login,im,community,voice_room,profile,playwith",
+    ).split(",")
+    if item.strip()
+]
+guarded_action_policy = os.environ.get("MONKEY_GUARDED_ACTION_POLICY", "read_only") or "read_only"
+business_weights = {
+    "core": max(0, int(float(os.environ.get("MONKEY_BUSINESS_WEIGHT_CORE", "40")))),
+    "expand": max(0, int(float(os.environ.get("MONKEY_BUSINESS_WEIGHT_EXPAND", "25")))),
+    "recovery": max(0, int(float(os.environ.get("MONKEY_BUSINESS_WEIGHT_RECOVERY", "20")))),
+    "popup": max(0, int(float(os.environ.get("MONKEY_BUSINESS_WEIGHT_POPUP", "10")))),
+    "random": max(0, int(float(os.environ.get("MONKEY_BUSINESS_WEIGHT_RANDOM", "5")))),
+}
 
 events = []
 session_id = ""
@@ -4082,6 +4111,48 @@ safe_right = 20
 current_action_started_at = None
 target_app_recoveries = 0
 last_target_app_check_index = -999
+
+def load_business_map(path):
+    if not path:
+        return {"version": 0, "defaultDomain": "unknown", "classes": {}, "keywordRules": []}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("mapping root is not an object")
+        data.setdefault("classes", {})
+        data.setdefault("keywordRules", [])
+        data.setdefault("guardedKeywords", [])
+        data.setdefault("blockedKeywords", [])
+        data.setdefault("defaultDomain", "unknown")
+        return data
+    except Exception as exc:
+        return {
+            "version": 0,
+            "defaultDomain": "unknown",
+            "classes": {},
+            "keywordRules": [],
+            "guardedKeywords": [],
+            "blockedKeywords": [],
+            "loadError": str(exc)[:300],
+            "path": path,
+        }
+
+business_map = load_business_map(business_map_path) if business_aware else {
+    "version": 0,
+    "defaultDomain": "unknown",
+    "classes": {},
+    "keywordRules": [],
+    "guardedKeywords": [],
+    "blockedKeywords": [],
+}
+business_navigation = business_map.get("businessNavigation") if isinstance(business_map.get("businessNavigation"), dict) else {}
+business_nav_targets = business_navigation.get("targets") if isinstance(business_navigation.get("targets"), list) else []
+business_nav_interval_events = max(0, int(float(
+    os.environ.get("MONKEY_BUSINESS_NAV_INTERVAL_EVENTS")
+    or business_navigation.get("intervalEvents")
+    or "8"
+)))
 
 def request(method, path, payload=None, timeout=8):
     data = None
@@ -4406,20 +4477,27 @@ def forbidden_regions_from_source(source, width, height):
         node_lower = node.lower()
         if not any(term in node_lower for term in forbidden_terms_lower):
             continue
-        x_match = re.search(r'\bx="([0-9.]+)"', node)
-        y_match = re.search(r'\by="([0-9.]+)"', node)
-        width_match = re.search(r'\bwidth="([0-9.]+)"', node)
-        height_match = re.search(r'\bheight="([0-9.]+)"', node)
-        if not (x_match and y_match and width_match and height_match):
+        rect = node_rect(node)
+        if not rect:
             continue
-        x = int(float(x_match.group(1)))
-        y = int(float(y_match.group(1)))
-        node_width = int(float(width_match.group(1)))
-        node_height = int(float(height_match.group(1)))
-        if node_width <= 0 or node_height <= 0:
-            continue
+        x, y, node_width, node_height = rect
         regions.append(expand_rect((x, y, x + node_width, y + node_height), width, height, forbidden_padding))
     return regions
+
+def node_rect(node):
+    x_match = re.search(r'\bx="([0-9.]+)"', node)
+    y_match = re.search(r'\by="([0-9.]+)"', node)
+    width_match = re.search(r'\bwidth="([0-9.]+)"', node)
+    height_match = re.search(r'\bheight="([0-9.]+)"', node)
+    if not (x_match and y_match and width_match and height_match):
+        return None
+    node_width = int(float(width_match.group(1)))
+    node_height = int(float(height_match.group(1)))
+    if node_width <= 0 or node_height <= 0:
+        return None
+    x = int(float(x_match.group(1)))
+    y = int(float(y_match.group(1)))
+    return x, y, node_width, node_height
 
 def get_source(session):
     try:
@@ -4581,13 +4659,89 @@ def summarize_source(source, limit=8):
         "nodeTypes": classes[:6],
     }
 
+def business_search_text(source):
+    if not source:
+        return ""
+    summary = summarize_source(source, limit=40)
+    visible_text = " ".join(summary.get("text") or [])
+    node_types = " ".join(summary.get("nodeTypes") or [])
+    return f"{source[:200000]} {visible_text} {node_types}"
+
+def infer_business_context(source):
+    context = {
+        "businessDomain": business_map.get("defaultDomain") or "unknown",
+        "businessPath": "unknown",
+        "pageName": "",
+        "riskLevel": "normal",
+        "matchedBy": "none",
+    }
+    if not business_aware or not source:
+        return context
+    search_text = business_search_text(source)
+    search_lower = search_text.lower()
+    classes = business_map.get("classes") if isinstance(business_map.get("classes"), dict) else {}
+    for class_name, mapping in classes.items():
+        if not class_name or class_name not in search_text:
+            continue
+        if not isinstance(mapping, dict):
+            continue
+        domain = str(mapping.get("businessDomain") or context["businessDomain"] or "unknown")
+        context.update({
+            "businessDomain": domain,
+            "businessPath": str(mapping.get("businessPath") or domain),
+            "pageName": str(mapping.get("pageName") or class_name),
+            "riskLevel": str(mapping.get("riskLevel") or "normal"),
+            "matchedBy": "class",
+            "matchedClass": class_name,
+        })
+        break
+    if context.get("matchedBy") == "none":
+        for rule in business_map.get("keywordRules") or []:
+            if not isinstance(rule, dict):
+                continue
+            matches = rule.get("match") or []
+            if isinstance(matches, str):
+                matches = [matches]
+            if not any(str(token).lower() in search_lower for token in matches if str(token).strip()):
+                continue
+            domain = str(rule.get("businessDomain") or context["businessDomain"] or "unknown")
+            context.update({
+                "businessDomain": domain,
+                "businessPath": str(rule.get("businessPath") or domain),
+                "pageName": str(rule.get("pageName") or domain),
+                "riskLevel": str(rule.get("riskLevel") or "normal"),
+                "matchedBy": "keyword",
+            })
+            break
+    guarded_hits = [
+        str(token) for token in business_map.get("guardedKeywords") or []
+        if str(token).strip() and str(token).lower() in search_lower
+    ]
+    blocked_hits = [
+        str(token) for token in business_map.get("blockedKeywords") or []
+        if str(token).strip() and str(token).lower() in search_lower
+    ]
+    if blocked_hits:
+        context["riskLevel"] = "blocked"
+        context["riskReason"] = f"blockedKeyword:{blocked_hits[0]}"
+    elif guarded_hits and context.get("riskLevel") == "normal":
+        context["riskLevel"] = "guarded"
+        context["riskReason"] = f"guardedKeyword:{guarded_hits[0]}"
+    if business_domains and context.get("businessDomain") not in business_domains and context.get("businessDomain") != "unknown":
+        context["outOfTargetDomains"] = True
+    return context
+
 def current_page_context(source):
     if not source:
         return {}
-    return {
+    context = {
         "fingerprint": hashlib.sha1(source.encode("utf-8", errors="ignore")).hexdigest(),
         "summary": summarize_source(source),
     }
+    business_context = infer_business_context(source)
+    if business_context:
+        context["business"] = business_context
+    return context
 
 def record_event(event, source=""):
     now = time.time()
@@ -4606,8 +4760,116 @@ def record_event(event, source=""):
     context = current_page_context(source)
     if context:
         event["page"] = context
+        business_context = context.get("business") or {}
+        for key in ("businessDomain", "businessPath", "pageName", "riskLevel", "matchedBy", "matchedClass", "riskReason"):
+            if business_context.get(key) and key not in event:
+                event[key] = business_context.get(key)
     events.append(event)
     return event
+
+def summarize_business_coverage():
+    domain_counts = {}
+    path_counts = {}
+    risk_counts = {}
+    matched_classes = {}
+    for event in events:
+        domain = str(event.get("businessDomain") or "unknown")
+        path = str(event.get("businessPath") or domain or "unknown")
+        risk = str(event.get("riskLevel") or "normal")
+        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        path_counts[path] = path_counts.get(path, 0) + 1
+        risk_counts[risk] = risk_counts.get(risk, 0) + 1
+        matched_class = event.get("matchedClass")
+        if matched_class:
+            matched_classes[matched_class] = matched_classes.get(matched_class, 0) + 1
+    top_paths = [
+        {"businessPath": path, "eventCount": count}
+        for path, count in sorted(path_counts.items(), key=lambda item: item[1], reverse=True)[:12]
+    ]
+    return {
+        "enabled": business_aware,
+        "mapPath": business_map_path,
+        "mapVersion": business_map.get("version"),
+        "mapLoadError": business_map.get("loadError", ""),
+        "targetDomains": business_domains,
+        "guardedActionPolicy": guarded_action_policy,
+        "weights": business_weights,
+        "domainCounts": domain_counts,
+        "riskCounts": risk_counts,
+        "topPaths": top_paths,
+        "matchedClasses": matched_classes,
+    }
+
+def business_domain_event_count(domain):
+    return sum(1 for event in events if event.get("businessDomain") == domain)
+
+def normalize_nav_labels(target):
+    labels = target.get("labels") or target.get("label") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    return [str(label).strip() for label in labels if str(label).strip()]
+
+def find_business_nav_point(source, target, width, height, forbidden_regions):
+    labels = normalize_nav_labels(target)
+    if source and labels:
+        lower_labels = [label.lower() for label in labels]
+        candidates = []
+        for match in re.finditer(r'<[^>]+>', source):
+            node = match.group(0)
+            rect = node_rect(node)
+            if not rect:
+                continue
+            x, y, node_width, node_height = rect
+            node_texts = [
+                text_attr(node, "label"),
+                text_attr(node, "name"),
+                text_attr(node, "value"),
+            ]
+            node_text = " ".join(text for text in node_texts if text).strip()
+            node_text_lower = node_text.lower()
+            if not node_text_lower:
+                continue
+            if not any(label.lower() == node_text_lower or label.lower() in node_text_lower for label in lower_labels):
+                continue
+            center_x = x + node_width // 2
+            center_y = y + node_height // 2
+            if any(point_in_rect(center_x, center_y, rect) for rect in forbidden_regions):
+                continue
+            bottom_bonus = 1 if center_y >= int(height * 0.55) else 0
+            candidates.append((bottom_bonus, center_y, center_x, center_y, node_text))
+        if candidates:
+            _, _, center_x, center_y, node_text = sorted(candidates, reverse=True)[0]
+            return center_x, center_y, "label", node_text
+    try:
+        fallback_x = int(float(target.get("fallbackXRatio", 0.5)) * width)
+        fallback_y = int(float(target.get("fallbackYRatio", 0.94)) * height)
+    except Exception:
+        fallback_x = width // 2
+        fallback_y = max(tap_safe_top, height - max(40, safe_bottom // 2))
+    fallback_x = min(max(safe_left, fallback_x), max(safe_left, width - safe_right))
+    fallback_y = min(max(tap_safe_top, fallback_y), max(tap_safe_top, height - 20))
+    if any(point_in_rect(fallback_x, fallback_y, rect) for rect in forbidden_regions):
+        return None
+    return fallback_x, fallback_y, "fallback", ""
+
+def choose_business_nav_target(current_domain):
+    if not business_aware or not business_nav_targets:
+        return None
+    candidates = []
+    for target in business_nav_targets:
+        if not isinstance(target, dict):
+            continue
+        domain = str(target.get("businessDomain") or "").strip()
+        if not domain:
+            continue
+        if business_domains and domain not in business_domains:
+            continue
+        count = business_domain_event_count(domain)
+        current_penalty = 3 if domain == current_domain else 0
+        candidates.append((count + current_penalty, random.random(), target))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda item: (item[0], item[1]))[0][2]
 
 def summarize_stutters():
     user_action_types = {
@@ -4875,9 +5137,28 @@ report = {
         "enforceTargetApp": enforce_target_app,
         "targetAppCheckIntervalEvents": target_app_check_interval_events,
         "targetAppMaxRecoveries": target_app_max_recoveries,
+        "businessAware": business_aware,
+        "businessMapPath": business_map_path,
+        "businessMapVersion": business_map.get("version"),
+        "businessMapLoadError": business_map.get("loadError", ""),
+        "businessDomains": business_domains,
+        "guardedActionPolicy": guarded_action_policy,
+        "businessWeights": business_weights,
+        "businessNavigationIntervalEvents": business_nav_interval_events,
+        "businessNavigationTargets": [
+            {
+                "businessDomain": target.get("businessDomain"),
+                "businessPath": target.get("businessPath"),
+                "pageName": target.get("pageName"),
+            }
+            for target in business_nav_targets
+            if isinstance(target, dict)
+        ],
     },
     "executedEvents": 0,
     "events": events,
+    "businessAware": business_aware,
+    "businessCoverage": {},
 }
 write_progress("running", "Monkey 测试初始化")
 
@@ -4913,7 +5194,7 @@ try:
                 index += 1
                 time.sleep(interval_seconds)
                 continue
-            should_refresh_source = index - last_forbidden_refresh_index >= stuck_check_interval_events
+            should_refresh_source = business_aware or index - last_forbidden_refresh_index >= stuck_check_interval_events
             if should_refresh_source:
                 current_source = get_source(session_id)
                 forbidden_regions = get_forbidden_regions_from_source(current_source, width, height)
@@ -4928,6 +5209,15 @@ try:
 
             reason = "random"
             action = ""
+            business_context = infer_business_context(current_source)
+            current_business_domain = business_context.get("businessDomain") or "unknown"
+            business_risk = business_context.get("riskLevel") or "normal"
+            should_navigate_business = (
+                business_aware
+                and business_nav_interval_events > 0
+                and index > 0
+                and index % business_nav_interval_events == 0
+            )
 
             if is_system_permission_alert(current_source):
                 reason = "systemPermissionAlert"
@@ -4955,6 +5245,91 @@ try:
                 }, current_source)
                 same_page_events = 0
                 last_fingerprint = ""
+            elif business_aware and business_risk == "blocked":
+                reason = business_context.get("riskReason") or "blockedBusinessPage"
+                start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                action = "businessGuardBack"
+                record_event({
+                    "index": index + 1,
+                    "type": action,
+                    "reason": reason,
+                    "startX": start_x,
+                    "startY": start_y,
+                    "endX": end_x,
+                    "endY": end_y,
+                    "businessGuard": "blocked",
+                }, current_source)
+                same_page_events = 0
+                last_fingerprint = ""
+            elif business_aware and business_risk == "guarded" and guarded_action_policy == "read_only":
+                reason = business_context.get("riskReason") or "guardedBusinessPage"
+                if random.random() < 0.6:
+                    start_x, start_y, end_x, end_y, fallback = swipe(session_id, width, height, forbidden_regions)
+                    action = "businessGuardSwipe"
+                    record_event({
+                        "index": index + 1,
+                        "type": action,
+                        "reason": reason,
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                        "forbiddenRegions": len(forbidden_regions),
+                        "usedFallbackPoint": fallback,
+                        "businessGuard": "guarded",
+                    }, current_source)
+                else:
+                    start_x, start_y, end_x, end_y = edge_back_swipe(session_id, width, height)
+                    action = "businessGuardBack"
+                    record_event({
+                        "index": index + 1,
+                        "type": action,
+                        "reason": reason,
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                        "businessGuard": "guarded",
+                    }, current_source)
+                same_page_events = 0
+                last_fingerprint = ""
+            elif should_navigate_business:
+                target = choose_business_nav_target(current_business_domain)
+                nav_point = find_business_nav_point(current_source, target, width, height, forbidden_regions) if target else None
+                if nav_point:
+                    x, y, match_method, matched_label = nav_point
+                    tap(session_id, x, y)
+                    record_event({
+                        "index": index + 1,
+                        "type": "businessNav",
+                        "reason": "balancedBusinessCoverage",
+                        "targetBusinessDomain": target.get("businessDomain"),
+                        "targetBusinessPath": target.get("businessPath"),
+                        "targetPageName": target.get("pageName"),
+                        "businessDomain": target.get("businessDomain"),
+                        "businessPath": target.get("businessPath"),
+                        "pageName": target.get("pageName"),
+                        "riskLevel": "normal",
+                        "x": x,
+                        "y": y,
+                        "matchMethod": match_method,
+                        "matchedLabel": matched_label,
+                    }, current_source)
+                    same_page_events = 0
+                    last_fingerprint = ""
+                else:
+                    start_x, start_y, end_x, end_y, fallback = swipe(session_id, width, height, forbidden_regions)
+                    record_event({
+                        "index": index + 1,
+                        "type": "businessExplore",
+                        "reason": "businessNavTargetUnavailable",
+                        "startX": start_x,
+                        "startY": start_y,
+                        "endX": end_x,
+                        "endY": end_y,
+                        "forbiddenRegions": len(forbidden_regions),
+                        "usedFallbackPoint": fallback,
+                    }, current_source)
             elif stuck_events and same_page_events >= stuck_events:
                 reason = f"stuck:{same_page_events}"
                 if random.random() < 0.65:
@@ -5075,11 +5450,19 @@ try:
             time.sleep(interval_seconds)
 
     report["status"] = "passed"
+    monkey_mode_name = "business-aware" if business_aware else "random"
     if deadline is not None:
-        report["message"] = f"Monkey completed {report['executedEvents']} random events in {int(duration_seconds)} seconds"
+        report["message"] = f"Monkey completed {report['executedEvents']} {monkey_mode_name} events in {int(duration_seconds)} seconds"
     else:
-        report["message"] = f"Monkey completed {event_count} random events"
+        report["message"] = f"Monkey completed {event_count} {monkey_mode_name} events"
     report["stutter"] = summarize_stutters()
+    report["businessCoverage"] = summarize_business_coverage()
+    domain_counts = report["businessCoverage"].get("domainCounts") or {}
+    if domain_counts:
+        report["dominantBusinessDomain"] = max(domain_counts.items(), key=lambda item: item[1])[0]
+    top_paths = report["businessCoverage"].get("topPaths") or []
+    if top_paths:
+        report["lastBusinessPath"] = events[-1].get("businessPath") if events else top_paths[0].get("businessPath")
     write_progress("passed", report["message"])
 except Exception as exc:
     message = str(exc)
@@ -5100,6 +5483,7 @@ except Exception as exc:
         )
     report["message"] = message
     report["stutter"] = summarize_stutters()
+    report["businessCoverage"] = summarize_business_coverage()
     write_progress("failed", message)
 finally:
     if session_id:
@@ -5109,6 +5493,12 @@ finally:
             pass
     report["durationMs"] = int((time.time() - started_at) * 1000)
     report["stutter"] = summarize_stutters()
+    report["businessCoverage"] = summarize_business_coverage()
+    domain_counts = report["businessCoverage"].get("domainCounts") or {}
+    if domain_counts:
+        report["dominantBusinessDomain"] = max(domain_counts.items(), key=lambda item: item[1])[0]
+    if events:
+        report["lastBusinessPath"] = events[-1].get("businessPath") or events[-1].get("businessDomain")
     with open(report_file, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
