@@ -92,7 +92,7 @@ function shouldUseInstalledProductionApp(build?: JenkinsBuild | null) {
 }
 
 function getQualityReportKind(build?: JenkinsQualityBuild | null): QualityReportKind {
-  const suite = String(build?.qualitySummary?.testSuite || '').toLowerCase();
+  const suite = String(build?.qualitySummary?.testSuite || '').trim().toLowerCase();
   if (suite === 'stutter') return 'stutter';
   if (suite === 'monkey') return 'monkey';
   return 'generic';
@@ -486,7 +486,7 @@ function buildPerformanceHighlights(analysis?: QualityPerformanceAnalysis, repor
   return [
     analysis.coldStartReadyMs !== undefined ? `首屏稳定 ${formatMilliseconds(analysis.coldStartReadyMs)}，评级 ${gradeLabel(analysis.coldStartGrade)}` : '',
     analysis.launchDurationMs !== undefined ? `启动命令耗时 ${formatMilliseconds(analysis.launchDurationMs)}` : '',
-    samples?.sampleCount !== undefined ? `采样 ${samples.sampleCount} 条` : '',
+    Number(samples?.sampleCount || 0) > 0 ? `采样 ${samples?.sampleCount} 条` : '',
     samples?.cpu?.avg !== undefined && samples.cpu.avg !== null ? `CPU 平均 ${samples.cpu.avg}% / 峰值 ${metricText(samples.cpu.max, '%')}` : '',
     samples?.memoryMB?.avg !== undefined && samples.memoryMB.avg !== null ? `内存平均 ${samples.memoryMB.avg}MB / 峰值 ${metricText(samples.memoryMB.max, 'MB')}` : '',
     includeStutterMetrics && samples?.fps?.avg !== undefined && samples.fps.avg !== null ? `FPS 平均 ${samples.fps.avg} / 最低 ${metricText(samples.fps.min)}` : '',
@@ -604,7 +604,7 @@ function PerformanceDataCoverage({ analysis, reportKind = 'generic' }: { analysi
                 ? 'Monkey 性能报告仅展示启动、CPU 和内存基础数据；卡顿、帧率和调用栈分析请使用卡顿检测任务。'
                 : sampleCount > 0
                 ? '本次已有进程采样，可分析 CPU/内存趋势；FPS 和精准帧级卡顿依赖 xctrace Animation Hitches/Frame 明细表。'
-                : '本次 xctrace Trace 已采集，但 Animation Hitches 模板未导出 CPU/内存/FPS 明细；后续任务会同时启动 tidevice perf 侧路采样补齐 CPU/内存。'}
+                : '本次 xctrace Trace 已采集，但未导出 CPU/内存明细；后续任务会同时启动侧路采样补齐 CPU/内存。'}
             </Text>
           )}
         </Space>
@@ -790,6 +790,16 @@ function PerformanceAnalysisSummary({
   }
 
   if (reportKind === 'monkey') {
+    const hasBasicSamples = Number(analysis.samples?.sampleCount || 0) > 0 ||
+      analysis.samples?.cpu?.avg !== undefined && analysis.samples.cpu.avg !== null ||
+      analysis.samples?.memoryMB?.avg !== undefined && analysis.samples.memoryMB.avg !== null;
+    const summaryText = issues[0]?.message || (
+      hasBasicSamples
+        ? performanceSeverityMeta(displaySeverity, reportKind).summary
+        : (analysis.trace?.available
+          ? 'Monkey 执行已通过，Trace 已留存；当前缺少 CPU / 内存采样明细，无法生成基础趋势。'
+          : 'Monkey 执行已通过，当前没有可用于基础趋势分析的 CPU / 内存采样。')
+    );
     return (
       <Alert
         showIcon
@@ -797,7 +807,7 @@ function PerformanceAnalysisSummary({
         message={`结论：${severity.label}`}
         description={(
           <Space direction="vertical" size={6}>
-            <Text type="secondary">{issues[0]?.message || performanceSeverityMeta(displaySeverity, reportKind).summary}</Text>
+            <Text type="secondary">{summaryText}</Text>
             {highlights.length > 0 && (
               <Space wrap>
                 {highlights.slice(0, 6).map((item) => <Tag key={item}>{item}</Tag>)}
@@ -872,7 +882,7 @@ function PerformanceAnalysisSummary({
                   analysis.trace.segmentCount && analysis.trace.segmentCount > 1 ? `分段 ${analysis.trace.segmentCount} 段` : '',
                   analysis.trace.endReason ? `结束原因 ${analysis.trace.endReason}` : '',
                   analysis.trace.terminationReason ? `进程 ${analysis.trace.terminationReason}` : '',
-                ].filter(Boolean).join('，') || 'xctrace 只导出了 trace 元信息，没有 CPU/内存/FPS 明细行。'}
+                ].filter(Boolean).join('，') || 'xctrace 只导出了 Trace 文件，未生成 CPU / 内存明细行。'}
               </Text>
             </Space>
           )}
@@ -1064,9 +1074,9 @@ function PerformanceDiagnostics({
   if (!samples?.samples?.length) {
     const summarySamples = analysis?.samples;
     const hasSummarySamples = !!summarySamples && (
-      summarySamples.sampleCount !== undefined ||
-      summarySamples.cpu?.avg !== undefined ||
-      summarySamples.memoryMB?.avg !== undefined
+      Number(summarySamples.sampleCount || 0) > 0 ||
+      (summarySamples.cpu?.avg !== undefined && summarySamples.cpu.avg !== null) ||
+      (summarySamples.memoryMB?.avg !== undefined && summarySamples.memoryMB.avg !== null)
     );
     if (isMonkeyReport && hasSummarySamples) {
       return (
@@ -1094,13 +1104,24 @@ function PerformanceDiagnostics({
         <Alert
           showIcon
           type="info"
-          message={isMonkeyReport ? '暂无 CPU / 内存明细，无法生成基础趋势诊断' : '暂无 CPU / 内存 / FPS 明细，无法生成趋势诊断'}
-          description={[
-            analysis.trace.templateName ? `Trace 模板：${analysis.trace.templateName}` : '',
-            analysis.trace.durationSeconds ? `采集时长：${formatSeconds(Math.round(analysis.trace.durationSeconds))}` : '',
-            analysis.trace.segmentCount && analysis.trace.segmentCount > 1 ? `Trace 分段：${analysis.trace.segmentCount} 段` : '',
-            analysis.trace.endReason ? `结束原因：${analysis.trace.endReason}` : '',
-          ].filter(Boolean).join('；') || (isMonkeyReport ? 'xctrace 文件已生成，但当前导出结果没有可解析的 CPU / 内存采样行。' : 'xctrace 文件已生成，但当前导出结果没有可解析的采样行。')}
+          message={isMonkeyReport ? 'Trace 已采集，CPU / 内存采样缺失' : 'Trace 已采集，采样明细缺失'}
+          description={(
+            <Space direction="vertical" size={4}>
+              <Text type="secondary">
+                {[
+                  analysis.trace.templateName ? `Trace 模板：${analysis.trace.templateName}` : '',
+                  analysis.trace.durationSeconds ? `采集时长：${formatSeconds(Math.round(analysis.trace.durationSeconds))}` : '',
+                  analysis.trace.segmentCount && analysis.trace.segmentCount > 1 ? `Trace 分段：${analysis.trace.segmentCount} 段` : '',
+                  analysis.trace.endReason ? `结束原因：${analysis.trace.endReason}` : '',
+                ].filter(Boolean).join('；') || 'xctrace 文件已生成。'}
+              </Text>
+              <Text type="secondary">
+                {isMonkeyReport
+                  ? 'Monkey 测试不需要 FPS/帧级卡顿数据；当前只是缺少 CPU / 内存采样明细，所以无法生成基础趋势图。'
+                  : '当前缺少可解析的采样明细，所以无法生成趋势图。'}
+              </Text>
+            </Space>
+          )}
         />
       );
     }
@@ -4211,8 +4232,12 @@ export default function CICDPage() {
                               <Alert
                                 showIcon
                                 type="info"
-                                message="Trace 已采集，暂无可绘制指标"
-                                description="当前 xctrace 导出结果没有 CPU、内存或 FPS 明细行，可下载 Trace 用 Instruments 打开继续分析。"
+                                message={isMonkeyQualityReport ? 'Trace 已采集，暂无 CPU / 内存趋势' : 'Trace 已采集，暂无可绘制指标'}
+                                description={isMonkeyQualityReport
+                                  ? 'Monkey 测试不需要 FPS/帧级卡顿数据；当前缺少 CPU / 内存采样明细，所以无法绘制基础趋势。可下载 Trace 用 Instruments 查看原始录制。'
+                                  : (isStutterQualityReport
+                                    ? '当前 xctrace 导出结果没有 CPU、内存或 FPS 明细行，可下载 Trace 用 Instruments 打开继续分析。'
+                                    : '当前 xctrace 导出结果没有 CPU、内存明细行，可下载 Trace 用 Instruments 打开继续分析。')}
                               />
                             ) : (
                               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未采集到性能样本" />

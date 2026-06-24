@@ -991,7 +991,7 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
   };
 
   return {
-    summaryUrl: buildLocalQualityArtifactUrl(summaryFile),
+    summaryUrl: path.basename(summaryFile) === 'summary.json' ? buildLocalQualityArtifactUrl(summaryFile) : '',
     screenshotUrl: artifactUrl(summary?.artifacts?.screenshot || 'screenshot.png'),
     deviceLogUrl: artifactUrl(summary?.artifacts?.deviceLog || 'device.log'),
     processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
@@ -1004,6 +1004,10 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     junitUrl: artifactUrl(summary?.artifacts?.junit || 'junit.xml'),
     qualityLogUrl: artifactUrl(summary?.artifacts?.qualityLog || 'quality.log'),
   };
+}
+
+function existingLocalArtifactName(dir: string, ...names: string[]) {
+  return names.find((name) => fs.existsSync(path.join(dir, name))) || '';
 }
 
 function decodeXmlText(value?: string) {
@@ -1115,7 +1119,53 @@ function readLocalQualityMetadata(jobName: string, build: any) {
 function readLocalQualitySummaryWithPath(jobName: string, build: any) {
   const summaryFile = findLatestQualityFile(jobName, 'summary.json', Number(build?.timestamp || 0), Number(build?.number || 0));
   const summary = summaryFile ? readJsonFile(summaryFile) : null;
-  return summary ? { summary, filePath: summaryFile } : null;
+  if (summary) return { summary, filePath: summaryFile };
+
+  const monkeyReportFile = findLatestQualityFile(jobName, 'monkey-report.json', Number(build?.timestamp || 0), Number(build?.number || 0));
+  const monkeyReport = monkeyReportFile ? readJsonFile(monkeyReportFile) : null;
+  if (!monkeyReport) return null;
+
+  const resultDir = path.dirname(monkeyReportFile);
+  const metadata = readJsonFile(path.join(resultDir, 'metadata.json')) || {};
+  const progress = readJsonFile(path.join(resultDir, 'quality-progress.json')) || {};
+  const status = String(monkeyReport.status || progress.status || '').trim() || (
+    String(build?.result || '').toUpperCase() === 'SUCCESS' ? 'passed' : ''
+  );
+  const requestedDurationSeconds = Number(monkeyReport.requestedDurationSeconds || progress.requestedDurationSeconds || 0);
+  const executedEvents = Number(monkeyReport.executedEvents || progress.executedEvents || 0);
+  const artifacts = {
+    monkeyReport: 'monkey-report.json',
+    qualityLog: existingLocalArtifactName(resultDir, 'quality.log'),
+    processes: existingLocalArtifactName(resultDir, 'processes.json', 'devicectl-processes.json'),
+    performanceTrace: existingLocalArtifactName(resultDir, 'performance.trace.zip', 'performance.trace'),
+    screenshot: existingLocalArtifactName(resultDir, 'screenshot.png'),
+    junit: existingLocalArtifactName(resultDir, 'junit.xml'),
+    crashReports: fs.existsSync(path.join(resultDir, 'crash-reports')) ? 'crash-reports' : '',
+  };
+  const fallbackSummary = {
+    ...metadata,
+    status,
+    message: monkeyReport.message || progress.message || 'Monkey 测试已完成，但收尾阶段未生成 summary.json，已使用归档文件兜底展示。',
+    testSuite: String(metadata.testSuite || 'monkey').trim().toLowerCase(),
+    monkeyStatus: monkeyReport.status || status,
+    monkeyMessage: monkeyReport.message || '',
+    monkeyExecutedEvents: executedEvents,
+    monkeyEventCount: Number(monkeyReport.requestedEvents || progress.requestedEvents || 0),
+    artifacts,
+    performanceAnalysis: {
+      conclusion: { severity: status === 'passed' ? 'passed' : (status === 'failed' ? 'failed' : 'warning'), issues: [] },
+      monkeyDurationMs: requestedDurationSeconds > 0 ? requestedDurationSeconds * 1000 : undefined,
+      monkeyExecutedEvents: executedEvents,
+      trace: {
+        available: Boolean(artifacts.performanceTrace),
+        segmentCount: fs.existsSync(path.join(resultDir, 'performance-traces')) ? fs.readdirSync(path.join(resultDir, 'performance-traces')).filter((item) => item.endsWith('.trace')).length : undefined,
+      },
+      samples: {
+        sampleCount: 0,
+      },
+    },
+  };
+  return { summary: fallbackSummary, filePath: monkeyReportFile };
 }
 
 function readLocalQualitySummary(jobName: string, build: any) {
@@ -2962,11 +3012,15 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       MONKEY_BUSINESS_NAV_INTERVAL_EVENTS: getRuntimeEnv('QA_MONKEY_BUSINESS_NAV_INTERVAL_EVENTS') || '8',
       PERFORMANCE_SAMPLING: getRuntimeEnv('QA_PERFORMANCE_SAMPLING') || '1',
       PERFORMANCE_SAMPLER: getRuntimeEnv('QA_PERFORMANCE_SAMPLER') || 'auto',
-      PERFORMANCE_SAMPLE_TYPES: getRuntimeEnv('QA_PERFORMANCE_SAMPLE_TYPES') || 'cpu,memory,fps',
+      PERFORMANCE_SAMPLE_TYPES: getRuntimeEnv('QA_PERFORMANCE_SAMPLE_TYPES') || 'cpu,memory',
       PERFORMANCE_XCTRACE_TEMPLATE: testSuite === 'stutter'
         ? (getRuntimeEnv('QA_STUTTER_XCTRACE_TEMPLATE') || 'Animation Hitches')
-        : (getRuntimeEnv('QA_PERFORMANCE_XCTRACE_TEMPLATE') || 'Time Profiler'),
+        : (getRuntimeEnv('QA_PERFORMANCE_XCTRACE_TEMPLATE') || 'Activity Monitor'),
       PERFORMANCE_FRAME_XCTRACE: testSuite === 'stutter' ? '0' : (getRuntimeEnv('QA_PERFORMANCE_FRAME_XCTRACE') || '0'),
+      PYMOBILEDEVICE3_TUNNELD_AUTO_START: getRuntimeEnv('QA_PYMOBILEDEVICE3_TUNNELD_AUTO_START') || '1',
+      PYMOBILEDEVICE3_TUNNELD_HOST: getRuntimeEnv('QA_PYMOBILEDEVICE3_TUNNELD_HOST') || '127.0.0.1',
+      PYMOBILEDEVICE3_TUNNELD_PORT: getRuntimeEnv('QA_PYMOBILEDEVICE3_TUNNELD_PORT') || '49151',
+      PYMOBILEDEVICE3_TUNNELD_PROTOCOL: getRuntimeEnv('QA_PYMOBILEDEVICE3_TUNNELD_PROTOCOL') || 'tcp',
       PERF_COLD_START_WARN_MS: getRuntimeEnv('QA_PERF_COLD_START_WARN_MS') || '8000',
       PERF_COLD_START_SLOW_MS: getRuntimeEnv('QA_PERF_COLD_START_SLOW_MS') || '15000',
       PERF_CPU_AVG_WARN: getRuntimeEnv('QA_PERF_CPU_AVG_WARN') || '80',

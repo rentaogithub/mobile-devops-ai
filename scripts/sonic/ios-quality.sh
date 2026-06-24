@@ -145,13 +145,22 @@ MONKEY_MESSAGE=""
 MONKEY_EXECUTED_EVENTS="0"
 PERFORMANCE_SAMPLING="${PERFORMANCE_SAMPLING:-1}"
 PERFORMANCE_SAMPLER="${PERFORMANCE_SAMPLER:-auto}"
-PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory,fps}"
-PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_XCTRACE_TEMPLATE:-Time Profiler}"
+PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory}"
+PERFORMANCE_XCTRACE_TEMPLATE="${PERFORMANCE_XCTRACE_TEMPLATE:-Activity Monitor}"
 PERFORMANCE_FRAME_XCTRACE_TEMPLATE="${PERFORMANCE_FRAME_XCTRACE_TEMPLATE:-Animation Hitches}"
 PERFORMANCE_FRAME_XCTRACE="${PERFORMANCE_FRAME_XCTRACE:-0}"
 PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS="${PERFORMANCE_XCTRACE_STOP_TIMEOUT_SECONDS:-60}"
 PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS="${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS:-120}"
 PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS="${PERFORMANCE_TRACE_PACKAGE_TIMEOUT_SECONDS:-300}"
+PYMOBILEDEVICE3_TUNNELD_AUTO_START="${PYMOBILEDEVICE3_TUNNELD_AUTO_START:-1}"
+PYMOBILEDEVICE3_TUNNELD_HOST="${PYMOBILEDEVICE3_TUNNELD_HOST:-127.0.0.1}"
+PYMOBILEDEVICE3_TUNNELD_PORT="${PYMOBILEDEVICE3_TUNNELD_PORT:-49151}"
+PYMOBILEDEVICE3_TUNNELD_PROTOCOL="${PYMOBILEDEVICE3_TUNNELD_PROTOCOL:-tcp}"
+PYMOBILEDEVICE3_TUNNELD_START_TIMEOUT_SECONDS="${PYMOBILEDEVICE3_TUNNELD_START_TIMEOUT_SECONDS:-20}"
+PYMOBILEDEVICE3_TUNNELD_RETRY_INTERVAL_SECONDS="${PYMOBILEDEVICE3_TUNNELD_RETRY_INTERVAL_SECONDS:-60}"
+PYMOBILEDEVICE3_TUNNELD_LAST_ATTEMPT_AT=0
+PYMOBILEDEVICE3_TUNNELD_LAST_FAILURE_LOG_AT=0
+PROCESS_METRIC_LAST_RESTART_WARN_AT=0
 PERF_COLD_START_WARN_MS="${PERF_COLD_START_WARN_MS:-8000}"
 PERF_COLD_START_SLOW_MS="${PERF_COLD_START_SLOW_MS:-15000}"
 PERF_CPU_AVG_WARN="${PERF_CPU_AVG_WARN:-80}"
@@ -2263,7 +2272,11 @@ start_performance_sampling() {
   case "${sampler}" in
     xctrace)
       if start_xctrace_sampling; then
-        log "xctrace 负责 Trace/调用栈，另行启动进程指标采样。"
+        if printf '%s' "${PERFORMANCE_XCTRACE_TEMPLATE}" | grep -Eiq 'activity.?monitor'; then
+          log "xctrace 使用 Activity Monitor 采集 CPU/内存趋势，另行启动进程指标采样作为兜底。"
+        else
+          log "xctrace 负责 Trace/调用栈，另行启动进程指标采样。"
+        fi
         if [ "${PERFORMANCE_FRAME_XCTRACE:-0}" = "1" ]; then
           start_frame_xctrace_sampling || log "帧级 xctrace 采样启动失败，本次仅保留主 xctrace Trace。"
         else
@@ -2300,14 +2313,106 @@ start_performance_sampling() {
   esac
 }
 
+find_pymobiledevice3_cmd() {
+  if [ -n "${PYMOBILEDEVICE3_CMD:-}" ] && [ -x "${PYMOBILEDEVICE3_CMD}" ]; then
+    printf '%s\n' "${PYMOBILEDEVICE3_CMD}"
+    return 0
+  fi
+  command -v pymobiledevice3 2>/dev/null || return 1
+}
+
+is_pymobiledevice3_tunneld_running() {
+  pgrep -f "pymobiledevice3.*remote tunneld" >/dev/null 2>&1
+}
+
+log_pymobiledevice3_tunneld_failure() {
+  local message="$1"
+  local now
+  now="$(date +%s)"
+  if [ $((now - PYMOBILEDEVICE3_TUNNELD_LAST_FAILURE_LOG_AT)) -lt "${PYMOBILEDEVICE3_TUNNELD_RETRY_INTERVAL_SECONDS}" ]; then
+    return 0
+  fi
+  PYMOBILEDEVICE3_TUNNELD_LAST_FAILURE_LOG_AT="${now}"
+  log "${message}"
+}
+
+ensure_pymobiledevice3_tunneld() {
+  if is_pymobiledevice3_tunneld_running; then
+    return 0
+  fi
+  if [ "${PYMOBILEDEVICE3_TUNNELD_AUTO_START}" != "1" ]; then
+    log_pymobiledevice3_tunneld_failure "未检测到 pymobiledevice3 tunneld，且已关闭自动启动。iOS 17+ DVT 采样需要先启动：pymobiledevice3 remote tunneld --daemonize --host ${PYMOBILEDEVICE3_TUNNELD_HOST} --port ${PYMOBILEDEVICE3_TUNNELD_PORT} --protocol ${PYMOBILEDEVICE3_TUNNELD_PROTOCOL}"
+    return 1
+  fi
+
+  local now
+  now="$(date +%s)"
+  if [ $((now - PYMOBILEDEVICE3_TUNNELD_LAST_ATTEMPT_AT)) -lt "${PYMOBILEDEVICE3_TUNNELD_RETRY_INTERVAL_SECONDS}" ]; then
+    return 1
+  fi
+  PYMOBILEDEVICE3_TUNNELD_LAST_ATTEMPT_AT="${now}"
+
+  local pymobiledevice3_cmd tunneld_log
+  pymobiledevice3_cmd="$(find_pymobiledevice3_cmd || true)"
+  if [ -z "${pymobiledevice3_cmd}" ]; then
+    log_pymobiledevice3_tunneld_failure "未找到 pymobiledevice3，无法自动启动 tunneld，iOS 17+ DVT CPU/内存采样不可用。"
+    return 1
+  fi
+
+  tunneld_log="${RESULT_DIR}/pymobiledevice3-tunneld.log"
+  log "未检测到 pymobiledevice3 tunneld，尝试自动启动: ${pymobiledevice3_cmd} remote tunneld --daemonize --host ${PYMOBILEDEVICE3_TUNNELD_HOST} --port ${PYMOBILEDEVICE3_TUNNELD_PORT} --protocol ${PYMOBILEDEVICE3_TUNNELD_PROTOCOL}"
+  : > "${tunneld_log}"
+  local start_status=0
+  run_with_timeout "${PYMOBILEDEVICE3_TUNNELD_START_TIMEOUT_SECONDS}" \
+    "${pymobiledevice3_cmd}" remote tunneld --daemonize \
+    --host "${PYMOBILEDEVICE3_TUNNELD_HOST}" \
+    --port "${PYMOBILEDEVICE3_TUNNELD_PORT}" \
+    --protocol "${PYMOBILEDEVICE3_TUNNELD_PROTOCOL}" >>"${tunneld_log}" 2>&1 || start_status=$?
+
+  if grep -qi "requires root privileges\\|retrying with \"sudo\"\\|permission denied" "${tunneld_log}" 2>/dev/null; then
+    start_status=126
+  fi
+
+  if [ "${start_status}" -ne 0 ]; then
+    if [ "${start_status}" -eq 126 ] && sudo -n true >/dev/null 2>&1; then
+      log "pymobiledevice3 tunneld 需要 root 权限，尝试使用免密 sudo 启动。"
+      : > "${tunneld_log}"
+      start_status=0
+      run_with_timeout "${PYMOBILEDEVICE3_TUNNELD_START_TIMEOUT_SECONDS}" \
+        sudo -n "${pymobiledevice3_cmd}" remote tunneld --daemonize \
+        --host "${PYMOBILEDEVICE3_TUNNELD_HOST}" \
+        --port "${PYMOBILEDEVICE3_TUNNELD_PORT}" \
+        --protocol "${PYMOBILEDEVICE3_TUNNELD_PROTOCOL}" >>"${tunneld_log}" 2>&1 || start_status=$?
+    fi
+    if [ "${start_status}" -ne 0 ]; then
+      log_pymobiledevice3_tunneld_failure "pymobiledevice3 tunneld 自动启动失败，日志: ${tunneld_log}。iOS 17+ CPU/内存采样依赖该 root 常驻服务，请先执行 scripts/sonic/install-pymobiledevice3-tunneld-launchdaemon.sh 做一次性配置。"
+      return 1
+    fi
+  fi
+
+  local waited=0
+  while [ "${waited}" -lt "${PYMOBILEDEVICE3_TUNNELD_START_TIMEOUT_SECONDS}" ]; do
+    if is_pymobiledevice3_tunneld_running; then
+      log "pymobiledevice3 tunneld 已就绪: ${PYMOBILEDEVICE3_TUNNELD_HOST}:${PYMOBILEDEVICE3_TUNNELD_PORT}"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  log_pymobiledevice3_tunneld_failure "pymobiledevice3 tunneld 启动后未进入运行状态，日志: ${tunneld_log}。CPU/内存采样本次跳过。"
+  return 1
+}
+
 start_pymobiledevice3_performance_sampling() {
   local append_mode="${1:-0}"
-  if ! command -v pymobiledevice3 >/dev/null 2>&1; then
+  local pymobiledevice3_cmd
+  pymobiledevice3_cmd="$(find_pymobiledevice3_cmd || true)"
+  if [ -z "${pymobiledevice3_cmd}" ]; then
     log "未找到 pymobiledevice3，无法使用 DVT sysmon 采样。"
     return 1
   fi
-  if ! pgrep -f "pymobiledevice3.*remote tunneld" >/dev/null 2>&1; then
-    log "未检测到 pymobiledevice3 tunneld，iOS 17+ DVT 采样需要先启动：sudo pymobiledevice3 remote tunneld --daemonize --host 127.0.0.1 --port 49151 --protocol tcp"
+  if ! ensure_pymobiledevice3_tunneld; then
     return 1
   fi
 
@@ -2321,7 +2426,7 @@ start_pymobiledevice3_performance_sampling() {
   [ "${append_mode}" = "1" ] && append_label=" (append)"
   log "启动性能采样: pymobiledevice3 dvt sysmon${append_label} -> ${PERFORMANCE_SAMPLE_FILE}"
   (
-    pymobiledevice3 developer dvt sysmon process monitor process \
+    "${pymobiledevice3_cmd}" developer dvt sysmon process monitor process \
       --udid "${SELECTED_DEVICE}" \
       --tunnel '' \
       -f "name=${DETECTED_EXECUTABLE_NAME:-NNIM}" \
@@ -2629,7 +2734,11 @@ export_xctrace_performance_samples() {
   if [ "${exported}" != "1" ]; then
     rm -f "${toc_xml}"
     run_with_timeout "${PERFORMANCE_XCTRACE_EXPORT_TIMEOUT_SECONDS}" xcrun xctrace export --input "${PERFORMANCE_TRACE_FILE}" --toc --output "${toc_xml}" >>"${export_log}" 2>&1 || true
-    log "xctrace 性能数据导出失败。"
+    if [ -s "${toc_xml}" ] && ! grep -q 'schema="activity-monitor-process-live"' "${toc_xml}"; then
+      log "xctrace Trace 未包含 Activity Monitor 进程指标表，无法从该 Trace 导出 CPU/内存趋势。当前 template=${PERFORMANCE_XCTRACE_TEMPLATE}。"
+    else
+      log "xctrace 性能数据导出失败。"
+    fi
     log "xctrace 导出日志: ${export_log}"
     return 1
   fi
@@ -3225,8 +3334,16 @@ ensure_process_metric_sampling_alive() {
   if [ -n "${pid}" ] && kill -0 "${pid}" >/dev/null 2>&1; then
     return 0
   fi
-  log "检测到进程指标采样已结束，Monkey 仍在运行，准备重新采集 CPU/内存。"
-  restart_process_metric_sampling || log "进程指标采样重启失败，稍后继续尝试。"
+  if restart_process_metric_sampling; then
+    log "检测到进程指标采样已结束，已重新采集 CPU/内存。"
+    return 0
+  fi
+  local now
+  now="$(date +%s)"
+  if [ $((now - PROCESS_METRIC_LAST_RESTART_WARN_AT)) -ge "${PYMOBILEDEVICE3_TUNNELD_RETRY_INTERVAL_SECONDS}" ]; then
+    PROCESS_METRIC_LAST_RESTART_WARN_AT="${now}"
+    log "检测到进程指标采样已结束，CPU/内存采样重启失败，稍后继续尝试。"
+  fi
 }
 
 start_xctrace_monitor() {
