@@ -22,9 +22,74 @@ const upload = multer({
 
 const fileHandler = new FileHandlerService();
 const storage = new StorageService();
+const uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
 
 function isNNRtcTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
+}
+
+async function saveDSYMToStorage(dsymPath: string): Promise<{
+  uuid: string;
+  appName: string;
+  version: string;
+  uploadTime: string;
+  filePath: string;
+}> {
+  const uuid = await fileHandler.extractUUID(dsymPath);
+  logger.info('UUID 提取完成', { uuid });
+
+  const appInfo = await fileHandler.extractAppInfo(dsymPath);
+  if (appInfo.appName === 'NNRtc' && isNNRtcTestVersion(appInfo.version)) {
+    throw new AppError(
+      ErrorCode.INVALID_FILE_FORMAT,
+      'NNRtc 测试包不允许上传 dSYM，请使用正式包 dSYM',
+      400
+    );
+  }
+
+  const sameVersionDsyms = await storage.findByAppNameAndVersion(appInfo.appName, appInfo.version);
+  for (const existing of sameVersionDsyms) {
+    logger.info('覆盖同版本 dSYM，删除旧记录', {
+      appName: existing.appName,
+      version: existing.version,
+      uuid: existing.uuid,
+      filePath: existing.filePath,
+    });
+    await storage.deleteDSYM(existing.uuid);
+  }
+
+  const uuidOwner = await storage.findByUUID(uuid);
+  if (uuidOwner) {
+    throw new AppError(
+      ErrorCode.INVALID_FILE_FORMAT,
+      `UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`,
+      409
+    );
+  }
+
+  const permanentPath = await fileHandler.moveToPermanentStorage(dsymPath, uuid);
+  const fileSize = fileHandler.getFileSize(permanentPath);
+  const dsymInfo = await storage.saveDSYMInfo({
+    uuid,
+    appName: appInfo.appName,
+    version: appInfo.version,
+    buildNumber: appInfo.buildNumber,
+    architecture: appInfo.architecture,
+    filePath: permanentPath,
+    fileSize,
+  });
+
+  logger.info('dSYM 上传成功', { uuid, appName: appInfo.appName });
+  symbolicationCache.clear();
+  logger.info('已清除符号化缓存（dSYM 更新）');
+
+  return {
+    uuid: dsymInfo.uuid,
+    appName: dsymInfo.appName,
+    version: dsymInfo.version,
+    uploadTime: dsymInfo.uploadTime,
+    filePath: dsymInfo.filePath,
+  };
 }
 
 /**
@@ -57,70 +122,12 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
     dsymPath = await fileHandler.identifyAndExtractDSYM(tempPath);
     logger.info('dSYM 提取完成', { dsymPath });
 
-    // 提取 UUID
-    logger.info('开始提取 UUID');
-    const uuid = await fileHandler.extractUUID(dsymPath);
-    logger.info('UUID 提取完成', { uuid });
-
-    // 提取应用信息
-    const appInfo = await fileHandler.extractAppInfo(dsymPath);
-    if (appInfo.appName === 'NNRtc' && isNNRtcTestVersion(appInfo.version)) {
-      await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath);
-      throw new AppError(
-        ErrorCode.INVALID_FILE_FORMAT,
-        'NNRtc 测试包不允许上传 dSYM，请使用正式包 dSYM',
-        400
-      );
-    }
-
-    // 同应用同版本覆盖：先删除旧记录和旧 dSYM 文件
-    const sameVersionDsyms = await storage.findByAppNameAndVersion(appInfo.appName, appInfo.version);
-    for (const existing of sameVersionDsyms) {
-      logger.info('覆盖同版本 dSYM，删除旧记录', {
-        appName: existing.appName,
-        version: existing.version,
-        uuid: existing.uuid,
-        filePath: existing.filePath,
-      });
-      await storage.deleteDSYM(existing.uuid);
-    }
-
-    // 覆盖同版本后，若 UUID 仍存在，说明同一个 UUID 被其他版本占用，拒绝上传
-    const uuidOwner = await storage.findByUUID(uuid);
-    if (uuidOwner) {
-      await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath);
-      throw new AppError(
-        ErrorCode.INVALID_FILE_FORMAT,
-        `UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`,
-        409
-      );
-    }
-
-    // 移动到永久存储
-    permanentPath = await fileHandler.moveToPermanentStorage(dsymPath, uuid);
-
-    // 获取文件大小
-    const fileSize = fileHandler.getFileSize(permanentPath);
-
-    // 保存到数据库
-    const dsymInfo = await storage.saveDSYMInfo({
-      uuid,
-      appName: appInfo.appName,
-      version: appInfo.version,
-      buildNumber: appInfo.buildNumber,
-      architecture: appInfo.architecture,
-      filePath: permanentPath,
-      fileSize,
-    });
-
-    logger.info('dSYM 上传成功', { uuid, appName: appInfo.appName });
+    logger.info('开始保存 dSYM');
+    const dsymInfo = await saveDSYMToStorage(dsymPath);
+    permanentPath = dsymInfo.filePath;
 
     // 上传成功后只保留永久存储中的 .dSYM，清理压缩包和解压外层目录
     await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath, permanentPath);
-
-    // 清除符号化缓存，确保使用新的 dSYM 重新符号化
-    symbolicationCache.clear();
-    logger.info('已清除符号化缓存（dSYM 更新）');
 
     res.json({
       success: true,
@@ -159,6 +166,60 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
         error: errorMessage,
       });
     }
+  }
+});
+
+/**
+ * POST /api/dsym/upload-from-xcarchive
+ * 从服务器本机 .xcarchive 自动提取主工程 dSYM（需要管理员权限）
+ */
+router.post('/upload-from-xcarchive', adminMiddleware, async (req: Request, res: Response) => {
+  let tempDir: string | undefined;
+  let dsymPath: string | undefined;
+  let permanentPath: string | undefined;
+
+  try {
+    const archivePath = String(req.body?.xcarchivePath || '').trim();
+    if (!archivePath) {
+      throw new AppError(ErrorCode.INVALID_FILE_FORMAT, '未找到当前构建对应的 xcarchivePath', 400);
+    }
+    if (!archivePath.endsWith('.xcarchive')) {
+      throw new AppError(ErrorCode.INVALID_FILE_FORMAT, '当前构建产物不是 .xcarchive，无法自动提取 dSYM', 400);
+    }
+    if (!fs.existsSync(archivePath)) {
+      throw new AppError(ErrorCode.INVALID_FILE_FORMAT, `服务器本机未找到 xcarchive：${archivePath}`, 404);
+    }
+
+    logger.info('从 xcarchive 自动导入 dSYM', { archivePath });
+    const archiveDSYMPath = await fileHandler.identifyAndExtractDSYM(archivePath);
+    tempDir = path.join(uploadDir, `xcarchive_dsym_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+    fs.mkdirSync(tempDir, { recursive: true });
+    dsymPath = path.join(tempDir, path.basename(archiveDSYMPath));
+    fs.cpSync(archiveDSYMPath, dsymPath, { recursive: true });
+
+    const dsymInfo = await saveDSYMToStorage(dsymPath);
+    permanentPath = dsymInfo.filePath;
+    await fileHandler.cleanupUploadArtifacts(tempDir, dsymPath, permanentPath);
+
+    res.json({
+      success: true,
+      data: {
+        uuid: dsymInfo.uuid,
+        appName: dsymInfo.appName,
+        version: dsymInfo.version,
+        uploadTime: dsymInfo.uploadTime,
+      },
+    });
+  } catch (error: any) {
+    logger.error('从 xcarchive 自动导入 dSYM 失败', {
+      error: error.message,
+      stack: error.stack,
+      xcarchivePath: req.body?.xcarchivePath,
+    });
+    if (tempDir || dsymPath || permanentPath) {
+      await fileHandler.cleanupUploadArtifacts(tempDir, dsymPath, permanentPath);
+    }
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 

@@ -14,6 +14,7 @@ import {
   PlusOutlined,
   DeleteOutlined,
   BranchesOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
@@ -2312,6 +2313,8 @@ export default function CICDPage() {
     thirdSdkMissingFiles?: string[];
     thirdSdkError?: string;
   } | null>(null);
+  const [buildDsymUploading, setBuildDsymUploading] = useState(false);
+  const [buildDsymUploaded, setBuildDsymUploaded] = useState<DSYMInfo | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [publishBranch, setPublishBranch] = useState('develop');
@@ -2884,6 +2887,7 @@ export default function CICDPage() {
 
   const showBuildLog = async (build: JenkinsBuild) => {
     setLogModalOpen(true);
+    setBuildDsymUploaded(null);
     setSelectedBuildLog({ build, log: '', thirdSdkBranch: build.branchName || 'develop', thirdSdkDependencies: [] });
     setLogLoading(true);
     try {
@@ -2908,6 +2912,29 @@ export default function CICDPage() {
       });
     } finally {
       setLogLoading(false);
+    }
+  };
+
+  const handleBuildDsymUpload = async () => {
+    const xcarchivePath = selectedBuildLog?.build.xcarchivePath;
+    if (!xcarchivePath) {
+      message.error('当前构建未记录 xcarchivePath，无法自动匹配 dSYM');
+      return;
+    }
+
+    setBuildDsymUploading(true);
+    setBuildDsymUploaded(null);
+    try {
+      const response = await dsymApi.uploadFromXcarchive(xcarchivePath);
+      if (!response.success || !response.data) {
+        throw new Error(response.error || '上传 dSYM 失败');
+      }
+      setBuildDsymUploaded(response.data);
+      message.success(`主工程 dSYM 上传成功：${response.data.appName}@${response.data.version}`);
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '上传 dSYM 失败');
+    } finally {
+      setBuildDsymUploading(false);
     }
   };
 
@@ -4395,6 +4422,33 @@ export default function CICDPage() {
               {getChannelBuildNumber(selectedBuildLog.build) && <Tag color="green">渠道构建号 {getChannelBuildNumber(selectedBuildLog.build)}</Tag>}
               {selectedBuildLog.build.appVersion && <Tag color="purple">APP {selectedBuildLog.build.appVersion}</Tag>}
             </Space>
+          )}
+          {selectedBuildLog?.build.publishChannel === 'AppStore' && (
+            <Card size="small">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+                <Space direction="vertical" size={4}>
+                  <Text strong>上传主工程 dSYM 文件</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    上传后会进入 Crash 符号化的 dSYM 文件管理，可直接用于线上崩溃符号化。
+                  </Text>
+                  {buildDsymUploaded && (
+                    <Space size={6} wrap>
+                      <Tag color="green">已上传</Tag>
+                      <Text>{buildDsymUploaded.appName}@{buildDsymUploaded.version}</Text>
+                      <Text code>{buildDsymUploaded.uuid}</Text>
+                    </Space>
+                  )}
+                </Space>
+                <Button
+                  icon={<UploadOutlined />}
+                  loading={buildDsymUploading}
+                  disabled={!selectedBuildLog.build.xcarchivePath}
+                  onClick={handleBuildDsymUpload}
+                >
+                  {buildDsymUploading ? '上传中...' : '上传 dSYM'}
+                </Button>
+              </div>
+            </Card>
           )}
           <Tabs
             key={selectedBuildLog?.build.number || 'build-log'}

@@ -84,6 +84,16 @@ export const dsymApi = {
   },
 
   /**
+   * 从服务器本机 xcarchive 自动上传主工程 dSYM
+   */
+  uploadFromXcarchive: async (xcarchivePath: string): Promise<ApiResponse<DSYMInfo>> => {
+    const response = await api.post<ApiResponse<DSYMInfo>>('/dsym/upload-from-xcarchive', { xcarchivePath }, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
+  /**
    * 获取 dSYM 列表
    */
   list: async (): Promise<ApiResponse<DSYMInfo[]>> => {
