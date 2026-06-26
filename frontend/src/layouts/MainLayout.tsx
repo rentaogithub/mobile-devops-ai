@@ -158,13 +158,14 @@ export default function MainLayout() {
           </Button>
         )}
       </Header>
-      <Content style={{ padding: '24px', background: '#f0f2f5' }}>
+      <Content style={{ padding: '24px', background: '#f0f2f5', minWidth: 0 }}>
         <div
           style={{
             background: '#fff',
             padding: '24px',
             minHeight: '500px',
             borderRadius: 8,
+            minWidth: 0,
           }}
         >
           <Outlet />

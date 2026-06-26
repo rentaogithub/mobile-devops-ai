@@ -1202,9 +1202,9 @@ export default function PodsPage() {
   ];
 
   return (
-    <div>
-      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
+    <div style={{ minWidth: 0 }}>
+      <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
+        <div style={{ minWidth: 0 }}>
           <Title level={4} style={{ marginBottom: 4 }}>
             <AppstoreOutlined style={{ marginRight: 8, color: '#52c41a' }} />
             Pods 组件管理
@@ -1219,7 +1219,7 @@ export default function PodsPage() {
         </Space>
       </div>
 
-      <div style={{ display: 'flex', gap: 16, minHeight: 500 }}>
+      <div style={{ display: 'flex', gap: 16, minHeight: 500, minWidth: 0 }}>
         {/* 左侧：组件列表 */}
         <Card
           size="small"
@@ -1328,7 +1328,8 @@ export default function PodsPage() {
         {/* 右侧：版本列表 */}
         <Card
           size="small"
-          style={{ flex: 1 }}
+          style={{ flex: '1 1 0', minWidth: 0 }}
+          styles={{ body: { overflow: 'hidden' } }}
           title={
             selectedGroup ? (
               <Space>
@@ -1377,7 +1378,7 @@ export default function PodsPage() {
               rowKey={(r) => `${r.name}-${r.version}`}
               loading={loading}
               size="small"
-              scroll={{ x: 1280 }}
+              scroll={{ x: 1360 }}
               pagination={
                 selectedGroup.versions.length > 10
                   ? { pageSize: 10, showTotal: (t) => `共 ${t} 个版本` }
