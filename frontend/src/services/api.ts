@@ -210,6 +210,229 @@ export const watermarkApi = {
   },
 };
 
+export interface OpUserInfo {
+  id?: string;
+  userId?: string | number;
+  nickName?: string;
+  telNum?: string;
+  email?: string;
+  nnNumber?: string;
+  userType_dictText?: string;
+  status_dictText?: string;
+  registerCanal?: string;
+  updateBy?: string;
+  updaeTime?: string;
+  createTime?: string;
+}
+
+export interface OpUserListResult {
+  records: OpUserInfo[];
+  total: number;
+  pageNo: number;
+  pageSize: number;
+}
+
+export interface UserQueryRecord extends OpUserInfo {
+  recordKey: string;
+  remark?: string;
+  searchKey?: string;
+  lastQueryAt: string;
+}
+
+export interface OpFeedbackLogInfo {
+  id?: string;
+  userId?: string | number;
+  type?: string | number;
+  reqChannel_dictText?: string;
+  showVersion?: string;
+  version?: string;
+  crashLogUrl?: string;
+  crashTime?: string;
+  createTime?: string;
+}
+
+const getOpAccessToken = () => {
+  const tokenKeys = [
+    'Access-Token',
+    'x-access-token',
+    'X-Access-Token',
+    'token',
+    'OP_TOKEN',
+  ];
+
+  for (const key of tokenKeys) {
+    const value = localStorage.getItem(key) || sessionStorage.getItem(key);
+    if (value) {
+      return value;
+    }
+  }
+
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i);
+    if (!key || !/access.?token|token/i.test(key)) {
+      continue;
+    }
+    const value = localStorage.getItem(key);
+    if (!value) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === 'string') {
+        return parsed;
+      }
+      if (typeof parsed?.value === 'string') {
+        return parsed.value;
+      }
+      if (typeof parsed?.content === 'string') {
+        return parsed.content;
+      }
+    } catch {
+      return value;
+    }
+  }
+
+  return '';
+};
+
+export const opUserApi = {
+  list: async (searchkey: string, pageNo = 1, pageSize = 10): Promise<OpUserListResult> => {
+    const response = await axios.get('/jeecg-boot/user/tUser/list', {
+      params: {
+        _t: Math.floor(Date.now() / 1000),
+        searchkey,
+        column: 'createTime',
+        order: 'desc',
+        field: 'id,,action,userId,nickName,telNum,email,nnNumber,userType_dictText,status_dictText,registerCanal,updateBy,updaeTime,createTime',
+        pageNo,
+        pageSize,
+      },
+      headers: {
+        ...(getOpAccessToken() ? { 'x-access-token': getOpAccessToken() } : {}),
+      },
+      timeout: 60000,
+    });
+
+    const payload = response.data;
+    if (
+      payload &&
+      (payload.success === false || (payload.code !== undefined && ![0, 200].includes(Number(payload.code))))
+    ) {
+      throw new Error(payload.message || payload.error || '查询用户信息失败');
+    }
+
+    const result = payload?.result || payload?.data || payload;
+    const records = Array.isArray(result?.records)
+      ? result.records
+      : Array.isArray(result)
+        ? result
+        : [];
+
+    return {
+      records,
+      total: Number(result?.total ?? records.length),
+      pageNo: Number(result?.current ?? result?.pageNo ?? pageNo),
+      pageSize: Number(result?.size ?? result?.pageSize ?? pageSize),
+    };
+  },
+  feedbackLogs: async (uid: string | number, pageNo = 1, pageSize = 10): Promise<OpUserListResult & { records: OpFeedbackLogInfo[] }> => {
+    const response = await axios.get('/jeecg-boot/crash_log/list', {
+      params: {
+        _t: Math.floor(Date.now() / 1000),
+        type: 36,
+        query: uid,
+        reqChannel: 1,
+        column: 'createTime',
+        order: 'desc',
+        field: 'id,,action,userId,type,reqChannel_dictText,version,crashLogUrl,undefined,crashTime,createTime',
+        pageNo,
+        pageSize,
+        queryParam: '',
+        page: pageNo - 1,
+      },
+      headers: {
+        ...(getOpAccessToken() ? { 'x-access-token': getOpAccessToken() } : {}),
+      },
+      timeout: 60000,
+    });
+
+    const payload = response.data;
+    if (
+      payload &&
+      (payload.success === false || (payload.code !== undefined && ![0, 200].includes(Number(payload.code))))
+    ) {
+      throw new Error(payload.message || payload.error || '查询反馈日志失败');
+    }
+
+    const result = payload?.result || payload?.data || payload;
+    const records = Array.isArray(result?.records)
+      ? result.records
+      : Array.isArray(result)
+        ? result
+        : [];
+
+    return {
+      records,
+      total: Number(result?.total ?? records.length),
+      pageNo: Number(result?.current ?? result?.pageNo ?? pageNo),
+      pageSize: Number(result?.size ?? result?.pageSize ?? pageSize),
+    };
+  },
+  downloadFeedbackLog: async (record: OpFeedbackLogInfo): Promise<void> => {
+    let fileURL = record.crashLogUrl || '';
+    if (!fileURL) {
+      throw new Error('当前记录缺少日志下载地址');
+    }
+
+    if (fileURL.includes(',')) {
+      fileURL = fileURL.substring(0, fileURL.indexOf(','));
+    }
+    if (fileURL.startsWith('/')) {
+      fileURL = fileURL.startsWith('/op/') ? fileURL : `/op${fileURL}`;
+    }
+
+    const link = document.createElement('a');
+    link.href = fileURL;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.download = `feedback-log-${record.userId || record.id || Date.now()}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  },
+};
+
+export const userQueryRecordApi = {
+  list: async (): Promise<UserQueryRecord[]> => {
+    const response = await api.get<ApiResponse<UserQueryRecord[]>>('/user-query-records');
+    return response.data.data || [];
+  },
+  upsertBatch: async (records: OpUserInfo[], searchKey: string): Promise<UserQueryRecord[]> => {
+    const response = await api.post<ApiResponse<UserQueryRecord[]>>('/user-query-records/batch', {
+      records,
+      searchKey,
+    });
+    return response.data.data || [];
+  },
+  updateRemark: async (recordKey: string, remark: string): Promise<UserQueryRecord[]> => {
+    const response = await api.put<ApiResponse<UserQueryRecord[]>>(
+      `/user-query-records/${encodeURIComponent(recordKey)}/remark`,
+      { remark }
+    );
+    return response.data.data || [];
+  },
+  remove: async (recordKey: string): Promise<UserQueryRecord[]> => {
+    const response = await api.delete<ApiResponse<UserQueryRecord[]>>(
+      `/user-query-records/${encodeURIComponent(recordKey)}`
+    );
+    return response.data.data || [];
+  },
+  clear: async (): Promise<UserQueryRecord[]> => {
+    const response = await api.delete<ApiResponse<UserQueryRecord[]>>('/user-query-records');
+    return response.data.data || [];
+  },
+};
+
 export const symbolicateApi = {
   /**
    * 符号化崩溃日志

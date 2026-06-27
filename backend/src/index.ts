@@ -24,6 +24,7 @@ import sentryAnalysisRoutes from './routes/sentryAnalysis.routes';
 import watermarkRoutes from './routes/watermark.routes';
 import sonicProxyRoutes from './routes/sonicProxy.routes';
 import opProxyRoutes from './routes/opProxy.routes';
+import userQueryRecordsRoutes from './routes/userQueryRecords.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -165,6 +166,7 @@ app.use('/api/quality', qualityRoutes);
 app.use('/api/pairing', pairingRoutes);
 app.use('/api/watermark', authMiddleware, watermarkRoutes);
 app.use('/api/sentry-analysis', sentryAnalysisRoutes);
+app.use('/api/user-query-records', userQueryRecordsRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');
