@@ -3,12 +3,24 @@ import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Moda
 import { DeleteOutlined, ReloadOutlined, SearchOutlined, EditOutlined, InboxOutlined, CheckCircleOutlined, LoadingOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadProps } from 'antd';
-import { dsymApi, moduleApi } from '../services/api';
+import { dsymApi, moduleApi, ExternalServicesConfig } from '../services/api';
 import { DSYMInfo } from '../types';
 import { formatFileSize, formatDateTime } from '../utils/helpers';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
+
+const defaultExternalServices: ExternalServicesConfig = {
+  nnrtcJenkins: {
+    baseUrl: '',
+    jobName: '',
+    jobUrl: '',
+  },
+  dsymSources: {
+    nnRtcArchiveSmbUrl: '',
+    screenShareUrl: '',
+  },
+};
 
 export default function ManagePage() {
   const [dsyms, setDsyms] = useState<DSYMInfo[]>([]);
@@ -26,6 +38,7 @@ export default function ManagePage() {
   const [customModules, setCustomModules] = useState<string[]>([]);
   const [moduleLoading, setModuleLoading] = useState(false);
   const [newModuleName, setNewModuleName] = useState('');
+  const [externalServices, setExternalServices] = useState<ExternalServicesConfig>(defaultExternalServices);
   
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
@@ -57,6 +70,17 @@ export default function ManagePage() {
       message.error('获取模块列表失败');
     } finally {
       setModuleLoading(false);
+    }
+  };
+
+  const loadExternalServices = async () => {
+    try {
+      const response = await moduleApi.getExternalServices();
+      if (response.success && response.data) {
+        setExternalServices(response.data);
+      }
+    } catch (error) {
+      console.warn('获取外部服务配置失败，使用默认地址', error);
     }
   };
 
@@ -156,6 +180,7 @@ export default function ManagePage() {
   useEffect(() => {
     loadDsyms();
     loadModules();
+    loadExternalServices();
   }, []);
 
   const uploadProps: UploadProps = {
@@ -652,7 +677,7 @@ export default function ManagePage() {
                   <div>
                     <strong>NN & RTC：</strong>
                     <a 
-                      href="smb://10.1.3.177/Archives"
+                      href={externalServices.dsymSources.nnRtcArchiveSmbUrl || undefined}
                       style={{ 
                         background: '#fff', 
                         padding: '2px 6px', 
@@ -674,7 +699,7 @@ export default function ManagePage() {
                         e.currentTarget.style.borderColor = '#d9d9d9';
                       }}
                     >
-                      smb://10.1.3.177/Archives
+                      {externalServices.dsymSources.nnRtcArchiveSmbUrl || '未配置'}
                     </a>
                     <span style={{ color: '#666' }}>（用户：1）</span>
                   </div>
@@ -720,7 +745,7 @@ export default function ManagePage() {
                     <div>
                       <strong>地址：</strong>
                       <a 
-                        href="vnc://10.1.3.177/"
+                        href={externalServices.dsymSources.screenShareUrl || undefined}
                         style={{ 
                           background: '#fff', 
                           padding: '2px 6px', 
@@ -742,7 +767,7 @@ export default function ManagePage() {
                           e.currentTarget.style.borderColor = '#d9d9d9';
                         }}
                       >
-                        vnc://10.1.3.177/
+                        {externalServices.dsymSources.screenShareUrl || '未配置'}
                       </a>
                     </div>
                   </div>

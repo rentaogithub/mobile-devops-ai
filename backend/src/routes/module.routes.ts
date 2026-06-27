@@ -1,6 +1,7 @@
 import express from 'express';
 import { moduleConfigService } from '../services/ModuleConfigService';
 import logger from '../utils/logger';
+import { getExternalServicesPublicConfig } from '../config/externalServices';
 
 const router = express.Router();
 
@@ -40,6 +41,21 @@ router.post('/modules', (req, res) => {
   } catch (error) {
     logger.error('更新模块列表失败', error);
     res.status(500).json({ error: '更新模块列表失败' });
+  }
+});
+
+/**
+ * 获取前端展示用外部服务配置
+ */
+router.get('/external-services', (_req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: getExternalServicesPublicConfig(),
+    });
+  } catch (error) {
+    logger.error('获取外部服务配置失败', error);
+    res.status(500).json({ success: false, error: '获取外部服务配置失败' });
   }
 });
 

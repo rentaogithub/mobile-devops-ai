@@ -6,10 +6,9 @@ import path from 'path';
 import podService from '../services/PodService';
 import logger from '../utils/logger';
 import { adminMiddleware } from '../middleware/auth';
+import { getNNRtcJenkinsConfig } from '../config/externalServices';
 
 const router = Router();
-const NNRTC_JENKINS_BASE_URL = (process.env.NNRTC_JENKINS_BASE_URL || 'http://10.1.3.177:8080').replace(/\/$/, '');
-const NNRTC_JENKINS_JOB = process.env.NNRTC_JENKINS_JOB || 'nnrtc-ios-build';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
 const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');
 const NNRTC_TASKS_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
@@ -117,14 +116,6 @@ function isNNRtcTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
-function encodeJobPath(jobName: string) {
-  return jobName
-    .split('/')
-    .filter(Boolean)
-    .map((part) => `job/${encodeURIComponent(part)}`)
-    .join('/');
-}
-
 function buildJenkinsAuthConfig() {
   const username = process.env.NNRTC_JENKINS_USER || process.env.JENKINS_USER || '';
   const token = process.env.NNRTC_JENKINS_TOKEN || process.env.JENKINS_TOKEN || '';
@@ -178,6 +169,41 @@ function isNNRtcReleaseBuildForVersion(branchName: string, version: string) {
   return normalized === `release_${version}` || normalized === `release/${version}`;
 }
 
+function inferNNRtcBuildBranch(build: any, parameters: any[]) {
+  const parameterBranch = String(
+    parameters.find((item: any) => String(item?.name || '').toUpperCase() === 'BRANCH')?.value ||
+    parameters.find((item: any) => /branch/i.test(String(item?.name || '')))?.value ||
+    ''
+  ).trim();
+  if (parameterBranch) return parameterBranch.replace(/^origin\//, '');
+
+  const text = [
+    build?.displayName,
+    build?.description,
+    ...(parameters || []).map((item: any) => `${item?.name || ''}=${item?.value || ''}`),
+  ].filter(Boolean).join(' ');
+  const matched = text.match(/(?:origin\/)?(release[_/]\d+(?:\.\d+){2,}|sdk_dev|develop|feature\/[^\s,;]+)/i);
+  return matched ? matched[1].replace(/^origin\//, '') : '';
+}
+
+async function fetchNNRtcBuildParameters(jobPath: string, buildNumber: number): Promise<any[]> {
+  const { baseUrl } = getNNRtcJenkinsConfig();
+  try {
+    const response = await axios.get(`${baseUrl}/${jobPath}/${buildNumber}/api/json`, {
+      timeout: 8000,
+      params: {
+        tree: 'actions[parameters[name,value]],displayName,description',
+      },
+      ...buildJenkinsAuthConfig(),
+    });
+    return (Array.isArray(response.data?.actions) ? response.data.actions : [])
+      .flatMap((action: any) => Array.isArray(action?.parameters) ? action.parameters : []);
+  } catch (error: any) {
+    logger.warn('获取 NNRtc Jenkins 构建参数失败', { buildNumber, error: error.message });
+    return [];
+  }
+}
+
 async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
   number: number;
   result: string;
@@ -186,32 +212,25 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
   url?: string;
   artifactPath: string;
 }>> {
-  const jobPath = encodeJobPath(NNRTC_JENKINS_JOB);
-  const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 100));
-  const response = await axios.get(`${NNRTC_JENKINS_BASE_URL}/${jobPath}/api/json`, {
+  const { baseUrl, jobPath } = getNNRtcJenkinsConfig();
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 300));
+  const response = await axios.get(`${baseUrl}/${jobPath}/api/json`, {
     timeout: 30000,
     params: {
-      tree: `builds[number,result,timestamp,url,actions[parameters[name,value]],artifacts[fileName,relativePath]]{0,${safeLimit}}`,
+      tree: `builds[number,result,timestamp,url,displayName,description,artifacts[fileName,relativePath]]{0,${safeLimit}}`,
     },
     ...buildJenkinsAuthConfig(),
   });
   const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
-  return builds
+  const candidates = builds
     .map((build: any) => {
       const artifact = findNNRtcArtifact(Array.isArray(build?.artifacts) ? build.artifacts : []);
       if (!artifact) return null;
       if (String(build.result || '') !== 'SUCCESS') return null;
-      const parameters = (Array.isArray(build?.actions) ? build.actions : [])
-        .flatMap((action: any) => Array.isArray(action?.parameters) ? action.parameters : []);
-      const branchName = String(
-        parameters.find((item: any) => String(item?.name || '').toUpperCase() === 'BRANCH')?.value ||
-        parameters.find((item: any) => /branch/i.test(String(item?.name || '')))?.value ||
-        ''
-      ).replace(/^origin\//, '');
       return {
         number: Number(build.number),
         result: String(build.result || ''),
-        branchName,
+        branchName: inferNNRtcBuildBranch(build, []),
         timestamp: Number(build.timestamp) || undefined,
         url: build.url ? String(build.url) : undefined,
         artifactPath: String(artifact.relativePath || artifact.fileName || ''),
@@ -225,6 +244,17 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
       url?: string;
       artifactPath: string;
     }>;
+
+  const unresolved = candidates.filter((build) => !build.branchName);
+  for (let index = 0; index < unresolved.length; index += 4) {
+    const batch = unresolved.slice(index, index + 4);
+    const parameterResults = await Promise.all(batch.map((build) => fetchNNRtcBuildParameters(jobPath, build.number)));
+    batch.forEach((build, batchIndex) => {
+      build.branchName = inferNNRtcBuildBranch(build, parameterResults[batchIndex]);
+    });
+  }
+
+  return candidates;
 }
 
 async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ filePath: string; fileName: string; artifactUrl: string }> {
@@ -236,8 +266,8 @@ async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ file
   }
 
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  const jobPath = encodeJobPath(NNRTC_JENKINS_JOB);
-  const apiUrl = `${NNRTC_JENKINS_BASE_URL}/${jobPath}/${build}/api/json`;
+  const { baseUrl, jobPath } = getNNRtcJenkinsConfig();
+  const apiUrl = `${baseUrl}/${jobPath}/${build}/api/json`;
   const metaResponse = await axios.get(apiUrl, {
     timeout: 30000,
     params: { tree: 'artifacts[fileName,relativePath]' },
@@ -252,7 +282,7 @@ async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ file
   }
 
   const fileName = String(artifact.fileName || path.basename(artifact.relativePath));
-  const artifactUrl = `${NNRTC_JENKINS_BASE_URL}/${jobPath}/${build}/artifact/${String(artifact.relativePath).split('/').map(encodeURIComponent).join('/')}`;
+  const artifactUrl = `${baseUrl}/${jobPath}/${build}/artifact/${String(artifact.relativePath).split('/').map(encodeURIComponent).join('/')}`;
   const filePath = path.join(UPLOAD_DIR, `nnrtc_jenkins_${build}_${Date.now()}_${fileName}`);
   const response = await axios.get(artifactUrl, {
     responseType: 'stream',
@@ -339,6 +369,22 @@ router.get('/nnrtc/jenkins/builds', adminMiddleware, async (req: Request, res: R
     logger.error('获取 NNRtc Jenkins 构建列表失败', { error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
+});
+
+/**
+ * GET /api/pods/nnrtc/jenkins/config
+ * 获取 NNRtc Jenkins 配置
+ */
+router.get('/nnrtc/jenkins/config', adminMiddleware, async (_req: Request, res: Response) => {
+  const { baseUrl, jobName, jobUrl } = getNNRtcJenkinsConfig();
+  res.json({
+    success: true,
+    data: {
+      baseUrl,
+      jobName,
+      jobUrl,
+    },
+  });
 });
 
 /**

@@ -10,7 +10,7 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcPodTask } from '../services/api';
+import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -96,8 +96,8 @@ function formatNNRtcBuildLabel(build: NNRtcJenkinsBuild) {
   return `#${build.number}${build.branchName ? ` ${build.branchName}` : ''}${time ? ` ${time}` : ''}`;
 }
 
-function buildNNRtcJenkinsBuildUrl(buildId: string) {
-  return `http://10.1.3.177:8080/job/nnrtc-ios-build/${encodeURIComponent(buildId)}/`;
+function buildNNRtcJenkinsBuildUrl(jobUrl: string, buildId: string) {
+  return `${jobUrl.replace(/\/$/, '')}/${encodeURIComponent(buildId)}/`;
 }
 
 function supportsNniosBuildTask(name?: string) {
@@ -154,6 +154,7 @@ export default function PodsPage() {
   const [detailJenkinsBuildNumber, setDetailJenkinsBuildNumber] = useState('');
   const [detailTriggerNniosBuild, setDetailTriggerNniosBuild] = useState(false);
   const [nnrtcBuilds, setNnrtcBuilds] = useState<NNRtcJenkinsBuild[]>([]);
+  const [nnrtcJenkinsConfig, setNnrtcJenkinsConfig] = useState<NNRtcJenkinsConfig | null>(null);
   const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
   const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
   const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
@@ -213,7 +214,13 @@ export default function PodsPage() {
     if (!isAdmin) return;
     setNnrtcBuildLoading(true);
     try {
-      const res = await podsApi.listNNRtcJenkinsBuilds();
+      const [configRes, res] = await Promise.all([
+        podsApi.getNNRtcJenkinsConfig(),
+        podsApi.listNNRtcJenkinsBuilds(),
+      ]);
+      if (configRes.success && configRes.data) {
+        setNnrtcJenkinsConfig(configRes.data);
+      }
       const builds = res.data || [];
       setNnrtcBuilds(builds);
       if (!form.getFieldValue('nnrtc_build_number') && builds.length > 0) {
@@ -1115,7 +1122,7 @@ export default function PodsPage() {
       render: (buildId: string | undefined, record) => (
         record.name === 'NNRtc' && buildId
           ? (
-            <a href={buildNNRtcJenkinsBuildUrl(buildId)} target="_blank" rel="noopener noreferrer">
+            <a href={nnrtcJenkinsConfig?.jobUrl ? buildNNRtcJenkinsBuildUrl(nnrtcJenkinsConfig.jobUrl, buildId) : '#'} target="_blank" rel="noopener noreferrer">
               <Text code>#{buildId}</Text>
             </a>
           )
@@ -1489,7 +1496,7 @@ export default function PodsPage() {
                             <span>
                               NNRtc 发布来源（
                               <a
-                                href="http://10.1.3.177:8080/job/nnrtc-ios-build/"
+                                href={nnrtcJenkinsConfig?.jobUrl || '#'}
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
@@ -1504,6 +1511,7 @@ export default function PodsPage() {
                             showSearch
                             loading={nnrtcBuildLoading}
                             placeholder="选择构建号"
+                            notFoundContent={nnrtcBuildLoading ? '加载中...' : (nnrtcPackageType === 'release' ? '未找到 release_x.x.x 构建' : '未找到非 release 构建')}
                             optionFilterProp="label"
                             options={nnrtcPublishBuilds.map((build) => ({
                               value: String(build.number),

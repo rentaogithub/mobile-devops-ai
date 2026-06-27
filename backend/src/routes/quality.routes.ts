@@ -3,10 +3,11 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { getJenkinsBaseUrl } from '../config/externalServices';
 
 const router = Router();
 
-const JENKINS_BASE_URL = (process.env.JENKINS_BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
+const JENKINS_BASE_URL = getJenkinsBaseUrl();
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');

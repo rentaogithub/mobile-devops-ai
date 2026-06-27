@@ -693,6 +693,18 @@ export const historyApi = {
   },
 };
 
+export interface ExternalServicesConfig {
+  nnrtcJenkins: {
+    baseUrl: string;
+    jobName: string;
+    jobUrl: string;
+  };
+  dsymSources: {
+    nnRtcArchiveSmbUrl: string;
+    screenShareUrl: string;
+  };
+}
+
 export const moduleApi = {
   /**
    * 获取自定义模块列表
@@ -707,6 +719,14 @@ export const moduleApi = {
    */
   updateModules: async (modules: string[]): Promise<void> => {
     await api.post('/config/modules', { modules });
+  },
+
+  /**
+   * 获取前端展示用外部服务配置
+   */
+  getExternalServices: async (): Promise<ApiResponse<ExternalServicesConfig>> => {
+    const response = await api.get<ApiResponse<ExternalServicesConfig>>('/config/external-services');
+    return response.data;
   },
 };
 
@@ -764,6 +784,12 @@ export interface NNRtcJenkinsBuild {
   timestamp?: number;
   url?: string;
   artifactPath: string;
+}
+
+export interface NNRtcJenkinsConfig {
+  baseUrl: string;
+  jobName: string;
+  jobUrl: string;
 }
 
 export interface NNRtcPodTask {
@@ -849,9 +875,15 @@ export const podsApi = {
   /** 获取 NNRtc Jenkins 构建列表 */
   listNNRtcJenkinsBuilds: async (): Promise<ApiResponse<NNRtcJenkinsBuild[]>> => {
     const response = await api.get<ApiResponse<NNRtcJenkinsBuild[]>>('/pods/nnrtc/jenkins/builds', {
-      params: { limit: 50 },
+      params: { limit: 300 },
       timeout: 60000,
     });
+    return response.data;
+  },
+
+  /** 获取 NNRtc Jenkins 配置 */
+  getNNRtcJenkinsConfig: async (): Promise<ApiResponse<NNRtcJenkinsConfig>> => {
+    const response = await api.get<ApiResponse<NNRtcJenkinsConfig>>('/pods/nnrtc/jenkins/config');
     return response.data;
   },
 
