@@ -422,7 +422,8 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
    * 连接 WebSocket 接收日志流
    */
   const connectLogStream = (targetSession: PairingSessionData | null = session) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    if (wsRef.current
+      && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       setState('streaming');
       return;
     }
@@ -447,6 +448,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(event.data);
 
@@ -558,8 +560,10 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       if (event.code !== 1000) {
         message.warning('日志流连接已断开');
       }
-      setAppConnectionState('disconnected');
-      wsRef.current = null;
+      if (wsRef.current === ws) {
+        setAppConnectionState('disconnected');
+        wsRef.current = null;
+      }
     };
   };
 
