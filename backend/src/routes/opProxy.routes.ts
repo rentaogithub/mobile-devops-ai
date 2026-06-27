@@ -6,7 +6,7 @@ import https from 'https';
 import path from 'path';
 import { URL } from 'url';
 import logger from '../utils/logger';
-import { buildOpCookieHeader, updateOpCookieJar } from '../services/OpCookieJar';
+import { buildOpCookieHeader, getOpAccessToken, updateOpAccessToken, updateOpCookieJar } from '../services/OpCookieJar';
 
 const router = Router();
 const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
@@ -125,6 +125,20 @@ function pickHeader(req: Request, name: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function pickRequestAccessToken(req: Request): string | undefined {
+  const headerToken =
+    pickHeader(req, 'x-access-token') ||
+    pickHeader(req, 'access-token') ||
+    pickHeader(req, 'Access-Token');
+  if (headerToken) {
+    return headerToken;
+  }
+
+  const authorization = pickHeader(req, 'authorization');
+  const match = authorization?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1];
+}
+
 function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string> {
   const targetOrigin = `${targetURL.protocol}//${targetURL.host}`;
   const headers: Record<string, string> = {
@@ -140,6 +154,7 @@ function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string>
     'accept-language',
     'content-type',
     'x-requested-with',
+    'access-token',
     'x-access-token',
     'x-sign',
     'x-timestamp',
@@ -152,6 +167,16 @@ function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string>
       headers[name] = value;
     }
   });
+
+  const requestAccessToken = pickRequestAccessToken(req);
+  if (requestAccessToken) {
+    updateOpAccessToken(requestAccessToken);
+  }
+
+  const accessToken = requestAccessToken || getOpAccessToken();
+  if (accessToken && !headers['x-access-token']) {
+    headers['x-access-token'] = accessToken;
+  }
 
   const origin = pickHeader(req, 'origin');
   if (origin) {
@@ -171,17 +196,45 @@ function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string>
   return headers;
 }
 
+function buildOpAuthBootstrapScript(): string {
+  const accessToken = getOpAccessToken();
+  if (!accessToken) {
+    return '';
+  }
+
+  return `<script>
+(function () {
+  var token = ${JSON.stringify(accessToken)};
+  var keys = ['Access-Token', 'access-token', 'x-access-token', 'X-Access-Token', 'token', 'OP_TOKEN'];
+  try {
+    keys.forEach(function (key) {
+      window.localStorage.setItem(key, token);
+      window.sessionStorage.setItem(key, token);
+    });
+  } catch (e) {}
+})();
+</script>`;
+}
+
 function rewriteHTMLBody(body: string, req: Request): string {
   const target = new URL(OP_TARGET);
   const proxyBaseURL = `${req.protocol}://${req.get('host') || ''}/op`;
   const targetPattern = new RegExp(target.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
 
-  return body
+  const rewritten = body
     .replace(targetPattern, proxyBaseURL)
     .replace(/(window\._CONFIG\[['"]domianURL['"]\]\s*=\s*['"])\/jeecg-boot(['"])/g, '$1/op/jeecg-boot$2')
     .replace(/(href|src|action)=["']\/(?!op\/)/g, '$1="/op/')
     .replace(/(href|src|action)=\/(?!op\/)/g, '$1=/op/')
     .replace(/url\(\s*["']?\/(?!op\/)/g, 'url(/op/');
+  const bootstrapScript = buildOpAuthBootstrapScript();
+  if (!bootstrapScript) {
+    return rewritten;
+  }
+  if (rewritten.includes('</head>')) {
+    return rewritten.replace('</head>', `${bootstrapScript}</head>`);
+  }
+  return `${bootstrapScript}${rewritten}`;
 }
 
 function rewriteCSSBody(body: string, req: Request): string {
@@ -204,10 +257,49 @@ function rewriteJavaScriptBody(body: string, req: Request): string {
     .replace(/(\b[$A-Z_a-z][$\w]*\.p=)(["'])\/\2/g, '$1$2/op/$2');
 }
 
+function findTokenInPayload(value: any, depth = 0): string | undefined {
+  if (!value || depth > 5) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const token = findTokenInPayload(item, depth + 1);
+      if (token) {
+        return token;
+      }
+    }
+    return undefined;
+  }
+  if (typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) {
+      if (
+        typeof item === 'string' &&
+        item.length >= 16 &&
+        /^(?:access[-_]?token|x[-_]?access[-_]?token|token)$/i.test(key)
+      ) {
+        return item;
+      }
+      const token = findTokenInPayload(item, depth + 1);
+      if (token) {
+        return token;
+      }
+    }
+  }
+  return undefined;
+}
+
 function rewriteJSONBody(body: string, req: Request): string {
   const target = new URL(OP_TARGET);
   const proxyBaseURL = `${req.protocol}://${req.get('host') || ''}/op`;
   const targetPattern = new RegExp(target.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  try {
+    const token = findTokenInPayload(JSON.parse(body));
+    if (token) {
+      updateOpAccessToken(token);
+    }
+  } catch {
+    // 非标准 JSON 响应只做 URL 重写。
+  }
   return body.replace(targetPattern, proxyBaseURL);
 }
 
