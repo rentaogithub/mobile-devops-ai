@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Typography, Card, Input, Button, Space, Upload, Alert, Descriptions, Switch, Tabs, Spin, Table, Modal, message } from 'antd';
 import {
   ApiOutlined,
@@ -12,6 +12,9 @@ import {
   LoadingOutlined,
 } from '@ant-design/icons';
 import {
+  feedbackLogApi,
+  FeedbackLogLine,
+  FeedbackLogPreviewResult,
   opUserApi,
   OpFeedbackLogInfo,
   OpUserInfo,
@@ -57,6 +60,25 @@ const formatWatermarkTimeSource = (source?: string, field?: string, reliable?: b
   return `${sourceName}${fieldText}（${reliableText}）`;
 };
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const highlightText = (value: string, keyword: string) => {
+  const text = value || '';
+  const trimmedKeyword = keyword.trim();
+  if (!trimmedKeyword) {
+    return text;
+  }
+
+  const parts = text.split(new RegExp(`(${escapeRegExp(trimmedKeyword)})`, 'ig'));
+  return parts.map((part, index) => (
+    part.toLowerCase() === trimmedKeyword.toLowerCase() ? (
+      <mark key={`${part}-${index}`} style={{ padding: 0, background: '#ffe58f' }}>
+        {part}
+      </mark>
+    ) : part
+  ));
+};
+
 export default function LogsPage() {
   const [watermarkDeep, setWatermarkDeep] = useState(true);
   const [watermarkLoading, setWatermarkLoading] = useState(false);
@@ -67,14 +89,33 @@ export default function LogsPage() {
   const [userQueryRecords, setUserQueryRecords] = useState<UserQueryRecord[]>([]);
   const [feedbackLogModalOpen, setFeedbackLogModalOpen] = useState(false);
   const [feedbackLogUid, setFeedbackLogUid] = useState<string | number>('');
+  const [feedbackLogSearchUid, setFeedbackLogSearchUid] = useState('');
+  const [feedbackLogSearchSubmitted, setFeedbackLogSearchSubmitted] = useState(false);
   const [feedbackLogLoading, setFeedbackLogLoading] = useState(false);
   const [feedbackLogList, setFeedbackLogList] = useState<OpFeedbackLogInfo[]>([]);
   const [downloadingFeedbackLogId, setDownloadingFeedbackLogId] = useState('');
+  const [previewingFeedbackLogId, setPreviewingFeedbackLogId] = useState('');
+  const [feedbackLogPreviewOpen, setFeedbackLogPreviewOpen] = useState(false);
+  const [feedbackLogPreview, setFeedbackLogPreview] = useState<FeedbackLogPreviewResult | null>(null);
+  const [feedbackLogActiveFilePath, setFeedbackLogActiveFilePath] = useState('');
+  const [feedbackLogFileRows, setFeedbackLogFileRows] = useState<Record<string, FeedbackLogLine[]>>({});
+  const [loadingFeedbackLogFilePath, setLoadingFeedbackLogFilePath] = useState('');
+  const [feedbackLogSearchInput, setFeedbackLogSearchInput] = useState('');
+  const [feedbackLogSearchText, setFeedbackLogSearchText] = useState('');
+  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [feedbackFrameLoading, setFeedbackFrameLoading] = useState(true);
 
   const openFeedbackLogs = () => {
     window.open(EXTERNAL_FEEDBACK_LOG_URL, '_blank', 'noopener,noreferrer');
   };
+
+  const feedbackLogRows = useMemo(() => {
+    const keyword = feedbackLogSearchText.trim().toLowerCase();
+    const rows = feedbackLogFileRows[feedbackLogActiveFilePath] || [];
+    return keyword
+      ? rows.filter((row) => `${row.time}\n${row.content}`.toLowerCase().includes(keyword))
+      : rows;
+  }, [feedbackLogActiveFilePath, feedbackLogFileRows, feedbackLogSearchText]);
 
   useEffect(() => {
     userQueryRecordApi.list()
@@ -82,6 +123,19 @@ export default function LogsPage() {
       .catch((error: any) => {
         message.error(error?.message || error?.error || '加载查询用户记录失败');
       });
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setFeedbackLogSearchText(feedbackLogSearchInput);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [feedbackLogSearchInput]);
+
+  useEffect(() => {
+    const updateViewportHeight = () => setViewportHeight(window.innerHeight);
+    window.addEventListener('resize', updateViewportHeight);
+    return () => window.removeEventListener('resize', updateViewportHeight);
   }, []);
 
   const changeUserRemarkLocal = (record: Partial<UserQueryRecord>, remark: string) => {
@@ -211,6 +265,18 @@ export default function LogsPage() {
     }
   };
 
+  const searchFeedbackLogsByUid = (uid = feedbackLogSearchUid) => {
+    const keyword = uid.trim();
+    if (!keyword) {
+      message.warning('请输入用户 UID');
+      return;
+    }
+
+    setFeedbackLogUid(keyword);
+    setFeedbackLogSearchSubmitted(true);
+    queryFeedbackLogs(keyword);
+  };
+
   const openFeedbackLogModal = (uid?: string | number) => {
     if (!uid) {
       message.warning('当前用户没有 UID');
@@ -227,6 +293,7 @@ export default function LogsPage() {
       return;
     }
 
+    setFeedbackLogModalOpen(false);
     setDownloadingFeedbackLogId(record.id || record.crashLogUrl);
     try {
       await opUserApi.downloadFeedbackLog(record);
@@ -235,6 +302,63 @@ export default function LogsPage() {
       message.error(error?.message || error?.error || '下载日志失败');
     } finally {
       setDownloadingFeedbackLogId('');
+    }
+  };
+
+  const loadFeedbackLogFile = async (filePath: string, force = false) => {
+    if (!filePath || (!force && feedbackLogFileRows[filePath] !== undefined)) {
+      return;
+    }
+
+    setLoadingFeedbackLogFilePath(filePath);
+    try {
+      const result = await feedbackLogApi.readFile(filePath);
+      setFeedbackLogFileRows((current) => ({
+        ...current,
+        [filePath]: result.rows,
+        [result.path]: result.rows,
+      }));
+    } catch (error: any) {
+      message.error(error?.message || error?.error || '读取日志文件失败');
+    } finally {
+      setLoadingFeedbackLogFilePath('');
+    }
+  };
+
+  const previewFeedbackLog = async (record: OpFeedbackLogInfo) => {
+    if (!record.crashLogUrl) {
+      message.warning('当前记录缺少日志下载地址');
+      return;
+    }
+
+    setFeedbackLogModalOpen(false);
+    setPreviewingFeedbackLogId(record.id || record.crashLogUrl);
+    setFeedbackLogPreviewOpen(true);
+    setFeedbackLogPreview(null);
+    setFeedbackLogActiveFilePath('');
+    setFeedbackLogFileRows({});
+    setFeedbackLogSearchInput('');
+    setFeedbackLogSearchText('');
+    try {
+      const result = await feedbackLogApi.preview(record);
+      const sortedResult = {
+        ...result,
+        files: [...result.files].sort((left, right) =>
+          (right.createdAtMs || right.modifiedAtMs) - (left.createdAtMs || left.modifiedAtMs)
+        ),
+      };
+      setFeedbackLogPreview(sortedResult);
+      if (sortedResult.files[0]) {
+        setFeedbackLogActiveFilePath(sortedResult.files[0].path);
+        loadFeedbackLogFile(sortedResult.files[0].path, true);
+      }
+      if (sortedResult.files.length === 0) {
+        message.info('压缩包中未找到 logs*.log 文件');
+      }
+    } catch (error: any) {
+      message.error(error?.message || error?.error || '查看日志失败');
+    } finally {
+      setPreviewingFeedbackLogId('');
     }
   };
 
@@ -371,18 +495,30 @@ export default function LogsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 120,
+      width: 160,
       render: (_: unknown, record: OpFeedbackLogInfo) => (
-        <Button
-          type="link"
-          size="small"
-          style={{ padding: 0 }}
-          disabled={!record.crashLogUrl}
-          loading={downloadingFeedbackLogId === (record.id || record.crashLogUrl)}
-          onClick={() => downloadFeedbackLog(record)}
-        >
-          下载日志
-        </Button>
+        <Space size="middle">
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            disabled={!record.crashLogUrl}
+            loading={previewingFeedbackLogId === (record.id || record.crashLogUrl)}
+            onClick={() => previewFeedbackLog(record)}
+          >
+            查看
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            disabled={!record.crashLogUrl}
+            loading={downloadingFeedbackLogId === (record.id || record.crashLogUrl)}
+            onClick={() => downloadFeedbackLog(record)}
+          >
+            下载
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -552,47 +688,89 @@ export default function LogsPage() {
                 </Space>
               ),
               children: (
-                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                  <Space>
-                    <Button icon={<ExportOutlined />} onClick={openFeedbackLogs}>
-                      新窗口打开 OP 日志平台
-                    </Button>
-                  </Space>
-                  <div style={{ position: 'relative', minHeight: 680 }}>
-                    {feedbackFrameLoading && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          inset: 0,
-                          zIndex: 1,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          background: '#fff',
-                          border: '1px solid #f0f0f0',
-                          borderRadius: 6,
-                        }}
-                      >
-                        <Space direction="vertical" align="center">
-                          <Spin />
-                          <span style={{ color: '#666' }}>正在加载 OP 日志平台...</span>
+                <Tabs
+                  defaultActiveKey="uid"
+                  items={[
+                    {
+                      key: 'uid',
+                      label: 'UID 查询',
+                      children: (
+                        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                          <Input.Search
+                            allowClear
+                            enterButton="查询"
+                            prefix={<SearchOutlined />}
+                            placeholder="输入用户 UID 查询反馈日志"
+                            value={feedbackLogSearchUid}
+                            loading={feedbackLogLoading}
+                            onChange={(event) => {
+                              setFeedbackLogSearchUid(event.target.value);
+                              if (!event.target.value.trim()) {
+                                setFeedbackLogSearchSubmitted(false);
+                              }
+                            }}
+                            onSearch={(value) => searchFeedbackLogsByUid(value)}
+                            style={{ width: 360 }}
+                          />
+                          <Table<OpFeedbackLogInfo>
+                            bordered
+                            size="small"
+                            rowKey={(record, index) => String(record.id || `${record.userId || feedbackLogUid}-${record.crashTime || index}`)}
+                            columns={feedbackLogColumns}
+                            dataSource={feedbackLogSearchSubmitted ? feedbackLogList : []}
+                            loading={feedbackLogLoading}
+                            pagination={false}
+                          />
                         </Space>
-                      </div>
-                    )}
-                    <iframe
-                      title="OP 反馈日志"
-                      src={FEEDBACK_LOG_URL}
-                      onLoad={() => setFeedbackFrameLoading(false)}
-                      style={{
-                        width: '100%',
-                        height: 680,
-                        border: '1px solid #f0f0f0',
-                        borderRadius: 6,
-                        background: '#fff',
-                      }}
-                    />
-                  </div>
-                </Space>
+                      ),
+                    },
+                    {
+                      key: 'op',
+                      label: 'OP 日志平台',
+                      children: (
+                        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                          <Button icon={<ExportOutlined />} onClick={openFeedbackLogs}>
+                            新窗口打开 OP 日志平台
+                          </Button>
+                          <div style={{ position: 'relative', minHeight: 680 }}>
+                            {feedbackFrameLoading && (
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  inset: 0,
+                                  zIndex: 1,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  background: '#fff',
+                                  border: '1px solid #f0f0f0',
+                                  borderRadius: 6,
+                                }}
+                              >
+                                <Space direction="vertical" align="center">
+                                  <Spin />
+                                  <span style={{ color: '#666' }}>正在加载 OP 日志平台...</span>
+                                </Space>
+                              </div>
+                            )}
+                            <iframe
+                              title="OP 反馈日志"
+                              src={FEEDBACK_LOG_URL}
+                              onLoad={() => setFeedbackFrameLoading(false)}
+                              style={{
+                                width: '100%',
+                                height: 680,
+                                border: '1px solid #f0f0f0',
+                                borderRadius: 6,
+                                background: '#fff',
+                              }}
+                            />
+                          </div>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                />
               ),
             },
             {
@@ -637,6 +815,103 @@ export default function LogsPage() {
           loading={feedbackLogLoading}
           pagination={false}
         />
+      </Modal>
+      <Modal
+        title="查看反馈日志"
+        open={feedbackLogPreviewOpen}
+        onCancel={() => setFeedbackLogPreviewOpen(false)}
+        footer={null}
+        width="calc(100vw - 24px)"
+        style={{ top: 12, paddingBottom: 0 }}
+        styles={{
+          content: { height: 'calc(100vh - 24px)', display: 'flex', flexDirection: 'column' },
+          body: { flex: 1, overflow: 'hidden', paddingTop: 8 },
+        }}
+        destroyOnHidden
+      >
+        {previewingFeedbackLogId ? (
+          <Spin />
+        ) : feedbackLogPreview ? (
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: 12 }}>
+            <Input.Search
+              allowClear
+              prefix={<SearchOutlined />}
+              placeholder="全文检索日志内容/时间"
+              value={feedbackLogSearchInput}
+              onChange={(event) => setFeedbackLogSearchInput(event.target.value)}
+              onSearch={(value) => setFeedbackLogSearchText(value)}
+              style={{ maxWidth: 520 }}
+            />
+            {feedbackLogPreview.files.length > 0 ? (
+              <Tabs
+                activeKey={feedbackLogActiveFilePath}
+                className="feedback-log-preview-tabs"
+                style={{ flex: 1, minHeight: 0 }}
+                onChange={(filePath) => {
+                  setFeedbackLogActiveFilePath(filePath);
+                  loadFeedbackLogFile(filePath);
+                }}
+                items={feedbackLogPreview.files.map((file) => ({
+                  key: file.path,
+                  label: file.name,
+                  children: (() => {
+                    const rows = feedbackLogActiveFilePath === file.path ? feedbackLogRows : [];
+                    const loading = loadingFeedbackLogFilePath === file.path;
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, height: '100%' }}>
+                        <Typography.Text type="secondary">
+                          共 {rows.length} 行{feedbackLogSearchText.trim() ? '匹配' : ''}
+                        </Typography.Text>
+                        <Table<FeedbackLogLine>
+                          bordered
+                          size="small"
+                          virtual
+                          rowKey="id"
+                          dataSource={rows}
+                          loading={loading}
+                          pagination={false}
+                          scroll={{ x: 1200, y: Math.max(520, viewportHeight - 205) }}
+                          columns={[
+                            {
+                              title: '时间',
+                              dataIndex: 'time',
+                              key: 'time',
+                              width: 190,
+                              render: (value: string) => highlightText(value || '-', feedbackLogSearchText),
+                            },
+                            {
+                              title: '日志内容',
+                              dataIndex: 'content',
+                              key: 'content',
+                              render: (value: string) => (
+                                <pre
+                                  style={{
+                                    margin: 0,
+                                    maxHeight: 110,
+                                    overflow: 'auto',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-word',
+                                    fontFamily: 'Menlo, Monaco, Consolas, monospace',
+                                    fontSize: 12,
+                                    lineHeight: 1.55,
+                                  }}
+                                >
+                                  {highlightText(value, feedbackLogSearchText)}
+                                </pre>
+                              ),
+                            },
+                          ]}
+                        />
+                      </div>
+                    );
+                  })(),
+                }))}
+              />
+            ) : (
+              <Alert type="warning" showIcon message="压缩包中未找到 logs*.log 文件" />
+            )}
+          </div>
+        ) : null}
       </Modal>
     </div>
   );

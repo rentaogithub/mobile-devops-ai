@@ -251,6 +251,32 @@ export interface OpFeedbackLogInfo {
   createTime?: string;
 }
 
+export interface FeedbackLogPreviewFile {
+  name: string;
+  path: string;
+  size: number;
+  createdAt: string;
+  modifiedAt: string;
+  createdAtMs: number;
+  modifiedAtMs: number;
+}
+
+export interface FeedbackLogPreviewResult {
+  tempDir: string;
+  files: FeedbackLogPreviewFile[];
+}
+
+export interface FeedbackLogLine {
+  id: string;
+  time: string;
+  content: string;
+}
+
+export interface FeedbackLogFileContent {
+  path: string;
+  rows: FeedbackLogLine[];
+}
+
 const getOpAccessToken = () => {
   const tokenKeys = [
     'Access-Token',
@@ -399,6 +425,35 @@ export const opUserApi = {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  },
+};
+
+export const feedbackLogApi = {
+  preview: async (record: OpFeedbackLogInfo): Promise<FeedbackLogPreviewResult> => {
+    if (!record.crashLogUrl) {
+      throw new Error('当前记录缺少日志下载地址');
+    }
+
+    const response = await api.post<ApiResponse<FeedbackLogPreviewResult>>('/feedback-log/preview', {
+      url: record.crashLogUrl,
+    }, {
+      timeout: 120000,
+    });
+    if (!response.data.data) {
+      throw new Error(response.data.error || '预览日志失败');
+    }
+    return response.data.data;
+  },
+  readFile: async (path: string): Promise<FeedbackLogFileContent> => {
+    const response = await api.post<ApiResponse<FeedbackLogFileContent>>('/feedback-log/read', {
+      path,
+    }, {
+      timeout: 120000,
+    });
+    if (!response.data.data) {
+      throw new Error(response.data.error || '读取日志文件失败');
+    }
+    return response.data.data;
   },
 };
 

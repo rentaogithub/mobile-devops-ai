@@ -15,3 +15,15 @@ body {
 #root {
   min-height: 100vh;
 }
+
+.feedback-log-preview-tabs,
+.feedback-log-preview-tabs > .ant-tabs-content-holder,
+.feedback-log-preview-tabs > .ant-tabs-content-holder > .ant-tabs-content,
+.feedback-log-preview-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
+  min-height: 0;
+  height: 100%;
+}
+
+.feedback-log-preview-tabs > .ant-tabs-content-holder {
+  flex: 1;
+}
