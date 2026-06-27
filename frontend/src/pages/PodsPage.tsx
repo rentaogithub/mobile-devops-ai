@@ -14,6 +14,7 @@ import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfi
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
+const NNRTC_JENKINS_JOB_URL_FALLBACK = 'http://10.1.2.175:8080/job/nnrtc-ios-build/';
 
 interface ComponentGroup {
   name: string;
@@ -96,8 +97,18 @@ function formatNNRtcBuildLabel(build: NNRtcJenkinsBuild) {
   return `#${build.number}${build.branchName ? ` ${build.branchName}` : ''}${time ? ` ${time}` : ''}`;
 }
 
-function buildNNRtcJenkinsBuildUrl(jobUrl: string, buildId: string) {
-  return `${jobUrl.replace(/\/$/, '')}/${encodeURIComponent(buildId)}/`;
+function normalizeNNRtcBuildId(buildId?: string | number) {
+  return String(buildId || '').trim().replace(/^#+/, '').trim();
+}
+
+function getNNRtcJenkinsJobUrl(config?: NNRtcJenkinsConfig | null) {
+  return config?.jobUrl || NNRTC_JENKINS_JOB_URL_FALLBACK;
+}
+
+function buildNNRtcJenkinsBuildUrl(jobUrl: string, buildId: string | number) {
+  const normalizedBuildId = normalizeNNRtcBuildId(buildId);
+  if (!normalizedBuildId) return jobUrl;
+  return `${jobUrl.replace(/\/$/, '')}/${encodeURIComponent(normalizedBuildId)}/`;
 }
 
 function supportsNniosBuildTask(name?: string) {
@@ -1122,8 +1133,8 @@ export default function PodsPage() {
       render: (buildId: string | undefined, record) => (
         record.name === 'NNRtc' && buildId
           ? (
-            <a href={nnrtcJenkinsConfig?.jobUrl ? buildNNRtcJenkinsBuildUrl(nnrtcJenkinsConfig.jobUrl, buildId) : '#'} target="_blank" rel="noopener noreferrer">
-              <Text code>#{buildId}</Text>
+            <a href={buildNNRtcJenkinsBuildUrl(getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig), buildId)} target="_blank" rel="noopener noreferrer">
+              <Text code>#{normalizeNNRtcBuildId(buildId)}</Text>
             </a>
           )
           : <Text type="secondary">-</Text>
@@ -1496,7 +1507,7 @@ export default function PodsPage() {
                             <span>
                               NNRtc 发布来源（
                               <a
-                                href={nnrtcJenkinsConfig?.jobUrl || '#'}
+                                href={getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
@@ -1953,7 +1964,15 @@ export default function PodsPage() {
               )}
               {selectedComponent.name === 'NNRtc' && (
                 <Descriptions.Item label="构建ID">
-                  {selectedComponent.build_id ? <Text code>#{selectedComponent.build_id}</Text> : <Text type="secondary">-</Text>}
+                  {selectedComponent.build_id ? (
+                    <a
+                      href={buildNNRtcJenkinsBuildUrl(getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig), selectedComponent.build_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <Text code>#{normalizeNNRtcBuildId(selectedComponent.build_id)}</Text>
+                    </a>
+                  ) : <Text type="secondary">-</Text>}
                 </Descriptions.Item>
               )}
               {selectedComponent.name === 'NNRtc' && (
