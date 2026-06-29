@@ -69,6 +69,11 @@ function isNNRtcTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
+function arrayify<T = any>(value: T | T[] | undefined | null): T[] {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
 function normalizeNNRtcTestVersion(version: string) {
   if (version.endsWith('-test')) return version;
   if (version.endsWith('_test')) return version.replace(/_test$/, '-test');
@@ -1600,20 +1605,8 @@ ${sourceLine}
     }
     if (!cloned) throw new Error(`git clone 失败：${gitUrl} tag=${tag}`);
 
-    // 2. 收集所有 .c/.m 源文件（从 subspecs 的 source_files 或 spec 根）
-    const srcPatterns: string[] = [];
-    if (spec.subspecs && Array.isArray(spec.subspecs)) {
-      for (const sub of spec.subspecs) {
-        if (sub.source_files) {
-          const files = Array.isArray(sub.source_files) ? sub.source_files : [sub.source_files];
-          srcPatterns.push(...files);
-        }
-      }
-    }
-    if (spec.source_files) {
-      const files = Array.isArray(spec.source_files) ? spec.source_files : [spec.source_files];
-      srcPatterns.push(...files);
-    }
+    // 2. 收集所有 C/ObjC/C++ 源文件（从 subspecs 的 source_files 或 spec 根）
+    const srcPatterns = this.collectSourceFilePatterns(spec);
 
     // 用 glob 展开（简单处理：用 find + wildcard）
     const allSrcFiles: string[] = [];
@@ -1892,6 +1885,25 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     return component;
   }
 
+  private collectSourceFilePatterns(spec: any): string[] {
+    const patterns: string[] = [];
+    if (spec.subspecs && Array.isArray(spec.subspecs)) {
+      for (const sub of spec.subspecs) {
+        patterns.push(...arrayify<string>(sub.source_files));
+      }
+    }
+    patterns.push(...arrayify<string>(spec.source_files));
+    return patterns.filter(Boolean);
+  }
+
+  private supportsDirectSourceBuild(spec: any): boolean {
+    const patterns = this.collectSourceFilePatterns(spec);
+    if (patterns.length === 0) return false;
+    const joined = patterns.join(' ');
+    if (/\.(swift|metal|mm)\b/i.test(joined)) return false;
+    return /\.(c|m|cc|cpp|cxx|S|h)\b/i.test(joined) || /[{}*]/.test(joined);
+  }
+
   /**
    * 递归清除 JSON 对象中值为 null 的字段
    * 解决 CocoaPods 解析 podspec 时遇到 null 值导致 "no implicit conversion of nil into String"
@@ -2151,31 +2163,38 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     return [...found];
   }
 
-  /**
-   * 查询官方组件的可用版本列表
-   * 顺序：本地已添加的 spec repos（含 aliyun、trunk 等） → pod trunk info → pod spec cat
-   */
-  async fetchOfficialVersions(podName: string): Promise<string[]> {
-    // 1. 优先扫本地 spec repos，能拿到所有第三方源的完整版本列表
-    const local = this.listVersionsFromLocalSpecRepos(podName);
-    if (local.length > 0) {
-      return this.sortVersionsDesc(local);
-    }
-
-    // 2. 退回到 pod trunk info（仅命中 CocoaPods 官方 trunk）
+  private listVersionsFromPodTrunkInfo(podName: string): string[] {
     try {
-      const cmd = `pod trunk info "${podName}" 2>/dev/null`;
-      const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
+      const result = execSync(`pod trunk info ${shellQuote(podName)} 2>/dev/null`, { encoding: 'utf-8', timeout: 30000 });
       const versions: string[] = [];
       for (const line of result.split('\n')) {
         const match = line.match(/^\s+-\s+([\d.]+[A-Za-z0-9._-]*)/);
         if (match) versions.push(match[1]);
       }
-      if (versions.length > 0) {
-        return this.sortVersionsDesc(versions);
-      }
-    } catch {
-      // fallthrough
+      return versions;
+    } catch (error: any) {
+      logger.warn('pod trunk info 获取官方版本失败', { podName, error: error.message });
+      return [];
+    }
+  }
+
+  /**
+   * 查询官方组件的可用版本列表
+   * 合并：本地已添加的 spec repos（含 aliyun、trunk 等） + pod trunk info，避免本地 CDN/镜像缓存落后漏版本
+   */
+  async fetchOfficialVersions(podName: string): Promise<string[]> {
+    const versions = new Set<string>();
+
+    // 1. 扫本地 spec repos，能拿到所有第三方源的版本列表
+    const local = this.listVersionsFromLocalSpecRepos(podName);
+    local.forEach((version) => versions.add(version));
+
+    // 2. 合并官方 trunk，避免本地 CocoaPods CDN/镜像缓存未更新时漏最新版本
+    const trunk = this.listVersionsFromPodTrunkInfo(podName);
+    trunk.forEach((version) => versions.add(version));
+
+    if (versions.size > 0) {
+      return this.sortVersionsDesc([...versions]);
     }
 
     // 3. 最后兜底：pod spec cat 至少能拿到当前最新版本
@@ -2524,7 +2543,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       try {
         for (let attempt = 0; attempt <= maxRetries && !podInstalled; attempt++) {
           const useRepoUpdate = attempt > 0;
-          const cmd = useRepoUpdate ? 'pod install 2>&1' : 'pod install --no-repo-update 2>&1';
+          const cmd = useRepoUpdate ? 'pod install --repo-update 2>&1' : 'pod install --no-repo-update 2>&1';
           logger.info(`pod install 尝试 ${attempt + 1}/${maxRetries + 1}`, { cmd });
 
           try {
@@ -2548,7 +2567,8 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
               );
               const canDirectBuild = spec.source?.git && hasSourceFiles &&
                 !hasVendoredFrameworks && !hasVendoredLibraries &&
-                !hasDependencies && !subspecHasDeps;
+                !hasDependencies && !subspecHasDeps &&
+                this.supportsDirectSourceBuild(spec);
 
               if (canDirectBuild) {
                 logger.info('pod install 失败，尝试直接编译 fallback（无外部依赖的纯 C/C++ 库）', { podName, version });
@@ -3153,7 +3173,18 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       podLines = `  pod '${podName}', '${version}'\n`;
     }
 
+    const podDslPatch = `# 平台临时编译工程需要使用 CocoaPods 原生 pod DSL，避免全局 podx/nn_binary 插件改写 pod(...) 后影响官方组件解析。
+module NNPlatformPlainPodDSL
+  def pod(name = nil, *requirements)
+    raise StandardError, 'A dependency requires a name.' unless name
+    current_target_definition.store_pod(name, *requirements)
+  end
+end
+Pod::Podfile::DSL.prepend(NNPlatformPlainPodDSL)
+`;
+
     const podfile = `${sources}
+${podDslPatch}
 ${useFrameworks}platform :ios, '${minDeployTarget}'
 
 target '${targetName}_Example' do
