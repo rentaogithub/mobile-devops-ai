@@ -393,6 +393,56 @@ router.get('/nnrtc/jenkins/config', adminMiddleware, async (_req: Request, res: 
 });
 
 /**
+ * GET /api/pods/leigod-im/imsdk/versions
+ * 获取 IMSDK 共享目录中的 leigod_im_cross_sdk 版本列表
+ */
+router.get('/leigod-im/imsdk/versions', adminMiddleware, async (_req: Request, res: Response) => {
+  try {
+    const versions = podService.listLeigodIMSDKVersions();
+    res.json({ success: true, data: versions });
+  } catch (error: any) {
+    logger.error('获取 IMSDK 版本列表失败', { error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/leigod-im/imsdk/publish
+ * 从 IMSDK 共享目录选择版本发布 leigod_im_cross_sdk
+ */
+router.post('/leigod-im/imsdk/publish', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { version, target_branch, sys_frameworks, sys_libraries, trigger_nnios_build } = req.body;
+    if (!version) {
+      return res.status(400).json({ success: false, error: '版本号为必填项' });
+    }
+    const targetBranch = requireTargetBranch(target_branch);
+
+    logger.info('从 IMSDK 共享目录发布 leigod_im_cross_sdk', {
+      version,
+      target_branch: targetBranch,
+      trigger_nnios_build,
+    });
+
+    const component = await podService.publishLeigodIMCrossSDKFromIMSDK(String(version), {
+      summary: 'leigod_im_cross_sdk',
+      homepage: 'http://git.leigod.top/nn_ios/leigod_im_cross_sdk',
+      authors: 'leigod',
+      license: 'MIT',
+      platform_version: '12.0',
+      sys_frameworks,
+      sys_libraries,
+      target_branch: targetBranch,
+    });
+
+    res.json({ success: true, data: component, warning: component.warning_message });
+  } catch (error: any) {
+    logger.error('从 IMSDK 发布 leigod_im_cross_sdk 失败', { error: error.message });
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
  * POST /api/pods/nnrtc/jenkins/publish
  * 从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
  */
@@ -776,8 +826,8 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
       const current = await podService.getOne(req.params.name, req.params.version);
       const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
       component = await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch, undefined, syncDSYM);
-    } else if (req.params.name === 'leigod_im_cross_sdk' && isNNRtcPackageFile(req.file.originalname)) {
-      component = await podService.replaceLeigodIMCrossSDKPackage(req.params.version, tempPath, req.file.originalname, targetBranch);
+    } else if (req.params.name === 'leigod_im_cross_sdk') {
+      throw new Error('leigod_im_cross_sdk 只能从 smb://192.168.3.30/share/IMSDK 对应版本包替换');
     } else {
       component = await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
     }
@@ -787,6 +837,22 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
   } catch (error: any) {
     logger.error('替换 zip 失败', { error: error.message });
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    res.status(error.statusCode || 500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * POST /api/pods/leigod-im/:version/imsdk/replace
+ * 从 IMSDK 共享目录对应版本替换 leigod_im_cross_sdk 二进制
+ */
+router.post('/leigod-im/:version/imsdk/replace', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { target_branch } = req.body;
+    const targetBranch = requireTargetBranch(target_branch);
+    const component = await podService.replaceLeigodIMCrossSDKFromIMSDK(req.params.version, targetBranch);
+    res.json({ success: true, data: component, warning: component.warning_message });
+  } catch (error: any) {
+    logger.error('从 IMSDK 替换 leigod_im_cross_sdk 失败', { version: req.params.version, error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });

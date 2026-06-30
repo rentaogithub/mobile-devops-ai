@@ -46,6 +46,15 @@ interface PodUploadParams {
   nnios_branch?: string;
 }
 
+export interface LeigodIMSDKVersion {
+  version: string;
+  path: string;
+  packageName?: string;
+  hasFramework: boolean;
+  hasDSYM: boolean;
+  updatedAt?: string;
+}
+
 const NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
 const NEXUS_USER = 'admin';
 const NEXUS_PASS = 'admin123';
@@ -56,6 +65,12 @@ const NNIOS_REPO_LOCAL = path.resolve(
   process.env.NNIOS_REPO_LOCAL ||
     path.join(process.env.GIT_WORK_DIR || path.join(process.env.UPLOAD_DIR || '/tmp', '../git-workspace'), 'nnios')
 );
+const LEIGOD_IM_SDK_DIR_CANDIDATES = [
+  process.env.LEIGOD_IM_SDK_DIR,
+  '/Volumes/IMSDK',
+  '/Volumes/share/IMSDK',
+  '/Volumes/share',
+].filter(Boolean) as string[];
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -78,6 +93,25 @@ function normalizeNNRtcTestVersion(version: string) {
   if (version.endsWith('-test')) return version;
   if (version.endsWith('_test')) return version.replace(/_test$/, '-test');
   return `${version}-test`;
+}
+
+function compareVersionNameDesc(a: string, b: string): number {
+  const tokenize = (value: string) => value
+    .split(/([0-9]+)/)
+    .filter(Boolean)
+    .map((part) => (/^\d+$/.test(part) ? Number(part) : part.toLowerCase()));
+  const left = tokenize(a);
+  const right = tokenize(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const l = left[i];
+    const r = right[i];
+    if (l === undefined) return 1;
+    if (r === undefined) return -1;
+    if (l === r) continue;
+    if (typeof l === 'number' && typeof r === 'number') return r - l;
+    return String(r).localeCompare(String(l), 'zh-CN', { numeric: true });
+  }
+  return 0;
 }
 
 export class PodService {
@@ -816,6 +850,119 @@ ${sourceLine}
     return null;
   }
 
+  private isSupportedFrameworkPackage(fileName: string): boolean {
+    const lowerName = fileName.toLowerCase();
+    return !path.basename(fileName).startsWith('._') &&
+      (lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz'));
+  }
+
+  private getLeigodIMSDKRoot(): string {
+    const root = LEIGOD_IM_SDK_DIR_CANDIDATES.find((candidate) => {
+      try {
+        return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+    if (!root) {
+      throw new Error(`未找到 IMSDK 共享目录，请先挂载 smb://192.168.3.30/share/IMSDK，或配置 LEIGOD_IM_SDK_DIR`);
+    }
+    return root;
+  }
+
+  private resolveLeigodIMSDKVersionDir(version: string): string {
+    const cleanVersion = String(version || '').trim();
+    if (!cleanVersion || cleanVersion.includes('/') || cleanVersion.includes('\\') || cleanVersion.includes('..')) {
+      throw new Error('IMSDK 版本号不合法');
+    }
+    const root = this.getLeigodIMSDKRoot();
+    const versionDir = path.join(root, cleanVersion);
+    if (!fs.existsSync(versionDir) || !fs.statSync(versionDir).isDirectory()) {
+      throw new Error(`IMSDK 共享目录中未找到版本 ${cleanVersion}`);
+    }
+    return versionDir;
+  }
+
+  private findLeigodIMSDKPackage(versionDir: string): string | null {
+    const entries = fs.readdirSync(versionDir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() && this.isSupportedFrameworkPackage(entry.name))
+      .map((entry) => path.join(versionDir, entry.name));
+    if (files.length === 0) return null;
+
+    const preferred = files.find((file) => /^leigod_im_cross_sdk.*\.(zip|tgz|tar\.gz)$/i.test(path.basename(file)));
+    return preferred || files[0];
+  }
+
+  private getHighestComponentVersion(name: string): string {
+    const rows = this.db
+      .prepare('SELECT version FROM pods_components WHERE name = ?')
+      .all(name) as Array<{ version: string }>;
+    return rows
+      .map((row) => String(row.version || '').trim())
+      .filter(Boolean)
+      .sort(compareVersionNameDesc)[0] || '';
+  }
+
+  listLeigodIMSDKVersions(): LeigodIMSDKVersion[] {
+    const root = this.getLeigodIMSDKRoot();
+    const currentHighestVersion = this.getHighestComponentVersion('leigod_im_cross_sdk');
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && /^\d+(?:\.\d+)+(?:[._-][A-Za-z0-9]+)*$/.test(entry.name))
+      .map((entry) => {
+        const versionDir = path.join(root, entry.name);
+        const frameworkPath = path.join(versionDir, 'leigod_im_cross_sdk.framework');
+        const dsymPath = path.join(versionDir, 'leigod_im_cross_sdk.dSYM');
+        const packagePath = this.findLeigodIMSDKPackage(versionDir);
+        const stat = fs.statSync(versionDir);
+        return {
+          version: entry.name,
+          path: versionDir,
+          packageName: undefined,
+          hasFramework: fs.existsSync(frameworkPath),
+          hasDSYM: false,
+          updatedAt: stat.mtime.toISOString(),
+        };
+      })
+      .filter((item) => Boolean(this.findLeigodIMSDKPackage(item.path)))
+      .filter((item) => !currentHighestVersion || compareVersionNameDesc(item.version, currentHighestVersion) < 0)
+      .sort((a, b) => compareVersionNameDesc(a.version, b.version))
+      .slice(0, 8);
+  }
+
+  private async prepareFrameworkDSYMFromDirectory(
+    versionDir: string,
+    componentName: string
+  ): Promise<{
+    workDir: string;
+    frameworkPath: string;
+    dsymPath?: string;
+    frameworkZipPath: string;
+  }> {
+    const frameworkName = `${componentName}.framework`;
+    const dsymName = `${componentName}.dSYM`;
+    const frameworkPath = this.findDirectoryByName(versionDir, frameworkName);
+    if (!frameworkPath) {
+      throw new Error(`IMSDK 版本目录内未找到 ${frameworkName}`);
+    }
+    const uploadDir = process.env.UPLOAD_DIR || '/tmp';
+    const safeName = componentName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const workDir = path.join(uploadDir, `${safeName}_smb_${Date.now()}`);
+    fs.mkdirSync(workDir, { recursive: true });
+    const sourceDsymPath = this.findDirectoryByName(versionDir, dsymName) || undefined;
+    const dsymPath = sourceDsymPath ? path.join(workDir, dsymName) : undefined;
+    if (sourceDsymPath && dsymPath) {
+      fs.cpSync(sourceDsymPath, dsymPath, { recursive: true });
+    }
+    const frameworkZipPath = path.join(uploadDir, `${safeName}_${Date.now()}.zip`);
+    execSync(`cd ${shellQuote(path.dirname(frameworkPath))} && zip -r ${shellQuote(frameworkZipPath)} ${shellQuote(path.basename(frameworkPath))}`, {
+      encoding: 'utf-8',
+      timeout: 120000,
+    });
+    return { workDir, frameworkPath, dsymPath, frameworkZipPath };
+  }
+
   private async extractFrameworkDSYMPackage(
     packagePath: string,
     originalFileName: string | undefined,
@@ -1094,6 +1241,41 @@ ${sourceLine}
     }
   }
 
+  async publishLeigodIMCrossSDKFromIMSDK(version: string, params: Omit<PodUploadParams, 'name' | 'version'>): Promise<PodComponent> {
+    const versionDir = this.resolveLeigodIMSDKVersionDir(version);
+    const packagePath = this.findLeigodIMSDKPackage(versionDir);
+    const extracted = packagePath
+      ? await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'leigod_im_cross_sdk', false)
+      : await this.prepareFrameworkDSYMFromDirectory(versionDir, 'leigod_im_cross_sdk');
+
+    try {
+      const component = await this.publish(extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', {
+        ...params,
+        name: 'leigod_im_cross_sdk',
+        version,
+        lib_type: 'framework',
+        lib_name: 'leigod_im_cross_sdk.framework',
+      });
+
+      if (extracted.dsymPath && component.status === 'published') {
+        try {
+          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+        } catch (error: any) {
+          component.warning_message = `leigod_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('leigod_im_cross_sdk IMSDK dSYM 同步失败，Pod 发布已完成', {
+            version,
+            error: error.message,
+          });
+        }
+      }
+
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
   async replaceLeigodIMCrossSDKPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
     const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'leigod_im_cross_sdk', false);
     try {
@@ -1105,6 +1287,36 @@ ${sourceLine}
         } catch (error: any) {
           component.warning_message = `leigod_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
           logger.error('leigod_im_cross_sdk dSYM 同步失败，Pod 替换已完成', {
+            version,
+            error: error.message,
+          });
+        }
+      }
+
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
+  async replaceLeigodIMCrossSDKFromIMSDK(version: string, targetBranch: string): Promise<PodComponent> {
+    const versionDir = this.resolveLeigodIMSDKVersionDir(version);
+    const packagePath = this.findLeigodIMSDKPackage(versionDir);
+    if (!packagePath) {
+      throw new Error(`IMSDK ${version} 目录下未找到可替换的 zip/tgz/tar.gz 包`);
+    }
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'leigod_im_cross_sdk', false);
+
+    try {
+      const component = await this.replaceZip('leigod_im_cross_sdk', version, extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', targetBranch);
+
+      if (extracted.dsymPath && component.status === 'published') {
+        try {
+          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+        } catch (error: any) {
+          component.warning_message = `leigod_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('leigod_im_cross_sdk IMSDK dSYM 同步失败，Pod 替换已完成', {
             version,
             error: error.message,
           });

@@ -1084,6 +1084,15 @@ export interface NNRtcPodTask {
   updatedAt: number;
 }
 
+export interface LeigodIMSDKVersion {
+  version: string;
+  path: string;
+  packageName?: string;
+  hasFramework: boolean;
+  hasDSYM: boolean;
+  updatedAt?: string;
+}
+
 export const podsApi = {
   /** 发布组件 */
   publish: async (
@@ -1165,6 +1174,27 @@ export const podsApi = {
     return response.data;
   },
 
+  /** 获取 IMSDK 共享目录中的 leigod_im_cross_sdk 版本列表 */
+  listLeigodIMSDKVersions: async (): Promise<ApiResponse<LeigodIMSDKVersion[]>> => {
+    const response = await api.get<ApiResponse<LeigodIMSDKVersion[]>>('/pods/leigod-im/imsdk/versions', {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  /** 从 IMSDK 共享目录发布 leigod_im_cross_sdk */
+  publishLeigodIMFromIMSDK: async (params: {
+    version: string;
+    target_branch: string;
+    sys_frameworks?: string;
+    sys_libraries?: string;
+  }): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>('/pods/leigod-im/imsdk/publish', params, {
+      timeout: 600000,
+    });
+    return response.data;
+  },
+
   /** 获取所有组件 */
   list: async (): Promise<ApiResponse<PodComponent[]>> => {
     const response = await api.get<ApiResponse<PodComponent[]>>('/pods/list');
@@ -1215,6 +1245,16 @@ export const podsApi = {
     const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/replace`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 300000,
+    });
+    return response.data;
+  },
+
+  /** 从 IMSDK 共享目录对应版本替换 leigod_im_cross_sdk */
+  replaceLeigodIMFromIMSDK: async (version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/leigod-im/${version}/imsdk/replace`, {
+      target_branch,
+    }, {
+      timeout: 600000,
     });
     return response.data;
   },

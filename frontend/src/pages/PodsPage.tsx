@@ -10,7 +10,7 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask } from '../services/api';
+import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask, LeigodIMSDKVersion } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -112,7 +112,19 @@ function buildNNRtcJenkinsBuildUrl(jobUrl: string, buildId: string | number) {
 }
 
 function supportsNniosBuildTask(name?: string) {
-  return name === 'NNRtc' || name === 'leigod_im_cross_sdk';
+  const normalized = String(name || '').trim();
+  return normalized === 'NNRtc' || normalized === 'leigod_im_cross_sdk';
+}
+
+function isLeigodIMCrossSDK(name?: string) {
+  return String(name || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '') === 'leigod_im_cross_sdk';
+}
+
+function isLeigodIMComponent(component?: PodComponent | null) {
+  if (!component) return false;
+  return isLeigodIMCrossSDK(component.name) ||
+    String(component.source_zip_url || '').includes('/leigod_im_cross_sdk/') ||
+    String(component.podspec_content || '').includes("s.name         = 'leigod_im_cross_sdk'");
 }
 
 function isOfficialComponent(component?: PodComponent | null) {
@@ -167,6 +179,8 @@ export default function PodsPage() {
   const [nnrtcBuilds, setNnrtcBuilds] = useState<NNRtcJenkinsBuild[]>([]);
   const [nnrtcJenkinsConfig, setNnrtcJenkinsConfig] = useState<NNRtcJenkinsConfig | null>(null);
   const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
+  const [leigodIMSDKVersions, setLeigodIMSDKVersions] = useState<LeigodIMSDKVersion[]>([]);
+  const [leigodIMSDKLoading, setLeigodIMSDKLoading] = useState(false);
   const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
   const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
   const nnrtcTaskContextRef = useRef<{
@@ -182,7 +196,9 @@ export default function PodsPage() {
   const nnrtcPackageType = Form.useWatch('nnrtc_package_type', form) || 'release';
   const nnrtcTestSource = Form.useWatch('nnrtc_test_source', form) || 'jenkins';
   const nnrtcBuildNumber = Form.useWatch('nnrtc_build_number', form);
+  const leigodIMSDKVersion = Form.useWatch('leigod_im_sdk_version', form);
   const isNNRtcPublish = publishName === 'NNRtc';
+  const isLeigodIMPublish = isLeigodIMCrossSDK(publishName);
   const nnrtcUseUpload = isNNRtcPublish && nnrtcPackageType === 'test' && nnrtcTestSource === 'upload';
   const nnrtcUseJenkins = isNNRtcPublish && (nnrtcPackageType !== 'test' || nnrtcTestSource !== 'upload');
   const showPublishNniosBuildTask = supportsNniosBuildTask(publishName);
@@ -249,6 +265,30 @@ export default function PodsPage() {
     }
   }, [detailJenkinsBuildNumber, form, isAdmin]);
 
+  const loadLeigodIMSDKVersions = useCallback(async () => {
+    if (!isAdmin) return;
+    setLeigodIMSDKLoading(true);
+    try {
+      const res = await podsApi.listLeigodIMSDKVersions();
+      const versions = res.data || [];
+      setLeigodIMSDKVersions(versions);
+      const current = form.getFieldValue('leigod_im_sdk_version');
+      const next = versions.some((item) => item.version === current)
+        ? current
+        : versions[0]?.version;
+      if (next) {
+        form.setFieldsValue({
+          leigod_im_sdk_version: next,
+          version: next,
+        });
+      }
+    } catch (error: any) {
+      message.warning(error?.error || error?.message || '加载 IMSDK 版本失败');
+    } finally {
+      setLeigodIMSDKLoading(false);
+    }
+  }, [form, isAdmin]);
+
   const fetchComponents = useCallback(async () => {
     setLoading(true);
     try {
@@ -279,6 +319,13 @@ export default function PodsPage() {
       loadNNRtcBuilds();
     }
   }, [isNNRtcPublish, loadNNRtcBuilds, publishModalOpen, publishTabKey]);
+
+  useEffect(() => {
+    if (publishModalOpen && publishTabKey === 'local' && isLeigodIMPublish) {
+      setUploadFile(null);
+      loadLeigodIMSDKVersions();
+    }
+  }, [isLeigodIMPublish, loadLeigodIMSDKVersions, publishModalOpen, publishTabKey]);
 
   useEffect(() => {
     if (detailDrawerOpen && isAdmin) {
@@ -467,6 +514,14 @@ export default function PodsPage() {
     }
   }, [form, isNNRtcPublish, latestNNRtcReleaseVersion, nnrtcBuildNumber, nnrtcPackageType, nnrtcPublishBuilds, nnrtcTestSource]);
 
+  useEffect(() => {
+    if (!isLeigodIMPublish) return;
+    const selected = String(leigodIMSDKVersion || form.getFieldValue('leigod_im_sdk_version') || '');
+    if (selected && form.getFieldValue('version') !== selected) {
+      form.setFieldValue('version', selected);
+    }
+  }, [form, isLeigodIMPublish, leigodIMSDKVersion]);
+
   // 自动选中第一个
   useEffect(() => {
     if (!selectedName && filteredGroups.length > 0) {
@@ -500,6 +555,37 @@ export default function PodsPage() {
             triggerNniosBuild: shouldTriggerNniosBuild,
           });
           message.success('NNRtc 发布任务已开始');
+        }
+        return;
+      }
+
+      if (isLeigodIMCrossSDK(values.name)) {
+        const res = await podsApi.publishLeigodIMFromIMSDK({
+          version: values.version,
+          sys_frameworks: values.sys_frameworks,
+          sys_libraries: values.sys_libraries,
+          target_branch: values.target_branch,
+        });
+        if (res.success) {
+          if (res.warning) {
+            message.warning(res.warning);
+          } else if (res.data?.status === 'published') {
+            message.success(`${values.name}@${values.version} 发布成功`);
+          } else {
+            message.warning(res.data?.error_message || '组件已上传，但后续同步失败，可稍后重试');
+          }
+          setPublishModalOpen(false);
+          form.resetFields();
+          setUploadFile(null);
+          setSelectedName(values.name);
+          fetchComponents();
+          if (shouldTriggerNniosBuild) {
+            try {
+              await triggerNniosBuildTask(values.target_branch);
+            } catch (error: any) {
+              message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            }
+          }
         }
         return;
       }
@@ -547,7 +633,7 @@ export default function PodsPage() {
   const handlePublish = async () => {
     try {
       const values = await form.validateFields();
-      if ((values.name !== 'NNRtc' || values.nnrtc_test_source === 'upload') && !uploadFile) {
+      if (!isLeigodIMCrossSDK(values.name) && (values.name !== 'NNRtc' || values.nnrtc_test_source === 'upload') && !uploadFile) {
         message.error(values.name === 'NNRtc' ? '请选择 zip/tgz 文件' : '请选择 zip 文件');
         return;
       }
@@ -555,7 +641,9 @@ export default function PodsPage() {
       const targetBranch = values.target_branch || 'develop';
       const sourceText = values.name === 'NNRtc'
         ? (values.nnrtc_test_source === 'upload' ? uploadFile?.name : `Jenkins 构建 #${values.nnrtc_build_number}`)
-        : uploadFile?.name;
+        : isLeigodIMCrossSDK(values.name)
+          ? `IMSDK/${values.leigod_im_sdk_version || values.version}`
+          : uploadFile?.name;
       const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
       let confirmBranch = '';
       Modal.confirm({
@@ -908,6 +996,74 @@ export default function PodsPage() {
           return Promise.reject();
         }
         await handleReplaceZip(file);
+      },
+    });
+  };
+
+  const handleReplaceLeigodIMFromIMSDK = async () => {
+    if (!selectedComponent) return;
+    setReplacingZip(true);
+    try {
+      const res = await podsApi.replaceLeigodIMFromIMSDK(selectedComponent.version, detailTargetBranch);
+      if (res.success && res.data) {
+        if (res.warning) {
+          message.warning(res.warning);
+        } else if (res.data.status === 'failed') {
+          message.warning(res.data.error_message || 'IMSDK 包已替换，但 nnios 分支同步失败');
+        } else {
+          message.success('IMSDK 包替换成功，podspec 已更新');
+        }
+        setSelectedComponent(res.data);
+        setPodspecDraft(res.data.podspec_content);
+        fetchComponents();
+        if (detailTriggerNniosBuild) {
+          try {
+            await triggerNniosBuildTask(detailTargetBranch);
+          } catch (error: any) {
+            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+          }
+        }
+      }
+    } catch (error: any) {
+      message.error(error?.error || '替换失败');
+    } finally {
+      setReplacingZip(false);
+    }
+  };
+
+  const confirmReplaceLeigodIMFromIMSDK = () => {
+    if (!selectedComponent) return;
+    let confirmBranch = '';
+    Modal.confirm({
+      title: `从 IMSDK 替换 ${selectedComponent.name}@${selectedComponent.version}`,
+      content: (
+        <div>
+          <p>
+            将使用 <Text strong code>smb://192.168.3.30/share/IMSDK/{selectedComponent.version}</Text> 对应版本包，
+            提取 leigod_im_cross_sdk.framework 替换 Nexus 二进制。
+          </p>
+          <p>同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。</p>
+          {detailTriggerNniosBuild && (
+            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+          )}
+          <p>
+            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+          </p>
+          <Input
+            placeholder={`请输入 ${detailTargetBranch}`}
+            onChange={(e) => { confirmBranch = e.target.value.trim(); }}
+          />
+        </div>
+      ),
+      okText: '确认替换',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        if (confirmBranch !== detailTargetBranch) {
+          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
+          return Promise.reject();
+        }
+        await handleReplaceLeigodIMFromIMSDK();
       },
     });
   };
@@ -1429,6 +1585,7 @@ export default function PodsPage() {
           setOfficialTriggerNniosBuild(false);
           setNniosBranches([]);
           setNnrtcBuilds([]);
+          setLeigodIMSDKVersions([]);
         }}
         footer={null}
         width={560}
@@ -1447,10 +1604,41 @@ export default function PodsPage() {
                     <Form.Item name="name" label="组件名称" rules={[{ required: true, message: '请输入组件名称' }]}>
                       <Input placeholder="例如: NNRtc" />
                     </Form.Item>
-                    {!isNNRtcPublish && (
+                    {!isNNRtcPublish && !isLeigodIMPublish && (
                     <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                       <Input placeholder="例如: 2.7.0" />
                     </Form.Item>
+                    )}
+                    {isLeigodIMPublish && (
+                      <>
+                        <Form.Item
+                          name="leigod_im_sdk_version"
+                          label="IMSDK 发布版本"
+                          rules={[{ required: true, message: '请选择 IMSDK 发布版本' }]}
+                        >
+                          <Select
+                            showSearch
+                            loading={leigodIMSDKLoading}
+                            placeholder="选择 IMSDK 版本"
+                            notFoundContent={leigodIMSDKLoading ? '加载中...' : '未找到可发布版本'}
+                            optionFilterProp="label"
+                            optionLabelProp="label"
+                            options={leigodIMSDKVersions.map((item) => ({
+                              value: item.version,
+                              label: item.version,
+                            }))}
+                            onChange={(value) => {
+                              form.setFieldValue('version', value);
+                            }}
+                            onDropdownVisibleChange={(open) => {
+                              if (open && leigodIMSDKVersions.length === 0) loadLeigodIMSDKVersions();
+                            }}
+                          />
+                        </Form.Item>
+                        <Form.Item name="version" hidden rules={[{ required: true, message: '请选择 IMSDK 发布版本' }]}>
+                          <Input />
+                        </Form.Item>
+                      </>
                     )}
                     {isNNRtcPublish && (
                       <>
@@ -1572,7 +1760,7 @@ export default function PodsPage() {
                         <Checkbox>是否发布 nnios 构建任务</Checkbox>
                       </Form.Item>
                     )}
-                    {(!isNNRtcPublish || nnrtcUseUpload) && (
+                    {!isLeigodIMPublish && (!isNNRtcPublish || nnrtcUseUpload) && (
                       <Form.Item
                         label={isNNRtcPublish ? 'NNRtc 测试包' : '二进制库 zip 文件'}
                         required
@@ -2057,7 +2245,24 @@ export default function PodsPage() {
 
             {isAdmin && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 16 }}>
-              {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+              {isLeigodIMComponent(selectedComponent) ? (
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <Text strong>替换二进制文件</Text>
+                    <br />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      从 smb://192.168.3.30/share/IMSDK/{selectedComponent.version} 对应版本包替换，自动更新 sha256 和 podspec
+                    </Text>
+                  </div>
+                  <Button
+                    icon={<SyncOutlined />}
+                    loading={replacingZip}
+                    onClick={confirmReplaceLeigodIMFromIMSDK}
+                  >
+                    {replacingZip ? '替换中...' : 'IMSDK 替换'}
+                  </Button>
+                </div>
+              ) : selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '96px minmax(0, 1fr)', rowGap: 8, columnGap: 12, alignItems: 'center' }}>
                   <Text strong style={{ whiteSpace: 'nowrap' }}>替换来源1：</Text>
                   <div>
