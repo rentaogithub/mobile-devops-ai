@@ -24,6 +24,7 @@ import {
   ClearOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
@@ -47,6 +48,52 @@ interface LogEntry {
   channel: LogChannel;
   message: string;
   raw: string;
+}
+
+interface ParsedBusinessLog {
+  time: string;
+  category: string;
+  event: string;
+  level: 'info' | 'warning' | 'error';
+  fields: Record<string, string>;
+  line: string;
+}
+
+interface ApiTimelineRow {
+  key: string;
+  requestTime: string;
+  responseTime: string;
+  api: string;
+  costMs: number | null;
+  retCode: string;
+  retMsg: string;
+  nntid: string;
+  trackId: string;
+  parameters: string;
+  requestLine: string;
+  responseLine: string;
+  fullApi: string;
+  status: 'success' | 'failed' | 'pending';
+}
+
+interface BusinessLogAnalysis {
+  source: string;
+  total: number;
+  timeRange: string;
+  warnings: number;
+  apiRequests: number;
+  apiResponses: number;
+  failedResponses: ParsedBusinessLog[];
+  slowResponses: ParsedBusinessLog[];
+  eventCounts: Array<{ event: string; count: number }>;
+  apiStats: Array<{ api: string; requestCount: number; responseCount: number; failedCount: number; maxCostMs: number; avgCostMs: number }>;
+  apiTimeline: ApiTimelineRow[];
+  retCodeCounts: Array<{ retCode: string; count: number }>;
+  versions: string[];
+  userIds: string[];
+  nntidIssueCount: number;
+  suggestions: string[];
+  functionGroups: Array<{ key: string; label: string; logs: ParsedBusinessLog[]; warnings: number; eventCounts: Array<{ event: string; count: number }> }>;
 }
 
 function normalizeWebSocketURL(url?: string): string | undefined {
@@ -151,6 +198,208 @@ function highlightText(text: string, keyword: string): ReactNode {
   return nodes;
 }
 
+function parseFields(fieldsText: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  const pattern = /([A-Za-z_][\w]*)=("(?:\\.|[^"])*"|[^,}]+)/g;
+  let match = pattern.exec(fieldsText);
+  while (match) {
+    const rawValue = match[2].trim();
+    fields[match[1]] = rawValue.startsWith('"') && rawValue.endsWith('"')
+      ? rawValue.slice(1, -1).replace(/\\"/g, '"')
+      : rawValue;
+    match = pattern.exec(fieldsText);
+  }
+  return fields;
+}
+
+function normalizeApiKey(api?: string): string {
+  if (!api) return '-';
+  try {
+    const parsed = new URL(api.replace(/^"|"$/g, ''));
+    return `${parsed.host}${parsed.pathname}`;
+  } catch {
+    return api.split('?')[0] || api;
+  }
+}
+
+function normalizeApiPath(api?: string): string {
+  if (!api) return '-';
+  try {
+    const parsed = new URL(api.replace(/^"|"$/g, ''));
+    return `${parsed.pathname}${parsed.search || ''}`;
+  } catch {
+    const value = api.replace(/^"|"$/g, '');
+    return value.replace(/^https?:\/\/[^/]+/i, '') || value;
+  }
+}
+
+function parseBusinessLogLine(line: string): ParsedBusinessLog {
+  const time = line.match(/^\[([^\]]+)\]/)?.[1] || '';
+  const categoryMatches = [...line.matchAll(/\[([A-Za-z][A-Za-z0-9_+\-.]*)\]/g)].map((item) => item[1]);
+  const category = categoryMatches.find((item) => item !== time && !item.includes(':')) || '业务';
+  const event = line.match(/\bevent=([A-Za-z0-9_:.+-]+)/)?.[1] || 'raw_log';
+  const fieldsText = line.match(/\bfields=\{([\s\S]*)\}\s*$/)?.[1] || '';
+  const fields = fieldsText ? parseFields(fieldsText) : {};
+  const retCode = fields.retCode;
+  const level = /⚠️|\[Warning\]|error|fail|exception/i.test(line) || (retCode && !['0', '100', '200'].includes(retCode))
+    ? 'warning'
+    : 'info';
+  return { time, category, event, level, fields, line };
+}
+
+function topCounts(values: string[], limit = 12) {
+  const counts = new Map<string, number>();
+  values.filter(Boolean).forEach((value) => counts.set(value, (counts.get(value) || 0) + 1));
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, limit)
+    .map(([event, count]) => ({ event, count }));
+}
+
+function getLogFunctionGroup(log: ParsedBusinessLog): { key: string; label: string } {
+  const haystack = `${log.category} ${log.event} ${log.line}`.toLowerCase();
+  const api = log.fields.api || '';
+  if (log.event === 'api_request' || log.event === 'api_response' || api) return { key: 'api', label: 'API' };
+  if (/login|登录|user_compare|token/.test(haystack)) return { key: 'login', label: '登录' };
+  if (/websocket|ws_|wsconnect|ws_connect/.test(haystack)) return { key: 'websocket', label: 'WebSocket' };
+  if (/im_|imsdk|tuikit|message|unread|friend/.test(haystack)) return { key: 'im', label: 'IM' };
+  if (/rtc|nrtc/.test(haystack)) return { key: 'rtc', label: 'RTC' };
+  if (/tabbar|view_controller|vc=|enter|page|module/.test(haystack)) return { key: 'page', label: '页面/Tab' };
+  if (/push|notice|notification/.test(haystack)) return { key: 'push', label: '推送' };
+  return { key: 'other', label: '其他' };
+}
+
+function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAnalysis {
+  const parsedLogs = lines.map(parseBusinessLogLine);
+  const apiRequests = parsedLogs.filter((log) => log.event === 'api_request');
+  const apiResponses = parsedLogs.filter((log) => log.event === 'api_response');
+  const failedResponses = apiResponses.filter((log) => {
+    const retCode = log.fields.retCode;
+    return retCode && !['0', '100', '200'].includes(retCode);
+  });
+  const slowResponses = apiResponses
+    .filter((log) => Number(log.fields.costMs || 0) >= 500)
+    .sort((left, right) => Number(right.fields.costMs || 0) - Number(left.fields.costMs || 0))
+    .slice(0, 20);
+
+  const apiMap = new Map<string, { requestCount: number; responseCount: number; failedCount: number; totalCostMs: number; costCount: number; maxCostMs: number }>();
+  [...apiRequests, ...apiResponses].forEach((log) => {
+    const api = normalizeApiKey(log.fields.api);
+    const item = apiMap.get(api) || { requestCount: 0, responseCount: 0, failedCount: 0, totalCostMs: 0, costCount: 0, maxCostMs: 0 };
+    if (log.event === 'api_request') item.requestCount += 1;
+    if (log.event === 'api_response') {
+      item.responseCount += 1;
+      const costMs = Number(log.fields.costMs || 0);
+      if (costMs > 0) {
+        item.totalCostMs += costMs;
+        item.costCount += 1;
+        item.maxCostMs = Math.max(item.maxCostMs, costMs);
+      }
+      const retCode = log.fields.retCode;
+      if (retCode && !['0', '100', '200'].includes(retCode)) item.failedCount += 1;
+    }
+    apiMap.set(api, item);
+  });
+
+  const apiStats = Array.from(apiMap.entries())
+    .map(([api, stat]) => ({
+      api,
+      requestCount: stat.requestCount,
+      responseCount: stat.responseCount,
+      failedCount: stat.failedCount,
+      maxCostMs: stat.maxCostMs,
+      avgCostMs: stat.costCount ? Math.round(stat.totalCostMs / stat.costCount) : 0,
+    }))
+    .sort((left, right) => right.failedCount - left.failedCount || right.maxCostMs - left.maxCostMs || right.requestCount - left.requestCount)
+    .slice(0, 30);
+
+  const responsesByNntid = new Map<string, ParsedBusinessLog[]>();
+  apiResponses.forEach((response) => {
+    const nntid = response.fields.nntid || '';
+    if (!nntid) return;
+    responsesByNntid.set(nntid, [...(responsesByNntid.get(nntid) || []), response]);
+  });
+  const apiTimeline = apiRequests.map((request, index) => {
+    const nntid = request.fields.nntid || '';
+    const response = nntid ? responsesByNntid.get(nntid)?.shift() : undefined;
+    const retCode = response?.fields.retCode || '';
+    const status: 'success' | 'failed' | 'pending' = response
+      ? (retCode && !['0', '100', '200'].includes(retCode) ? 'failed' : 'success')
+      : 'pending';
+    return {
+      key: `${nntid || request.time}-${index}`,
+      requestTime: request.time,
+      responseTime: response?.time || '-',
+      api: normalizeApiKey(request.fields.api || response?.fields.api),
+      costMs: response?.fields.costMs ? Number(response.fields.costMs) : null,
+      retCode: retCode || '-',
+      retMsg: response?.fields.retMsg || '-',
+      nntid: nntid || '-',
+      trackId: response?.fields.trackId || '-',
+      parameters: request.fields.parameters || '-',
+      requestLine: request.line,
+      responseLine: response?.line || '-',
+      fullApi: request.fields.api || response?.fields.api || '-',
+      status,
+    };
+  });
+
+  const requestNntids = new Set(apiRequests.map((log) => log.fields.nntid).filter(Boolean));
+  const responseNntids = new Set(apiResponses.map((log) => log.fields.nntid).filter(Boolean));
+  let nntidIssueCount = 0;
+  requestNntids.forEach((nntid) => {
+    if (!responseNntids.has(nntid)) nntidIssueCount += 1;
+  });
+
+  const versions = Array.from(new Set(parsedLogs.map((log) => log.fields.version).filter(Boolean))).slice(0, 8);
+  const userIds = Array.from(new Set(parsedLogs.flatMap((log) => {
+    const raw = `${log.fields.userId || ''} ${log.fields.parameters || ''}`;
+    return [...raw.matchAll(/\buserId"?[:=]?"?(\d{5,})/g)].map((item) => item[1]);
+  }))).slice(0, 8);
+
+  const suggestions: string[] = [];
+  if (failedResponses.length) suggestions.push(`发现 ${failedResponses.length} 条非成功 retCode，优先查看异常响应列表。`);
+  if (slowResponses.length) suggestions.push(`发现 ${slowResponses.length} 条接口耗时 >= 500ms，建议关注慢请求 Top。`);
+  if (nntidIssueCount) suggestions.push(`发现 ${nntidIssueCount} 个请求 nntid 未匹配到响应，可能存在超时、丢日志或请求未完成。`);
+  if (!suggestions.length) suggestions.push('未发现明显异常 retCode 或慢请求，可结合用户操作路径继续检索关键 event。');
+
+  const groupOrder = ['api', 'login', 'im', 'websocket', 'page', 'push', 'rtc', 'other'];
+  const groupMap = new Map<string, { key: string; label: string; logs: ParsedBusinessLog[] }>();
+  parsedLogs.forEach((log) => {
+    const group = getLogFunctionGroup(log);
+    const item = groupMap.get(group.key) || { ...group, logs: [] };
+    item.logs.push(log);
+    groupMap.set(group.key, item);
+  });
+  const functionGroups = Array.from(groupMap.values())
+    .sort((left, right) => groupOrder.indexOf(left.key) - groupOrder.indexOf(right.key))
+    .map((group) => ({
+      ...group,
+      warnings: group.logs.filter((log) => log.level !== 'info').length,
+      eventCounts: topCounts(group.logs.map((log) => log.event), 8),
+    }));
+
+  return {
+    source,
+    total: parsedLogs.length,
+    timeRange: parsedLogs.length ? `${parsedLogs[0].time || '-'} ~ ${parsedLogs[parsedLogs.length - 1].time || '-'}` : '-',
+    warnings: parsedLogs.filter((log) => log.level !== 'info').length,
+    apiRequests: apiRequests.length,
+    apiResponses: apiResponses.length,
+    failedResponses: failedResponses.slice(0, 30),
+    slowResponses,
+    eventCounts: topCounts(parsedLogs.map((log) => log.event), 16),
+    apiStats,
+    apiTimeline,
+    retCodeCounts: topCounts(apiResponses.map((log) => log.fields.retCode || 'empty'), 12).map((item) => ({ retCode: item.event, count: item.count })),
+    versions,
+    userIds,
+    nntidIssueCount,
+    suggestions,
+    functionGroups,
+  };
+}
+
 export default function LogsPairPage({ embedded = false, pairingMode = 'inline' }: LogsPairPageProps = {}) {
   const usePairingModal = pairingMode === 'modal';
   const [state, setState] = useState<ConnectionState>('idle');
@@ -170,6 +419,8 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [centerSuccessText, setCenterSuccessText] = useState('');
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<BusinessLogAnalysis | null>(null);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<PairingSessionData | null>(null);
@@ -252,6 +503,16 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       setCenterSuccessText('');
       centerSuccessTimerRef.current = null;
     }, 1600);
+  };
+
+  const openBusinessLogAnalysis = () => {
+    const lines = businessLogs.map((log) => normalizeDisplayLine(log.message || log.raw, 'business'));
+    if (lines.length === 0) {
+      message.warning('当前没有业务日志可分析');
+      return;
+    }
+    setAnalysisResult(analyzeBusinessLogLines(lines, '实时业务日志'));
+    setAnalysisOpen(true);
   };
 
   const normalizeLogChannel = (channel?: string, line?: string): LogChannel => {
@@ -759,6 +1020,55 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     ? activeLogs.filter((log) => `${log.message}\n${log.raw}`.toLowerCase().includes(normalizedLogSearchText))
     : activeLogs;
 
+  const renderApiTimelineTable = (dataSource: ApiTimelineRow[], pageSize = 20) => (
+    <Table
+      size="small"
+      bordered
+      rowKey="key"
+      dataSource={dataSource}
+      pagination={dataSource.length > pageSize ? { pageSize } : false}
+      scroll={{ x: 900 }}
+      expandable={{
+        expandedRowRender: (record) => (
+          <Space direction="vertical" size="small" style={{ width: '100%' }}>
+            <Text type="secondary">完整接口：{record.fullApi}</Text>
+            <Text type="secondary">参数：{record.parameters}</Text>
+            <Text type="secondary">nntid：{record.nntid}</Text>
+            <Text type="secondary">trackId：{record.trackId}</Text>
+            <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{record.requestLine}</Text>
+            <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{record.responseLine}</Text>
+          </Space>
+        ),
+      }}
+      columns={[
+        { title: '请求时间', dataIndex: 'requestTime', width: 150 },
+        {
+          title: '耗时',
+          dataIndex: 'costMs',
+          width: 90,
+          sorter: (a, b) => (a.costMs || 0) - (b.costMs || 0),
+          render: (value: number | null) => {
+            if (value === null) return '-';
+            return value > 350 ? <Tag color="orange">{value}ms</Tag> : `${value}ms`;
+          },
+        },
+        {
+          title: '结果',
+          key: 'result',
+          width: 220,
+          render: (_, record) => {
+            const color = record.status === 'failed' ? 'red' : record.status === 'pending' ? 'gold' : 'green';
+            const text = record.status === 'pending'
+              ? '无响应'
+              : `${record.retCode}${record.retMsg && record.retMsg !== '-' ? ` / ${record.retMsg}` : ''}`;
+            return <Tag color={color}>{text}</Tag>;
+          },
+        },
+        { title: '接口', dataIndex: 'fullApi', ellipsis: true, render: (value: string) => normalizeApiPath(value) },
+      ]}
+    />
+  );
+
   return (
     <div>
       {centerSuccessText && (
@@ -1083,6 +1393,13 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               </Button>
               <Button
                 size="small"
+                icon={<FileSearchOutlined />}
+                onClick={openBusinessLogAnalysis}
+              >
+                分析业务日志
+              </Button>
+              <Button
+                size="small"
                 type={autoScroll ? 'primary' : 'default'}
                 onClick={() => setAutoScroll(!autoScroll)}
               >
@@ -1172,6 +1489,54 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
           </div>
         </Card>
       )}
+
+      <Modal
+        title="业务日志在线分析"
+        open={analysisOpen}
+        onCancel={() => setAnalysisOpen(false)}
+        footer={null}
+        width="88vw"
+        destroyOnHidden
+      >
+        {analysisResult ? (
+          <Tabs
+            defaultActiveKey={analysisResult.functionGroups[0]?.key || 'api'}
+            items={analysisResult.functionGroups.map((group) => ({
+              key: group.key,
+              label: `${group.label} (${group.logs.length})`,
+              children: group.key === 'api' ? (
+                renderApiTimelineTable(analysisResult.apiTimeline)
+              ) : (
+                <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                  <Table
+                    size="small"
+                    bordered
+                    rowKey="event"
+                    dataSource={group.eventCounts}
+                    pagination={false}
+                    columns={[
+                      { title: '事件', dataIndex: 'event' },
+                      { title: '次数', dataIndex: 'count', width: 100 },
+                    ]}
+                  />
+                  <Table
+                    size="small"
+                    bordered
+                    rowKey={(record: ParsedBusinessLog, index) => `${record.time}-${index}`}
+                    dataSource={group.logs.slice(0, 100)}
+                    pagination={{ pageSize: 10 }}
+                    columns={[
+                      { title: '时间', dataIndex: 'time', width: 150 },
+                      { title: '事件', dataIndex: 'event', width: 180 },
+                      { title: '日志', dataIndex: 'line', render: (value: string) => <Text code>{value}</Text> },
+                    ]}
+                  />
+                </Space>
+              ),
+            }))}
+          />
+        ) : null}
+      </Modal>
 
       {/* 错误 */}
       {state === 'error' && (
