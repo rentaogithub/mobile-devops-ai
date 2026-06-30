@@ -336,9 +336,14 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
       package_type: nnrtcPackageType,
       build_id,
     };
-    const component = name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)
-      ? await podService.publishNNRtcPackage(tempPath, req.file.originalname, params)
-      : await podService.publish(tempPath, req.file.originalname, params);
+    let component;
+    if (name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+      component = await podService.publishNNRtcPackage(tempPath, req.file.originalname, params);
+    } else if (name === 'leigod_im_cross_sdk' && isNNRtcPackageFile(req.file.originalname)) {
+      component = await podService.publishLeigodIMCrossSDKPackage(tempPath, req.file.originalname, params);
+    } else {
+      component = await podService.publish(tempPath, req.file.originalname, params);
+    }
 
     // 清理临时文件
     if (fs.existsSync(tempPath)) {
@@ -771,6 +776,8 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
       const current = await podService.getOne(req.params.name, req.params.version);
       const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
       component = await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch, undefined, syncDSYM);
+    } else if (req.params.name === 'leigod_im_cross_sdk' && isNNRtcPackageFile(req.file.originalname)) {
+      component = await podService.replaceLeigodIMCrossSDKPackage(req.params.version, tempPath, req.file.originalname, targetBranch);
     } else {
       component = await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
     }

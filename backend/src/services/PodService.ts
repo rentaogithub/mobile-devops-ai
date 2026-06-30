@@ -816,14 +816,20 @@ ${sourceLine}
     return null;
   }
 
-  private async extractNNRtcPackage(packagePath: string, originalFileName?: string, requireDSYM = true): Promise<{
+  private async extractFrameworkDSYMPackage(
+    packagePath: string,
+    originalFileName: string | undefined,
+    componentName: string,
+    requireDSYM = false
+  ): Promise<{
     workDir: string;
     frameworkPath: string;
     dsymPath?: string;
     frameworkZipPath: string;
   }> {
     const uploadDir = process.env.UPLOAD_DIR || '/tmp';
-    const workDir = path.join(uploadDir, `nnrtc_pkg_${Date.now()}`);
+    const safeName = componentName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const workDir = path.join(uploadDir, `${safeName}_pkg_${Date.now()}`);
     fs.mkdirSync(workDir, { recursive: true });
 
     try {
@@ -833,19 +839,21 @@ ${sourceLine}
       } else if (lowerName.endsWith('.zip')) {
         new AdmZip(packagePath).extractAllTo(workDir, true);
       } else {
-        throw new Error('仅支持 nrt.tgz、.tar.gz 或 .zip 包');
+        throw new Error('仅支持 .zip、.tgz 或 .tar.gz 包');
       }
 
-      const frameworkPath = this.findDirectoryByName(workDir, 'NNRtc.framework');
-      const dsymPath = this.findDirectoryByName(workDir, 'NNRtc.dSYM');
+      const frameworkName = `${componentName}.framework`;
+      const dsymName = `${componentName}.dSYM`;
+      const frameworkPath = this.findDirectoryByName(workDir, frameworkName);
+      const dsymPath = this.findDirectoryByName(workDir, dsymName);
       if (!frameworkPath) {
-        throw new Error('包内未找到 NNRtc.framework');
+        throw new Error(`包内未找到 ${frameworkName}`);
       }
       if (requireDSYM && !dsymPath) {
-        throw new Error('包内未找到 NNRtc.dSYM');
+        throw new Error(`包内未找到 ${dsymName}`);
       }
 
-      const frameworkZipPath = path.join(uploadDir, `NNRtc_${Date.now()}.zip`);
+      const frameworkZipPath = path.join(uploadDir, `${safeName}_${Date.now()}.zip`);
       execSync(`cd ${shellQuote(path.dirname(frameworkPath))} && zip -r ${shellQuote(frameworkZipPath)} ${shellQuote(path.basename(frameworkPath))}`, {
         encoding: 'utf-8',
         timeout: 120000,
@@ -858,14 +866,19 @@ ${sourceLine}
     }
   }
 
-  private async saveNNRtcDSYM(dsymPath: string, version: string): Promise<void> {
+  private async extractNNRtcPackage(packagePath: string, originalFileName?: string, requireDSYM = true) {
+    return this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'NNRtc', requireDSYM);
+  }
+
+  private async saveComponentDSYM(componentName: string, dsymPath: string, version: string): Promise<void> {
     const uuid = await this.fileHandler.extractUUID(dsymPath);
     const appInfo = await this.fileHandler.extractAppInfo(dsymPath);
-    const appName = appInfo.appName || 'NNRtc';
+    const appName = appInfo.appName || componentName;
 
     const sameVersionDsyms = await this.storage.findByAppNameAndVersion(appName, version);
     for (const existing of sameVersionDsyms) {
-      logger.info('覆盖 NNRtc 同版本 dSYM，删除旧记录', {
+      logger.info('覆盖组件同版本 dSYM，删除旧记录', {
+        componentName,
         appName: existing.appName,
         version: existing.version,
         uuid: existing.uuid,
@@ -876,14 +889,15 @@ ${sourceLine}
     const uuidOwner = await this.storage.findByUUID(uuid);
     if (uuidOwner) {
       if (uuidOwner.appName === appName) {
-        logger.info('覆盖 NNRtc 同 UUID dSYM，删除旧记录', {
+        logger.info('覆盖组件同 UUID dSYM，删除旧记录', {
+          componentName,
           appName: uuidOwner.appName,
           version: uuidOwner.version,
           uuid: uuidOwner.uuid,
         });
         await this.storage.deleteDSYM(uuidOwner.uuid);
       } else {
-        throw new Error(`NNRtc.dSYM UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`);
+        throw new Error(`${componentName}.dSYM UUID ${uuid} 已存在于 ${uuidOwner.appName}@${uuidOwner.version}`);
       }
     }
 
@@ -898,9 +912,13 @@ ${sourceLine}
       filePath: permanentPath,
       fileSize,
     });
-    logger.info('NNRtc dSYM 已同步到 dSYM 管理', { uuid, appName, version });
+    logger.info('组件 dSYM 已同步到 dSYM 管理', { componentName, uuid, appName, version });
     symbolicationCache.clear();
-    logger.info('已清除符号化缓存（NNRtc dSYM 更新）', { uuid, appName, version });
+    logger.info('已清除符号化缓存（组件 dSYM 更新）', { componentName, uuid, appName, version });
+  }
+
+  private async saveNNRtcDSYM(dsymPath: string, version: string): Promise<void> {
+    return this.saveComponentDSYM('NNRtc', dsymPath, version);
   }
 
   private async deleteNNRtcDSYMs(version: string): Promise<void> {
@@ -1037,6 +1055,62 @@ ${sourceLine}
       if (!shouldSyncDSYM && component.status === 'published') {
         await this.deleteNNRtcDSYMs(version);
       }
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
+  async publishLeigodIMCrossSDKPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
+    if (params.name !== 'leigod_im_cross_sdk') {
+      throw new Error('leigod_im_cross_sdk 包发布仅支持组件 leigod_im_cross_sdk');
+    }
+
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'leigod_im_cross_sdk', false);
+    try {
+      const component = await this.publish(extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', {
+        ...params,
+        lib_type: 'framework',
+        lib_name: 'leigod_im_cross_sdk.framework',
+      });
+
+      if (extracted.dsymPath && component.status === 'published') {
+        try {
+          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, params.version);
+        } catch (error: any) {
+          component.warning_message = `leigod_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('leigod_im_cross_sdk dSYM 同步失败，Pod 发布已完成', {
+            version: params.version,
+            error: error.message,
+          });
+        }
+      }
+
+      return component;
+    } finally {
+      fs.rmSync(extracted.workDir, { recursive: true, force: true });
+      fs.rmSync(extracted.frameworkZipPath, { force: true });
+    }
+  }
+
+  async replaceLeigodIMCrossSDKPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'leigod_im_cross_sdk', false);
+    try {
+      const component = await this.replaceZip('leigod_im_cross_sdk', version, extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', targetBranch);
+
+      if (extracted.dsymPath && component.status === 'published') {
+        try {
+          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+        } catch (error: any) {
+          component.warning_message = `leigod_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('leigod_im_cross_sdk dSYM 同步失败，Pod 替换已完成', {
+            version,
+            error: error.message,
+          });
+        }
+      }
+
       return component;
     } finally {
       fs.rmSync(extracted.workDir, { recursive: true, force: true });
