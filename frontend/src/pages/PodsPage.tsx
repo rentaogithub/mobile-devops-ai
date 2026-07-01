@@ -127,9 +127,14 @@ function isLeigodIMComponent(component?: PodComponent | null) {
     String(component.podspec_content || '').includes("s.name         = 'leigod_im_cross_sdk'");
 }
 
+function isInternalComponent(component?: PodComponent | null) {
+  if (!component) return false;
+  if (isLeigodIMComponent(component)) return true;
+  return String(component.name || '').trim() === 'NNRtc';
+}
+
 function isOfficialComponent(component?: PodComponent | null) {
-  if (!component?.homepage) return false;
-  return !component.homepage.includes('leigod');
+  return !isInternalComponent(component);
 }
 
 export default function PodsPage() {
@@ -442,7 +447,7 @@ export default function PodsPage() {
           totalVersions: versions.length,
           latestStatus: latest.status,
           latestTime: latest.upload_time,
-          isInternal: !latest.homepage,
+          isInternal: isInternalComponent(latest),
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
