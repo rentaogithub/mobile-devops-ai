@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
+import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input, Select } from 'antd';
+import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 import { formatDateTime } from '../utils/helpers';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -36,6 +36,8 @@ export default function HistoryPage() {
   const [selectedRecord, setSelectedRecord] = useState<HistoryRecord | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState('log'); // 当前激活的标签
+  const [queryText, setQueryText] = useState('');
+  const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
   const isAdmin = authUtils.isAdmin();
 
   // 从 localStorage 获取保存的 OpenAI API Key
@@ -112,10 +114,22 @@ export default function HistoryPage() {
     }
   };
 
-  const handleViewDetail = (record: HistoryRecord) => {
+  const handleViewDetail = async (record: HistoryRecord) => {
     setSelectedRecord(record);
     setDetailModalVisible(true);
     setActiveTab('log'); // 重置为日志标签
+
+    try {
+      const response = await historyApi.detail(record.id);
+      if (response.success && response.data) {
+        setSelectedRecord(response.data);
+        setHistoryData((prev) =>
+          prev.map((item) => (item.id === response.data!.id ? response.data! : item))
+        );
+      }
+    } catch (error: any) {
+      message.warning(error?.message || '刷新历史详情失败，当前显示可能不是最新结果');
+    }
   };
 
   const handleCloseDetail = () => {
@@ -222,7 +236,35 @@ export default function HistoryPage() {
     }
   };
 
-  const records = historyData;
+  const normalizedQuery = queryText.trim().toLowerCase();
+  const records = historyData.filter((record) => {
+    if (fixedFilter === 'fixed' && !record.isFixed) return false;
+    if (fixedFilter === 'unfixed' && record.isFixed) return false;
+    if (!normalizedQuery) return true;
+
+    const idQuery = normalizedQuery.replace(/^#/, '');
+    if (/^\d+$/.test(idQuery) && String(record.id).includes(idQuery)) {
+      return true;
+    }
+
+    const searchable = [
+      record.id,
+      record.appVersion,
+      record.crashType,
+      record.crashReason,
+      record.lastStackCall,
+      record.crashModule,
+      record.crashLocation,
+      record.fixedVersion,
+      record.symbolicatedLog,
+      record.aiAnalysis?.summary,
+      record.aiAnalysis?.crashModule,
+      record.aiAnalysis?.crashLocation,
+      ...(record.usedUuids || []),
+    ].filter(Boolean).join('\n').toLowerCase();
+
+    return searchable.includes(normalizedQuery);
+  });
 
   if (loading) {
     return (
@@ -249,11 +291,48 @@ export default function HistoryPage() {
     <div>
       <Title level={2}>符号化历史记录</Title>
       <Paragraph type="secondary">
-        查看所有符号化过的崩溃日志记录。共 {records.length} 条记录。
+        查看所有符号化过的崩溃日志记录。共 {historyData.length} 条记录。
       </Paragraph>
 
+      <Card size="small" style={{ marginTop: 16 }}>
+        <Space wrap>
+          <Input
+            allowClear
+            prefix={<SearchOutlined />}
+            placeholder="搜索入库编号、版本、模块、类型、原因或堆栈关键词"
+            value={queryText}
+            onChange={(event) => setQueryText(event.target.value)}
+            style={{ width: 420 }}
+          />
+          <Select
+            value={fixedFilter}
+            onChange={setFixedFilter}
+            style={{ width: 120 }}
+            options={[
+              { value: 'all', label: '全部状态' },
+              { value: 'unfixed', label: '未修复' },
+              { value: 'fixed', label: '已修复' },
+            ]}
+          />
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={() => {
+              setQueryText('');
+              setFixedFilter('all');
+            }}
+          >
+            重置
+          </Button>
+          <Text type="secondary">
+            当前 {records.length} 条
+          </Text>
+        </Space>
+      </Card>
+
       <Space direction="vertical" style={{ width: '100%', marginTop: 24 }} size="middle">
-        {records.map((record) => (
+        {records.length === 0 ? (
+          <Empty description="未找到匹配记录" style={{ marginTop: 40 }} />
+        ) : records.map((record) => (
                   <Card
                     key={record.id}
                     size="small"
@@ -261,6 +340,7 @@ export default function HistoryPage() {
                       <Space>
                         <ClockCircleOutlined />
                         <Text>{formatDateTime(record.createdAt)}</Text>
+                        <Tag color="green">已入库 #{record.id}</Tag>
                         {record.versionDetected ? (
                           <Tag color="green">v{record.appVersion}</Tag>
                         ) : (
@@ -386,6 +466,8 @@ export default function HistoryPage() {
           <div>
             <Space direction="vertical" style={{ width: '100%', marginBottom: 16 }} size="middle">
               <div>
+                <Text strong>编号：</Text>
+                <Tag color="green" style={{ marginRight: 16 }}>已入库 #{selectedRecord.id}</Tag>
                 <Text strong>版本：</Text>
                 <Text>{selectedRecord.appVersion}</Text>
                 <Text type="secondary" style={{ marginLeft: 16 }}>时间：</Text>

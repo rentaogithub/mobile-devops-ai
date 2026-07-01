@@ -177,6 +177,32 @@ function hasDWARFFile(dsymPath: string): boolean {
   return fs.readdirSync(dwarfDir).some((file) => !file.startsWith('.'));
 }
 
+function resolveDSYMFilePath(dsym: DSYMInfo): string {
+  if (hasDWARFFile(dsym.filePath)) {
+    return dsym.filePath;
+  }
+
+  const dsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data', 'dsyms');
+  const dsymName = path.basename(dsym.filePath || `${dsym.appName}.dSYM`);
+  const candidates = [
+    path.join(dsymDir, dsym.uuid, dsymName),
+    path.join(dsymDir, dsym.uuid, `${dsym.appName}.dSYM`),
+    path.join(dsymDir, dsym.uuid, `${dsym.appName}.app.dSYM`),
+  ];
+  const resolved = candidates.find((candidate) => hasDWARFFile(candidate));
+  if (resolved) {
+    logger.warn('修正 dSYM 旧路径', {
+      appName: dsym.appName,
+      uuid: dsym.uuid,
+      oldPath: dsym.filePath,
+      resolvedPath: resolved,
+    });
+    return resolved;
+  }
+
+  return dsym.filePath;
+}
+
 function extractCrashBinaryNames(crashLog: string): Set<string> {
   const names = new Set<string>();
   crashLog.split('\n').forEach((line) => {
@@ -197,17 +223,19 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
   const crashBinaryNames = extractCrashBinaryNames(crashLog);
   const normalizedCrashLog = normalizeUUID(crashLog);
   const filtered = dsymInfos.filter((dsym) => {
+    const resolvedFilePath = resolveDSYMFilePath(dsym);
     const appName = dsym.appName;
     const isMainApp = appName.toUpperCase() === 'NNIM';
     const uuidMatches = normalizedCrashLog.includes(normalizeUUID(dsym.uuid));
     const nameMatches = crashBinaryNames.has(appName);
-    const hasDWARF = hasDWARFFile(dsym.filePath);
+    const hasDWARF = hasDWARFFile(resolvedFilePath);
 
     if (!hasDWARF) {
       logger.warn('跳过缺少 DWARF 的 Sentry dSYM', {
         appName,
         uuid: dsym.uuid,
         filePath: dsym.filePath,
+        resolvedFilePath,
       });
       return false;
     }
@@ -222,9 +250,21 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
       crashBinaries: Array.from(crashBinaryNames),
     });
     return false;
-  });
+  }).map((dsym) => ({
+    ...dsym,
+    filePath: resolveDSYMFilePath(dsym),
+  }));
 
-  return filtered.length > 0 ? filtered : dsymInfos.filter((dsym) => hasDWARFFile(dsym.filePath));
+  return filtered.length > 0
+    ? filtered
+    : dsymInfos
+      .map((dsym) => ({ ...dsym, filePath: resolveDSYMFilePath(dsym) }))
+      .filter((dsym) => hasDWARFFile(dsym.filePath));
+}
+
+function isHistoryMissingTargetUUIDs(existingUUIDs: string[] = [], targetUUIDs: string[] = []): boolean {
+  const existing = new Set(existingUUIDs.map((uuid) => normalizeUUID(uuid)));
+  return targetUUIDs.some((uuid) => !existing.has(normalizeUUID(uuid)));
 }
 
 function assertSentryCrashLogSymbolicatable(crashLog: string, issue: any, eventId?: string) {
@@ -286,12 +326,39 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
 
       const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
       const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
-      const existingHistory =
+      let existingHistory =
         historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
         historyService.findDuplicateByOriginalLog(crashLog, appVersion) ||
         historyService.findDuplicateByOriginalLog(crashLog);
 
       if (existingHistory) {
+        if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs)) {
+          logger.info('Sentry 自动符号化命中旧历史，刷新缺失 dSYM 的符号化结果', {
+            issueId: normalizedIssue.id,
+            historyId: existingHistory.id,
+            existingUUIDs: existingHistory.usedUuids,
+            targetUUIDs,
+          });
+
+          const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
+          const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
+          const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+
+          existingHistory = await historyService.updateSymbolicationResult(existingHistory.id, {
+            appVersion,
+            versionDetected,
+            crashType: crashInfo.crashType,
+            crashReason: crashInfo.crashReason,
+            lastStackCall: crashInfo.lastStackCall,
+            crashModule: crashInfo.crashModule,
+            crashLocation: crashInfo.crashLocation,
+            originalLog: crashLog,
+            symbolicatedLog: symbolicated.symbolicatedLog,
+            usedUuids: targetUUIDs,
+            aiAnalysis: undefined,
+          });
+        }
+
         upsertSentryIssueHistory(normalizedIssue, existingHistory.id);
         return {
           issue: normalizedIssue,
@@ -736,11 +803,39 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
     const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
     const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
-    const existingHistory =
+    let existingHistory =
       historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
       historyService.findDuplicateByOriginalLog(crashLog, appVersion);
 
     if (existingHistory) {
+      if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs)) {
+        logger.info('Sentry 历史记录缺少当前可用 dSYM，刷新符号化结果', {
+          issueId: normalizedIssue.id,
+          historyId: existingHistory.id,
+          existingUUIDs: existingHistory.usedUuids,
+          targetUUIDs,
+        });
+
+        const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
+        const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
+        const extractedVersion = extractVersionFromCrashLog(crashLog);
+        const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+
+        existingHistory = await historyService.updateSymbolicationResult(existingHistory.id, {
+          appVersion,
+          versionDetected,
+          crashType: crashInfo.crashType,
+          crashReason: crashInfo.crashReason,
+          lastStackCall: crashInfo.lastStackCall,
+          crashModule: crashInfo.crashModule,
+          crashLocation: crashInfo.crashLocation,
+          originalLog: crashLog,
+          symbolicatedLog: symbolicated.symbolicatedLog,
+          usedUuids: targetUUIDs,
+          aiAnalysis: undefined,
+        });
+      }
+
       logger.info('Sentry 问题已解析过，直接返回历史记录', {
         issueId: normalizedIssue.id,
         appVersion,

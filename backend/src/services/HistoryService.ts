@@ -143,6 +143,7 @@ export class HistoryService {
                 crash_module = ?,
                 crash_location = ?,
                 symbolicated_log = ?,
+                used_uuids = ?,
                 ai_analysis = ?
             WHERE id = ?
           `);
@@ -156,6 +157,7 @@ export class HistoryService {
             params.crashModule || null,
             params.crashLocation || null,
             params.symbolicatedLog,
+            JSON.stringify(params.usedUuids),
             params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null,
             duplicate.id
           );
@@ -239,6 +241,52 @@ export class HistoryService {
 
   private countUnknownSystemFrames(log: string): number {
     return (log.match(/^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
+  }
+
+  async updateSymbolicationResult(id: number, params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
+    const db = getDatabase();
+
+    try {
+      const stmt = db.prepare(`
+        UPDATE symbolication_history
+        SET app_version = ?,
+            version_detected = ?,
+            crash_type = ?,
+            crash_reason = ?,
+            last_stack_call = ?,
+            crash_module = ?,
+            crash_location = ?,
+            symbolicated_log = ?,
+            used_uuids = ?,
+            ai_analysis = ?
+        WHERE id = ?
+      `);
+
+      stmt.run(
+        params.appVersion,
+        params.versionDetected !== false ? 1 : 0,
+        params.crashType || null,
+        params.crashReason || null,
+        params.lastStackCall || null,
+        params.crashModule || null,
+        params.crashLocation || null,
+        params.symbolicatedLog,
+        JSON.stringify(params.usedUuids),
+        params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null,
+        id
+      );
+
+      logger.info('历史记录符号化结果已刷新', {
+        id,
+        appVersion: params.appVersion,
+        uuidCount: params.usedUuids.length,
+      });
+
+      return this.getHistoryById(id);
+    } catch (error: any) {
+      logger.error('刷新历史记录符号化结果失败', { error: error.message, id });
+      throw error;
+    }
   }
 
   /**

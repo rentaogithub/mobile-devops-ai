@@ -16,6 +16,35 @@ interface AIAnalysisPanelProps {
   loading: boolean;
 }
 
+const longTextStyle: React.CSSProperties = {
+  display: 'inline-block',
+  maxWidth: '100%',
+  marginLeft: 8,
+  padding: '1px 8px',
+  borderRadius: 4,
+  border: '1px solid #ffadd2',
+  background: '#fff0f6',
+  color: '#c41d7f',
+  fontSize: 12,
+  lineHeight: '20px',
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  wordBreak: 'break-word',
+  verticalAlign: 'top',
+};
+
+const LongTextValue: React.FC<{ children: React.ReactNode; color?: string }> = ({ children, color = 'magenta' }) => {
+  const palette = color === 'volcano'
+    ? { border: '#ffbb96', background: '#fff2e8', color: '#d4380d' }
+    : { border: '#ffadd2', background: '#fff0f6', color: '#c41d7f' };
+
+  return (
+    <Text code style={{ ...longTextStyle, borderColor: palette.border, background: palette.background, color: palette.color }}>
+      {children}
+    </Text>
+  );
+};
+
 const AIAnalysisPanel: React.FC<AIAnalysisPanelProps> = ({ analysis, loading }) => {
   const getSeverityIcon = (severity: string) => {
     switch (severity) {
@@ -120,20 +149,18 @@ const AIAnalysisPanel: React.FC<AIAnalysisPanelProps> = ({ analysis, loading }) 
             </div>
           )}
           {analysis.crashLocation && (
-            <div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', maxWidth: '100%' }}>
               <Text strong>崩溃位置：</Text>
-              <Tag color="magenta" style={{ marginLeft: 8 }}>
-                {analysis.crashLocation}
-              </Tag>
+              <LongTextValue>{analysis.crashLocation}</LongTextValue>
             </div>
           )}
           {(analysis.crashFile || analysis.crashLine) && (
-            <div>
+            <div style={{ display: 'flex', alignItems: 'flex-start', maxWidth: '100%' }}>
               <Text strong>代码位置：</Text>
-              <Tag color="volcano" style={{ marginLeft: 8 }}>
+              <LongTextValue color="volcano">
                 {analysis.crashFile}
                 {analysis.crashLine && `:${analysis.crashLine}`}
-              </Tag>
+              </LongTextValue>
             </div>
           )}
           <div>
@@ -150,7 +177,15 @@ const AIAnalysisPanel: React.FC<AIAnalysisPanelProps> = ({ analysis, loading }) 
             <Text strong>受影响组件：</Text>
             <div style={{ marginTop: 8 }}>
               {analysis.affectedComponents.map((component, index) => (
-                <Tag key={index} style={{ marginBottom: 4 }}>
+                <Tag
+                  key={index}
+                  style={{
+                    marginBottom: 4,
+                    maxWidth: '100%',
+                    whiteSpace: 'normal',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
                   {component}
                 </Tag>
               ))}
