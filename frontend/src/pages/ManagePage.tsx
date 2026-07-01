@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Modal, Form, Card, Alert, Collapse, Badge, Tabs, Select, List } from 'antd';
-import { DeleteOutlined, ReloadOutlined, SearchOutlined, EditOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List } from 'antd';
+import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { dsymApi, moduleApi } from '../services/api';
 import { DSYMInfo } from '../types';
@@ -13,9 +13,6 @@ export default function ManagePage() {
   const [dsyms, setDsyms] = useState<DSYMInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [editingDsym, setEditingDsym] = useState<DSYMInfo | null>(null);
-  const [form] = Form.useForm();
   
   // 模块配置相关状态
   const [customModules, setCustomModules] = useState<string[]>([]);
@@ -88,38 +85,6 @@ export default function ManagePage() {
     }
   };
 
-  const handleEdit = (dsym: DSYMInfo) => {
-    setEditingDsym(dsym);
-    form.setFieldsValue({
-      version: dsym.version,
-      notes: dsym.notes || '',
-      relatedAppVersions: dsym.relatedAppVersions || [],
-    });
-    setEditModalVisible(true);
-  };
-
-  const handleEditSubmit = async () => {
-    if (!editingDsym) return;
-
-    try {
-      const values = await form.validateFields();
-      const response = await dsymApi.update(editingDsym.uuid, values);
-
-      if (response.success) {
-        message.success('更新成功');
-        setEditModalVisible(false);
-        setEditingDsym(null);
-        form.resetFields();
-        loadDsyms();
-      } else {
-        throw new Error(response.error || '更新失败');
-      }
-    } catch (error: any) {
-      const errorMsg = error.error || error.message || '更新失败';
-      message.error(errorMsg);
-    }
-  };
-
   const handleDownload = (dsym: DSYMInfo) => {
     try {
       message.loading({ content: '正在准备下载...', key: 'download', duration: 0 });
@@ -129,22 +94,6 @@ export default function ManagePage() {
       }, 1000);
     } catch (error: any) {
       message.error({ content: '下载失败', key: 'download', duration: 2 });
-    }
-  };
-
-  const handleDelete = async (uuid: string) => {
-    try {
-      const response = await dsymApi.delete(uuid);
-
-      if (response.success) {
-        message.success('删除成功');
-        loadDsyms();
-      } else {
-        throw new Error(response.error || '删除失败');
-      }
-    } catch (error: any) {
-      const errorMsg = error.error || error.message || '删除失败';
-      message.error(errorMsg);
     }
   };
 
@@ -232,7 +181,7 @@ export default function ManagePage() {
     {
       title: '操作',
       key: 'action',
-      width: isAdmin ? 200 : 100,
+      width: 100,
       fixed: 'right',
       render: (_, record) => (
         <Space>
@@ -243,24 +192,6 @@ export default function ManagePage() {
           >
             下载
           </Button>
-          {isAdmin && (
-            <>
-              <Button type="link" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
-                编辑
-              </Button>
-              <Popconfirm
-                title="确认删除"
-                description="删除后将无法恢复，确定要删除这个 dSYM 文件吗？"
-                onConfirm={() => handleDelete(record.uuid)}
-                okText="确定"
-                cancelText="取消"
-              >
-                <Button type="link" danger icon={<DeleteOutlined />}>
-                  删除
-                </Button>
-              </Popconfirm>
-            </>
-          )}
         </Space>
       ),
     },
@@ -345,10 +276,7 @@ export default function ManagePage() {
                         <GroupedView 
                           dsyms={filteredDsyms.filter(d => d.appName.toUpperCase() !== 'NNIM')} 
                           loading={loading}
-                          onEdit={handleEdit}
-                          onDelete={handleDelete}
                           onDownload={handleDownload}
-                          isAdmin={isAdmin}
                         />
                       ),
                     },
@@ -425,59 +353,6 @@ export default function ManagePage() {
         ]}
       />
 
-      <Modal
-        title="编辑 dSYM 信息"
-        open={editModalVisible}
-        onOk={handleEditSubmit}
-        onCancel={() => {
-          setEditModalVisible(false);
-          setEditingDsym(null);
-          form.resetFields();
-        }}
-        okText="保存"
-        cancelText="取消"
-      >
-        <Form form={form} layout="vertical">
-          <Form.Item
-            label="版本号"
-            name="version"
-            rules={[{ required: true, message: '请输入版本号' }]}
-          >
-            <Input placeholder="如：1.0.0" />
-          </Form.Item>
-          
-          {editingDsym && editingDsym.appName.toUpperCase() !== 'NNIM' && (
-            <Form.Item
-              label="关联主应用版本"
-              name="relatedAppVersions"
-            >
-              <Select
-                mode="multiple"
-                placeholder="默认不关联主应用版本，可按需选择"
-                showSearch
-                filterOption={(input, option) =>
-                  (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
-                }
-                options={dsyms
-                  .filter(d => d.appName.toUpperCase() === 'NNIM')
-                  .map(d => ({
-                    value: d.version,
-                    label: `NNIM ${d.version}`,
-                  }))
-                  .filter((item, index, self) => 
-                    index === self.findIndex(t => t.value === item.value)
-                  )
-                  .sort((a, b) => b.value.localeCompare(a.value))
-                }
-              />
-            </Form.Item>
-          )}
-          
-          <Form.Item label="备注" name="notes">
-            <Input.TextArea rows={3} placeholder="可选的备注信息，如：测试版本、发布日期等" />
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 }
@@ -486,13 +361,10 @@ export default function ManagePage() {
 interface GroupedViewProps {
   dsyms: DSYMInfo[];
   loading: boolean;
-  onEdit: (dsym: DSYMInfo) => void;
-  onDelete: (uuid: string) => void;
   onDownload: (dsym: DSYMInfo) => void;
-  isAdmin: boolean;
 }
 
-function GroupedView({ dsyms, loading, onEdit, onDelete, onDownload, isAdmin }: GroupedViewProps) {
+function GroupedView({ dsyms, loading, onDownload }: GroupedViewProps) {
   // 按应用名称分组
   const groupedDsyms = dsyms.reduce((acc, dsym) => {
     const appName = dsym.appName;
@@ -577,7 +449,7 @@ function GroupedView({ dsyms, loading, onEdit, onDelete, onDownload, isAdmin }: 
           {
             title: '操作',
             key: 'action',
-            width: isAdmin ? 200 : 100,
+            width: 100,
             fixed: 'right' as const,
             render: (_, record) => (
               <Space>
@@ -588,24 +460,6 @@ function GroupedView({ dsyms, loading, onEdit, onDelete, onDownload, isAdmin }: 
                 >
                   下载
                 </Button>
-                {isAdmin && (
-                  <>
-                    <Button type="link" icon={<EditOutlined />} onClick={() => onEdit(record)}>
-                      编辑
-                    </Button>
-                    <Popconfirm
-                      title="确认删除"
-                      description="删除后将无法恢复，确定要删除这个 dSYM 文件吗？"
-                      onConfirm={() => onDelete(record.uuid)}
-                      okText="确定"
-                      cancelText="取消"
-                    >
-                      <Button type="link" danger icon={<DeleteOutlined />}>
-                        删除
-                      </Button>
-                    </Popconfirm>
-                  </>
-                )}
               </Space>
             ),
           },

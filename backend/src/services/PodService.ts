@@ -1068,15 +1068,16 @@ ${sourceLine}
     return this.saveComponentDSYM('NNRtc', dsymPath, version);
   }
 
-  private async deleteNNRtcDSYMs(version: string): Promise<void> {
-    const dsyms = await this.storage.findByAppNameAndVersion('NNRtc', version);
+  private async deleteComponentDSYMs(componentName: string, version: string): Promise<void> {
+    const dsyms = await this.storage.findByAppNameAndVersion(componentName, version);
     if (dsyms.length === 0) {
-      logger.info('未找到需要删除的 NNRtc dSYM', { version });
+      logger.info('未找到需要删除的组件 dSYM', { componentName, version });
       return;
     }
 
     for (const dsym of dsyms) {
-      logger.info('删除 NNRtc 版本对应 dSYM', {
+      logger.info('删除组件版本对应 dSYM', {
+        componentName,
         version,
         uuid: dsym.uuid,
         filePath: dsym.filePath,
@@ -1084,7 +1085,11 @@ ${sourceLine}
       await this.storage.deleteDSYM(dsym.uuid);
     }
     symbolicationCache.clear();
-    logger.info('已清除符号化缓存（NNRtc dSYM 删除）', { version });
+    logger.info('已清除符号化缓存（组件 dSYM 删除）', { componentName, version });
+  }
+
+  private async deleteNNRtcDSYMs(version: string): Promise<void> {
+    return this.deleteComponentDSYMs('NNRtc', version);
   }
 
   async hasNNRtcDSYM(version: string): Promise<boolean> {
@@ -1591,12 +1596,12 @@ ${sourceLine}
     // 删除 spec 仓库中的版本目录
     await this.deleteFromSpecRepo(name, version);
     let warning: string | undefined;
-    if (name === 'NNRtc') {
+    if (name === 'NNRtc' || name === 'leigod_im_cross_sdk') {
       try {
-        await this.deleteNNRtcDSYMs(version);
+        await this.deleteComponentDSYMs(name, version);
       } catch (error: any) {
-        warning = `NNRtc@${version} 已删除，但对应 dSYM 清理失败: ${error.message}`;
-        logger.error('删除 NNRtc 版本后清理 dSYM 失败', { version, error: error.message });
+        warning = `${name}@${version} 已删除，但对应 dSYM 清理失败: ${error.message}`;
+        logger.error('删除组件版本后清理 dSYM 失败', { name, version, error: error.message });
       }
     }
 
@@ -1616,12 +1621,12 @@ ${sourceLine}
     const dsymWarnings: string[] = [];
     for (const v of versions) {
       await this.deleteFromNexus(name, v.version);
-      if (name === 'NNRtc') {
+      if (name === 'NNRtc' || name === 'leigod_im_cross_sdk') {
         try {
-          await this.deleteNNRtcDSYMs(v.version);
+          await this.deleteComponentDSYMs(name, v.version);
         } catch (error: any) {
           dsymWarnings.push(`${v.version}: ${error.message}`);
-          logger.error('删除 NNRtc 组件后清理 dSYM 失败', { version: v.version, error: error.message });
+          logger.error('删除组件后清理 dSYM 失败', { name, version: v.version, error: error.message });
         }
       }
     }
@@ -1636,7 +1641,7 @@ ${sourceLine}
 
     return {
       deletedVersions: result.changes,
-      warning: dsymWarnings.length > 0 ? `NNRtc 组件已删除，但部分 dSYM 清理失败: ${dsymWarnings.join('; ')}` : undefined,
+      warning: dsymWarnings.length > 0 ? `${name} 组件已删除，但部分 dSYM 清理失败: ${dsymWarnings.join('; ')}` : undefined,
     };
   }
 

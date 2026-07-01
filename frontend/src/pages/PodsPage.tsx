@@ -802,8 +802,8 @@ export default function PodsPage() {
         <div>
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
           <p>如果 nnios 目标分支正在引用该版本，会自动回退到此组件剩余的最新版本。</p>
-          {record.name === 'NNRtc' && (
-            <p>将同时删除 dSYM 管理中的 <Text strong code>NNRtc@{record.version}</Text> 符号文件。</p>
+          {(record.name === 'NNRtc' || record.name === 'leigod_im_cross_sdk') && (
+            <p>将同时删除 dSYM 管理中的 <Text strong code>{record.name}@{record.version}</Text> 符号文件。</p>
           )}
           {isNNRtcTestPackage ? (
             <div style={{ marginBottom: 12 }}>
