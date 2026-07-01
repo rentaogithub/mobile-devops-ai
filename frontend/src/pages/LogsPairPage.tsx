@@ -256,17 +256,10 @@ function topCounts(values: string[], limit = 12) {
     .map(([event, count]) => ({ event, count }));
 }
 
-function getLogFunctionGroup(log: ParsedBusinessLog): { key: string; label: string } {
-  const haystack = `${log.category} ${log.event} ${log.line}`.toLowerCase();
-  const api = log.fields.api || '';
-  if (log.event === 'api_request' || log.event === 'api_response' || api) return { key: 'api', label: 'API' };
-  if (/login|登录|user_compare|token/.test(haystack)) return { key: 'login', label: '登录' };
-  if (/websocket|ws_|wsconnect|ws_connect/.test(haystack)) return { key: 'websocket', label: 'WebSocket' };
-  if (/im_|imsdk|tuikit|message|unread|friend/.test(haystack)) return { key: 'im', label: 'IM' };
-  if (/rtc|nrtc/.test(haystack)) return { key: 'rtc', label: 'RTC' };
-  if (/tabbar|view_controller|vc=|enter|page|module/.test(haystack)) return { key: 'page', label: '页面/Tab' };
-  if (/push|notice|notification/.test(haystack)) return { key: 'push', label: '推送' };
-  return { key: 'other', label: '其他' };
+function getLogModuleGroup(log: ParsedBusinessLog): { key: string; label: string } {
+  const label = log.category && log.category !== '业务' ? log.category : '未分类';
+  const key = label.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_') || 'unknown';
+  return { key, label };
 }
 
 function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAnalysis {
@@ -319,9 +312,11 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
     if (!nntid) return;
     responsesByNntid.set(nntid, [...(responsesByNntid.get(nntid) || []), response]);
   });
-  const apiTimeline = apiRequests.map((request, index) => {
+  const usedResponses = new Set<ParsedBusinessLog>();
+  const apiTimeline: ApiTimelineRow[] = apiRequests.map((request, index) => {
     const nntid = request.fields.nntid || '';
     const response = nntid ? responsesByNntid.get(nntid)?.shift() : undefined;
+    if (response) usedResponses.add(response);
     const retCode = response?.fields.retCode || '';
     const status: 'success' | 'failed' | 'pending' = response
       ? (retCode && !['0', '100', '200'].includes(retCode) ? 'failed' : 'success')
@@ -343,6 +338,27 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       status,
     };
   });
+  apiResponses.forEach((response, index) => {
+    if (usedResponses.has(response)) return;
+    const retCode = response.fields.retCode || '';
+    const status: 'success' | 'failed' = retCode && !['0', '100', '200'].includes(retCode) ? 'failed' : 'success';
+    apiTimeline.push({
+      key: `response-only-${response.fields.nntid || response.time}-${index}`,
+      requestTime: response.time || '-',
+      responseTime: response.time || '-',
+      api: normalizeApiKey(response.fields.api),
+      costMs: response.fields.costMs ? Number(response.fields.costMs) : null,
+      retCode: retCode || '-',
+      retMsg: response.fields.retMsg || '-',
+      nntid: response.fields.nntid || '-',
+      trackId: response.fields.trackId || '-',
+      parameters: '-',
+      requestLine: '-',
+      responseLine: response.line,
+      fullApi: response.fields.api || '-',
+      status,
+    });
+  });
 
   const requestNntids = new Set(apiRequests.map((log) => log.fields.nntid).filter(Boolean));
   const responseNntids = new Set(apiResponses.map((log) => log.fields.nntid).filter(Boolean));
@@ -363,16 +379,35 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
   if (nntidIssueCount) suggestions.push(`发现 ${nntidIssueCount} 个请求 nntid 未匹配到响应，可能存在超时、丢日志或请求未完成。`);
   if (!suggestions.length) suggestions.push('未发现明显异常 retCode 或慢请求，可结合用户操作路径继续检索关键 event。');
 
-  const groupOrder = ['api', 'login', 'im', 'websocket', 'page', 'push', 'rtc', 'other'];
   const groupMap = new Map<string, { key: string; label: string; logs: ParsedBusinessLog[] }>();
   parsedLogs.forEach((log) => {
-    const group = getLogFunctionGroup(log);
+    const group = getLogModuleGroup(log);
     const item = groupMap.get(group.key) || { ...group, logs: [] };
     item.logs.push(log);
     groupMap.set(group.key, item);
   });
   const functionGroups = Array.from(groupMap.values())
-    .sort((left, right) => groupOrder.indexOf(left.key) - groupOrder.indexOf(right.key))
+    .sort((left, right) => {
+      const leadingOrder = ['API', 'Login', 'Community'];
+      const trailingOrder = ['未分类', 'Warning', 'Error', 'Debug'];
+      const leftLeadingIndex = leadingOrder.indexOf(left.label);
+      const rightLeadingIndex = leadingOrder.indexOf(right.label);
+      if (leftLeadingIndex !== -1 || rightLeadingIndex !== -1) {
+        if (leftLeadingIndex === -1) return 1;
+        if (rightLeadingIndex === -1) return -1;
+        return leftLeadingIndex - rightLeadingIndex;
+      }
+      const leftTrailingIndex = trailingOrder.indexOf(left.label);
+      const rightTrailingIndex = trailingOrder.indexOf(right.label);
+      if (leftTrailingIndex !== -1 || rightTrailingIndex !== -1) {
+        if (leftTrailingIndex === -1) return -1;
+        if (rightTrailingIndex === -1) return 1;
+        return leftTrailingIndex - rightTrailingIndex;
+      }
+      if (left.label === 'IM' && right.label === 'RTC') return -1;
+      if (left.label === 'RTC' && right.label === 'IM') return 1;
+      return 0;
+    })
     .map((group) => ({
       ...group,
       warnings: group.logs.filter((log) => log.level !== 'info').length,
@@ -1500,25 +1535,14 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       >
         {analysisResult ? (
           <Tabs
-            defaultActiveKey={analysisResult.functionGroups[0]?.key || 'api'}
+            defaultActiveKey={analysisResult.functionGroups.find((group) => group.label === 'API')?.key || analysisResult.functionGroups[0]?.key || 'unknown'}
             items={analysisResult.functionGroups.map((group) => ({
               key: group.key,
               label: `${group.label} (${group.logs.length})`,
-              children: group.key === 'api' ? (
+              children: group.label === 'API' ? (
                 renderApiTimelineTable(analysisResult.apiTimeline)
               ) : (
                 <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                  <Table
-                    size="small"
-                    bordered
-                    rowKey="event"
-                    dataSource={group.eventCounts}
-                    pagination={false}
-                    columns={[
-                      { title: '事件', dataIndex: 'event' },
-                      { title: '次数', dataIndex: 'count', width: 100 },
-                    ]}
-                  />
                   <Table
                     size="small"
                     bordered
