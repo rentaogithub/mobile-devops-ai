@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input, Select } from 'antd';
 import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons';
@@ -38,6 +38,7 @@ export default function HistoryPage() {
   const [activeTab, setActiveTab] = useState('log'); // 当前激活的标签
   const [queryText, setQueryText] = useState('');
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
+  const openedUrlHistoryIdRef = useRef<number | null>(null);
   const isAdmin = authUtils.isAdmin();
 
   // 从 localStorage 获取保存的 OpenAI API Key
@@ -54,8 +55,12 @@ export default function HistoryPage() {
     const idParam = searchParams.get('id');
     if (idParam && historyData.length > 0) {
       const id = parseInt(idParam, 10);
+      if (openedUrlHistoryIdRef.current === id) {
+        return;
+      }
       const record = historyData.find(r => r.id === id);
       if (record) {
+        openedUrlHistoryIdRef.current = id;
         handleViewDetail(record);
         // 清除 URL 参数，避免刷新时重复打开
         // setSearchParams({});
@@ -115,9 +120,12 @@ export default function HistoryPage() {
   };
 
   const handleViewDetail = async (record: HistoryRecord) => {
+    const isOpeningDifferentRecord = !detailModalVisible || selectedRecord?.id !== record.id;
     setSelectedRecord(record);
     setDetailModalVisible(true);
-    setActiveTab('log'); // 重置为日志标签
+    if (isOpeningDifferentRecord) {
+      setActiveTab(record.aiAnalysis ? 'analysis' : 'log');
+    }
 
     try {
       const response = await historyApi.detail(record.id);
@@ -134,6 +142,7 @@ export default function HistoryPage() {
 
   const handleCloseDetail = () => {
     setDetailModalVisible(false);
+    openedUrlHistoryIdRef.current = null;
     // 清除 URL 参数
     if (searchParams.get('id')) {
       setSearchParams({});
