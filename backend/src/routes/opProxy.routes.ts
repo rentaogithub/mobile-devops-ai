@@ -6,7 +6,7 @@ import https from 'https';
 import path from 'path';
 import { URL } from 'url';
 import logger from '../utils/logger';
-import { buildOpCookieHeader, getOpAccessToken, updateOpAccessToken, updateOpCookieJar } from '../services/OpCookieJar';
+import { buildOpCookieHeader, clearOpAccessToken, getOpAccessToken, updateOpAccessToken, updateOpCookieJar } from '../services/OpCookieJar';
 
 const router = Router();
 const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
@@ -173,7 +173,8 @@ function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string>
     updateOpAccessToken(requestAccessToken);
   }
 
-  const accessToken = requestAccessToken || getOpAccessToken();
+  const skipSavedAccessToken = pickHeader(req, 'x-op-skip-access-token') === '1';
+  const accessToken = requestAccessToken || (skipSavedAccessToken ? undefined : getOpAccessToken());
   if (accessToken && !headers['x-access-token']) {
     headers['x-access-token'] = accessToken;
   }
@@ -198,19 +199,77 @@ function buildProxyHeaders(req: Request, targetURL: URL): Record<string, string>
 
 function buildOpAuthBootstrapScript(): string {
   const accessToken = getOpAccessToken();
-  if (!accessToken) {
-    return '';
-  }
 
   return `<script>
 (function () {
-  var token = ${JSON.stringify(accessToken)};
-  var keys = ['Access-Token', 'access-token', 'x-access-token', 'X-Access-Token', 'token', 'OP_TOKEN'];
+  var savedToken = ${JSON.stringify(accessToken || '')};
+  var keys = [
+    'Access-Token',
+    'access-token',
+    'x-access-token',
+    'X-Access-Token',
+    'OP_TOKEN',
+    'pro__Access-Token',
+    'pro__access-token',
+    'pro__x-access-token'
+  ];
+  function parseStoredToken(raw) {
+    if (!raw) return '';
+    try {
+      var parsed = JSON.parse(raw);
+      if (typeof parsed === 'string') return parsed;
+      if (parsed && typeof parsed.value === 'string') {
+        if (parsed.expire && Number(parsed.expire) <= Date.now()) return '';
+        return parsed.value;
+      }
+      if (parsed && typeof parsed.content === 'string') return parsed.content;
+      if (parsed && typeof parsed.token === 'string') return parsed.token;
+    } catch (e) {
+      return raw;
+    }
+    return '';
+  }
+  function findToken() {
+    for (var i = 0; i < keys.length; i += 1) {
+      var key = keys[i];
+      var token = parseStoredToken(window.localStorage.getItem(key) || window.sessionStorage.getItem(key));
+      if (token && token.length >= 16) return token;
+    }
+    for (var j = 0; j < window.localStorage.length; j += 1) {
+      var storageKey = window.localStorage.key(j);
+      if (!storageKey || !/(^|__)access[-_]?token$/i.test(storageKey)) continue;
+      var storageToken = parseStoredToken(window.localStorage.getItem(storageKey));
+      if (storageToken && storageToken.length >= 16) return storageToken;
+    }
+    return '';
+  }
+  function saveToken(token) {
+    if (!token) return;
+    var value = JSON.stringify({ value: token, expire: Date.now() + 7 * 24 * 60 * 60 * 1000 });
+    try {
+      window.localStorage.setItem('Access-Token', token);
+      window.sessionStorage.setItem('Access-Token', token);
+      window.localStorage.setItem('pro__Access-Token', value);
+      window.sessionStorage.setItem('pro__Access-Token', value);
+    } catch (e) {}
+  }
+  function syncToken(token) {
+    if (!token) return;
+    try {
+      window.fetch('/api/op-auth/sync', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: token }),
+        credentials: 'same-origin'
+      }).catch(function () {});
+    } catch (e) {}
+  }
   try {
-    keys.forEach(function (key) {
-      window.localStorage.setItem(key, token);
-      window.sessionStorage.setItem(key, token);
-    });
+    saveToken(savedToken);
+    syncToken(findToken() || savedToken);
+    window.setInterval(function () {
+      syncToken(findToken());
+    }, 5000);
   } catch (e) {}
 })();
 </script>`;
@@ -293,7 +352,12 @@ function rewriteJSONBody(body: string, req: Request): string {
   const proxyBaseURL = `${req.protocol}://${req.get('host') || ''}/op`;
   const targetPattern = new RegExp(target.origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
   try {
-    const token = findTokenInPayload(JSON.parse(body));
+    const payload = JSON.parse(body);
+    const message = `${payload?.message || ''} ${payload?.error || ''}`;
+    if (/token.*失效|登录.*失效|重新登录/i.test(message)) {
+      clearOpAccessToken();
+    }
+    const token = findTokenInPayload(payload);
     if (token) {
       updateOpAccessToken(token);
     }

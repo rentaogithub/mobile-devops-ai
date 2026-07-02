@@ -30,6 +30,7 @@ import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
 import { browserLogWebSocketService } from './services/BrowserLogWebSocketService';
+import { getOpAccessToken, updateOpAccessToken } from './services/OpCookieJar';
 import logger from './utils/logger';
 
 const app = express();
@@ -70,6 +71,25 @@ app.use((req, res, next) => {
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', database: 'connected' });
+});
+
+app.post('/api/op-auth/sync', (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  if (!token || token.length < 16) {
+    res.status(400).json({ success: false, error: '缺少有效 OP token' });
+    return;
+  }
+  updateOpAccessToken(token);
+  res.json({ success: true });
+});
+
+app.get('/api/op-auth/status', (_req, res) => {
+  const token = getOpAccessToken();
+  res.json({
+    success: true,
+    hasToken: Boolean(token),
+    tokenUpdated: Boolean(token),
+  });
 });
 
 const backendPublic = path.join(__dirname, '../public');

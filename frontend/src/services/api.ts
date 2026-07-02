@@ -277,52 +277,68 @@ export interface FeedbackLogFileContent {
   rows: FeedbackLogLine[];
 }
 
-const getOpAccessToken = () => {
+const parseStoredOpToken = (raw: string | null): string => {
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'string') return parsed;
+    if (typeof parsed?.value === 'string') {
+      if (parsed.expire && Number(parsed.expire) <= Date.now()) return '';
+      return parsed.value;
+    }
+    if (typeof parsed?.content === 'string') return parsed.content;
+    if (typeof parsed?.token === 'string') return parsed.token;
+  } catch {
+    return raw;
+  }
+  return '';
+};
+
+const getCurrentOpAccessToken = (): string => {
   const tokenKeys = [
     'Access-Token',
+    'access-token',
     'x-access-token',
     'X-Access-Token',
-    'token',
     'OP_TOKEN',
+    'pro__Access-Token',
+    'pro__access-token',
+    'pro__x-access-token',
   ];
 
   for (const key of tokenKeys) {
-    const value = localStorage.getItem(key) || sessionStorage.getItem(key);
-    if (value) {
-      return value;
-    }
+    const token = parseStoredOpToken(localStorage.getItem(key) || sessionStorage.getItem(key));
+    if (token && token.length >= 16) return token;
   }
 
-  for (let i = 0; i < localStorage.length; i += 1) {
-    const key = localStorage.key(i);
-    if (!key || !/access.?token|token/i.test(key)) {
-      continue;
-    }
-    const value = localStorage.getItem(key);
-    if (!value) {
-      continue;
-    }
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === 'string') {
-        return parsed;
-      }
-      if (typeof parsed?.value === 'string') {
-        return parsed.value;
-      }
-      if (typeof parsed?.content === 'string') {
-        return parsed.content;
-      }
-    } catch {
-      return value;
-    }
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key || !/(^|__)access[-_]?token$/i.test(key)) continue;
+    const token = parseStoredOpToken(localStorage.getItem(key));
+    if (token && token.length >= 16) return token;
   }
 
   return '';
 };
 
+const syncCurrentOpAccessToken = async (): Promise<string> => {
+  const token = getCurrentOpAccessToken();
+  if (!token) return '';
+  await axios.post('/api/op-auth/sync', { token }, { timeout: 10000 }).catch(() => {});
+  return token;
+};
+
+const toOpErrorMessage = (error: any, fallback: string): string => {
+  const payload = error?.response?.data || error;
+  if (typeof payload === 'string') {
+    return payload || fallback;
+  }
+  return payload?.message || payload?.error || error?.message || fallback;
+};
+
 export const opUserApi = {
   list: async (searchkey: string, pageNo = 1, pageSize = 10): Promise<OpUserListResult> => {
+    await syncCurrentOpAccessToken();
     const response = await axios.get('/jeecg-boot/user/tUser/list', {
       params: {
         _t: Math.floor(Date.now() / 1000),
@@ -332,9 +348,6 @@ export const opUserApi = {
         field: 'id,,action,userId,nickName,telNum,email,nnNumber,userType_dictText,status_dictText,registerCanal,updateBy,updaeTime,createTime',
         pageNo,
         pageSize,
-      },
-      headers: {
-        ...(getOpAccessToken() ? { 'x-access-token': getOpAccessToken() } : {}),
       },
       timeout: 60000,
     });
@@ -362,25 +375,28 @@ export const opUserApi = {
     };
   },
   feedbackLogs: async (uid: string | number, pageNo = 1, pageSize = 10): Promise<OpUserListResult & { records: OpFeedbackLogInfo[] }> => {
-    const response = await axios.get('/jeecg-boot/crash_log/list', {
-      params: {
-        _t: Math.floor(Date.now() / 1000),
-        type: 36,
-        query: uid,
-        reqChannel: 1,
-        column: 'createTime',
-        order: 'desc',
-        field: 'id,,action,userId,type,reqChannel_dictText,version,crashLogUrl,undefined,crashTime,createTime',
-        pageNo,
-        pageSize,
-        queryParam: '',
-        page: pageNo - 1,
-      },
-      headers: {
-        ...(getOpAccessToken() ? { 'x-access-token': getOpAccessToken() } : {}),
-      },
-      timeout: 60000,
-    });
+    await syncCurrentOpAccessToken();
+    let response;
+    try {
+      response = await axios.get('/jeecg-boot/crash_log/list', {
+        params: {
+          _t: Math.floor(Date.now() / 1000),
+          type: 36,
+          query: uid,
+          reqChannel: 1,
+          column: 'createTime',
+          order: 'desc',
+          field: 'id,,action,userId,type,reqChannel_dictText,version,crashLogUrl,crashTime,createTime',
+          pageNo,
+          pageSize,
+          queryParam: '',
+          page: pageNo - 1,
+        },
+        timeout: 60000,
+      });
+    } catch (error: any) {
+      throw new Error(toOpErrorMessage(error, '查询反馈日志失败'));
+    }
 
     const payload = response.data;
     if (

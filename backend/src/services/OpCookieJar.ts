@@ -226,6 +226,11 @@ export function getOpAccessToken(): string | undefined {
   return opAuth.accessToken;
 }
 
+export function clearOpAccessToken() {
+  opAuth = {};
+  persistOpAuth();
+}
+
 export function clearOpCookieJar() {
   opSessionCookies.clear();
   opAuth = {};
