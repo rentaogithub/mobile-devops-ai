@@ -26,6 +26,7 @@ import sonicProxyRoutes from './routes/sonicProxy.routes';
 import opProxyRoutes from './routes/opProxy.routes';
 import userQueryRecordsRoutes from './routes/userQueryRecords.routes';
 import feedbackLogRoutes from './routes/feedbackLog.routes';
+import accessStatsRoutes from './routes/accessStats.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -35,6 +36,8 @@ import logger from './utils/logger';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
+
+app.set('trust proxy', true);
 
 // 初始化数据库
 initializeDatabase();
@@ -189,6 +192,7 @@ app.use('/api/watermark', authMiddleware, watermarkRoutes);
 app.use('/api/sentry-analysis', sentryAnalysisRoutes);
 app.use('/api/user-query-records', userQueryRecordsRoutes);
 app.use('/api/feedback-log', feedbackLogRoutes);
+app.use('/api/access-stats', accessStatsRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

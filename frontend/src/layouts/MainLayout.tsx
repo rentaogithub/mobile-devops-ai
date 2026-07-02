@@ -10,6 +10,7 @@ import {
   ToolOutlined,
   LogoutOutlined,
   CrownOutlined,
+  BarChartOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 
@@ -82,6 +83,11 @@ export default function MainLayout() {
       icon: <NodeIndexOutlined />,
       label: '路由管理',
     },
+    ...(isAdmin ? [{
+      key: '/access-stats',
+      icon: <BarChartOutlined />,
+      label: '访问统计',
+    }] : []),
   ];
 
   const handleLogin = () => {

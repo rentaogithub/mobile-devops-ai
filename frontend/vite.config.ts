@@ -69,6 +69,7 @@ export default defineConfig(async () => {
           changeOrigin: true,
           secure: false,
           ws: true,
+          xfwd: true,
           timeout: 600000, // 10分钟超时
         },
         '/install-cocoapods-podx.sh': {

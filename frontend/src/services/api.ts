@@ -239,6 +239,37 @@ export interface UserQueryRecord extends OpUserInfo {
   lastQueryAt: string;
 }
 
+export interface ServiceAccessVisitor {
+  visitorId: string;
+  role: 'admin' | 'user' | string;
+  ip: string;
+  accessHost?: string;
+  userAgent: string;
+  firstPath: string;
+  lastPath: string;
+  firstSeen: string;
+  lastSeen: string;
+  visitCount: number;
+}
+
+export interface ServiceAccessPathStat {
+  path: string;
+  visitors: number;
+  visits: number;
+}
+
+export interface ServiceAccessSummary {
+  totals: {
+    totalVisitors: number;
+    totalVisits: number;
+    adminVisitors: number;
+    todayVisitors: number;
+    todayVisits: number;
+  };
+  recentVisitors: ServiceAccessVisitor[];
+  topPaths: ServiceAccessPathStat[];
+}
+
 export interface OpFeedbackLogInfo {
   id?: string;
   userId?: string | number;
@@ -501,6 +532,40 @@ export const userQueryRecordApi = {
   clear: async (): Promise<UserQueryRecord[]> => {
     const response = await api.delete<ApiResponse<UserQueryRecord[]>>('/user-query-records');
     return response.data.data || [];
+  },
+};
+
+const getServiceVisitorId = (): string => {
+  const key = 'service_access_visitor_id';
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const nextId = `visitor_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  localStorage.setItem(key, nextId);
+  return nextId;
+};
+
+export const accessStatsApi = {
+  track: async (path: string): Promise<void> => {
+    await api.post('/access-stats/track', {
+      visitorId: getServiceVisitorId(),
+      path,
+      isAdmin: authUtils.isAdmin(),
+      accessHost: window.location.hostname,
+    }).catch(() => {});
+  },
+  summary: async (): Promise<ServiceAccessSummary> => {
+    const response = await api.get<ApiResponse<ServiceAccessSummary>>('/access-stats/summary');
+    return response.data.data || {
+      totals: {
+        totalVisitors: 0,
+        totalVisits: 0,
+        adminVisitors: 0,
+        todayVisitors: 0,
+        todayVisits: 0,
+      },
+      recentVisitors: [],
+      topPaths: [],
+    };
   },
 };
 

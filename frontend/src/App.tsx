@@ -1,6 +1,7 @@
 import { ConfigProvider, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import HomePage from './pages/HomePage';
 import SymbolicatePage from './pages/SymbolicatePage';
@@ -14,13 +15,25 @@ import LogsPairPage from './pages/LogsPairPage';
 import RoutesPage from './pages/RoutesPage';
 import LoginPage from './pages/LoginPage';
 import SentryServicePage from './pages/SentryServicePage';
+import AccessStatsPage from './pages/AccessStatsPage';
 import { authUtils } from './utils/auth';
+import { accessStatsApi } from './services/api';
 
 message.config({
   top: 80,
   duration: 3,
   maxCount: 3,
 });
+
+function AccessTracker() {
+  const location = useLocation();
+
+  useEffect(() => {
+    accessStatsApi.track(`${location.pathname}${location.search}`);
+  }, [location.pathname, location.search]);
+
+  return null;
+}
 
 function App() {
   const handleLogin = (password: string, isAdmin: boolean) => {
@@ -31,6 +44,7 @@ function App() {
   return (
     <ConfigProvider locale={zhCN}>
       <BrowserRouter>
+        <AccessTracker />
         <Routes>
           <Route path="/" element={<MainLayout />}>
             <Route index element={<HomePage />} />
@@ -51,6 +65,8 @@ function App() {
             <Route path="devops" element={<DevOpsPage />} />
             {/* 路由管理 */}
             <Route path="routes" element={<RoutesPage />} />
+            {/* 访问统计 */}
+            <Route path="access-stats" element={<AccessStatsPage />} />
           </Route>
           <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
         </Routes>
