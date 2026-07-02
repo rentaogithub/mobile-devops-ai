@@ -22,7 +22,6 @@ const { Title, Text, Paragraph } = Typography;
 const { TextArea, Search } = Input;
 
 const SENTRY_SERVICE_URL = '/sentry-service';
-const SENTRY_ORIGIN_URL = 'http://172.31.2.239:9000';
 const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved !release:"10.0.0"';
 const TOP_PERIOD = '7d';
@@ -103,21 +102,21 @@ function toLocalIssueURL(issue?: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
   return issueId ? `${SENTRY_SERVICE_URL}?issue=${encodeURIComponent(issueId)}` : SENTRY_SERVICE_URL;
 }
 
-function toSentryIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink'>) {
+function toSentryProxyIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink'>) {
   if (issue.permalink) {
     try {
       const url = new URL(issue.permalink);
       const publicPath = url.pathname.replace(/^\/sentry(?=\/)/, '');
-      return `${SENTRY_ORIGIN_URL}${publicPath}${url.search}${url.hash}`;
+      return `${publicPath}${url.search}${url.hash}`;
     } catch {
       if (issue.permalink.startsWith('/')) {
         const publicPath = issue.permalink.replace(/^\/sentry(?=\/)/, '');
-        return `${SENTRY_ORIGIN_URL}${publicPath}`;
+        return publicPath;
       }
     }
   }
 
-  return `${SENTRY_ORIGIN_URL}/organizations/sentry/issues/${encodeURIComponent(issue.id)}/?project=6&query=&referrer=project-issue-stream`;
+  return `/organizations/sentry/issues/${encodeURIComponent(issue.id)}/?project=6&query=&referrer=project-issue-stream`;
 }
 
 function getIssueTime(issue: SentryIssueSummary) {
@@ -295,6 +294,9 @@ export default function SentryServicePage() {
   const [lookupValue, setLookupValue] = useState('');
   const [lookupQuery, setLookupQuery] = useState('');
   const [currentIssue, setCurrentIssue] = useState<CurrentSentryIssue | null>(null);
+  const [sentryDetailModalOpen, setSentryDetailModalOpen] = useState(false);
+  const [sentryDetailIssue, setSentryDetailIssue] = useState<SentryIssueSummary | null>(null);
+  const [sentryDetailFrameKey, setSentryDetailFrameKey] = useState(0);
   const [analysisModalOpen, setAnalysisModalOpen] = useState(false);
   const [analysisTargetIssue, setAnalysisTargetIssue] = useState<SentryIssueSummary | null>(null);
   const [analysisResult, setAnalysisResult] = useState<SentrySymbolicateAnalyzeResult | null>(null);
@@ -577,9 +579,11 @@ export default function SentryServicePage() {
     updateCurrentIssue({
       id: issue.id,
       title: issue.title || issue.shortId || issue.id,
-      permalink: toLocalIssueURL(issue),
+      permalink: toSentryProxyIssueURL(issue),
     });
-    window.open(toSentryIssueURL(issue), '_blank', 'noopener,noreferrer');
+    setSentryDetailIssue(issue);
+    setSentryDetailFrameKey((key) => key + 1);
+    setSentryDetailModalOpen(true);
   };
 
   const handleShowOverview = () => {
@@ -1050,6 +1054,11 @@ export default function SentryServicePage() {
     );
   };
 
+  const sentryDetailURL = sentryDetailIssue ? toSentryProxyIssueURL(sentryDetailIssue) : '';
+  const sentryDetailTitle = sentryDetailIssue
+    ? `${sentryDetailIssue.shortId || sentryDetailIssue.id} - ${sentryDetailIssue.title || '原始 Sentry 详情'}`
+    : '原始 Sentry 详情';
+
   return (
     <div>
       <Space align="center" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -1111,6 +1120,7 @@ export default function SentryServicePage() {
             key={overviewFrameKey}
             src={buildOverviewURL(overviewFrameKey)}
             title="Sentry NNIOS 总览"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-downloads"
             style={{
               width: '100%',
               height: '100%',
@@ -1264,6 +1274,35 @@ export default function SentryServicePage() {
           </Spin>
         </Card>
       )}
+
+      <Modal
+        title={`原始 Sentry 详情 - ${sentryDetailIssue?.shortId || sentryDetailIssue?.id || ''}`}
+        open={sentryDetailModalOpen}
+        onCancel={() => setSentryDetailModalOpen(false)}
+        width="92vw"
+        style={{ top: 24 }}
+        styles={{ body: { padding: 0, height: 'calc(100vh - 150px)', minHeight: 560 } }}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setSentryDetailModalOpen(false)}>
+            关闭
+          </Button>,
+        ]}
+      >
+        {sentryDetailURL && (
+          <iframe
+            key={`${sentryDetailFrameKey}-${sentryDetailURL}`}
+            src={sentryDetailURL}
+            title={sentryDetailTitle}
+            sandbox="allow-same-origin allow-scripts allow-forms allow-downloads"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 0,
+              display: 'block',
+            }}
+          />
+        )}
+      </Modal>
 
       <Modal
         title={`符号化结果 - ${analysisTitle}`}

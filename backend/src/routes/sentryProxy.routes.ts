@@ -121,16 +121,13 @@ function injectSentryIssueBridge(body: string): string {
 }
 
 function rewriteLocationHeader(location: string): string {
-  if (location.startsWith(SENTRY_TARGET)) {
-    const target = new URL(location);
-    return `/sentry${target.pathname}${target.search}${target.hash}`;
+  const normalizedLocation = location;
+  if (normalizedLocation.startsWith(SENTRY_TARGET)) {
+    const target = new URL(normalizedLocation);
+    return `${target.pathname}${target.search}${target.hash}`;
   }
 
-  if (location.startsWith('/') && !location.startsWith('/sentry/')) {
-    return `/sentry${location}`;
-  }
-
-  return location;
+  return normalizedLocation;
 }
 
 function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
@@ -281,7 +278,8 @@ function isSentryLoginPath(req: Request): boolean {
 }
 
 function buildDefaultProxyPath(): string {
-  return `/sentry${SENTRY_DEFAULT_PATH.startsWith('/') ? SENTRY_DEFAULT_PATH : `/${SENTRY_DEFAULT_PATH}`}`;
+  const defaultPath = SENTRY_DEFAULT_PATH.startsWith('/') ? SENTRY_DEFAULT_PATH : `/${SENTRY_DEFAULT_PATH}`;
+  return defaultPath.replace(/^\/sentry(?=\/)/, '');
 }
 
 router.use(async (req: Request, res: Response) => {
