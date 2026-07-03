@@ -13,6 +13,7 @@ import {
   Tabs,
   Input,
   Modal,
+  Tree,
 } from 'antd';
 import {
   QrcodeOutlined,
@@ -25,12 +26,14 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   FileSearchOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 const MAX_RENDERED_LOG_COUNT = 10000;
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 type ConnectionState = 'idle' | 'qrcode' | 'polling' | 'paired' | 'streaming' | 'error';
 type AppConnectionState = 'unknown' | 'waiting' | 'connected' | 'disconnected';
@@ -70,6 +73,7 @@ interface ApiTimelineRow {
   nntid: string;
   trackId: string;
   parameters: string;
+  responseBody: string;
   requestLine: string;
   responseLine: string;
   fullApi: string;
@@ -209,7 +213,42 @@ function parseFields(fieldsText: string): Record<string, string> {
       : rawValue;
     match = pattern.exec(fieldsText);
   }
+  const response = extractFieldValue(fieldsText, 'response');
+  if (response) {
+    fields.response = response;
+  }
   return fields;
+}
+
+function decodeQuotedFieldValue(value: string): string {
+  return value.replace(/\\"/g, '"');
+}
+
+function extractFieldValue(source: string, fieldName: string): string {
+  if (!source) return '';
+  const startToken = `${fieldName}=`;
+  const startIndex = source.indexOf(startToken);
+  if (startIndex < 0) return '';
+
+  const valueStart = startIndex + startToken.length;
+  if (source[valueStart] !== '"') {
+    const endMatch = source.slice(valueStart).match(/(?=,\s*[A-Za-z_][\w]*=|\})/);
+    const endIndex = endMatch?.index !== undefined ? valueStart + endMatch.index : source.length;
+    return source.slice(valueStart, endIndex).trim();
+  }
+
+  const quotedStart = valueStart + 1;
+  let searchIndex = quotedStart;
+  while (searchIndex < source.length) {
+    const quoteIndex = source.indexOf('"', searchIndex);
+    if (quoteIndex < 0) break;
+    const tail = source.slice(quoteIndex + 1);
+    if (/^\s*(?:,\s*[A-Za-z_][\w]*=|\}\s*$)/.test(tail)) {
+      return decodeQuotedFieldValue(source.slice(quotedStart, quoteIndex));
+    }
+    searchIndex = quoteIndex + 1;
+  }
+  return '';
 }
 
 function normalizeApiKey(api?: string): string {
@@ -231,6 +270,154 @@ function normalizeApiPath(api?: string): string {
     const value = api.replace(/^"|"$/g, '');
     return value.replace(/^https?:\/\/[^/]+/i, '') || value;
   }
+}
+
+function parseJsonValue(value?: string): JsonValue | null {
+  if (!value || value === '-') return '';
+  const candidates = [
+    value,
+    value.replace(/\\\\(?=")/g, '\\'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as JsonValue;
+    } catch {
+      // 尝试下一种转义层级。
+    }
+  }
+  return null;
+}
+
+function formatJsonText(value?: string): string {
+  const parsed = parseJsonValue(value);
+  if (parsed === null) {
+    return '';
+  }
+  try {
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return '';
+  }
+}
+
+function formatJsonPrimitive(value: JsonValue): string {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (value === null) return 'null';
+  return String(value);
+}
+
+function getJsonNodeSummary(value: JsonValue): string {
+  if (Array.isArray(value)) return `Array(${value.length})`;
+  if (value && typeof value === 'object') return `Object(${Object.keys(value).length})`;
+  return formatJsonPrimitive(value);
+}
+
+function buildJsonTreeData(value: JsonValue, keyword: string, key = 'root', label = 'root'): any[] {
+  const lowerKeyword = keyword.trim().toLowerCase();
+  const renderLabel = (nodeLabel: string, nodeValue: JsonValue) => {
+    const valueText = getJsonNodeSummary(nodeValue);
+    const text = `${nodeLabel}: ${valueText}`;
+    return <span>{highlightText(text, lowerKeyword)}</span>;
+  };
+
+  const makeNode = (nodeValue: JsonValue, nodeKey: string, nodeLabel: string): any => {
+    if (Array.isArray(nodeValue)) {
+      return {
+        key: nodeKey,
+        title: renderLabel(nodeLabel, nodeValue),
+        children: nodeValue.map((item, index) => makeNode(item, `${nodeKey}.${index}`, `[${index}]`)),
+      };
+    }
+    if (nodeValue && typeof nodeValue === 'object') {
+      return {
+        key: nodeKey,
+        title: renderLabel(nodeLabel, nodeValue),
+        children: Object.entries(nodeValue).map(([childKey, childValue]) => makeNode(childValue, `${nodeKey}.${childKey}`, childKey)),
+      };
+    }
+    return {
+      key: nodeKey,
+      title: renderLabel(nodeLabel, nodeValue),
+    };
+  };
+
+  return [makeNode(value, key, label)];
+}
+
+function getDefaultExpandedJsonKeys(value: JsonValue, maxDepth = 2, key = 'root', depth = 0): string[] {
+  if (depth >= maxDepth || value === null || typeof value !== 'object') {
+    return [];
+  }
+  const keys = [key];
+  const entries = Array.isArray(value)
+    ? value.map((item, index) => [`${index}`, item] as const)
+    : Object.entries(value);
+  entries.forEach(([childKey, childValue]) => {
+    keys.push(...getDefaultExpandedJsonKeys(childValue, maxDepth, `${key}.${childKey}`, depth + 1));
+  });
+  return keys;
+}
+
+function getMatchedJsonKeys(value: JsonValue, keyword: string, key = 'root', label = 'root'): string[] {
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  if (!normalizedKeyword) return [];
+  const keys = new Set<string>();
+  const walk = (nodeValue: JsonValue, nodeKey: string, nodeLabel: string, ancestors: string[]) => {
+    const text = `${nodeLabel}: ${getJsonNodeSummary(nodeValue)}`.toLowerCase();
+    if (text.includes(normalizedKeyword)) {
+      [...ancestors, nodeKey].forEach((item) => keys.add(item));
+    }
+    if (Array.isArray(nodeValue)) {
+      nodeValue.forEach((item, index) => walk(item, `${nodeKey}.${index}`, `[${index}]`, [...ancestors, nodeKey]));
+    } else if (nodeValue && typeof nodeValue === 'object') {
+      Object.entries(nodeValue).forEach(([childKey, childValue]) => walk(childValue, `${nodeKey}.${childKey}`, childKey, [...ancestors, nodeKey]));
+    }
+  };
+  walk(value, key, label, []);
+  return Array.from(keys);
+}
+
+function removeResponseFieldFromLogLine(line: string): string {
+  if (!line || line === '-') return line;
+  return line
+    .replace(/,\s*response="(?:\\.|[^"\\])*"(?=,\s*[A-Za-z_][\w]*=|\})/g, '')
+    .replace(/\sresponse="(?:\\.|[^"\\])*",\s*/g, ' ')
+    .replace(/\sresponse="(?:\\.|[^"\\])*"(?=\})/g, '');
+}
+
+function extractResponseFieldFromLogLine(line: string): string {
+  if (!line || line === '-') return '';
+  return extractFieldValue(line, 'response');
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 回退到 textarea 复制。
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'true');
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-9999px';
+  textArea.style.top = '0';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textArea);
+  }
+  return copied;
 }
 
 function parseBusinessLogLine(line: string): ParsedBusinessLog {
@@ -332,6 +519,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       nntid: nntid || '-',
       trackId: response?.fields.trackId || '-',
       parameters: request.fields.parameters || '-',
+      responseBody: response?.fields.response || extractResponseFieldFromLogLine(response?.line || '') || '-',
       requestLine: request.line,
       responseLine: response?.line || '-',
       fullApi: request.fields.api || response?.fields.api || '-',
@@ -353,6 +541,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       nntid: response.fields.nntid || '-',
       trackId: response.fields.trackId || '-',
       parameters: '-',
+      responseBody: response.fields.response || extractResponseFieldFromLogLine(response.line) || '-',
       requestLine: '-',
       responseLine: response.line,
       fullApi: response.fields.api || '-',
@@ -456,6 +645,8 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<BusinessLogAnalysis | null>(null);
+  const [apiResponseJsonSearchText, setApiResponseJsonSearchText] = useState('');
+  const [apiSearchText, setApiSearchText] = useState('');
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<PairingSessionData | null>(null);
@@ -1055,25 +1246,115 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     ? activeLogs.filter((log) => `${log.message}\n${log.raw}`.toLowerCase().includes(normalizedLogSearchText))
     : activeLogs;
 
-  const renderApiTimelineTable = (dataSource: ApiTimelineRow[], pageSize = 20) => (
-    <Table
-      size="small"
-      bordered
-      rowKey="key"
-      dataSource={dataSource}
-      pagination={dataSource.length > pageSize ? { pageSize } : false}
+  const renderApiTimelineTable = (dataSource: ApiTimelineRow[], pageSize = 20) => {
+    const normalizedApiSearchText = apiSearchText.trim().toLowerCase();
+    const filteredDataSource = normalizedApiSearchText
+      ? dataSource.filter((record) => `${record.fullApi}\n${normalizeApiPath(record.fullApi)}\n${record.api}`.toLowerCase().includes(normalizedApiSearchText))
+      : dataSource;
+
+    return (
+      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+        <Space>
+          <Input.Search
+            allowClear
+            placeholder="检索接口"
+            value={apiSearchText}
+            onChange={(event) => setApiSearchText(event.target.value)}
+            style={{ width: 360 }}
+          />
+          {normalizedApiSearchText && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              命中 {filteredDataSource.length} 条
+            </Text>
+          )}
+        </Space>
+        <Table
+          size="small"
+          bordered
+          rowKey="key"
+          dataSource={filteredDataSource}
+          pagination={filteredDataSource.length > pageSize ? { pageSize } : false}
       scroll={{ x: 900 }}
       expandable={{
-        expandedRowRender: (record) => (
-          <Space direction="vertical" size="small" style={{ width: '100%' }}>
-            <Text type="secondary">完整接口：{record.fullApi}</Text>
-            <Text type="secondary">参数：{record.parameters}</Text>
-            <Text type="secondary">nntid：{record.nntid}</Text>
-            <Text type="secondary">trackId：{record.trackId}</Text>
-            <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{record.requestLine}</Text>
-            <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{record.responseLine}</Text>
-          </Space>
-        ),
+        expandedRowRender: (record) => {
+          const responseBody = record.responseBody || extractResponseFieldFromLogLine(record.responseLine);
+          const parsedResponse = parseJsonValue(responseBody);
+          const formattedResponse = formatJsonText(responseBody);
+          const responseJsonSearchKeyword = apiResponseJsonSearchText.trim();
+          const expandedJsonKeys = parsedResponse && responseJsonSearchKeyword
+            ? getMatchedJsonKeys(parsedResponse, responseJsonSearchKeyword)
+            : parsedResponse
+              ? getDefaultExpandedJsonKeys(parsedResponse)
+              : [];
+          return (
+            <Space direction="vertical" size="small" style={{ width: '100%' }}>
+              <Text type="secondary">完整接口：{record.fullApi}</Text>
+              <Text type="secondary">参数：{record.parameters}</Text>
+              <Text type="secondary">nntid：{record.nntid}</Text>
+              <Text type="secondary">trackId：{record.trackId}</Text>
+              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{record.requestLine}</Text>
+              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{removeResponseFieldFromLogLine(record.responseLine)}</Text>
+              {formattedResponse ? (
+                <div>
+                  <Space style={{ marginBottom: 6 }}>
+                    <Text type="secondary">响应 JSON：</Text>
+                    <Input.Search
+                      allowClear
+                      size="small"
+                      placeholder="检索响应 JSON"
+                      value={apiResponseJsonSearchText}
+                      onChange={(event) => setApiResponseJsonSearchText(event.target.value)}
+                      style={{ width: 240 }}
+                    />
+                    <Button
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={async () => {
+                        const copied = await copyTextToClipboard(formattedResponse);
+                        if (copied) {
+                          message.success('已复制响应 JSON');
+                        } else {
+                          message.error('复制失败，请手动选中复制');
+                        }
+                      }}
+                    >
+                      复制
+                    </Button>
+                  </Space>
+                  <div
+                    style={{
+                      padding: 8,
+                      background: '#f6f8fa',
+                      border: '1px solid #f0f0f0',
+                      borderRadius: 4,
+                      maxHeight: 420,
+                      overflow: 'auto',
+                    }}
+                  >
+                    {parsedResponse ? (
+                      <Tree
+                        key={`${record.key}-${responseJsonSearchKeyword}`}
+                        blockNode
+                        defaultExpandAll={false}
+                        defaultExpandedKeys={expandedJsonKeys}
+                        treeData={buildJsonTreeData(parsedResponse, responseJsonSearchKeyword)}
+                        style={{ background: 'transparent', fontFamily: 'Menlo, Monaco, Consolas, monospace', fontSize: 12 }}
+                      />
+                    ) : (
+                      <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {highlightText(formattedResponse, responseJsonSearchKeyword)}
+                      </pre>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  未采集 response 字段，当前响应日志没有可格式化的 JSON。
+                </Text>
+              )}
+            </Space>
+          );
+        },
       }}
       columns={[
         { title: '请求时间', dataIndex: 'requestTime', width: 150 },
@@ -1099,10 +1380,17 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
             return <Tag color={color}>{text}</Tag>;
           },
         },
-        { title: '接口', dataIndex: 'fullApi', ellipsis: true, render: (value: string) => normalizeApiPath(value) },
+        {
+          title: '接口',
+          dataIndex: 'fullApi',
+          ellipsis: true,
+          render: (value: string) => highlightText(normalizeApiPath(value), apiSearchText.trim()),
+        },
       ]}
-    />
-  );
+        />
+      </Space>
+    );
+  };
 
   return (
     <div>
