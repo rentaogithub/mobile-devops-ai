@@ -1249,7 +1249,20 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const renderApiTimelineTable = (dataSource: ApiTimelineRow[], pageSize = 20) => {
     const normalizedApiSearchText = apiSearchText.trim().toLowerCase();
     const filteredDataSource = normalizedApiSearchText
-      ? dataSource.filter((record) => `${record.fullApi}\n${normalizeApiPath(record.fullApi)}\n${record.api}`.toLowerCase().includes(normalizedApiSearchText))
+      ? dataSource.filter((record) => [
+        record.fullApi,
+        normalizeApiPath(record.fullApi),
+        record.api,
+        record.parameters,
+        record.requestLine,
+        record.responseLine,
+        record.responseBody,
+        formatJsonText(record.responseBody),
+        record.retCode,
+        record.retMsg,
+        record.nntid,
+        record.trackId,
+      ].join('\n').toLowerCase().includes(normalizedApiSearchText))
       : dataSource;
 
     return (
@@ -1257,7 +1270,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
         <Space>
           <Input.Search
             allowClear
-            placeholder="检索接口"
+            placeholder="检索接口 / 日志内容"
             value={apiSearchText}
             onChange={(event) => setApiSearchText(event.target.value)}
             style={{ width: 360 }}
@@ -1292,8 +1305,8 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               <Text type="secondary">参数：{record.parameters}</Text>
               <Text type="secondary">nntid：{record.nntid}</Text>
               <Text type="secondary">trackId：{record.trackId}</Text>
-              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{record.requestLine}</Text>
-              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{removeResponseFieldFromLogLine(record.responseLine)}</Text>
+              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{highlightText(record.requestLine, apiSearchText.trim())}</Text>
+              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{highlightText(removeResponseFieldFromLogLine(record.responseLine), apiSearchText.trim())}</Text>
               {formattedResponse ? (
                 <div>
                   <Space style={{ marginBottom: 6 }}>
