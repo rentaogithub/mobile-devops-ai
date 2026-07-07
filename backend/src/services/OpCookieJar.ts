@@ -13,6 +13,8 @@ type StoredOpAuth = {
   updatedAt?: number;
 };
 
+const OP_AUTH_MAX_AGE_MS = Number(process.env.OP_AUTH_MAX_AGE_MS || 12 * 60 * 60 * 1000);
+
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const COOKIE_JAR_PATH = process.env.OP_COOKIE_JAR_PATH || path.join(DATA_DIR, 'op-cookie-jar.json');
 const OP_AUTH_PATH = process.env.OP_AUTH_PATH || path.join(DATA_DIR, 'op-auth.json');
@@ -151,6 +153,37 @@ function loadOpAuth() {
 loadOpCookieJar();
 loadOpAuth();
 
+function decodeBase64UrlJSON(value: string): any | null {
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function getJwtExpireMs(token: string): number | undefined {
+  const parts = token.split('.');
+  if (parts.length < 2) {
+    return undefined;
+  }
+  const payload = decodeBase64UrlJSON(parts[1]);
+  const exp = Number(payload?.exp);
+  return Number.isFinite(exp) && exp > 0 ? exp * 1000 : undefined;
+}
+
+export function isOpAccessTokenUsable(token = opAuth.accessToken, updatedAt = opAuth.updatedAt): boolean {
+  if (!token) {
+    return false;
+  }
+  const expiresAt = getJwtExpireMs(token);
+  if (expiresAt !== undefined) {
+    return expiresAt > Date.now() + 30 * 1000;
+  }
+  return Boolean(updatedAt) && Date.now() - (updatedAt || 0) < OP_AUTH_MAX_AGE_MS;
+}
+
 export function updateOpCookieJar(setCookie: string | string[] | undefined) {
   if (!setCookie) {
     return;
@@ -211,7 +244,16 @@ export function buildOpCookieHeader(extraCookie?: string): string | undefined {
 
 export function updateOpAccessToken(token: string | undefined) {
   const normalizedToken = token?.trim();
-  if (!normalizedToken || normalizedToken === opAuth.accessToken) {
+  if (!normalizedToken) {
+    return;
+  }
+  if (!isOpAccessTokenUsable(normalizedToken, Date.now())) {
+    if (normalizedToken === opAuth.accessToken) {
+      clearOpAccessToken();
+    }
+    return;
+  }
+  if (normalizedToken === opAuth.accessToken) {
     return;
   }
 
@@ -223,6 +265,10 @@ export function updateOpAccessToken(token: string | undefined) {
 }
 
 export function getOpAccessToken(): string | undefined {
+  if (!isOpAccessTokenUsable()) {
+    clearOpAccessToken();
+    return undefined;
+  }
   return opAuth.accessToken;
 }
 

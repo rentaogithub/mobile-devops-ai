@@ -30,6 +30,7 @@ import {
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
+import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
 const MAX_RENDERED_LOG_COUNT = 10000;
@@ -644,6 +645,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
 
 export default function LogsPairPage({ embedded = false, pairingMode = 'inline' }: LogsPairPageProps = {}) {
   const usePairingModal = pairingMode === 'modal';
+  const isAdmin = authUtils.isAdmin();
   const [state, setState] = useState<ConnectionState>('idle');
   const [session, setSession] = useState<PairingSessionData | null>(null);
   const [pairingStatus, setPairingStatus] = useState<PairingStatusData | null>(null);
@@ -1319,10 +1321,6 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               : [];
           return (
             <Space direction="vertical" size="small" style={{ width: '100%' }}>
-              <Text type="secondary">完整接口：{record.fullApi}</Text>
-              <Text type="secondary">参数：{record.parameters}</Text>
-              <Text type="secondary">nntid：{record.nntid}</Text>
-              <Text type="secondary">trackId：{record.trackId}</Text>
               <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>
                 请求：{record.matchedRequest ? highlightText(record.requestLine, apiSearchText.trim()) : <Tag color="gold">缺少请求日志</Tag>}
               </Text>
@@ -1572,18 +1570,20 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                     >
                       {record.appConnected ? '刷新' : '重连'}
                     </Button>
-                    <Popconfirm
-                      title="移出设备"
-                      description="移出后会断开该设备实时日志连接，确认继续？"
-                      okText="移出"
-                      cancelText="取消"
-                      okButtonProps={{ danger: true }}
-                      onConfirm={() => removeDevice(record)}
-                    >
-                      <Button type="link" size="small" danger icon={<DeleteOutlined />}>
-                        移出
-                      </Button>
-                    </Popconfirm>
+                    {isAdmin ? (
+                      <Popconfirm
+                        title="移出设备"
+                        description="移出后会断开该设备实时日志连接，确认继续？"
+                        okText="移出"
+                        cancelText="取消"
+                        okButtonProps={{ danger: true }}
+                        onConfirm={() => removeDevice(record)}
+                      >
+                        <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                          移出
+                        </Button>
+                      </Popconfirm>
+                    ) : null}
                   </Space>
                 ),
               },

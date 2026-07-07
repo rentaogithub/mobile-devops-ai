@@ -217,17 +217,49 @@ function buildOpAuthBootstrapScript(): string {
     if (!raw) return '';
     try {
       var parsed = JSON.parse(raw);
-      if (typeof parsed === 'string') return parsed;
+      if (typeof parsed === 'string') return isUsableToken(parsed) ? parsed : '';
       if (parsed && typeof parsed.value === 'string') {
         if (parsed.expire && Number(parsed.expire) <= Date.now()) return '';
-        return parsed.value;
+        return isUsableToken(parsed.value) ? parsed.value : '';
       }
-      if (parsed && typeof parsed.content === 'string') return parsed.content;
-      if (parsed && typeof parsed.token === 'string') return parsed.token;
+      if (parsed && typeof parsed.content === 'string') return isUsableToken(parsed.content) ? parsed.content : '';
+      if (parsed && typeof parsed.token === 'string') return isUsableToken(parsed.token) ? parsed.token : '';
     } catch (e) {
-      return raw;
+      return isUsableToken(raw) ? raw : '';
     }
     return '';
+  }
+  function getJwtExpireMs(token) {
+    try {
+      var parts = token.split('.');
+      if (parts.length < 2) return 0;
+      var payload = JSON.parse(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return payload && payload.exp ? Number(payload.exp) * 1000 : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+  function isUsableToken(token) {
+    var jwtExpire = getJwtExpireMs(token);
+    return !jwtExpire || jwtExpire > Date.now() + 30000;
+  }
+  function clearTokens() {
+    try {
+      keys.forEach(function (key) {
+        window.localStorage.removeItem(key);
+        window.sessionStorage.removeItem(key);
+      });
+      for (var i = window.localStorage.length - 1; i >= 0; i -= 1) {
+        var storageKey = window.localStorage.key(i);
+        if (storageKey && /(^|__)access[-_]?token$/i.test(storageKey)) {
+          window.localStorage.removeItem(storageKey);
+        }
+      }
+      window.fetch('/api/op-auth/clear', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
+    } catch (e) {}
+  }
+  function isExpiredMessage(text) {
+    return /token.*失效|登录.*失效|登录已过期|重新登录/i.test(text || '');
   }
   function findToken() {
     for (var i = 0; i < keys.length; i += 1) {
@@ -245,7 +277,12 @@ function buildOpAuthBootstrapScript(): string {
   }
   function saveToken(token) {
     if (!token) return;
-    var value = JSON.stringify({ value: token, expire: Date.now() + 7 * 24 * 60 * 60 * 1000 });
+    var jwtExpire = getJwtExpireMs(token);
+    if (jwtExpire && jwtExpire <= Date.now() + 30000) {
+      clearTokens();
+      return;
+    }
+    var value = JSON.stringify({ value: token, expire: jwtExpire || Date.now() + 12 * 60 * 60 * 1000 });
     try {
       window.localStorage.setItem('Access-Token', token);
       window.sessionStorage.setItem('Access-Token', token);
@@ -261,10 +298,43 @@ function buildOpAuthBootstrapScript(): string {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token: token }),
         credentials: 'same-origin'
+      }).then(function (res) {
+        if (res.status === 401) clearTokens();
       }).catch(function () {});
     } catch (e) {}
   }
+  function patchAuthExpiryHooks() {
+    try {
+      if (window.__nnOpAuthExpiryPatched) return;
+      window.__nnOpAuthExpiryPatched = true;
+      var rawFetch = window.fetch;
+      if (rawFetch) {
+        window.fetch = function () {
+          return rawFetch.apply(this, arguments).then(function (response) {
+            try {
+              response.clone().text().then(function (text) {
+                if (isExpiredMessage(text)) clearTokens();
+              }).catch(function () {});
+            } catch (e) {}
+            return response;
+          });
+        };
+      }
+      var rawSend = window.XMLHttpRequest && window.XMLHttpRequest.prototype.send;
+      if (rawSend) {
+        window.XMLHttpRequest.prototype.send = function () {
+          this.addEventListener('load', function () {
+            try {
+              if (isExpiredMessage(this.responseText)) clearTokens();
+            } catch (e) {}
+          });
+          return rawSend.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+  }
   try {
+    patchAuthExpiryHooks();
     saveToken(savedToken);
     syncToken(findToken() || savedToken);
     window.setInterval(function () {

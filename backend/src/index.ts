@@ -31,7 +31,7 @@ import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
 import { browserLogWebSocketService } from './services/BrowserLogWebSocketService';
-import { getOpAccessToken, updateOpAccessToken } from './services/OpCookieJar';
+import { clearOpAccessToken, getOpAccessToken, isOpAccessTokenUsable, updateOpAccessToken } from './services/OpCookieJar';
 import logger from './utils/logger';
 
 const app = express();
@@ -82,7 +82,16 @@ app.post('/api/op-auth/sync', (req, res) => {
     res.status(400).json({ success: false, error: '缺少有效 OP token' });
     return;
   }
+  if (!isOpAccessTokenUsable(token, Date.now())) {
+    res.status(401).json({ success: false, error: 'OP token 已过期' });
+    return;
+  }
   updateOpAccessToken(token);
+  res.json({ success: true });
+});
+
+app.post('/api/op-auth/clear', (_req, res) => {
+  clearOpAccessToken();
   res.json({ success: true });
 });
 

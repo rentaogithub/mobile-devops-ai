@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getDatabase } from '../database';
+import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -174,7 +175,7 @@ router.post('/batch', (req: Request, res: Response) => {
   }
 });
 
-router.put('/:recordKey/remark', (req: Request, res: Response) => {
+router.put('/:recordKey/remark', adminMiddleware, (req: Request, res: Response) => {
   try {
     ensureTable();
     const recordKey = req.params.recordKey;
@@ -199,7 +200,7 @@ router.put('/:recordKey/remark', (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:recordKey', (req: Request, res: Response) => {
+router.delete('/:recordKey', adminMiddleware, (req: Request, res: Response) => {
   try {
     ensureTable();
     getDatabase().prepare('DELETE FROM user_query_records WHERE record_key = ?').run(req.params.recordKey);
@@ -210,7 +211,7 @@ router.delete('/:recordKey', (req: Request, res: Response) => {
   }
 });
 
-router.delete('/', (_req: Request, res: Response) => {
+router.delete('/', adminMiddleware, (_req: Request, res: Response) => {
   try {
     ensureTable();
     getDatabase().prepare('DELETE FROM user_query_records').run();

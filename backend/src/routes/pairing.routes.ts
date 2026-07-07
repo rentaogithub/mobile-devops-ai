@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import os from 'os';
 import pairingService from '../services/PairingService';
 import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
+import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -170,7 +171,7 @@ router.get('/devices', (req: Request, res: Response) => {
  * DELETE /api/pairing/:pairingId
  * 删除配对会话
  */
-router.delete('/:pairingId', (req: Request, res: Response) => {
+router.delete('/:pairingId', adminMiddleware, (req: Request, res: Response) => {
   try {
     const { pairingId } = req.params;
     logger.info(`[Pairing] 删除配对会话: pairingId=${pairingId}`);

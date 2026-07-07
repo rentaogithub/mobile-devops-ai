@@ -23,6 +23,7 @@ import {
   watermarkApi,
   WatermarkDecodeResult,
 } from '../services/api';
+import { authUtils } from '../utils/auth';
 import LogsPairPage from './LogsPairPage';
 
 const { Title, Paragraph } = Typography;
@@ -80,6 +81,7 @@ const highlightText = (value: string, keyword: string) => {
 };
 
 export default function LogsPage() {
+  const isAdmin = authUtils.isAdmin();
   const [watermarkDeep, setWatermarkDeep] = useState(true);
   const [watermarkLoading, setWatermarkLoading] = useState(false);
   const [watermarkResult, setWatermarkResult] = useState<WatermarkDecodeResult | null>(null);
@@ -395,14 +397,16 @@ export default function LogsPage() {
           <Descriptions.Item label="注册渠道">{record.registerCanal || '-'}</Descriptions.Item>
           <Descriptions.Item label="创建时间">{record.createTime || '-'}</Descriptions.Item>
           <Descriptions.Item label="备注" span={3}>
-            <Input
-              allowClear
-              placeholder="添加备注"
-              value={stored?.remark || ''}
-              onChange={(event) => changeUserRemarkLocal(record, event.target.value)}
-              onBlur={(event) => updateUserRemark(record, event.target.value)}
-              style={{ maxWidth: 260 }}
-            />
+            {isAdmin ? (
+              <Input
+                allowClear
+                placeholder="添加备注"
+                value={stored?.remark || ''}
+                onChange={(event) => changeUserRemarkLocal(record, event.target.value)}
+                onBlur={(event) => updateUserRemark(record, event.target.value)}
+                style={{ maxWidth: 260 }}
+              />
+            ) : (stored?.remark || '-')}
           </Descriptions.Item>
         </Descriptions>
       </Space>
@@ -455,17 +459,19 @@ export default function LogsPage() {
       key: 'remark',
       width: 170,
       render: (_: string, record: UserQueryRecord) => (
-        <Input
-          allowClear
-          placeholder="添加备注"
-          value={record.remark || ''}
-          onChange={(event) => changeUserRemarkLocal(record, event.target.value)}
-          onBlur={(event) => updateUserRemark(record, event.target.value)}
-          style={{ width: 150 }}
-        />
+        isAdmin ? (
+          <Input
+            allowClear
+            placeholder="添加备注"
+            value={record.remark || ''}
+            onChange={(event) => changeUserRemarkLocal(record, event.target.value)}
+            onBlur={(event) => updateUserRemark(record, event.target.value)}
+            style={{ width: 150 }}
+          />
+        ) : (record.remark || '-')
       ),
     },
-    {
+    ...(isAdmin ? [{
       title: '操作',
       key: 'action',
       width: 90,
@@ -474,7 +480,7 @@ export default function LogsPage() {
           删除
         </Button>
       ),
-    },
+    }] : []),
   ];
 
   const feedbackLogColumns = [
@@ -586,9 +592,11 @@ export default function LogsPage() {
                             <Typography.Title level={5} style={{ margin: 0 }}>
                               查询用户记录
                             </Typography.Title>
-                            <Button size="small" disabled={userQueryRecords.length === 0} onClick={clearUserQueryRecords}>
-                              清空记录
-                            </Button>
+                            {isAdmin ? (
+                              <Button size="small" disabled={userQueryRecords.length === 0} onClick={clearUserQueryRecords}>
+                                清空记录
+                              </Button>
+                            ) : null}
                           </div>
                           <Table<UserQueryRecord>
                             bordered
