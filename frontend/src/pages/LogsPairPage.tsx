@@ -77,6 +77,7 @@ interface ApiTimelineRow {
   requestLine: string;
   responseLine: string;
   fullApi: string;
+  matchedRequest: boolean;
   status: 'success' | 'failed' | 'pending';
 }
 
@@ -272,8 +273,23 @@ function normalizeApiPath(api?: string): string {
   }
 }
 
+function parseLogTimeValue(time: string): number {
+  const match = time.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/);
+  if (!match) return 0;
+  const [, month, day, hour, minute, second, millisecond = '0'] = match;
+  return new Date(
+    2000,
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+    Number(millisecond.padEnd(3, '0'))
+  ).getTime();
+}
+
 function parseJsonValue(value?: string): JsonValue | null {
-  if (!value || value === '-') return '';
+  if (!value || value === '-') return null;
   const candidates = [
     value,
     value.replace(/\\\\(?=")/g, '\\'),
@@ -523,6 +539,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       requestLine: request.line,
       responseLine: response?.line || '-',
       fullApi: request.fields.api || response?.fields.api || '-',
+      matchedRequest: true,
       status,
     };
   });
@@ -535,7 +552,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       requestTime: response.time || '-',
       responseTime: response.time || '-',
       api: normalizeApiKey(response.fields.api),
-      costMs: response.fields.costMs ? Number(response.fields.costMs) : null,
+      costMs: null,
       retCode: retCode || '-',
       retMsg: response.fields.retMsg || '-',
       nntid: response.fields.nntid || '-',
@@ -545,6 +562,7 @@ function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAn
       requestLine: '-',
       responseLine: response.line,
       fullApi: response.fields.api || '-',
+      matchedRequest: false,
       status,
     });
   });
@@ -1305,7 +1323,9 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               <Text type="secondary">参数：{record.parameters}</Text>
               <Text type="secondary">nntid：{record.nntid}</Text>
               <Text type="secondary">trackId：{record.trackId}</Text>
-              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>请求：{highlightText(record.requestLine, apiSearchText.trim())}</Text>
+              <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>
+                请求：{record.matchedRequest ? highlightText(record.requestLine, apiSearchText.trim()) : <Tag color="gold">缺少请求日志</Tag>}
+              </Text>
               <Text code style={{ display: 'block', whiteSpace: 'pre-wrap' }}>响应：{highlightText(removeResponseFieldFromLogLine(record.responseLine), apiSearchText.trim())}</Text>
               {formattedResponse ? (
                 <div>
@@ -1360,22 +1380,28 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                     )}
                   </div>
                 </div>
-              ) : (
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  未采集 response 字段，当前响应日志没有可格式化的 JSON。
-                </Text>
-              )}
+              ) : null}
             </Space>
           );
         },
       }}
       columns={[
-        { title: '请求时间', dataIndex: 'requestTime', width: 150 },
+        {
+          title: '请求时间',
+          dataIndex: 'requestTime',
+          width: 150,
+          sorter: (a, b) => parseLogTimeValue(a.requestTime) - parseLogTimeValue(b.requestTime),
+        },
         {
           title: '耗时',
           dataIndex: 'costMs',
           width: 90,
-          sorter: (a, b) => (a.costMs || 0) - (b.costMs || 0),
+          sorter: (a, b) => {
+            if (a.costMs === null && b.costMs === null) return 0;
+            if (a.costMs === null) return 1;
+            if (b.costMs === null) return -1;
+            return a.costMs - b.costMs;
+          },
           render: (value: number | null) => {
             if (value === null) return '-';
             return value > 350 ? <Tag color="orange">{value}ms</Tag> : `${value}ms`;

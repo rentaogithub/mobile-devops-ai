@@ -731,10 +731,10 @@ export default function PodsPage() {
             onChange={(value) => { targetBranch = value; }}
           />
           <p style={{ marginTop: 12 }}>
-            请再次输入 nnios 目标分支 <Text strong code>{targetBranch || '上方选择的分支'}</Text> 确认：
+            请再次输入 nnios 目标分支确认：
           </p>
           <Input
-            placeholder={targetBranch ? `请输入 ${targetBranch}` : '请输入上方选择的分支'}
+            placeholder="请输入选择的分支名"
             onChange={(e) => { confirmBranch = e.target.value.trim(); }}
           />
         </div>
