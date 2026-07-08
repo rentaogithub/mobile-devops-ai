@@ -162,54 +162,118 @@ router.get('/summary', adminMiddleware, (req: Request, res: Response) => {
     const requestAccessHost = getHostOnly(String(req.headers['x-forwarded-host'] || req.get('host') || ''));
     const localNetworkIp = getLocalNetworkIp();
     const totals = db.prepare(`
+      WITH normalized AS (
+        SELECT
+          CASE
+            WHEN (ip = '127.0.0.1' OR ip = 'localhost' OR ip = '::1' OR ip LIKE '127.%')
+            THEN CASE
+              WHEN access_host IS NOT NULL
+                AND access_host NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND access_host NOT LIKE '127.%'
+              THEN access_host
+              WHEN @requestAccessHost IS NOT NULL
+                AND @requestAccessHost NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND @requestAccessHost NOT LIKE '127.%'
+              THEN @requestAccessHost
+              ELSE @localNetworkIp
+            END
+            ELSE ip
+          END AS display_ip,
+          role,
+          last_seen,
+          visit_count
+        FROM service_access_stats
+      )
       SELECT
-        COUNT(*) AS totalVisitors,
+        COUNT(DISTINCT display_ip) AS totalVisitors,
         COALESCE(SUM(visit_count), 0) AS totalVisits,
-        COALESCE(SUM(CASE WHEN role = 'admin' THEN 1 ELSE 0 END), 0) AS adminVisitors,
-        COALESCE(SUM(CASE WHEN date(last_seen) = date('now') THEN 1 ELSE 0 END), 0) AS todayVisitors,
+        COUNT(DISTINCT CASE WHEN role = 'admin' THEN display_ip END) AS adminVisitors,
+        COUNT(DISTINCT CASE WHEN date(last_seen) = date('now') THEN display_ip END) AS todayVisitors,
         COALESCE(SUM(CASE WHEN date(last_seen) = date('now') THEN visit_count ELSE 0 END), 0) AS todayVisits
-      FROM service_access_stats
-    `).get();
+      FROM normalized
+    `).get({ requestAccessHost, localNetworkIp });
 
     const recentVisitors = db.prepare(`
+      WITH normalized AS (
+        SELECT
+          visitor_id,
+          role,
+          CASE
+            WHEN (ip = '127.0.0.1' OR ip = 'localhost' OR ip = '::1' OR ip LIKE '127.%')
+            THEN CASE
+              WHEN access_host IS NOT NULL
+                AND access_host NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND access_host NOT LIKE '127.%'
+              THEN access_host
+              WHEN @requestAccessHost IS NOT NULL
+                AND @requestAccessHost NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND @requestAccessHost NOT LIKE '127.%'
+              THEN @requestAccessHost
+              ELSE @localNetworkIp
+            END
+            ELSE ip
+          END AS display_ip,
+          access_host,
+          user_agent,
+          first_path,
+          last_path,
+          first_seen,
+          last_seen,
+          visit_count
+        FROM service_access_stats
+      ),
+      latest AS (
+        SELECT display_ip, MAX(last_seen) AS latest_seen
+        FROM normalized
+        GROUP BY display_ip
+      )
       SELECT
-        visitor_id AS visitorId,
-        role,
-        CASE
-          WHEN (ip = '127.0.0.1' OR ip = 'localhost' OR ip = '::1' OR ip LIKE '127.%')
-          THEN CASE
-            WHEN access_host IS NOT NULL
-              AND access_host NOT IN ('127.0.0.1', 'localhost', '::1')
-              AND access_host NOT LIKE '127.%'
-            THEN access_host
-            WHEN @requestAccessHost IS NOT NULL
-              AND @requestAccessHost NOT IN ('127.0.0.1', 'localhost', '::1')
-              AND @requestAccessHost NOT LIKE '127.%'
-            THEN @requestAccessHost
-            ELSE @localNetworkIp
-          END
-          ELSE ip
-        END AS ip,
-        access_host AS accessHost,
-        user_agent AS userAgent,
-        first_path AS firstPath,
-        last_path AS lastPath,
-        first_seen AS firstSeen,
-        last_seen AS lastSeen,
-        visit_count AS visitCount
-      FROM service_access_stats
-      ORDER BY last_seen DESC
+        n.display_ip AS visitorId,
+        CASE WHEN SUM(CASE WHEN n.role = 'admin' THEN 1 ELSE 0 END) > 0 THEN 'admin' ELSE 'user' END AS role,
+        n.display_ip AS ip,
+        MAX(n.access_host) AS accessHost,
+        '' AS userAgent,
+        MIN(n.first_path) AS firstPath,
+        MAX(CASE WHEN n.last_seen = latest.latest_seen THEN n.last_path ELSE '' END) AS lastPath,
+        MIN(n.first_seen) AS firstSeen,
+        MAX(n.last_seen) AS lastSeen,
+        COALESCE(SUM(n.visit_count), 0) AS visitCount
+      FROM normalized n
+      JOIN latest ON latest.display_ip = n.display_ip
+      GROUP BY n.display_ip
+      ORDER BY MAX(n.last_seen) DESC
       LIMIT 100
     `).all({ requestAccessHost, localNetworkIp });
 
     const topPaths = db.prepare(`
-      SELECT last_path AS path, COUNT(*) AS visitors, COALESCE(SUM(visit_count), 0) AS visits
-      FROM service_access_stats
+      WITH normalized AS (
+        SELECT
+          CASE
+            WHEN (ip = '127.0.0.1' OR ip = 'localhost' OR ip = '::1' OR ip LIKE '127.%')
+            THEN CASE
+              WHEN access_host IS NOT NULL
+                AND access_host NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND access_host NOT LIKE '127.%'
+              THEN access_host
+              WHEN @requestAccessHost IS NOT NULL
+                AND @requestAccessHost NOT IN ('127.0.0.1', 'localhost', '::1')
+                AND @requestAccessHost NOT LIKE '127.%'
+              THEN @requestAccessHost
+              ELSE @localNetworkIp
+            END
+            ELSE ip
+          END AS display_ip,
+          last_path,
+          visit_count
+        FROM service_access_stats
+      )
+      SELECT last_path AS path, COUNT(DISTINCT display_ip) AS visitors, COALESCE(SUM(visit_count), 0) AS visits
+      FROM normalized
       WHERE last_path IS NOT NULL AND last_path != ''
       GROUP BY last_path
       ORDER BY visits DESC
       LIMIT 10
-    `).all();
+    `).all({ requestAccessHost, localNetworkIp });
 
     res.json({
       success: true,
