@@ -1387,16 +1387,14 @@ async function cleanupLocalQualityProcesses(deviceUdid?: string) {
 
 function parseBuildDescription(description?: string | null) {
   const text = (description || '').trim();
-  const match = text.match(/^([^,，]+)[,，]\s*(.+)$/);
-  if (!match) {
-    return {
-      publishChannel: text || '',
-      buildNumber: '',
-    };
-  }
+  if (!text) return { publishChannel: '', buildNumber: '' };
+
+  const parts = text.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+  const channelPart = parts.find((part) => normalizeDeployTarget(part) !== part || DEPLOY_TARGETS.has(part));
+  const buildNumberPart = [...parts].reverse().find((part) => /^[0-9]+$/.test(part));
   return {
-    publishChannel: match[1].trim(),
-    buildNumber: match[2].trim(),
+    publishChannel: channelPart ? normalizeDeployTarget(channelPart) : '',
+    buildNumber: buildNumberPart || '',
   };
 }
 
@@ -1529,8 +1527,8 @@ function parseConsoleMetadata(consoleText: string) {
   ).trim();
   const pgyerBuildNumber =
     plainConsoleText.match(/蒲公英版本[:：][^\n\r]*?build\s*\[([0-9]+)\]/i)?.[1] ||
-    plainConsoleText.match(/BUILD_DESCRIPTION\s*=\s*Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
-    plainConsoleText.match(/Description set:\s*Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
+    plainConsoleText.match(/BUILD_DESCRIPTION\s*=\s*(?:[^,\n\r]+[,，]\s*)?Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
+    plainConsoleText.match(/Description set:\s*(?:[^,\n\r]+[,，]\s*)?Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
     '';
   const testFlightBuildNumber =
     plainConsoleText.match(/TestFlight渠道构建号[:：]\s*([0-9]+)/i)?.[1] ||

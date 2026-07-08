@@ -422,7 +422,8 @@ function qualityPhaseLabel(build: JenkinsQualityBuild) {
 }
 
 function getChannelBuildNumber(build: JenkinsBuild) {
-  const channelBuildNumber = String(build.buildNumber || '').trim();
+  const rawBuildNumber = String(build.buildNumber || '').trim();
+  const channelBuildNumber = rawBuildNumber.match(/[0-9]+$/)?.[0] || rawBuildNumber;
   if (!channelBuildNumber) return '';
   if (channelBuildNumber === String(build.number)) return '';
   return channelBuildNumber;
