@@ -65,14 +65,6 @@ function writeSentrySymbolicationCache(cache: SentrySymbolicationHistoryCache) {
   window.localStorage.setItem(SENTRY_SYMBOLICATION_HISTORY_CACHE_KEY, JSON.stringify(cache));
 }
 
-function getCachedSentryHistoryId(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
-  const cache = readSentrySymbolicationCache();
-  const cached = getIssueCacheKeys(issue)
-    .map((key) => cache[key]?.historyId)
-    .find((historyId) => typeof historyId === 'number' && historyId > 0);
-  return cached || 0;
-}
-
 function cacheSentryHistoryId(issue: Pick<SentryIssueSummary, 'id' | 'shortId'>, historyId?: number) {
   if (!historyId) {
     return;
@@ -329,19 +321,6 @@ export default function SentryServicePage() {
       return;
     }
 
-    const cachedHistoryId = getCachedSentryHistoryId(issue);
-    if (cachedHistoryId) {
-      backgroundSymbolicatedIssueIds.current.add(issue.id);
-      setIssueSymbolicationStatus((statusMap) => ({
-        ...statusMap,
-        [issue.id]: {
-          status: 'success',
-          historyId: cachedHistoryId,
-        },
-      }));
-      return;
-    }
-
     if (!hasIssueVersionInfo(issue)) {
       return;
     }
@@ -472,12 +451,9 @@ export default function SentryServicePage() {
         const statuses = statusResponse.data?.statuses || {};
         const storedStatusMap: Record<string, IssueSymbolicationStatus> = {};
         const storedVersionMap: Record<string, string> = {};
-        const cachedHistoryVersionTasks: Array<{ issueId: string; historyId: number }> = [];
         nextIssues.forEach((issue) => {
           const status = statuses[issue.id] || (issue.shortId ? statuses[issue.shortId] : undefined);
-          const cachedHistoryId = getCachedSentryHistoryId(issue);
           const historyId =
-            cachedHistoryId ||
             status?.historyId ||
             0;
           if (historyId) {
@@ -489,16 +465,20 @@ export default function SentryServicePage() {
           }
           if (status?.appVersion && !hasIssueVersionInfo(issue)) {
             storedVersionMap[issue.id] = status.appVersion;
-          } else if (cachedHistoryId && !hasIssueVersionInfo(issue)) {
-            cachedHistoryVersionTasks.push({ issueId: issue.id, historyId: cachedHistoryId });
           }
         });
-        if (Object.keys(storedStatusMap).length > 0) {
-          setIssueSymbolicationStatus((statusMap) => ({
-            ...statusMap,
+        setIssueSymbolicationStatus((statusMap) => {
+          const nextStatusMap = { ...statusMap };
+          nextIssues.forEach((issue) => {
+            if (issue.id) {
+              delete nextStatusMap[issue.id];
+            }
+          });
+          return {
+            ...nextStatusMap,
             ...storedStatusMap,
-          }));
-        }
+          };
+        });
         if (Object.keys(storedVersionMap).length > 0) {
           updateIssuesForView(targetView, (currentIssues) => currentIssues.map((issue) => {
             const appVersion = storedVersionMap[issue.id];
@@ -512,31 +492,6 @@ export default function SentryServicePage() {
                 appVersionLoading: false,
               }
               : issue;
-          }));
-        }
-        if (cachedHistoryVersionTasks.length > 0) {
-          void Promise.all(cachedHistoryVersionTasks.map(async ({ issueId, historyId }) => {
-            try {
-              const detailResponse = await historyApi.detail(historyId);
-              const appVersion = detailResponse.data?.appVersion;
-              if (!detailResponse.success || !appVersion) {
-                return;
-              }
-              updateIssuesForView(targetView, (currentIssues) => currentIssues.map((issue) => (
-                issue.id === issueId
-                  ? {
-                    ...issue,
-                    appVersionRange: appVersion,
-                    minAppVersion: appVersion,
-                    maxAppVersion: appVersion,
-                    appVersions: [appVersion],
-                    appVersionLoading: false,
-                  }
-                  : issue
-              )));
-            } catch {
-              // 历史版本回填失败不影响列表展示。
-            }
           }));
         }
       } catch (statusError: any) {

@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input, Select } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, ReloadOutlined, UpOutlined, DownOutlined } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 import { formatDateTime } from '../utils/helpers';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -37,8 +37,11 @@ export default function HistoryPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [activeTab, setActiveTab] = useState('log'); // 当前激活的标签
   const [queryText, setQueryText] = useState('');
+  const [detailSearchText, setDetailSearchText] = useState('');
+  const [activeDetailMatchIndex, setActiveDetailMatchIndex] = useState(0);
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
   const openedUrlHistoryIdRef = useRef<number | null>(null);
+  const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const isAdmin = authUtils.isAdmin();
 
   // 从 localStorage 获取保存的 OpenAI API Key
@@ -125,6 +128,8 @@ export default function HistoryPage() {
     setDetailModalVisible(true);
     if (isOpeningDifferentRecord) {
       setActiveTab(record.aiAnalysis ? 'analysis' : 'log');
+      setDetailSearchText('');
+      setActiveDetailMatchIndex(0);
     }
 
     try {
@@ -142,6 +147,9 @@ export default function HistoryPage() {
 
   const handleCloseDetail = () => {
     setDetailModalVisible(false);
+    setDetailSearchText('');
+    setActiveDetailMatchIndex(0);
+    detailMatchRefs.current = [];
     openedUrlHistoryIdRef.current = null;
     // 清除 URL 参数
     if (searchParams.get('id')) {
@@ -243,6 +251,92 @@ export default function HistoryPage() {
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  const detailSearchKeyword = detailSearchText.trim();
+  const detailMatchCount = useMemo(() => {
+    if (!selectedRecord || !detailSearchKeyword) return 0;
+
+    const lowerLog = selectedRecord.symbolicatedLog.toLowerCase();
+    const lowerKeyword = detailSearchKeyword.toLowerCase();
+    let count = 0;
+    let searchIndex = 0;
+    let matchIndex = lowerLog.indexOf(lowerKeyword, searchIndex);
+
+    while (matchIndex !== -1) {
+      count += 1;
+      searchIndex = matchIndex + lowerKeyword.length;
+      matchIndex = lowerLog.indexOf(lowerKeyword, searchIndex);
+    }
+
+    return count;
+  }, [selectedRecord, detailSearchKeyword]);
+
+  useEffect(() => {
+    setActiveDetailMatchIndex(0);
+    detailMatchRefs.current = [];
+  }, [detailSearchKeyword, selectedRecord?.id]);
+
+  useEffect(() => {
+    if (!detailMatchCount) return;
+    detailMatchRefs.current[activeDetailMatchIndex]?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center',
+      inline: 'nearest',
+    });
+  }, [activeDetailMatchIndex, detailMatchCount]);
+
+  const jumpDetailMatch = (direction: 1 | -1) => {
+    if (!detailMatchCount) return;
+    setActiveDetailMatchIndex((current) => (current + direction + detailMatchCount) % detailMatchCount);
+  };
+
+  const renderHighlightedLog = (log: string) => {
+    if (!detailSearchKeyword) return log;
+
+    const lowerLog = log.toLowerCase();
+    const lowerKeyword = detailSearchKeyword.toLowerCase();
+    const nodes: React.ReactNode[] = [];
+    let searchIndex = 0;
+    let matchIndex = lowerLog.indexOf(lowerKeyword, searchIndex);
+    let matchNumber = 0;
+
+    while (matchIndex !== -1) {
+      if (matchIndex > searchIndex) {
+        nodes.push(log.slice(searchIndex, matchIndex));
+      }
+
+      const matchEnd = matchIndex + detailSearchKeyword.length;
+      const isActive = matchNumber === activeDetailMatchIndex;
+      const currentMatchNumber = matchNumber;
+      nodes.push(
+        <mark
+          key={`match-${matchIndex}-${matchNumber}`}
+          ref={(node) => {
+            detailMatchRefs.current[currentMatchNumber] = node;
+          }}
+          style={{
+            background: isActive ? '#ffb020' : '#fff1a8',
+            color: '#1f1f1f',
+            padding: '0 2px',
+            borderRadius: 2,
+            outline: isActive ? '1px solid #d48806' : 'none',
+          }}
+        >
+          {log.slice(matchIndex, matchEnd)}
+        </mark>
+      );
+
+      matchNumber += 1;
+      searchIndex = matchEnd;
+      matchIndex = lowerLog.indexOf(lowerKeyword, searchIndex);
+    }
+
+    if (searchIndex < log.length) {
+      nodes.push(log.slice(searchIndex));
+    }
+
+    return nodes;
   };
 
   const normalizedQuery = queryText.trim().toLowerCase();
@@ -517,6 +611,37 @@ export default function HistoryPage() {
                   label: '符号化日志',
                   children: (
                     <Card size="small">
+                      <Space wrap style={{ width: '100%', marginBottom: 12 }}>
+                        <Input
+                          allowClear
+                          prefix={<SearchOutlined />}
+                          placeholder="在当前日志中检索"
+                          value={detailSearchText}
+                          onChange={(event) => setDetailSearchText(event.target.value)}
+                          style={{ width: 320 }}
+                        />
+                        <Text type={detailSearchKeyword && detailMatchCount === 0 ? 'danger' : 'secondary'}>
+                          {detailSearchKeyword
+                            ? detailMatchCount > 0
+                              ? `${activeDetailMatchIndex + 1} / ${detailMatchCount}`
+                              : '未找到匹配项'
+                            : '输入关键词后高亮匹配内容'}
+                        </Text>
+                        <Button
+                          icon={<UpOutlined />}
+                          disabled={!detailMatchCount}
+                          onClick={() => jumpDetailMatch(-1)}
+                        >
+                          上一个
+                        </Button>
+                        <Button
+                          icon={<DownOutlined />}
+                          disabled={!detailMatchCount}
+                          onClick={() => jumpDetailMatch(1)}
+                        >
+                          下一个
+                        </Button>
+                      </Space>
                       <pre style={{ 
                         maxHeight: 500, 
                         overflow: 'auto', 
@@ -525,7 +650,7 @@ export default function HistoryPage() {
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-all'
                       }}>
-                        {selectedRecord.symbolicatedLog}
+                        {renderHighlightedLog(selectedRecord.symbolicatedLog)}
                       </pre>
                     </Card>
                   ),

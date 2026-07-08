@@ -68,7 +68,7 @@ function getSentryIssueHistoryMap(issues: any[]) {
       h.history_id,
       sh.app_version
     FROM sentry_issue_symbolication_history h
-    LEFT JOIN symbolication_history sh ON sh.id = h.history_id
+    INNER JOIN symbolication_history sh ON sh.id = h.history_id
     WHERE h.issue_id = ? OR h.short_id = ?
     ORDER BY h.updated_at DESC
     LIMIT 1

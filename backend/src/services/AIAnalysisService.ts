@@ -84,12 +84,12 @@ export class AIAnalysisService {
     fallbackAppVersion?: string
   ): Promise<CrashAnalysis> {
     try {
-      // 优先使用环境变量中的 Key，其次使用前端传入的 Key
-      const effectiveApiKey = this.getEffectiveAPIKey(apiKey);
+      // 优先使用环境变量中的 Key；如果鉴权失败，再回退到本次请求传入的 Key。
+      const candidateApiKeys = this.getCandidateAPIKeys(apiKey);
       
       logger.info('开始 AI 分析崩溃日志', { fallbackAppVersion });
 
-      if (!effectiveApiKey || effectiveApiKey.trim().length === 0) {
+      if (candidateApiKeys.length === 0) {
         throw new Error('API Key 不能为空');
       }
 
@@ -119,7 +119,7 @@ export class AIAnalysisService {
       });
 
       // 调用 AI API
-      const response = await this.callAIAPI(prompt, effectiveApiKey);
+      const response = await this.callAIAPIWithFallback(prompt, candidateApiKeys);
 
       // 解析 AI 响应
       const analysis = this.parseAIResponse(response);
@@ -150,8 +150,8 @@ export class AIAnalysisService {
     issues: AggregateCrashIssueInput[],
     apiKey: string
   ): Promise<AggregateCrashAnalysis> {
-    const effectiveApiKey = this.getEffectiveAPIKey(apiKey);
-    if (!effectiveApiKey || effectiveApiKey.trim().length === 0) {
+    const candidateApiKeys = this.getCandidateAPIKeys(apiKey);
+    if (candidateApiKeys.length === 0) {
       throw new Error('API Key 不能为空');
     }
     if (issues.length === 0) {
@@ -161,7 +161,7 @@ export class AIAnalysisService {
     logger.info('开始 AI 聚合分析 Sentry 崩溃', { issueCount: issues.length });
 
     const prompt = this.buildAggregateAnalysisPrompt(issues);
-    const response = await this.callAIAPI(prompt, effectiveApiKey);
+    const response = await this.callAIAPIWithFallback(prompt, candidateApiKeys);
     return this.parseAggregateAIResponse(response);
   }
 
@@ -686,7 +686,42 @@ ${compactCrashLog}
   }
 
   hasConfiguredAPIKey(apiKey?: string): boolean {
-    return this.getEffectiveAPIKey(apiKey).trim().length > 0;
+    return this.getCandidateAPIKeys(apiKey).length > 0;
+  }
+
+  private getCandidateAPIKeys(apiKey?: string): string[] {
+    return [
+      process.env.OPENAI_API_KEY,
+      apiKey,
+    ]
+      .map((key) => (key || '').trim())
+      .filter((key, index, keys) => key.length > 0 && keys.indexOf(key) === index);
+  }
+
+  private async callAIAPIWithFallback(prompt: string, apiKeys: string[]): Promise<string> {
+    let lastError: any;
+
+    for (let index = 0; index < apiKeys.length; index += 1) {
+      try {
+        return await this.callAIAPI(prompt, apiKeys[index]);
+      } catch (error: any) {
+        lastError = error;
+        if (!this.isAPIKeyAuthError(error) || index === apiKeys.length - 1) {
+          throw error;
+        }
+        logger.warn('AI API Key 鉴权失败，尝试使用请求中的备用 Key', {
+          attempt: index + 1,
+          remainingAttempts: apiKeys.length - index - 1,
+        });
+      }
+    }
+
+    throw lastError || new Error('AI API 调用失败');
+  }
+
+  private isAPIKeyAuthError(error: any): boolean {
+    const message = String(error?.message || '');
+    return message.includes('API Key 无效') || message.includes('401');
   }
 
   private async callAIAPI(prompt: string, apiKey: string): Promise<string> {
