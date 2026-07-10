@@ -50,6 +50,17 @@ export interface AggregateCrashAnalysis {
   needsMoreData: string[];
 }
 
+export interface BuildFailureAnalysis {
+  summary: string;
+  stage: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  rootCause: string;
+  evidence: string[];
+  suggestions: string[];
+  ownerHint?: string;
+  needsManualAction?: boolean;
+}
+
 /**
  * OpenAI AI 崩溃分析服务
  */
@@ -163,6 +174,63 @@ export class AIAnalysisService {
     const prompt = this.buildAggregateAnalysisPrompt(issues);
     const response = await this.callAIAPIWithFallback(prompt, candidateApiKeys);
     return this.parseAggregateAIResponse(response);
+  }
+
+  async analyzeBuildFailureLog(input: {
+    log: string;
+    buildNumber?: number;
+    branchName?: string;
+    publishChannel?: string;
+    appVersion?: string;
+    commitHash?: string;
+  }, apiKey = ''): Promise<BuildFailureAnalysis> {
+    const candidateApiKeys = this.getCandidateAPIKeys(apiKey);
+    if (candidateApiKeys.length === 0) {
+      throw new Error('API Key 不能为空');
+    }
+
+    const compactLog = this.buildCompactBuildFailureLog(input.log);
+    const systemPrompt = `你是 iOS CI/CD 打包发布故障分析助手。请分析 Jenkins 构建日志，输出严格 JSON，不要 Markdown。
+
+输出字段：
+{
+  "summary": "一句话说明失败原因",
+  "stage": "失败阶段，如 编译/签名/导出IPA/上传TestFlight/上传蒲公英/Jenkins后处理/未知",
+  "severity": "low|medium|high|critical",
+  "rootCause": "最可能根因，要求具体、可执行",
+  "evidence": ["日志证据1", "日志证据2"],
+  "suggestions": ["处理建议1", "处理建议2"],
+  "ownerHint": "建议处理方，如 iOS/发布管理员/Apple开发者账号管理员/Jenkins维护",
+  "needsManualAction": true
+}
+
+判断规则：
+- 优先定位第一个导致构建失败的关键错误，不要被后续 Jenkins 后处理日志干扰。
+- 对 TestFlight/App Store 上传失败，要重点判断 Apple 协议、账号、证书、ASC 构建号、网络/API 错误。
+- 对蒲公英失败，要判断上传接口、包路径、二维码/渠道构建号解析问题。
+- 对编译失败，要指出可能的模块、文件、脚本或依赖。
+- evidence 只引用最关键的 2-5 条短日志。`;
+
+    const userPrompt = `构建信息：
+- Jenkins 构建号：${input.buildNumber || ''}
+- 分支：${input.branchName || ''}
+- 发布渠道：${input.publishChannel || ''}
+- APP 版本：${input.appVersion || ''}
+- Commit：${input.commitHash || ''}
+
+关键日志：
+${compactLog}`;
+
+    logger.info('开始 AI 分析 Jenkins 构建失败日志', {
+      buildNumber: input.buildNumber,
+      publishChannel: input.publishChannel,
+      branchName: input.branchName,
+      logLength: input.log.length,
+      compactLength: compactLog.length,
+    });
+
+    const response = await this.callAIAPIWithFallback(JSON.stringify({ systemPrompt, userPrompt }), candidateApiKeys);
+    return this.parseBuildFailureAIResponse(response);
   }
 
   /**
@@ -930,6 +998,71 @@ ${compactCrashLog}
         suggestions: ['请手动检查崩溃日志', '查看堆栈信息定位问题'],
         severity: 'medium',
         affectedComponents: ['未知'],
+      };
+    }
+  }
+
+  private buildCompactBuildFailureLog(log: string): string {
+    const plain = String(log || '').replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+    const lines = plain.split(/\r?\n/);
+    const keywordPattern = /error|failed|failure|exception|fatal|exit code|fastlane finished|ipa|testflight|app store|appstore|altool|transporter|asc|agreement|provisioning|codesign|archive|xcodebuild|pod install|BUILD FAILED|Finished:\s+FAILURE|构建失败|上传失败|协议|证书|签名|失败/i;
+    const selected: string[] = [];
+    const seen = new Set<string>();
+
+    function pushLine(line: string) {
+      const normalized = line.trim();
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      selected.push(normalized);
+    }
+
+    lines.forEach((line, index) => {
+      if (!keywordPattern.test(line)) return;
+      for (let offset = -2; offset <= 3; offset += 1) {
+        const candidate = lines[index + offset];
+        if (candidate !== undefined) pushLine(candidate);
+      }
+    });
+
+    if (selected.length < 8) {
+      lines.slice(Math.max(0, lines.length - 160)).forEach(pushLine);
+    }
+
+    const compact = selected.join('\n');
+    return compact.length > 18000 ? compact.slice(-18000) : compact;
+  }
+
+  private parseBuildFailureAIResponse(response: string): BuildFailureAnalysis {
+    try {
+      let jsonStr = response.trim();
+      const codeBlockMatch = jsonStr.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+      if (codeBlockMatch) {
+        jsonStr = codeBlockMatch[1];
+      } else {
+        const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
+        if (objectMatch) jsonStr = objectMatch[0];
+      }
+      const parsed = JSON.parse(jsonStr);
+      return {
+        summary: String(parsed.summary || '无法确定构建失败原因'),
+        stage: String(parsed.stage || '未知'),
+        severity: this.validateSeverity(parsed.severity),
+        rootCause: String(parsed.rootCause || parsed.summary || '需要结合完整日志继续排查'),
+        evidence: Array.isArray(parsed.evidence) ? parsed.evidence.map((item: any) => String(item)).filter(Boolean).slice(0, 6) : [],
+        suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.map((item: any) => String(item)).filter(Boolean).slice(0, 8) : ['查看关键错误日志并重新执行构建验证'],
+        ownerHint: parsed.ownerHint ? String(parsed.ownerHint) : undefined,
+        needsManualAction: Boolean(parsed.needsManualAction),
+      };
+    } catch (error: any) {
+      logger.error('解析 Jenkins 构建失败 AI 响应失败', { error: error.message, response });
+      return {
+        summary: 'AI 分析结果解析失败',
+        stage: '未知',
+        severity: 'medium',
+        rootCause: 'AI 返回内容不是可解析的 JSON，需要人工查看日志。',
+        evidence: [],
+        suggestions: ['查看打包日志中的第一处 ERROR/FAILURE', '确认发布账号、证书、构建脚本和上传渠道状态'],
+        needsManualAction: true,
       };
     }
   }

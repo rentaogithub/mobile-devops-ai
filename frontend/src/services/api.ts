@@ -1768,6 +1768,8 @@ export interface JenkinsBuildLogResult {
   jobName: string;
   buildNumber: number;
   log: string;
+  failureAnalysis?: JenkinsBuildFailureAnalysis;
+  failureAnalysisUpdatedAt?: string;
   thirdSdkBranch: string;
   thirdSdkRevision?: string;
   thirdSdkDependencies: Array<{
@@ -1777,6 +1779,17 @@ export interface JenkinsBuildLogResult {
   }>;
   thirdSdkMissingFiles?: string[];
   thirdSdkError?: string;
+}
+
+export interface JenkinsBuildFailureAnalysis {
+  summary: string;
+  stage: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  rootCause: string;
+  evidence: string[];
+  suggestions: string[];
+  ownerHint?: string;
+  needsManualAction?: boolean;
 }
 
 export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'full';
@@ -2278,6 +2291,15 @@ export const jenkinsApi = {
     const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/nn/builds/${buildNumber}/log`, {
       timeout: 120000,
     });
+    return response.data;
+  },
+
+  analyzeBuildFailure: async (buildNumber: number, force = false): Promise<ApiResponse<{ jobName: string; buildNumber: number; analysis: JenkinsBuildFailureAnalysis; updatedAt?: string; cached?: boolean }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number; analysis: JenkinsBuildFailureAnalysis; updatedAt?: string; cached?: boolean }>>(
+      `/jenkins/nn/builds/${buildNumber}/analyze-failure`,
+      { force },
+      { timeout: 120000 },
+    );
     return response.data;
   },
 

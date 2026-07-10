@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import podDepsResolver from '../services/PodDependencyResolver';
+import aiAnalysisService from '../services/AIAnalysisService';
 import { getJenkinsBaseUrl } from '../config/externalServices';
 
 const router = Router();
@@ -30,6 +31,7 @@ const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_ST
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
 
@@ -713,6 +715,38 @@ function readJsonFile(filePath: string): any | null {
   } catch {
     return null;
   }
+}
+
+function readBuildFailureAnalysisCache() {
+  const cache = readJsonFile(BUILD_FAILURE_ANALYSIS_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { analyses: {} };
+}
+
+function getSavedBuildFailureAnalysis(buildNumber: number) {
+  const cache = readBuildFailureAnalysisCache();
+  return cache?.analyses?.[String(buildNumber)] || null;
+}
+
+function saveBuildFailureAnalysis(buildNumber: number, analysis: any, context: any = {}) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const cache = readBuildFailureAnalysisCache();
+  const nextCache = {
+    ...cache,
+    analyses: {
+      ...(cache.analyses || {}),
+      [String(buildNumber)]: {
+        analysis,
+        context,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  };
+  const tmpPath = `${BUILD_FAILURE_ANALYSIS_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
+  fs.renameSync(tmpPath, BUILD_FAILURE_ANALYSIS_CACHE_PATH);
+  return nextCache.analyses[String(buildNumber)];
 }
 
 function parseIpsJson(content: string) {
@@ -2203,6 +2237,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
     const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
     const checkoutRevision = parseCheckoutRevision(log);
     const thirdSdk = await fetchThirdSdkDependencies(buildParameters.branchName || 'develop', checkoutRevision);
+    const savedFailureAnalysis = getSavedBuildFailureAnalysis(buildNumber);
 
     res.json({
       success: true,
@@ -2210,6 +2245,8 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
         jobName: DEFAULT_JOB_NAME,
         buildNumber,
         log,
+        failureAnalysis: savedFailureAnalysis?.analysis,
+        failureAnalysisUpdatedAt: savedFailureAnalysis?.updatedAt,
         thirdSdkBranch: thirdSdk.branch,
         thirdSdkRevision: thirdSdk.revision,
         thirdSdkDependencies: thirdSdk.dependencies,
@@ -2221,6 +2258,87 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
     res.status(502).json({
       success: false,
       error: extractErrorMessage(error, '获取 Jenkins 打包日志失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
+router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Response) => {
+  try {
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const [buildResponse, logResponse] = await Promise.all([
+      fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url'),
+      axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+        timeout: 30000,
+        responseType: 'text',
+        ...buildAuthConfig(),
+      }),
+    ]);
+    const build = buildResponse.data || {};
+    const result = String(build.result || '').toUpperCase();
+    const log = String(logResponse.data || '');
+    const force = Boolean(req.body?.force);
+    if (result && result !== 'FAILURE' && !/Finished:\s+FAILURE|fastlane finished with errors|构建失败|上传失败/i.test(log)) {
+      res.status(400).json({
+        success: false,
+        error: '当前构建不是失败状态，无需失败分析',
+      });
+      return;
+    }
+    const saved = getSavedBuildFailureAnalysis(buildNumber);
+    if (saved?.analysis && !force) {
+      res.json({
+        success: true,
+        data: {
+          jobName: DEFAULT_JOB_NAME,
+          buildNumber,
+          analysis: saved.analysis,
+          updatedAt: saved.updatedAt,
+          cached: true,
+        },
+      });
+      return;
+    }
+
+    const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
+    const consoleMetadata = parseConsoleMetadata(log);
+    const descriptionMetadata = parseBuildDescription(build.description);
+    const context = {
+      branchName: buildParameters.branchName,
+      publishChannel: consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel),
+      appVersion: consoleMetadata.appVersion,
+      commitHash: consoleMetadata.commitHash || parseCheckoutRevision(log),
+    };
+    const analysis = await aiAnalysisService.analyzeBuildFailureLog({
+      log,
+      buildNumber,
+      ...context,
+    }, String(req.body?.apiKey || ''));
+    const savedAnalysis = saveBuildFailureAnalysis(buildNumber, analysis, context);
+
+    res.json({
+      success: true,
+      data: {
+        jobName: DEFAULT_JOB_NAME,
+        buildNumber,
+        analysis,
+        updatedAt: savedAnalysis.updatedAt,
+        cached: false,
+      },
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '失败分析构建失败原因失败'),
       status: error.response?.status,
     });
   }

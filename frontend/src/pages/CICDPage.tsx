@@ -15,8 +15,9 @@ import {
   DeleteOutlined,
   BranchesOutlined,
   UploadOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
@@ -427,6 +428,13 @@ function getChannelBuildNumber(build: JenkinsBuild) {
   if (!channelBuildNumber) return '';
   if (channelBuildNumber === String(build.number)) return '';
   return channelBuildNumber;
+}
+
+function canAnalyzeBuildFailure(build?: JenkinsBuild, log?: string) {
+  if (!build) return false;
+  if (build.result === 'FAILURE') return true;
+  if (build.result === 'SUCCESS') return false;
+  return /Finished:\s+FAILURE|fastlane finished with errors|构建失败|上传失败/i.test(log || '');
 }
 
 function normalizeOpenUrl(url?: string) {
@@ -2287,6 +2295,8 @@ export default function CICDPage() {
   const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
+  const [buildFailureAnalysisLoading, setBuildFailureAnalysisLoading] = useState(false);
+  const [buildFailureAnalysis, setBuildFailureAnalysis] = useState<JenkinsBuildFailureAnalysis | null>(null);
   const [qualityModalOpen, setQualityModalOpen] = useState(false);
   const [qualitySubmitting, setQualitySubmitting] = useState(false);
   const [qualitySubmitMessage, setQualitySubmitMessage] = useState('');
@@ -2889,6 +2899,7 @@ export default function CICDPage() {
   const showBuildLog = async (build: JenkinsBuild) => {
     setLogModalOpen(true);
     setBuildDsymUploaded(null);
+    setBuildFailureAnalysis(null);
     setSelectedBuildLog({ build, log: '', thirdSdkBranch: build.branchName || 'develop', thirdSdkDependencies: [] });
     setLogLoading(true);
     try {
@@ -2902,6 +2913,7 @@ export default function CICDPage() {
         thirdSdkMissingFiles: response.data?.thirdSdkMissingFiles || [],
         thirdSdkError: response.data?.thirdSdkError,
       });
+      setBuildFailureAnalysis(response.data?.failureAnalysis || null);
     } catch (err: any) {
       message.error(err?.error || err?.message || '加载打包日志失败');
       setSelectedBuildLog({
@@ -2914,6 +2926,26 @@ export default function CICDPage() {
     } finally {
       setLogLoading(false);
     }
+  };
+
+  const analyzeSelectedBuildFailure = async (force = false) => {
+    if (!selectedBuildLog) return;
+    setBuildFailureAnalysisLoading(true);
+    try {
+      const response = await jenkinsApi.analyzeBuildFailure(selectedBuildLog.build.number, force);
+      setBuildFailureAnalysis(response.data?.analysis || null);
+      message.success(response.data?.cached ? '已加载保存的失败分析' : '失败分析完成');
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '失败分析失败');
+    } finally {
+      setBuildFailureAnalysisLoading(false);
+    }
+  };
+
+  const ensureBuildFailureAnalysis = () => {
+    if (!selectedBuildLog || buildFailureAnalysis || buildFailureAnalysisLoading) return;
+    if (!canAnalyzeBuildFailure(selectedBuildLog.build, selectedBuildLog.log)) return;
+    void analyzeSelectedBuildFailure(false);
   };
 
   const handleBuildDsymUpload = async () => {
@@ -4454,6 +4486,9 @@ export default function CICDPage() {
           <Tabs
             key={selectedBuildLog?.build.number || 'build-log'}
             defaultActiveKey="build-log"
+            onChange={(key) => {
+              if (key === 'ai-analysis') ensureBuildFailureAnalysis();
+            }}
             items={[
               {
                 key: 'build-log',
@@ -4524,6 +4559,76 @@ export default function CICDPage() {
                   </Space>
                 ),
               },
+              ...(canAnalyzeBuildFailure(selectedBuildLog?.build, selectedBuildLog?.log) ? [{
+                key: 'ai-analysis',
+                label: (
+                  <Space>
+                    <span>失败分析</span>
+                    {buildFailureAnalysis && <Tag color={analysisSeverityColor(buildFailureAnalysis.severity)}>{buildFailureAnalysis.severity}</Tag>}
+                  </Space>
+                ),
+                children: (
+                  <Card size="small">
+                    {buildFailureAnalysis ? (
+                      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                        <Alert
+                          showIcon
+                          type={buildFailureAnalysis.severity === 'critical' || buildFailureAnalysis.severity === 'high' ? 'error' : 'warning'}
+                          message={buildFailureAnalysis.summary || '构建失败分析'}
+                          description={(
+                            <Space direction="vertical" size={6}>
+                              <Space wrap>
+                                <Tag color={analysisSeverityColor(buildFailureAnalysis.severity)}>{buildFailureAnalysis.severity}</Tag>
+                                <Tag color="blue">{buildFailureAnalysis.stage || '未知阶段'}</Tag>
+                                {buildFailureAnalysis.ownerHint && <Tag>{buildFailureAnalysis.ownerHint}</Tag>}
+                                {buildFailureAnalysis.needsManualAction && <Tag color="orange">需要人工处理</Tag>}
+                              </Space>
+                              <Text>{buildFailureAnalysis.rootCause}</Text>
+                            </Space>
+                          )}
+                        />
+                        {buildFailureAnalysis.evidence?.length > 0 && (
+                          <div>
+                            <Text strong>关键证据</Text>
+                            <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                              {buildFailureAnalysis.evidence.map((item, index) => (
+                                <li key={`${index}-${item}`}>
+                                  <Text code style={{ whiteSpace: 'pre-wrap' }}>{item}</Text>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {buildFailureAnalysis.suggestions?.length > 0 && (
+                          <div>
+                            <Text strong>处理建议</Text>
+                            <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                              {buildFailureAnalysis.suggestions.map((item, index) => (
+                                <li key={`${index}-${item}`}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        <Button icon={<BulbOutlined />} loading={buildFailureAnalysisLoading} onClick={() => analyzeSelectedBuildFailure(true)}>
+                          重新失败分析
+                        </Button>
+                      </Space>
+                    ) : (
+                      <Alert
+                        showIcon
+                        type="error"
+                        message="构建失败，可发起失败分析"
+                        description="会优先定位第一处关键失败日志，并给出根因、证据和处理建议。"
+                        action={(
+                          <Button size="small" icon={<BulbOutlined />} loading={buildFailureAnalysisLoading} onClick={() => analyzeSelectedBuildFailure(false)}>
+                            失败分析
+                          </Button>
+                        )}
+                      />
+                    )}
+                  </Card>
+                ),
+              }] : []),
             ]}
           />
         </Space>
