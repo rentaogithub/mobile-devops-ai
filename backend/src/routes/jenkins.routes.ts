@@ -1540,8 +1540,9 @@ function parseConsoleMetadata(consoleText: string) {
   const plainConsoleText = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   const appVersion =
     plainConsoleText.match(/ASC_VERSION\s*=\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
-    plainConsoleText.match(/版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
-    plainConsoleText.match(/显示版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
+    plainConsoleText.match(/APP版本信息[:：]?[\s\S]{0,160}(?:^|\n)\s*版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/m)?.[1] ||
+    plainConsoleText.match(/(?:^|\n)\s*显示版本[:：]\s*([0-9]+(?:\.[0-9]+)+)/m)?.[1] ||
+    plainConsoleText.match(/(?:^|\n)\s*版本号[:：]\s*([0-9]+(?:\.[0-9]+)+)/m)?.[1] ||
     plainConsoleText.match(/MARKETING_VERSION:\s*[^→\n]*→\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     '';
   const publishChannel = normalizeDeployTarget(
