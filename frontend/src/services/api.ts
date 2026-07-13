@@ -274,6 +274,8 @@ export interface OpFeedbackLogInfo {
   id?: string;
   userId?: string | number;
   type?: string | number;
+  type_dictText?: string;
+  logType_dictText?: string;
   reqChannel_dictText?: string;
   showVersion?: string;
   version?: string;
@@ -412,12 +414,11 @@ export const opUserApi = {
       response = await axios.get('/jeecg-boot/crash_log/list', {
         params: {
           _t: Math.floor(Date.now() / 1000),
-          type: 36,
           query: uid,
           reqChannel: 1,
           column: 'createTime',
           order: 'desc',
-          field: 'id,,action,userId,type,reqChannel_dictText,version,crashLogUrl,crashTime,createTime',
+          field: 'id,,action,userId,type,type_dictText,logType_dictText,reqChannel_dictText,version,crashLogUrl,crashTime,createTime',
           pageNo,
           pageSize,
           queryParam: '',

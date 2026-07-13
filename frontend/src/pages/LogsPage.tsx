@@ -24,6 +24,7 @@ import {
   WatermarkDecodeResult,
 } from '../services/api';
 import { authUtils } from '../utils/auth';
+import { analyzeBusinessLogLines, BusinessLogAnalysisModal, type BusinessLogAnalysis } from '../components/BusinessLogAnalysisModal';
 import LogsPairPage from './LogsPairPage';
 
 const { Title, Paragraph } = Typography;
@@ -97,6 +98,7 @@ export default function LogsPage() {
   const [feedbackLogList, setFeedbackLogList] = useState<OpFeedbackLogInfo[]>([]);
   const [downloadingFeedbackLogId, setDownloadingFeedbackLogId] = useState('');
   const [previewingFeedbackLogId, setPreviewingFeedbackLogId] = useState('');
+  const [analyzingFeedbackLogId, setAnalyzingFeedbackLogId] = useState('');
   const [feedbackLogPreviewOpen, setFeedbackLogPreviewOpen] = useState(false);
   const [feedbackLogPreview, setFeedbackLogPreview] = useState<FeedbackLogPreviewResult | null>(null);
   const [feedbackLogActiveFilePath, setFeedbackLogActiveFilePath] = useState('');
@@ -104,6 +106,8 @@ export default function LogsPage() {
   const [loadingFeedbackLogFilePath, setLoadingFeedbackLogFilePath] = useState('');
   const [feedbackLogSearchInput, setFeedbackLogSearchInput] = useState('');
   const [feedbackLogSearchText, setFeedbackLogSearchText] = useState('');
+  const [feedbackAnalysisOpen, setFeedbackAnalysisOpen] = useState(false);
+  const [feedbackAnalysisResult, setFeedbackAnalysisResult] = useState<BusinessLogAnalysis | null>(null);
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [feedbackFrameLoading, setFeedbackFrameLoading] = useState(true);
 
@@ -251,7 +255,7 @@ export default function LogsPage() {
 
     setFeedbackLogLoading(true);
     try {
-      const result = await opUserApi.feedbackLogs(uid, 1, 10);
+      const result = await opUserApi.feedbackLogs(uid, 1, 30);
       const records = [...result.records]
         .sort((left, right) => getFeedbackLogTime(right) - getFeedbackLogTime(left))
         .slice(0, 10);
@@ -361,6 +365,58 @@ export default function LogsPage() {
       message.error(error?.message || error?.error || '查看日志失败');
     } finally {
       setPreviewingFeedbackLogId('');
+    }
+  };
+
+  const makeFeedbackLogAnalysisLine = (row: FeedbackLogLine) => {
+    const content = row.content || '';
+    if (row.time && row.time !== '-' && !content.startsWith(`[${row.time}]`)) {
+      return `[${row.time}]${content}`;
+    }
+    return content;
+  };
+
+  const analyzeFeedbackLog = async (record: OpFeedbackLogInfo) => {
+    if (!record.crashLogUrl) {
+      message.warning('当前记录缺少日志下载地址');
+      return;
+    }
+
+    const recordKey = record.id || record.crashLogUrl;
+    setFeedbackLogModalOpen(false);
+    setAnalyzingFeedbackLogId(recordKey);
+    message.loading({ content: '正在分析反馈日志...', key: 'feedback-log-analysis', duration: 0 });
+    try {
+      const result = await feedbackLogApi.preview(record);
+      const files = [...result.files].sort((left, right) =>
+        (right.createdAtMs || right.modifiedAtMs) - (left.createdAtMs || left.modifiedAtMs)
+      );
+      if (files.length === 0) {
+        message.destroy('feedback-log-analysis');
+        message.info('压缩包中未找到 logs*.log 文件');
+        return;
+      }
+
+      const fileContents = await Promise.all(files.map((file) => feedbackLogApi.readFile(file.path)));
+      const lines = fileContents.flatMap((file) =>
+        file.rows
+          .map(makeFeedbackLogAnalysisLine)
+          .filter((line) => line.trim())
+      );
+      if (lines.length === 0) {
+        message.destroy('feedback-log-analysis');
+        message.info('日志文件内容为空，无法分析');
+        return;
+      }
+
+      setFeedbackAnalysisResult(analyzeBusinessLogLines(lines, `反馈日志 ${record.userId || ''}`.trim()));
+      setFeedbackAnalysisOpen(true);
+      message.success({ content: '反馈日志分析完成', key: 'feedback-log-analysis' });
+    } catch (error: any) {
+      message.destroy('feedback-log-analysis');
+      message.error(error?.message || error?.error || '分析日志失败');
+    } finally {
+      setAnalyzingFeedbackLogId('');
     }
   };
 
@@ -485,6 +541,12 @@ export default function LogsPage() {
 
   const feedbackLogColumns = [
     {
+      title: '日志类型',
+      key: 'type',
+      width: 150,
+      render: (_: unknown, record: OpFeedbackLogInfo) => record.type_dictText || record.logType_dictText || record.type || '-',
+    },
+    {
       title: '版本',
       dataIndex: 'version',
       key: 'version',
@@ -501,7 +563,7 @@ export default function LogsPage() {
     {
       title: '操作',
       key: 'action',
-      width: 160,
+      width: 210,
       render: (_: unknown, record: OpFeedbackLogInfo) => (
         <Space size="middle">
           <Button
@@ -513,6 +575,16 @@ export default function LogsPage() {
             onClick={() => previewFeedbackLog(record)}
           >
             查看
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: 0 }}
+            disabled={!record.crashLogUrl}
+            loading={analyzingFeedbackLogId === (record.id || record.crashLogUrl)}
+            onClick={() => analyzeFeedbackLog(record)}
+          >
+            分析
           </Button>
           <Button
             type="link"
@@ -921,6 +993,11 @@ export default function LogsPage() {
           </div>
         ) : null}
       </Modal>
+      <BusinessLogAnalysisModal
+        open={feedbackAnalysisOpen}
+        analysisResult={feedbackAnalysisResult}
+        onCancel={() => setFeedbackAnalysisOpen(false)}
+      />
     </div>
   );
 }
