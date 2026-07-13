@@ -27,6 +27,7 @@ import opProxyRoutes from './routes/opProxy.routes';
 import userQueryRecordsRoutes from './routes/userQueryRecords.routes';
 import feedbackLogRoutes from './routes/feedbackLog.routes';
 import accessStatsRoutes from './routes/accessStats.routes';
+import apiDocsRoutes from './routes/apiDocs.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -202,6 +203,7 @@ app.use('/api/sentry-analysis', sentryAnalysisRoutes);
 app.use('/api/user-query-records', userQueryRecordsRoutes);
 app.use('/api/feedback-log', feedbackLogRoutes);
 app.use('/api/access-stats', accessStatsRoutes);
+app.use('/api/api-docs', apiDocsRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

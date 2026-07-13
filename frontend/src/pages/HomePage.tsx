@@ -7,6 +7,7 @@ import {
   FileSearchOutlined,
   NodeIndexOutlined,
   ToolOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -29,7 +30,7 @@ const features: FeatureCard[] = [
     icon: <BugOutlined />,
     path: '/sentry-service',
     color: '#1677ff',
-    gradient: 'linear-gradient(135deg, #1677ff 0%, #4096ff 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
   {
     key: 'pods',
@@ -38,7 +39,7 @@ const features: FeatureCard[] = [
     icon: <AppstoreOutlined />,
     path: '/pods',
     color: '#52c41a',
-    gradient: 'linear-gradient(135deg, #52c41a 0%, #73d13d 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
   {
     key: 'cicd',
@@ -47,7 +48,7 @@ const features: FeatureCard[] = [
     icon: <RocketOutlined />,
     path: '/cicd',
     color: '#722ed1',
-    gradient: 'linear-gradient(135deg, #722ed1 0%, #9254de 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
   {
     key: 'logs',
@@ -56,7 +57,7 @@ const features: FeatureCard[] = [
     icon: <FileSearchOutlined />,
     path: '/logs',
     color: '#fa541c',
-    gradient: 'linear-gradient(135deg, #fa541c 0%, #ff7a45 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
   {
     key: 'devops',
@@ -65,7 +66,16 @@ const features: FeatureCard[] = [
     icon: <ToolOutlined />,
     path: '/devops',
     color: '#faad14',
-    gradient: 'linear-gradient(135deg, #faad14 0%, #ffc53d 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+  },
+  {
+    key: 'api-docs',
+    title: 'API 接口',
+    description: '用户查询服务接口文档，集中查看请求参数、响应字段与调用地址',
+    icon: <ApiOutlined />,
+    path: '/api-docs',
+    color: '#eb2f96',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
   {
     key: 'routes',
@@ -74,7 +84,7 @@ const features: FeatureCard[] = [
     icon: <NodeIndexOutlined />,
     path: '/routes',
     color: '#13c2c2',
-    gradient: 'linear-gradient(135deg, #13c2c2 0%, #36cfc9 100%)',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
 ];
 
@@ -88,13 +98,13 @@ export default function HomePage() {
           iOS 移动管理平台
         </Title>
         <Paragraph type="secondary" style={{ fontSize: 16 }}>
-          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、DevOps 工具链和路由
+          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、API 文档、DevOps 工具链和路由
         </Paragraph>
       </div>
 
-      <Row gutter={[24, 24]} justify="center" style={{ maxWidth: 1200, margin: '0 auto' }}>
+      <Row gutter={[24, 24]} style={{ maxWidth: 1440, margin: '0 auto' }}>
         {features.map((feature) => (
-          <Col xs={24} sm={12} lg={8} key={feature.key}>
+          <Col xs={24} sm={12} xl={6} key={feature.key}>
             <Card
               hoverable
               onClick={() => navigate(feature.path)}
@@ -110,18 +120,20 @@ export default function HomePage() {
             >
               <div
                 style={{
-                  background: feature.gradient,
-                  padding: '32px 24px 24px',
+                  background: '#f7f9fc',
+                  padding: '28px 22px',
+                  minHeight: 120,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 16,
+                  borderBottom: '1px solid #f0f0f0',
                 }}
               >
                 <div
                   style={{
                     fontSize: 36,
-                    color: '#fff',
-                    background: 'rgba(255,255,255,0.2)',
+                    color: '#1677ff',
+                    background: '#eaf2ff',
                     borderRadius: 12,
                     width: 64,
                     height: 64,
@@ -133,11 +145,11 @@ export default function HomePage() {
                 >
                   {feature.icon}
                 </div>
-                <Title level={4} style={{ color: '#fff', margin: 0 }}>
+                <Title level={4} style={{ color: '#1f2937', margin: 0 }}>
                   {feature.title}
                 </Title>
               </div>
-              <div style={{ padding: '20px 24px 24px' }}>
+              <div style={{ padding: '20px 22px 24px', minHeight: 112 }}>
                 <Paragraph type="secondary" style={{ margin: 0, fontSize: 14, lineHeight: 1.8 }}>
                   {feature.description}
                 </Paragraph>

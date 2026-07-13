@@ -64,7 +64,7 @@ export default defineConfig(async () => {
       port: 5173,
       strictPort: true, // 强制使用 5173 端口，如果被占用则报错
       proxy: {
-        '/api': {
+        '^/api(?=/|$)': {
           target: backendTarget,
           changeOrigin: true,
           secure: false,

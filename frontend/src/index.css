@@ -27,3 +27,56 @@ body {
 .feedback-log-preview-tabs > .ant-tabs-content-holder {
   flex: 1;
 }
+
+.api-docs-page {
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.api-docs-title {
+  margin-bottom: 16px;
+}
+
+.api-docs-global-search {
+  margin-bottom: 16px;
+  border-color: #d6e4ff;
+  box-shadow: 0 2px 10px rgba(22, 119, 255, 0.06);
+}
+
+.api-docs-workspace {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.api-docs-sidebar {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 110px);
+  overflow: auto;
+}
+
+.api-docs-content {
+  min-width: 0;
+}
+
+.api-docs-service-header {
+  margin-bottom: 16px;
+}
+
+.api-docs-api-card .ant-card-head {
+  background: #fafafa;
+}
+
+@media (max-width: 900px) {
+  .api-docs-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .api-docs-sidebar {
+    position: static;
+    max-height: 260px;
+  }
+
+}

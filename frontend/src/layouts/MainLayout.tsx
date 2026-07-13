@@ -11,6 +11,7 @@ import {
   LogoutOutlined,
   CrownOutlined,
   BarChartOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 
@@ -77,6 +78,11 @@ export default function MainLayout() {
       key: '/devops',
       icon: <ToolOutlined />,
       label: 'DevOps 技能库',
+    },
+    {
+      key: '/api-docs',
+      icon: <ApiOutlined />,
+      label: 'API 接口',
     },
     {
       key: '/routes',
