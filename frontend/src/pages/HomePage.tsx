@@ -9,6 +9,11 @@ import {
   ToolOutlined,
   ApiOutlined,
   MobileOutlined,
+  CodeOutlined,
+  ExperimentOutlined,
+  CloudUploadOutlined,
+  SafetyCertificateOutlined,
+  RightOutlined,
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -98,18 +103,96 @@ const features: FeatureCard[] = [
   },
 ];
 
+const serviceChain = [
+  {
+    key: 'development',
+    title: '研发支撑',
+    description: '查工具用法、管组件、查接口',
+    icon: <CodeOutlined />,
+    services: [
+      { label: 'DevOps 技能库', path: '/devops' },
+      { label: 'Pods 组件', path: '/pods' },
+      { label: 'API 接口', path: '/api-docs' },
+    ],
+  },
+  {
+    key: 'integration',
+    title: '联调验证',
+    description: '调路由跳转、验证 JS SDK 能力',
+    icon: <ExperimentOutlined />,
+    services: [
+      { label: '路由管理', path: '/routes' },
+      { label: '跨端能力', path: '/cross-platform' },
+    ],
+  },
+  {
+    key: 'delivery',
+    title: '构建发布',
+    description: '自动构建、质检并发布应用',
+    icon: <CloudUploadOutlined />,
+    services: [
+      { label: 'CI/CD 管理', path: '/cicd' },
+      { label: '自动质检', path: '/cicd/quality' },
+    ],
+  },
+  {
+    key: 'operations',
+    title: '运行保障',
+    description: '查运行日志、定位线上崩溃',
+    icon: <SafetyCertificateOutlined />,
+    services: [
+      { label: '日志服务', path: '/logs' },
+      { label: 'Crash 服务', path: '/sentry-service' },
+    ],
+  },
+];
+
 export default function HomePage() {
   const navigate = useNavigate();
 
   return (
     <div style={{ padding: '20px 0' }}>
-      <div style={{ textAlign: 'center', marginBottom: 48 }}>
+      <div style={{ textAlign: 'center', marginBottom: 40 }}>
         <Title level={2} style={{ marginBottom: 8 }}>
           iOS 移动管理平台
         </Title>
         <Paragraph type="secondary" style={{ fontSize: 16 }}>
           一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、API 文档、DevOps 工具链、路由和跨端能力
         </Paragraph>
+
+        <section className="service-chain" aria-label="iOS 移动管理平台服务链">
+          <div className="service-chain-label">你可以用平台完成</div>
+          <div className="service-chain-flow">
+            {serviceChain.map((stage, index) => (
+              <div className="service-chain-segment" key={stage.key}>
+                <div className={`service-chain-stage service-chain-stage-${index + 1}`}>
+                  <div className="service-chain-stage-header">
+                    <span className="service-chain-stage-icon">{stage.icon}</span>
+                    <span>
+                      <span className="service-chain-stage-title">{stage.title}</span>
+                      <span className="service-chain-stage-description">{stage.description}</span>
+                    </span>
+                  </div>
+                  <div className="service-chain-services">
+                    {stage.services.map((service) => (
+                      <button
+                        type="button"
+                        className="service-chain-service"
+                        key={service.path}
+                        onClick={() => navigate(service.path)}
+                      >
+                        {service.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {index < serviceChain.length - 1 && (
+                  <RightOutlined className="service-chain-arrow" aria-hidden="true" />
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
 
       <Row gutter={[24, 24]} style={{ maxWidth: 1440, margin: '0 auto' }}>
