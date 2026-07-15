@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { adminMiddleware } from '../middleware/auth';
+import { getDatabase } from '../database';
 
 const router = Router();
 const sourceBase = 'https://test1-doc.nn.com';
@@ -44,6 +45,81 @@ const publicHeaders = {
   registerCanal: 'App Store',
 };
 
+function ensureApiDocRecordsTable(): void {
+  getDatabase().prepare(`
+    CREATE TABLE IF NOT EXISTS api_doc_view_records (
+      record_key TEXT PRIMARY KEY,
+      service TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      tag TEXT DEFAULT '',
+      view_count INTEGER NOT NULL DEFAULT 0,
+      last_viewed_at TEXT NOT NULL
+    )
+  `).run();
+}
+
+router.get('/records/list', (_req, res) => {
+  ensureApiDocRecordsTable();
+  const data = getDatabase().prepare(`
+    SELECT service, method, path, summary, tag, view_count AS viewCount, last_viewed_at AS lastViewedAt
+    FROM api_doc_view_records
+    ORDER BY last_viewed_at DESC
+    LIMIT 500
+  `).all();
+  res.json({ data });
+});
+
+router.post('/records/view', (req, res) => {
+  const { service, method, path: apiPath, summary = '', tag = '' } = req.body || {};
+  if (!sources[String(service)] || !method || !apiPath) {
+    res.status(400).json({ message: '接口记录参数无效' });
+    return;
+  }
+  ensureApiDocRecordsTable();
+  const normalizedMethod = String(method).toUpperCase();
+  const recordKey = `${service}:${normalizedMethod}:${apiPath}`;
+  const now = new Date().toISOString();
+  getDatabase().prepare(`
+    INSERT INTO api_doc_view_records (record_key, service, method, path, summary, tag, view_count, last_viewed_at)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(record_key) DO UPDATE SET
+      summary = excluded.summary,
+      tag = excluded.tag,
+      view_count = api_doc_view_records.view_count + 1,
+      last_viewed_at = excluded.last_viewed_at
+  `).run(recordKey, service, normalizedMethod, apiPath, String(summary), String(tag), now);
+  res.json({ success: true });
+});
+
+function normalizeApiSearchText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\/{2,}/g, '/')
+    .replace(/\/$/, '');
+}
+
+function makeSearchTokens(keyword: string, basePaths: string[]): string[] {
+  const normalizedKeyword = normalizeApiSearchText(keyword);
+  const tokens = normalizedKeyword.split(/\s+/).filter(Boolean);
+  return tokens.map((token) => {
+    const variants = new Set([token]);
+    basePaths.forEach((basePath) => {
+      const normalizedBasePath = normalizeApiSearchText(basePath);
+      if (normalizedBasePath && token.startsWith(`${normalizedBasePath}/`)) {
+        variants.add(token.slice(normalizedBasePath.length) || '/');
+      }
+    });
+    return Array.from(variants).join('\u0000');
+  });
+}
+
+function matchSearchToken(text: string, encodedVariants: string): boolean {
+  return encodedVariants.split('\u0000').some((variant) => text.includes(variant));
+}
+
 function cacheFile(service: string): string {
   return path.join(cacheDirectory, `${service}.json`);
 }
@@ -66,6 +142,16 @@ function writeCachedDocument(service: string, data: unknown): void {
   fs.mkdirSync(cacheDirectory, { recursive: true });
   fs.writeFileSync(cacheFile(service), JSON.stringify(data));
   cache.set(service, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
+}
+
+function readSearchDocument(service: string): unknown | undefined {
+  const cached = readCachedDocument(service);
+  if (cached) return cached.data;
+  try {
+    return JSON.parse(fs.readFileSync(cacheFile(service), 'utf8'));
+  } catch {
+    return undefined;
+  }
 }
 
 async function fetchDocument(service: string): Promise<unknown> {
@@ -91,30 +177,38 @@ async function fetchDocument(service: string): Promise<unknown> {
 }
 
 router.get('/search/all', async (req, res) => {
-  const keyword = String(req.query.q || '').trim().toLowerCase();
-  if (keyword.length < 2) {
-    res.json({ data: [], total: 0 });
-    return;
+  try {
+    const keyword = normalizeApiSearchText(String(req.query.q || ''));
+    if (keyword.length < 2) {
+      res.json({ data: [], total: 0 });
+      return;
+    }
+
+    const documents = Object.keys(sources).map((service) => {
+      const data = readSearchDocument(service);
+      return data
+        ? { status: 'fulfilled' as const, value: { service, data: data as { host?: string; basePath?: string; paths?: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[] }>> } } }
+        : { status: 'rejected' as const };
+    });
+    const basePaths = documents.flatMap((result) => result.status === 'fulfilled' && result.value.data.basePath ? [result.value.data.basePath] : []);
+    const tokens = makeSearchTokens(keyword, basePaths);
+
+    const results = documents.flatMap((result) => {
+      if (result.status !== 'fulfilled') return [];
+      const { service, data } = result.value;
+      return Object.entries(data.paths || {}).flatMap(([path, methods]) => Object.entries(methods).flatMap(([method, operation]) => {
+        const fullPath = `${data.basePath || ''}${path}`;
+        const text = normalizeApiSearchText(`${fullPath} ${path} ${operation.summary || ''} ${operation.operationId || ''} ${(operation.tags || []).join(' ')}`);
+        if (!tokens.every((token) => matchSearchToken(text, token))) return [];
+        return [{ service, basePath: data.basePath || '', path, method: method.toUpperCase(), summary: operation.summary || '', operationId: operation.operationId || '', tag: operation.tags?.[0] || '其他' }];
+      }));
+    });
+
+    res.json({ data: results.slice(0, 200), total: results.length });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '全局查询失败';
+    res.status(500).json({ message });
   }
-
-  const tokens = keyword.split(/\s+/).filter(Boolean);
-  const documents = await Promise.allSettled(Object.keys(sources).map(async (service) => {
-    const cached = readCachedDocument(service);
-    const data = cached && cached.expiresAt > Date.now() ? cached.data : await fetchDocument(service);
-    return { service, data: data as { host?: string; basePath?: string; paths?: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[] }>> } };
-  }));
-
-  const results = documents.flatMap((result) => {
-    if (result.status !== 'fulfilled') return [];
-    const { service, data } = result.value;
-    return Object.entries(data.paths || {}).flatMap(([path, methods]) => Object.entries(methods).flatMap(([method, operation]) => {
-      const text = `${path} ${operation.summary || ''} ${operation.operationId || ''} ${(operation.tags || []).join(' ')}`.toLowerCase();
-      if (!tokens.every((token) => text.includes(token))) return [];
-      return [{ service, basePath: data.basePath || '', path, method: method.toUpperCase(), summary: operation.summary || '', operationId: operation.operationId || '', tag: operation.tags?.[0] || '其他' }];
-    }));
-  });
-
-  res.json({ data: results.slice(0, 200), total: results.length });
 });
 
 router.post('/sync/all', adminMiddleware, async (_req, res) => {

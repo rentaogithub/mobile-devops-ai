@@ -18,6 +18,7 @@ import {
   opUserApi,
   OpFeedbackLogInfo,
   OpUserInfo,
+  RtcLogRetrieveTaskInfo,
   userQueryRecordApi,
   UserQueryRecord,
   watermarkApi,
@@ -62,6 +63,41 @@ const formatWatermarkTimeSource = (source?: string, field?: string, reliable?: b
   return `${sourceName}${fieldText}（${reliableText}）`;
 };
 
+const parseDateOnlyTime = (value?: string) => {
+  if (!value) {
+    return 0;
+  }
+  const normalized = value.match(/\d{4}-\d{2}-\d{2}/)?.[0] || '';
+  if (!normalized) {
+    return 0;
+  }
+  const timestamp = new Date(`${normalized}T00:00:00`).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const isActiveRtcRetrieveTask = (task: RtcLogRetrieveTaskInfo) => {
+  const statusText = String(task.status_dictText || task.status || '');
+  if (statusText && !['1', '正常'].includes(statusText)) {
+    return false;
+  }
+
+  const today = new Date();
+  const todayTime = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const rangeText = [
+    task.taskTime,
+    task.beginTime,
+    (task as Record<string, unknown>).taskDate,
+    (task as Record<string, unknown>).timeRange,
+  ].map((value) => String(value || '')).find((value) => value.includes('~')) || '';
+  const rangeDates = rangeText.match(/\d{4}-\d{2}-\d{2}/g) || [];
+  const beginTime = parseDateOnlyTime(rangeDates[0] || task.beginTime);
+  const endTime = parseDateOnlyTime(rangeDates[1] || task.endTime);
+  if (beginTime && endTime) {
+    return beginTime <= todayTime && todayTime <= endTime;
+  }
+  return true;
+};
+
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const highlightText = (value: string, keyword: string) => {
@@ -99,6 +135,9 @@ export default function LogsPage() {
   const [downloadingFeedbackLogId, setDownloadingFeedbackLogId] = useState('');
   const [previewingFeedbackLogId, setPreviewingFeedbackLogId] = useState('');
   const [analyzingFeedbackLogId, setAnalyzingFeedbackLogId] = useState('');
+  const [creatingRtcRetrieveUid, setCreatingRtcRetrieveUid] = useState('');
+  const [checkingRtcRetrieveUid, setCheckingRtcRetrieveUid] = useState('');
+  const [activeRtcRetrieveTaskUid, setActiveRtcRetrieveTaskUid] = useState('');
   const [feedbackLogPreviewOpen, setFeedbackLogPreviewOpen] = useState(false);
   const [feedbackLogPreview, setFeedbackLogPreview] = useState<FeedbackLogPreviewResult | null>(null);
   const [feedbackLogActiveFilePath, setFeedbackLogActiveFilePath] = useState('');
@@ -193,6 +232,45 @@ export default function LogsPage() {
     }
   };
 
+  const createRtcLogRetrieveTask = async (uid?: string | number) => {
+    if (!uid) {
+      message.warning('当前用户没有 UID');
+      return;
+    }
+
+    const targetUid = String(uid);
+    setCreatingRtcRetrieveUid(targetUid);
+    try {
+      await opUserApi.createRtcLogRetrieveTask(targetUid);
+      setActiveRtcRetrieveTaskUid(targetUid);
+      message.success('日志回捞任务已创建');
+    } catch (error: any) {
+      message.error(error?.message || error?.error || '创建日志回捞任务失败');
+    } finally {
+      setCreatingRtcRetrieveUid('');
+    }
+  };
+
+  const checkRtcLogRetrieveTask = async (uid?: string | number) => {
+    if (!uid) {
+      setActiveRtcRetrieveTaskUid('');
+      return;
+    }
+
+    const targetUid = String(uid);
+    setCheckingRtcRetrieveUid(targetUid);
+    try {
+      const result = await opUserApi.rtcLogRetrieveTasks(targetUid, 1, 10);
+      const hasActiveTask = result.total > 0 || result.records.length > 0 || result.records.some(isActiveRtcRetrieveTask);
+      setActiveRtcRetrieveTaskUid(hasActiveTask ? targetUid : '');
+    } catch (error: any) {
+      setActiveRtcRetrieveTaskUid('');
+      message.error(error?.message || error?.error || '查询日志回捞任务失败');
+    } finally {
+      setCheckingRtcRetrieveUid('');
+    }
+  };
+
   const handleWatermarkUpload = async (options: any) => {
     const file = options.file as File;
     setWatermarkLoading(true);
@@ -281,6 +359,7 @@ export default function LogsPage() {
     setFeedbackLogUid(keyword);
     setFeedbackLogSearchSubmitted(true);
     queryFeedbackLogs(keyword);
+    checkRtcLogRetrieveTask(keyword);
   };
 
   const openFeedbackLogModal = (uid?: string | number) => {
@@ -289,8 +368,10 @@ export default function LogsPage() {
       return;
     }
     setFeedbackLogUid(uid);
+    setActiveRtcRetrieveTaskUid('');
     setFeedbackLogModalOpen(true);
     queryFeedbackLogs(uid);
+    checkRtcLogRetrieveTask(uid);
   };
 
   const downloadFeedbackLog = async (record: OpFeedbackLogInfo) => {
@@ -500,13 +581,6 @@ export default function LogsPage() {
       dataIndex: 'telNum',
       key: 'telNum',
       width: 140,
-      render: (value: string) => value || '-',
-    },
-    {
-      title: '邮箱',
-      dataIndex: 'email',
-      key: 'email',
-      width: 180,
       render: (value: string) => value || '-',
     },
     {
@@ -886,15 +960,32 @@ export default function LogsPage() {
         width={980}
         destroyOnHidden
       >
-        <Table<OpFeedbackLogInfo>
-          bordered
-          size="small"
-          rowKey={(record, index) => String(record.id || `${record.userId || feedbackLogUid}-${record.crashTime || index}`)}
-          columns={feedbackLogColumns}
-          dataSource={feedbackLogList}
-          loading={feedbackLogLoading}
-          pagination={false}
-        />
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Button
+            type="primary"
+            disabled={
+              !feedbackLogUid ||
+              activeRtcRetrieveTaskUid === String(feedbackLogUid || '') ||
+              checkingRtcRetrieveUid === String(feedbackLogUid || '')
+            }
+            loading={
+              creatingRtcRetrieveUid === String(feedbackLogUid || '') ||
+              checkingRtcRetrieveUid === String(feedbackLogUid || '')
+            }
+            onClick={() => createRtcLogRetrieveTask(feedbackLogUid)}
+          >
+            {activeRtcRetrieveTaskUid === String(feedbackLogUid || '') ? '已有回捞任务' : '日志回捞'}
+          </Button>
+          <Table<OpFeedbackLogInfo>
+            bordered
+            size="small"
+            rowKey={(record, index) => String(record.id || `${record.userId || feedbackLogUid}-${record.crashTime || index}`)}
+            columns={feedbackLogColumns}
+            dataSource={feedbackLogList}
+            loading={feedbackLogLoading}
+            pagination={false}
+          />
+        </Space>
       </Modal>
       <Modal
         title="查看反馈日志"

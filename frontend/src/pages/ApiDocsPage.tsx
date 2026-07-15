@@ -1,7 +1,8 @@
-import { ApiOutlined, CodeOutlined, CopyOutlined, LinkOutlined, PlayCircleOutlined, SearchOutlined, SettingOutlined, SyncOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Collapse, Empty, Input, InputNumber, Menu, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
+import { ApiOutlined, CodeOutlined, HistoryOutlined, LinkOutlined, PlayCircleOutlined, SearchOutlined, SettingOutlined, ShareAltOutlined, SyncOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Empty, Input, InputNumber, Menu, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
 import axios from 'axios';
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -17,6 +18,7 @@ type RequestResult = { status: number; statusText: string; duration: number; url
 type RequestEnvironment = 'release' | 'test' | 'test1';
 type EnvironmentTokens = Record<RequestEnvironment, string>;
 type ResponseCodeSummary = { code: string; descriptions: string[]; interfaces: { method: string; path: string; summary: string }[] };
+type ApiViewRecord = { service: keyof typeof services; method: string; path: string; summary: string; tag: string; viewCount: number; lastViewedAt: string };
 
 const services = {
   'user-query': { name: '用户查询服务', source: 'https://test1-doc.nn.com/doc.html#/用户查询服务' },
@@ -200,7 +202,32 @@ const updateValueAtPath = (config: RequestConfig, section: keyof RequestConfig, 
   return next;
 };
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 回退到 textarea 复制。
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'true');
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-9999px';
+  textArea.style.top = '0';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textArea);
+  return copied;
+}
+
 export default function ApiDocsPage() {
+  const [searchParams] = useSearchParams();
   const [service, setService] = useState<keyof typeof services>('user-query');
   const [doc, setDoc] = useState<SwaggerDoc>();
   const [loading, setLoading] = useState(false);
@@ -213,6 +240,8 @@ export default function ApiDocsPage() {
   const [globalSearching, setGlobalSearching] = useState(false);
   const [searchMode, setSearchMode] = useState<'global' | 'service'>('global');
   const [requestApi, setRequestApi] = useState<ApiItem>();
+  const [requestService, setRequestService] = useState<keyof typeof services>('user-query');
+  const [requestDoc, setRequestDoc] = useState<SwaggerDoc>();
   const [requestEnvironment, setRequestEnvironment] = useState<RequestEnvironment>('test');
   const [environmentTokens, setEnvironmentTokens] = useState<EnvironmentTokens>(readEnvironmentTokens);
   const [tokenSettingsOpen, setTokenSettingsOpen] = useState(false);
@@ -225,6 +254,10 @@ export default function ApiDocsPage() {
   const [requestConfig, setRequestConfig] = useState<RequestConfig>({ headers: {}, query: {}, pathParams: {} });
   const [requesting, setRequesting] = useState(false);
   const [requestResult, setRequestResult] = useState<RequestResult>();
+  const [recordsOpen, setRecordsOpen] = useState(false);
+  const [recordsLoading, setRecordsLoading] = useState(false);
+  const [records, setRecords] = useState<ApiViewRecord[]>([]);
+  const [recordSearch, setRecordSearch] = useState('');
   const isAdmin = authUtils.isAdmin();
   const pageSize = 20;
 
@@ -235,6 +268,36 @@ export default function ApiDocsPage() {
       .catch((reason) => setError(reason.response?.data?.message || reason.message || '加载失败'))
       .finally(() => setLoading(false));
   }, [service]);
+
+  useEffect(() => {
+    const sharedService = searchParams.get('service') as keyof typeof services | null;
+    const sharedMethod = searchParams.get('method')?.toUpperCase();
+    const sharedPath = searchParams.get('path');
+    if (!sharedService || !services[sharedService] || !sharedMethod || !sharedPath) {
+      return;
+    }
+
+    setService(sharedService);
+    setDetailLoading(true);
+    setDetailService(sharedService);
+    setDetailApi(undefined);
+    setDetailDoc(undefined);
+    axios.get<SwaggerDoc>(`/api/api-docs/${sharedService}`, { timeout: 45_000 })
+      .then(({ data }) => {
+        const operation = data.paths?.[sharedPath]?.[sharedMethod.toLowerCase()];
+        if (!operation) throw new Error('接口详情不存在');
+        setDetailDoc(data);
+        const api = { ...operation, path: sharedPath, method: sharedMethod, tag: operation.tags?.[0] || '其他' };
+        setDetailApi(api);
+        void trackApiView(sharedService, api);
+      })
+      .catch((reason) => {
+        const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : reason instanceof Error ? reason.message : '加载接口详情失败';
+        message.error(errorMessage);
+        setDetailService(undefined);
+      })
+      .finally(() => setDetailLoading(false));
+  }, []);
 
   useEffect(() => {
     const query = keyword.trim();
@@ -257,9 +320,9 @@ export default function ApiDocsPage() {
   const apis = useMemo<ApiItem[]>(() => doc ? Object.entries(doc.paths).flatMap(([path, methods]) =>
     Object.entries(methods).map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase(), tag: operation.tags?.[0] || '其他' }))) : [], [doc]);
   const filteredApis = useMemo(() => apis.filter((api) => {
-    const text = `${api.path} ${api.summary} ${api.operationId} ${api.tag}`.toLowerCase();
+    const text = `${doc?.basePath || ''}${api.path} ${api.path} ${api.summary} ${api.operationId} ${api.tag}`.toLowerCase();
     return text.includes(keyword.trim().toLowerCase());
-  }), [apis, keyword]);
+  }), [apis, doc?.basePath, keyword]);
   const pagedApis = useMemo(() => filteredApis.slice((page - 1) * pageSize, page * pageSize), [filteredApis, page]);
   const responseCodeSummaries = useMemo<ResponseCodeSummary[]>(() => {
     const summaries = new Map<string, ResponseCodeSummary>();
@@ -282,8 +345,7 @@ export default function ApiDocsPage() {
     const value = responseCodeSearch.trim().toLowerCase();
     return businessResponseCodes.filter((item) => !value || `${item.code} ${item.description}`.toLowerCase().includes(value));
   }, [responseCodeSearch]);
-  const fullUrl = (path: string) => `https://${doc?.host || 'test1-doc.nn.com'}${doc?.basePath || ''}${path}`;
-  const originalDocumentUrl = (api: ApiItem) => `${services[service].source}/${encodeURIComponent(api.tag)}/${encodeURIComponent(api.operationId || api.path)}`;
+  const originalDocumentUrl = (api: ApiItem, targetService: keyof typeof services = service) => `${services[targetService].source}/${encodeURIComponent(api.tag)}/${encodeURIComponent(api.operationId || api.path)}`;
   const syncAllDocuments = async () => {
     setSyncing(true);
     try {
@@ -305,16 +367,18 @@ export default function ApiDocsPage() {
       setSyncing(false);
     }
   };
-  const openRequest = (api: ApiItem) => {
+  const openRequest = (api: ApiItem, targetService: keyof typeof services = service, targetDoc: SwaggerDoc | undefined = doc) => {
     const environment: RequestEnvironment = 'test';
     setRequestApi(api);
+    setRequestService(targetService);
+    setRequestDoc(targetDoc);
     setRequestEnvironment(environment);
-    const saved = localStorage.getItem(`api_request_config:${service}:${api.method}:${api.path}:${environment}`);
-    setRequestConfig(saved ? JSON.parse(saved) : createRequestConfig(api, doc?.definitions || {}));
+    const saved = localStorage.getItem(`api_request_config:${targetService}:${api.method}:${api.path}:${environment}`);
+    setRequestConfig(saved ? JSON.parse(saved) : createRequestConfig(api, targetDoc?.definitions || {}));
     setRequestResult(undefined);
   };
   const requestConfigKey = (environment: RequestEnvironment, api = requestApi) => api
-    ? `api_request_config:${service}:${api.method}:${api.path}:${environment}`
+    ? `api_request_config:${requestService}:${api.method}:${api.path}:${environment}`
     : '';
   const changeRequestEnvironment = (environment: RequestEnvironment) => {
     const currentKey = requestConfigKey(requestEnvironment);
@@ -322,7 +386,7 @@ export default function ApiDocsPage() {
     setRequestEnvironment(environment);
     const nextKey = requestConfigKey(environment);
     const saved = nextKey && localStorage.getItem(nextKey);
-    setRequestConfig(saved ? JSON.parse(saved) : requestApi ? createRequestConfig(requestApi, doc?.definitions || {}) : { headers: {}, query: {}, pathParams: {} });
+    setRequestConfig(saved ? JSON.parse(saved) : requestApi ? createRequestConfig(requestApi, requestDoc?.definitions || {}) : { headers: {}, query: {}, pathParams: {} });
     setRequestResult(undefined);
   };
   const saveTokenSettings = () => {
@@ -338,7 +402,7 @@ export default function ApiDocsPage() {
       setRequesting(true);
       const configKey = requestConfigKey(requestEnvironment);
       if (configKey) localStorage.setItem(configKey, JSON.stringify(requestConfig));
-      const { data } = await axios.post<RequestResult>(`/api/api-docs/request/${service}`, {
+      const { data } = await axios.post<RequestResult>(`/api/api-docs/request/${requestService}`, {
         environment: requestEnvironment,
         path: requestApi.path,
         method: requestApi.method,
@@ -363,7 +427,9 @@ export default function ApiDocsPage() {
       const operation = data.paths?.[item.path]?.[item.method.toLowerCase()];
       if (!operation) throw new Error('接口详情不存在');
       setDetailDoc(data);
-      setDetailApi({ ...operation, path: item.path, method: item.method, tag: operation.tags?.[0] || item.tag || '其他' });
+      const api = { ...operation, path: item.path, method: item.method, tag: operation.tags?.[0] || item.tag || '其他' };
+      setDetailApi(api);
+      void trackApiView(item.service, api);
     } catch (reason) {
       const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : reason instanceof Error ? reason.message : '加载接口详情失败';
       message.error(errorMessage);
@@ -371,6 +437,81 @@ export default function ApiDocsPage() {
     } finally {
       setDetailLoading(false);
     }
+  };
+  const openCurrentDetail = (api: ApiItem) => {
+    setDetailService(service);
+    setDetailDoc(doc);
+    setDetailApi(api);
+    void trackApiView(service, api);
+  };
+  const trackApiView = async (targetService: keyof typeof services, api: ApiItem) => {
+    try {
+      await axios.post('/api/api-docs/records/view', { service: targetService, method: api.method, path: api.path, summary: api.summary || '', tag: api.tag || '' });
+    } catch {
+      // 查询记录失败不影响接口详情展示。
+    }
+  };
+  const loadRecords = async () => {
+    setRecordsOpen(true);
+    setRecordsLoading(true);
+    try {
+      const { data } = await axios.get<{ data: ApiViewRecord[] }>('/api/api-docs/records/list');
+      setRecords(data.data);
+    } catch {
+      message.error('查询记录加载失败');
+    } finally {
+      setRecordsLoading(false);
+    }
+  };
+  const filteredRecords = records.filter((record) => {
+    const value = recordSearch.trim().toLowerCase();
+    return !value || `${services[record.service]?.name || record.service} ${record.method} ${record.path} ${record.summary} ${record.tag}`.toLowerCase().includes(value);
+  });
+  const openRecordDetail = async (record: ApiViewRecord) => {
+    setRecordsOpen(false);
+    await openGlobalDetail({ ...record, basePath: '', operationId: '' });
+  };
+  const shareCurrentApi = async (api: ApiItem) => {
+    const url = new URL('/api-docs', window.location.origin);
+    url.searchParams.set('service', service);
+    url.searchParams.set('method', api.method);
+    url.searchParams.set('path', api.path);
+    const summary = api.summary || api.operationId || 'API 接口';
+    const titleParts = [summary, api.tag].filter((item, index, array) => item && array.indexOf(item) === index);
+    const copied = await copyTextToClipboard([
+      titleParts.join('，'),
+      `API接口: ${doc?.basePath || ''}${api.path}`,
+      `API文档: ${url.toString()}`,
+    ].join('\n'));
+    if (copied) message.success('分享内容已复制');
+    else message.error('复制失败，请手动复制分享内容');
+  };
+  const globalItemToApi = (item: GlobalSearchItem): ApiItem => ({
+    path: item.path,
+    method: item.method,
+    summary: item.summary,
+    operationId: item.operationId,
+    tag: item.tag,
+  });
+  const openGlobalRequest = async (item: GlobalSearchItem) => {
+    try {
+      const { data } = await axios.get<SwaggerDoc>(`/api/api-docs/${item.service}`, { timeout: 45_000 });
+      const operation = data.paths?.[item.path]?.[item.method.toLowerCase()];
+      openRequest(operation ? { ...operation, path: item.path, method: item.method, tag: operation.tags?.[0] || item.tag } : globalItemToApi(item), item.service, data);
+    } catch (reason) {
+      const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : '加载在线请求配置失败';
+      message.error(errorMessage);
+    }
+  };
+  const shareGlobalApi = async (item: GlobalSearchItem) => {
+    const url = new URL('/api-docs', window.location.origin);
+    url.searchParams.set('service', item.service);
+    url.searchParams.set('method', item.method);
+    url.searchParams.set('path', item.path);
+    const titleParts = [item.summary || item.operationId || 'API 接口', item.tag].filter((value, index, array) => value && array.indexOf(value) === index);
+    const copied = await copyTextToClipboard([titleParts.join('，'), `API接口: ${item.basePath}${item.path}`, `API文档: ${url.toString()}`].join('\n'));
+    if (copied) message.success('分享内容已复制');
+    else message.error('复制失败，请手动复制分享内容');
   };
 
   return <div className="api-docs-page">
@@ -380,6 +521,7 @@ export default function ApiDocsPage() {
         <Space>
           <Button size="large" icon={<SettingOutlined />} onClick={() => setTokenSettingsOpen(true)}>请求配置</Button>
           <Button size="large" icon={<CodeOutlined />} onClick={() => setResponseCodesOpen(true)}>响应码查询</Button>
+          <Button size="large" icon={<HistoryOutlined />} onClick={loadRecords}>查询记录</Button>
           {isAdmin && <Button type="primary" size="large" icon={<SyncOutlined spin={syncing} />} loading={syncing} onClick={syncAllDocuments}>同步API</Button>}
         </Space>
       </Space>
@@ -415,7 +557,14 @@ export default function ApiDocsPage() {
           <Spin spinning={globalSearching}><Space direction="vertical" size={10} style={{ width: '100%' }}>
             {!globalSearching && globalResults.length === 0 && <Empty description="没有找到匹配的接口" />}
             {globalResults.map((item) => <Card key={`${item.service}-${item.method}-${item.path}`} size="small" hoverable onClick={() => openGlobalDetail(item)}>
-              <Space wrap><Tag color={item.method === 'GET' ? 'blue' : 'green'}>{item.method}</Tag><Tag color="purple">{services[item.service]?.name || item.service}</Tag><Text code>{`${item.basePath}${item.path}`}</Text><Text strong>{item.summary}</Text><Text type="secondary">{item.tag}</Text></Space>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+                <Space wrap><Tag color={item.method === 'GET' ? 'blue' : 'green'}>{item.method}</Tag><Tag color="purple">{services[item.service]?.name || item.service}</Tag><Text code>{`${item.basePath}${item.path}`}</Text><Text strong>{item.summary}</Text><Text type="secondary">{item.tag}</Text></Space>
+                <Space onClick={(event) => event.stopPropagation()}>
+                  <Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(globalItemToApi(item), item.service)} target="_blank">原始文档</Button>
+                  <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openGlobalRequest(item)}>在线请求</Button>
+                  <Button type="text" icon={<ShareAltOutlined />} onClick={() => shareGlobalApi(item)}>分享</Button>
+                </Space>
+              </div>
             </Card>)}
           </Space></Spin>
         </> : <>
@@ -426,41 +575,34 @@ export default function ApiDocsPage() {
         {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} />}
         <Spin spinning={loading}><Space direction="vertical" size={12} style={{ width: '100%' }}>
       {!loading && filteredApis.length === 0 && <Empty description="没有匹配的接口" />}
-      {pagedApis.map((api) => {
-        const businessParameters = (api.parameters || []).filter((parameter) => parameter.in !== 'header');
-        const expandedBusinessParameters = requestFields(businessParameters, doc?.definitions || {});
-        const commonResponseStatuses = new Set(['200', '201', '401', '403', '404']);
-        const customResponses = Object.entries(api.responses || {}).filter(([code]) => !commonResponseStatuses.has(code));
-        return <Card className="api-docs-api-card" key={`${api.method}-${api.path}`} title={<Space wrap><Tag color={api.method === 'GET' ? 'blue' : 'green'}>{api.method}</Tag><Text code>{`${doc?.basePath || ''}${api.path}`}</Text><Text strong>{api.summary}</Text></Space>}
-        extra={<Space><Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(api)} target="_blank">原始文档</Button><Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openRequest(api)}>在线请求</Button><Button type="text" icon={<CopyOutlined />} onClick={() => navigator.clipboard.writeText(fullUrl(api.path)).then(() => message.success('接口地址已复制'))}>复制地址</Button></Space>}>
-        <Collapse items={[
-          ...(expandedBusinessParameters.length ? [{ key: 'parameters', label: '请求参数', children: <Table rowKey={(row) => `${row.in}-${row.name}`} size="small" pagination={false} columns={parameterColumns} dataSource={expandedBusinessParameters} scroll={{ x: 800 }} /> }] : []),
-          ...(customResponses.length ? [{ key: 'status', label: `响应状态（${customResponses.length}）`, children: <Table
-            rowKey="code"
-            size="small"
-            pagination={false}
-            dataSource={customResponses.map(([code, value]) => ({ code, description: value.description || '-' }))}
-            columns={[
-              { title: 'HTTP 状态码', dataIndex: 'code', width: 160, render: (value: string) => <Tag color={value === '200' ? 'green' : value.startsWith('4') || value.startsWith('5') ? 'red' : 'blue'}>{value}</Tag> },
-              { title: '状态说明', dataIndex: 'description' },
-            ]}
-          /> }] : []),
-          { key: 'responses', label: '响应参数', children: <Space direction="vertical" size={12} style={{ width: '100%' }}>
-            {Object.entries(api.responses || {}).filter(([, value]) => Boolean(value.schema)).map(([code, value]) => {
-              const fields = value.schema ? nestedRequestFields(value.schema, doc?.definitions || {}) : [];
-              return fields.length > 0
-                ? <Table key={code} rowKey="name" size="small" pagination={false} columns={responseFieldColumns} dataSource={fields} scroll={{ x: 800 }} />
-                : null;
-            })}
-          </Space> },
-        ]} />
-      </Card>;})}
+      {pagedApis.map((api) => <Card
+        className="api-docs-api-card"
+        key={`${api.method}-${api.path}`}
+        size="small"
+        hoverable
+        onClick={() => openCurrentDetail(api)}
+        styles={{ body: { padding: '12px 16px' } }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+          <Space wrap>
+            <Tag color={api.method === 'GET' ? 'blue' : 'green'}>{api.method}</Tag>
+            <Text code>{`${doc?.basePath || ''}${api.path}`}</Text>
+            <Text strong>{api.summary}</Text>
+            <Text type="secondary">{api.tag}</Text>
+          </Space>
+          <Space onClick={(event) => event.stopPropagation()}>
+            <Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(api)} target="_blank">原始文档</Button>
+            <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openRequest(api)}>在线请求</Button>
+            <Button type="text" icon={<ShareAltOutlined />} onClick={() => shareCurrentApi(api)}>分享</Button>
+          </Space>
+        </div>
+      </Card>)}
       {filteredApis.length > pageSize && <Pagination current={page} pageSize={pageSize} total={filteredApis.length} showSizeChanger={false} showQuickJumper onChange={setPage} style={{ alignSelf: 'center', paddingTop: 8 }} />}
         </Space></Spin>
         </>}
       </main>
     </div>
-    <Modal title={requestApi ? `在线请求：${requestApi.method} ${doc?.basePath || ''}${requestApi.path}` : '在线请求'} open={Boolean(requestApi)} onCancel={() => setRequestApi(undefined)} width={900} footer={null} destroyOnHidden>
+    <Modal title={requestApi ? `在线请求：${requestApi.method} ${requestDoc?.basePath || ''}${requestApi.path}` : '在线请求'} open={Boolean(requestApi)} onCancel={() => setRequestApi(undefined)} width={900} footer={null} destroyOnHidden>
       <Space direction="vertical" size={14} style={{ width: '100%' }}>
         <Space wrap style={{ width: '100%' }}>
           <Select value={requestEnvironment} onChange={changeRequestEnvironment} style={{ width: 220 }} options={[{ value: 'release', label: 'release 环境' }, { value: 'test', label: 'test 环境（默认）' }, { value: 'test1', label: 'test1 环境' }]} />
@@ -518,8 +660,33 @@ export default function ApiDocsPage() {
         ]} /> },
       ]} />
     </Modal>
+    <Modal title="接口查询记录" open={recordsOpen} onCancel={() => setRecordsOpen(false)} footer={null} width={1100}>
+      <Input allowClear prefix={<SearchOutlined />} placeholder="查询服务、接口名称或路径" value={recordSearch} onChange={(event) => setRecordSearch(event.target.value)} style={{ marginBottom: 16 }} />
+      <Table
+        rowKey={(record) => `${record.service}-${record.method}-${record.path}`}
+        loading={recordsLoading}
+        size="small"
+        dataSource={filteredRecords}
+        pagination={{ pageSize: 20, showSizeChanger: false }}
+        onRow={(record) => ({ onClick: () => openRecordDetail(record), style: { cursor: 'pointer' } })}
+        columns={[
+          { title: '服务', dataIndex: 'service', width: 210, render: (value: keyof typeof services) => <Tag color="purple">{services[value]?.name || value}</Tag> },
+          { title: '方式', dataIndex: 'method', width: 90, render: (value: string) => <Tag color={value === 'GET' ? 'blue' : 'green'}>{value}</Tag> },
+          { title: '接口路径', dataIndex: 'path', render: (value: string) => <Text code>{value}</Text> },
+          { title: '接口名称', dataIndex: 'summary' },
+          { title: '访问次数', dataIndex: 'viewCount', width: 100, sorter: (a: ApiViewRecord, b: ApiViewRecord) => a.viewCount - b.viewCount },
+          { title: '最近访问', dataIndex: 'lastViewedAt', width: 180, render: (value: string) => new Date(value).toLocaleString('zh-CN') },
+        ]}
+      />
+    </Modal>
     <Modal
-      title={detailApi && detailService ? <Space wrap><Tag color={detailApi.method === 'GET' ? 'blue' : 'green'}>{detailApi.method}</Tag><Text code>{`${detailDoc?.basePath || ''}${detailApi.path}`}</Text><Text strong>{detailApi.summary}</Text></Space> : '接口详情'}
+      title={detailApi && detailService ? (
+        <Space wrap>
+          <Tag color={detailApi.method === 'GET' ? 'blue' : 'green'}>{detailApi.method}</Tag>
+          <Text code>{`${detailDoc?.basePath || ''}${detailApi.path}`}</Text>
+          <Text strong>{detailApi.summary}</Text>
+        </Space>
+      ) : '接口详情'}
       open={Boolean(detailService)}
       onCancel={() => { setDetailService(undefined); setDetailApi(undefined); setDetailDoc(undefined); }}
       footer={null}
@@ -536,7 +703,11 @@ export default function ApiDocsPage() {
             {customResponses.length > 0 && <Card size="small" title="响应状态"><Table rowKey="code" size="small" pagination={false} dataSource={customResponses.map(([code, value]) => ({ code, description: value.description || '-' }))} columns={[{ title: 'HTTP 状态码', dataIndex: 'code', width: 160, render: (value: string) => <Tag color={value.startsWith('4') || value.startsWith('5') ? 'red' : 'blue'}>{value}</Tag> }, { title: '状态说明', dataIndex: 'description' }]} /></Card>}
             {Object.entries(detailApi.responses || {}).filter(([, value]) => Boolean(value.schema)).map(([code, value]) => {
               const fields = value.schema ? nestedRequestFields(value.schema, detailDoc.definitions || {}) : [];
-              return fields.length ? <Card key={code} size="small" title="响应参数"><Table rowKey={(row) => `${row.name}-${row.level}`} size="small" pagination={false} columns={responseFieldColumns} dataSource={fields} scroll={{ x: 800 }} /></Card> : null;
+              const jsonExample = value.schema ? sampleValue(value.schema, detailDoc.definitions || {}) : null;
+              return fields.length ? <Card key={code} size="small" title="响应参数"><Tabs items={[
+                { key: 'table', label: '参数表格', children: <Table rowKey={(row) => `${row.name}-${row.level}`} size="small" pagination={false} columns={responseFieldColumns} dataSource={fields} scroll={{ x: 800 }} /> },
+                { key: 'json', label: 'JSON 格式', children: <pre style={{ margin: 0, padding: 16, borderRadius: 8, background: '#f6f8fa', overflow: 'auto', maxHeight: 520 }}>{JSON.stringify(jsonExample, null, 2)}</pre> },
+              ]} /></Card> : null;
             })}
           </Space>;
         })()}

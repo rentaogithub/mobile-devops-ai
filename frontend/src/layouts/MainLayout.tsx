@@ -12,6 +12,7 @@ import {
   CrownOutlined,
   BarChartOutlined,
   ApiOutlined,
+  MobileOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 
@@ -88,6 +89,11 @@ export default function MainLayout() {
       key: '/routes',
       icon: <NodeIndexOutlined />,
       label: '路由管理',
+    },
+    {
+      key: '/cross-platform',
+      icon: <MobileOutlined />,
+      label: '跨端能力',
     },
     ...(isAdmin ? [{
       key: '/access-stats',

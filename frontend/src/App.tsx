@@ -17,6 +17,7 @@ import LoginPage from './pages/LoginPage';
 import SentryServicePage from './pages/SentryServicePage';
 import AccessStatsPage from './pages/AccessStatsPage';
 import ApiDocsPage from './pages/ApiDocsPage';
+import CrossPlatformPage from './pages/CrossPlatformPage';
 import { authUtils } from './utils/auth';
 import { accessStatsApi } from './services/api';
 
@@ -68,6 +69,8 @@ function App() {
             <Route path="routes" element={<RoutesPage />} />
             {/* API 接口文档 */}
             <Route path="api-docs" element={<ApiDocsPage />} />
+            {/* 跨端能力 */}
+            <Route path="cross-platform" element={<CrossPlatformPage />} />
             {/* 访问统计 */}
             <Route path="access-stats" element={<AccessStatsPage />} />
           </Route>

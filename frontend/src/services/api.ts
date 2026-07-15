@@ -284,6 +284,24 @@ export interface OpFeedbackLogInfo {
   createTime?: string;
 }
 
+export interface RtcLogRetrieveTaskInfo {
+  id?: string;
+  userId?: string | number;
+  beginTime?: string;
+  endTime?: string;
+  taskTime?: string;
+  status?: string | number;
+  status_dictText?: string;
+  reqChannelStatus?: string;
+}
+
+export interface RtcLogRetrieveTaskListResult {
+  records: RtcLogRetrieveTaskInfo[];
+  total: number;
+  pageNo: number;
+  pageSize: number;
+}
+
 export interface FeedbackLogPreviewFile {
   name: string;
   path: string;
@@ -369,6 +387,13 @@ const toOpErrorMessage = (error: any, fallback: string): string => {
   return payload?.message || payload?.error || error?.message || fallback;
 };
 
+const formatOpDate = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 export const opUserApi = {
   list: async (searchkey: string, pageNo = 1, pageSize = 10): Promise<OpUserListResult> => {
     await syncCurrentOpAccessToken();
@@ -439,6 +464,83 @@ export const opUserApi = {
     }
 
     const result = payload?.result || payload?.data || payload;
+    const records = Array.isArray(result?.records)
+      ? result.records
+      : Array.isArray(result)
+        ? result
+        : [];
+
+    return {
+      records,
+      total: Number(result?.total ?? records.length),
+      pageNo: Number(result?.current ?? result?.pageNo ?? pageNo),
+      pageSize: Number(result?.size ?? result?.pageSize ?? pageSize),
+    };
+  },
+  createRtcLogRetrieveTask: async (uid: string | number): Promise<void> => {
+    await syncCurrentOpAccessToken();
+    const beginDate = new Date();
+    const endDate = new Date(beginDate);
+    endDate.setDate(beginDate.getDate() + 4);
+
+    let response;
+    try {
+      response = await axios.post('/jeecg-boot/bms/rtc/log/task/add', {
+        userId: String(uid),
+        beginTime: formatOpDate(beginDate),
+        endTime: formatOpDate(endDate),
+        reqChannel: [1],
+      }, {
+        timeout: 60000,
+      });
+    } catch (error: any) {
+      throw new Error(toOpErrorMessage(error, '创建日志回捞任务失败'));
+    }
+
+    const payload = response.data;
+    if (
+      payload &&
+      (
+        payload.success === false ||
+        (payload.code !== undefined && ![0, 200].includes(Number(payload.code))) ||
+        (payload.retCode !== undefined && !['0', '100', '200'].includes(String(payload.retCode)))
+      )
+    ) {
+      throw new Error(payload.message || payload.error || '创建日志回捞任务失败');
+    }
+  },
+  rtcLogRetrieveTasks: async (uid: string | number, pageNo = 1, pageSize = 10): Promise<RtcLogRetrieveTaskListResult> => {
+    await syncCurrentOpAccessToken();
+    let response;
+    try {
+      response = await axios.post('/jeecg-boot/bms/rtc/log/task/list', {
+        userId: String(uid),
+        status: 1,
+        column: 'createTime',
+        order: 'desc',
+        field: 'id,,userId,beginTime,status,reqChannelStatus,action',
+        pageNo,
+        pageSize,
+      }, {
+        timeout: 60000,
+      });
+    } catch (error: any) {
+      throw new Error(toOpErrorMessage(error, '查询日志回捞任务失败'));
+    }
+
+    const payload = response.data;
+    if (
+      payload &&
+      (
+        payload.success === false ||
+        (payload.code !== undefined && ![0, 200].includes(Number(payload.code))) ||
+        (payload.retCode !== undefined && !['0', '100', '200'].includes(String(payload.retCode)))
+      )
+    ) {
+      throw new Error(payload.message || payload.error || '查询日志回捞任务失败');
+    }
+
+    const result = payload?.result || payload?.data || payload?.retData || payload;
     const records = Array.isArray(result?.records)
       ? result.records
       : Array.isArray(result)

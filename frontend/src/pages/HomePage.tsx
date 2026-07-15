@@ -8,6 +8,7 @@ import {
   NodeIndexOutlined,
   ToolOutlined,
   ApiOutlined,
+  MobileOutlined,
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -86,6 +87,15 @@ const features: FeatureCard[] = [
     color: '#13c2c2',
     gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
   },
+  {
+    key: 'cross-platform',
+    title: '跨端能力',
+    description: '查看和调试 JS SDK 跨端能力示例，验证各类原生与 Web 交互能力',
+    icon: <MobileOutlined />,
+    path: '/cross-platform',
+    color: '#2f54eb',
+    gradient: 'linear-gradient(135deg, #334155 0%, #475569 100%)',
+  },
 ];
 
 export default function HomePage() {
@@ -98,7 +108,7 @@ export default function HomePage() {
           iOS 移动管理平台
         </Title>
         <Paragraph type="secondary" style={{ fontSize: 16 }}>
-          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、API 文档、DevOps 工具链和路由
+          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、API 文档、DevOps 工具链、路由和跨端能力
         </Paragraph>
       </div>
 
