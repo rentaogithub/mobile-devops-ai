@@ -8,6 +8,7 @@ import { extractCrashInfo } from '../utils/crashLogParser';
 import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
+import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import fs from 'fs';
 import path from 'path';
 
@@ -434,13 +435,16 @@ router.post('/issues', async (req: Request, res: Response) => {
       period = '24h',
       limit = 10,
       query,
+      enrichVersions = false,
     } = req.body || {};
 
     const issues = await sentryIssueService.listNewIssues({
       period: String(period || '24h'),
       limit: Number(limit || 10),
       query: query ? String(query) : undefined,
+      enrichVersions: Boolean(enrichVersions),
     });
+    workflowIntegrationService.syncSentryIssues(issues);
 
     res.json({
       success: true,
@@ -456,6 +460,36 @@ router.post('/issues', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error.message || '抓取 Sentry 问题列表失败',
+    });
+  }
+});
+
+router.post('/sync-issues', async (req: Request, res: Response) => {
+  try {
+    const inputIssues = Array.isArray(req.body?.issues) ? req.body.issues.slice(0, 50) : [];
+    if (inputIssues.length === 0) {
+      res.status(400).json({ success: false, error: '缺少待同步的 Sentry Issue' });
+      return;
+    }
+
+    const normalizedIssues = inputIssues.map((issue: any) => sentryIssueService.normalizeIssueSummary(issue));
+    const enrichedIssues = (await sentryIssueService.enrichIssueSummaries(normalizedIssues))
+      .filter((issue) => !issue.excludedAppVersionOnly);
+    const synced = workflowIntegrationService.syncSentryIssues(enrichedIssues);
+
+    res.json({
+      success: true,
+      data: {
+        total: enrichedIssues.length,
+        synced: synced.length,
+        issues: enrichedIssues,
+      },
+    });
+  } catch (error: any) {
+    logger.error('同步 Sentry Issue 到 Workflow 失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '同步 Sentry Issue 到 Workflow 失败',
     });
   }
 });
@@ -502,6 +536,10 @@ router.post('/analyze-selected', async (req: Request, res: Response) => {
         };
       }
     }));
+    results.forEach((result: any) => workflowIntegrationService.syncSentryIssue(
+      { ...(result.issue || {}), eventId: result.eventId },
+      result.analysis,
+    ));
 
     res.json({
       success: true,
@@ -553,6 +591,7 @@ router.post('/aggregate-analyze', async (req: Request, res: Response) => {
     }));
 
     const analysis = await aiAnalysisService.analyzeAggregateCrashes(aggregateInputs, apiKey);
+    aggregateInputs.forEach((issue: any) => workflowIntegrationService.syncSentryIssue(issue, analysis));
 
     res.json({
       success: true,
@@ -642,6 +681,10 @@ router.post('/symbolicate-and-save', async (req: Request, res: Response) => {
     } = req.body || {};
 
     const result = await symbolicateAndSaveSentryIssue(issue, requestedAppVersion);
+    workflowIntegrationService.syncSentryIssue(
+      { ...(result.issue || issue || {}), eventId: result.eventId, appVersion: result.appVersion },
+      (result as any).aiAnalysis,
+    );
 
     res.json({
       success: true,
@@ -728,6 +771,10 @@ router.post('/symbolicate-selected', async (req: Request, res: Response) => {
         });
       }
     }
+    results.forEach((result: any) => workflowIntegrationService.syncSentryIssue(
+      { ...(result.issue || {}), eventId: result.eventId, appVersion: result.appVersion },
+      result.aiAnalysis,
+    ));
 
     res.json({
       success: true,
@@ -872,6 +919,11 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         }
       }
 
+      workflowIntegrationService.syncSentryIssue(
+        { ...normalizedIssue, eventId: event?.id, appVersion: existingHistory.appVersion || appVersion },
+        aiAnalysis,
+      );
+
       res.json({
         success: true,
         data: {
@@ -937,6 +989,10 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       historyId: savedRecord.id,
       hasAIAnalysis: !!aiAnalysis,
     });
+    workflowIntegrationService.syncSentryIssue(
+      { ...normalizedIssue, eventId: event?.id, appVersion },
+      aiAnalysis,
+    );
 
     res.json({
       success: true,
@@ -1009,6 +1065,10 @@ router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
         };
       }
     }));
+    results.forEach((result: any) => workflowIntegrationService.syncSentryIssue(
+      { ...(result.issue || {}), eventId: result.eventId },
+      result.analysis,
+    ));
 
     res.json({
       success: true,

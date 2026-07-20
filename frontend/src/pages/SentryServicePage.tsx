@@ -22,7 +22,7 @@ const { Title, Text, Paragraph } = Typography;
 const { TextArea, Search } = Input;
 
 const SENTRY_SERVICE_URL = '/sentry-service';
-const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
+const SENTRY_OVERVIEW_PATH = '/organizations/sentry/issues/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved !release:"10.0.0"';
 const TOP_PERIOD = '7d';
 const RECENT_PERIOD = '24h';
@@ -414,6 +414,62 @@ export default function SentryServicePage() {
     }
   }, [symbolicateIssueInBackground]);
 
+  const hydrateIssueMetadataInBackground = useCallback(async (issues: SentryIssueSummary[], view: SentryView) => {
+    void enrichIssueVersionsInBackground(issues, view);
+
+    try {
+      const statusResponse = await sentryAnalysisApi.historyStatus({ issues });
+      const statuses = statusResponse.data?.statuses || {};
+      const storedStatusMap: Record<string, IssueSymbolicationStatus> = {};
+      const storedVersionMap: Record<string, string> = {};
+      issues.forEach((issue) => {
+        const status = statuses[issue.id] || (issue.shortId ? statuses[issue.shortId] : undefined);
+        const historyId = status?.historyId || 0;
+        if (historyId) {
+          cacheSentryHistoryId(issue, historyId);
+          storedStatusMap[issue.id] = {
+            status: 'success',
+            historyId,
+          };
+        }
+        if (status?.appVersion && !hasIssueVersionInfo(issue)) {
+          storedVersionMap[issue.id] = status.appVersion;
+        }
+      });
+      setIssueSymbolicationStatus((statusMap) => {
+        const nextStatusMap = { ...statusMap };
+        issues.forEach((issue) => {
+          if (issue.id) {
+            delete nextStatusMap[issue.id];
+          }
+        });
+        return {
+          ...nextStatusMap,
+          ...storedStatusMap,
+        };
+      });
+      if (Object.keys(storedVersionMap).length > 0) {
+        updateIssuesForView(view, (currentIssues) => currentIssues.map((issue) => {
+          const appVersion = storedVersionMap[issue.id];
+          return appVersion
+            ? {
+              ...issue,
+              appVersionRange: appVersion,
+              minAppVersion: appVersion,
+              maxAppVersion: appVersion,
+              appVersions: [appVersion],
+              appVersionLoading: false,
+            }
+            : issue;
+        }));
+      }
+    } catch (statusError: any) {
+      console.warn('查询 Sentry 入库状态失败', statusError);
+    }
+
+    void symbolicateIssuesInBackground(issues);
+  }, [enrichIssueVersionsInBackground, symbolicateIssuesInBackground, updateIssuesForView]);
+
   const loadIssues = useCallback(async (
     period: string,
     options: { query?: string; view?: SentryView } = {}
@@ -444,61 +500,9 @@ export default function SentryServicePage() {
         setLookupIssues(nextIssues);
       }
 
-      void enrichIssueVersionsInBackground(nextIssues, targetView);
+      setIssueLoading(false);
+      void hydrateIssueMetadataInBackground(nextIssues, targetView);
 
-      try {
-        const statusResponse = await sentryAnalysisApi.historyStatus({ issues: nextIssues });
-        const statuses = statusResponse.data?.statuses || {};
-        const storedStatusMap: Record<string, IssueSymbolicationStatus> = {};
-        const storedVersionMap: Record<string, string> = {};
-        nextIssues.forEach((issue) => {
-          const status = statuses[issue.id] || (issue.shortId ? statuses[issue.shortId] : undefined);
-          const historyId =
-            status?.historyId ||
-            0;
-          if (historyId) {
-            cacheSentryHistoryId(issue, historyId);
-            storedStatusMap[issue.id] = {
-              status: 'success',
-              historyId,
-            };
-          }
-          if (status?.appVersion && !hasIssueVersionInfo(issue)) {
-            storedVersionMap[issue.id] = status.appVersion;
-          }
-        });
-        setIssueSymbolicationStatus((statusMap) => {
-          const nextStatusMap = { ...statusMap };
-          nextIssues.forEach((issue) => {
-            if (issue.id) {
-              delete nextStatusMap[issue.id];
-            }
-          });
-          return {
-            ...nextStatusMap,
-            ...storedStatusMap,
-          };
-        });
-        if (Object.keys(storedVersionMap).length > 0) {
-          updateIssuesForView(targetView, (currentIssues) => currentIssues.map((issue) => {
-            const appVersion = storedVersionMap[issue.id];
-            return appVersion
-              ? {
-                ...issue,
-                appVersionRange: appVersion,
-                minAppVersion: appVersion,
-                maxAppVersion: appVersion,
-                appVersions: [appVersion],
-                appVersionLoading: false,
-              }
-              : issue;
-          }));
-        }
-      } catch (statusError: any) {
-        console.warn('查询 Sentry 入库状态失败', statusError);
-      }
-
-      void symbolicateIssuesInBackground(nextIssues);
       setCurrentIssue((selected) => {
         const initialIssueId = getInitialIssueId();
         const initialIssue = initialIssueId
@@ -523,7 +527,7 @@ export default function SentryServicePage() {
     } finally {
       setIssueLoading(false);
     }
-  }, [enrichIssueVersionsInBackground, symbolicateIssuesInBackground, updateIssuesForView]);
+  }, [hydrateIssueMetadataInBackground]);
 
   const updateCurrentIssue = (issue: CurrentSentryIssue | null) => {
     setCurrentIssue(issue?.id ? issue : null);

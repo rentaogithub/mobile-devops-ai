@@ -21,7 +21,7 @@ load_platform_env() {
 
   while IFS='=' read -r key value; do
     case "$key" in
-      SONIC_STACK_*|SONIC_SERVER_*|SONIC_WEB_*|SONIC_MYSQL_*|SONIC_REDIS_*|SONIC_HOST)
+      SONIC_STACK_*|SONIC_SERVER_*|SONIC_WEB_*|SONIC_MYSQL_*|SONIC_REDIS_*|SONIC_EUREKA_*|SONIC_GATEWAY_*|SONIC_CONTROLLER_*|SONIC_FOLDER_*|SONIC_SECRET_KEY|SONIC_HOST)
         if [ -z "${!key:-}" ]; then
           value="${value%%#*}"
           value="${value%$'\r'}"
@@ -33,7 +33,7 @@ load_platform_env() {
         fi
         ;;
     esac
-  done < <(grep -E '^(SONIC_STACK_|SONIC_SERVER_|SONIC_WEB_|SONIC_MYSQL_|SONIC_REDIS_|SONIC_HOST=)' "$BACKEND_ENV_FILE" || true)
+  done < <(grep -E '^(SONIC_STACK_|SONIC_SERVER_|SONIC_WEB_|SONIC_MYSQL_|SONIC_REDIS_|SONIC_EUREKA_|SONIC_GATEWAY_|SONIC_CONTROLLER_|SONIC_FOLDER_|SONIC_SECRET_KEY=|SONIC_HOST=)' "$BACKEND_ENV_FILE" || true)
 }
 
 read_env_value() {
@@ -46,15 +46,13 @@ read_env_value() {
 }
 
 has_placeholder_images() {
-  local web_image server_image
+  local web_image
   web_image="$(read_env_value SONIC_WEB_IMAGE "$SONIC_ENV_FILE")"
-  server_image="$(read_env_value SONIC_SERVER_IMAGE "$SONIC_ENV_FILE")"
 
-  if [ -z "$web_image" ] || [ -z "$server_image" ]; then
+  if [ -z "$web_image" ]; then
     return 0
   fi
   [ "$web_image" = "sonic-web-image:latest" ] && return 0
-  [ "$server_image" = "sonic-server-image:latest" ] && return 0
   return 1
 }
 
@@ -159,6 +157,50 @@ FLUSH PRIVILEGES;
 SQL' >/dev/null 2>&1 || echo "WARN: failed to sync Sonic MySQL user credentials."
 }
 
+prepare_native_sonic_server_images() {
+  local host_arch dockerfile spec name variable configured_image image_arch native_image jar_name
+  host_arch="$(uname -m)"
+  case "$host_arch" in
+    arm64|aarch64) ;;
+    *) return 0 ;;
+  esac
+
+  dockerfile="$SONIC_DIR/Dockerfile.service-arm64"
+  if [ ! -f "$dockerfile" ]; then
+    echo "WARN: Sonic arm64 compatibility Dockerfile is missing: $dockerfile"
+    return 0
+  fi
+
+  for spec in \
+    'eureka|SONIC_EUREKA_IMAGE|sonicorg/sonic-server-eureka:v2.7.2|sonic-server-eureka.jar' \
+    'gateway|SONIC_GATEWAY_IMAGE|sonicorg/sonic-server-gateway:v2.7.2|sonic-server-gateway.jar' \
+    'controller|SONIC_CONTROLLER_IMAGE|sonicorg/sonic-server-controller:v2.7.2|sonic-server-controller.jar' \
+    'folder|SONIC_FOLDER_IMAGE|sonicorg/sonic-server-folder:v2.7.2|sonic-server-folder.jar'; do
+    IFS='|' read -r name variable configured_image jar_name <<< "$spec"
+    configured_image="${!variable:-$configured_image}"
+    image_arch="$(docker image inspect "$configured_image" --format '{{.Architecture}}' 2>/dev/null || true)"
+    if [ -z "$image_arch" ]; then
+      docker pull "$configured_image" >/dev/null
+      image_arch="$(docker image inspect "$configured_image" --format '{{.Architecture}}' 2>/dev/null || true)"
+    fi
+    if [ "$image_arch" != "amd64" ]; then
+      continue
+    fi
+    native_image="nn-sonic-${name}-arm64:2.7.2"
+    if ! docker image inspect "$native_image" >/dev/null 2>&1; then
+      echo "Building native arm64 Sonic $name image from the official Sonic JAR..."
+      docker build \
+        --build-arg "SONIC_SOURCE_IMAGE=$configured_image" \
+        --build-arg "SONIC_JAR_NAME=$jar_name" \
+        -f "$dockerfile" \
+        -t "$native_image" \
+        "$SONIC_DIR"
+    fi
+    export "$variable=$native_image"
+  done
+  echo "Using native Sonic 2.7.2 service images on arm64."
+}
+
 load_platform_env
 
 if [ "${SONIC_STACK_AUTO_START:-true}" = "false" ]; then
@@ -184,13 +226,15 @@ if [ ! -f "$SONIC_ENV_FILE" ] || has_placeholder_images || has_placeholder_passw
 fi
 
 if has_placeholder_images; then
-  echo "Sonic Server/Web not started: configure real SONIC_WEB_IMAGE and SONIC_SERVER_IMAGE in $SONIC_ENV_FILE."
+  echo "Sonic Server/Web not started: configure a real SONIC_WEB_IMAGE in $SONIC_ENV_FILE."
   exit 0
 fi
 
 if ! ensure_docker_runtime; then
   exit 0
 fi
+
+prepare_native_sonic_server_images
 
 COMPOSE_CMD="$(compose_cmd)"
 if [ -z "$COMPOSE_CMD" ]; then
@@ -199,14 +243,14 @@ if [ -z "$COMPOSE_CMD" ]; then
 fi
 
 echo "Starting Sonic Server/Web by docker compose..."
-$COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d
+$COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --remove-orphans
 sync_mysql_credentials
 
 if ! wait_http "http://127.0.0.1:${SONIC_API_PORT:-8094}" 12; then
-  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
-    if docker logs --tail 120 nn-sonic-server 2>&1 | grep -q 'HikariPool-1 - Starting'; then
-      echo "Sonic Server appears stuck while opening datasource. Recreating sonic-server and sonic-web..."
-      $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server sonic-web
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-controller$'; then
+    if docker logs --tail 120 nn-sonic-controller 2>&1 | grep -q 'HikariPool-1 - Starting'; then
+      echo "Sonic Controller appears stuck while opening datasource. Recreating Sonic services..."
+      $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server-controller sonic-server-gateway sonic-web
     fi
   fi
 fi
@@ -214,7 +258,7 @@ fi
 if command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-web$'; then
   if docker logs --tail 80 nn-sonic-web 2>&1 | grep -q 'sonic-server-gateway'; then
     echo "Sonic Web upstream DNS is stale. Recreating Sonic Server/Web containers..."
-    $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server sonic-web
+    $COMPOSE_CMD -f "$SONIC_DIR/docker-compose.yml" --env-file "$SONIC_ENV_FILE" up -d --force-recreate sonic-server-gateway sonic-web
   fi
 fi
 

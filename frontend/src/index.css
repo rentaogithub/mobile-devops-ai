@@ -22,6 +22,72 @@ body {
   text-align: left;
 }
 
+.service-chain-workflow {
+  display: flex;
+  align-items: center;
+  width: min(920px, calc(100% - 36px));
+  margin: 0 auto 24px;
+  padding: 16px 20px;
+  border: 1px solid #adc6ff;
+  border-radius: 14px;
+  color: inherit;
+  background: linear-gradient(135deg, #f0f5ff 0%, #f9f0ff 100%);
+  box-shadow: 0 8px 24px rgba(22, 119, 255, 0.1);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.service-chain-workflow:hover,
+.service-chain-workflow:focus-visible {
+  border-color: #1677ff;
+  box-shadow: 0 10px 28px rgba(22, 119, 255, 0.16);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.service-chain-workflow-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-radius: 12px;
+  color: #fff;
+  background: linear-gradient(135deg, #1677ff 0%, #722ed1 100%);
+  font-size: 24px;
+}
+
+.service-chain-workflow-content {
+  min-width: 0;
+  margin-left: 16px;
+}
+
+.service-chain-workflow-title,
+.service-chain-workflow-description {
+  display: block;
+}
+
+.service-chain-workflow-title {
+  color: #1e3a8a;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.service-chain-workflow-description {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.service-chain-workflow-arrow {
+  margin-left: auto;
+  padding-left: 16px;
+  color: #1677ff;
+}
+
 .service-chain-label {
   margin-bottom: 12px;
   color: #64748b;
@@ -190,6 +256,26 @@ body {
 }
 
 @media (max-width: 640px) {
+  .service-chain-workflow {
+    width: 100%;
+    padding: 14px;
+  }
+
+  .service-chain-workflow-icon {
+    width: 42px;
+    height: 42px;
+    flex-basis: 42px;
+    font-size: 21px;
+  }
+
+  .service-chain-workflow-content {
+    margin-left: 12px;
+  }
+
+  .service-chain-workflow-arrow {
+    display: none;
+  }
+
   .service-chain-flow {
     grid-template-columns: 1fr;
     gap: 0;
@@ -246,6 +332,86 @@ body {
 .feedback-log-preview-tabs > .ant-tabs-content-holder > .ant-tabs-content > .ant-tabs-tabpane {
   min-height: 0;
   height: 100%;
+}
+
+.release-gate-preview .ant-alert-content {
+  min-width: 0;
+  width: 100%;
+}
+
+.release-gate-preview-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.release-gate-preview-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.release-gate-preview-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 77, 79, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.release-gate-preview-action .ant-btn {
+  flex-shrink: 0;
+}
+
+.release-gate-preview .ant-collapse {
+  overflow: hidden;
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.release-gate-preview-list {
+  max-height: 210px;
+  margin: 0;
+  padding: 0 4px 0 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.release-gate-preview-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.release-gate-preview-list li:last-child {
+  border-bottom: 0;
+}
+
+.release-gate-preview-list .ant-tag {
+  min-width: 76px;
+  margin: 1px 0 0;
+  text-align: center;
+}
+
+.release-gate-preview-list .ant-typography {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.55;
+}
+
+@media (max-width: 640px) {
+  .release-gate-preview-title,
+  .release-gate-preview-action {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 .feedback-log-preview-tabs > .ant-tabs-content-holder {

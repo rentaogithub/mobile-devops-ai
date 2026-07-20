@@ -1,7 +1,14 @@
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
-import { buildSentryCookieHeader, updateSentryCookieJar } from './SentryCookieJar';
+import {
+  buildSentryCookieHeader,
+  clearSentryCookieJar,
+  getSentryCookie,
+  getSentryCookieJarUpdatedAt,
+  hasSentryCookie,
+  updateSentryCookieJar,
+} from './SentryCookieJar';
 import logger from '../utils/logger';
 
 type SentryHTTPResponse = {
@@ -12,6 +19,7 @@ type SentryHTTPResponse = {
 
 export interface SentryIssueSummary {
   id: string;
+  eventId?: string;
   shortId?: string;
   title: string;
   culprit?: string;
@@ -59,10 +67,9 @@ export class SentryIssueService {
   private readonly autoLogin = process.env.SENTRY_AUTO_LOGIN === 'true';
   private readonly username = process.env.SENTRY_LOGIN_USERNAME || '';
   private readonly password = process.env.SENTRY_LOGIN_PASSWORD || '';
-  private readonly sessionCookies = new Map<string, string>();
   private loginPromise: Promise<void> | null = null;
   private lastLoginAt = 0;
-  private readonly sessionTtlMs = 30 * 60 * 1000;
+  private readonly sessionTtlMs = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 
   async listNewIssues(options: {
     organization?: string;
@@ -70,6 +77,7 @@ export class SentryIssueService {
     period?: string;
     limit?: number;
     query?: string;
+    enrichVersions?: boolean;
   } = {}): Promise<SentryIssueSummary[]> {
     await this.ensureLogin();
 
@@ -78,18 +86,12 @@ export class SentryIssueService {
     const period = options.period || '24h';
     const limit = Math.min(Math.max(options.limit || 5, 1), 20);
     const query = options.query || this.buildDefaultIssueQuery();
-    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const params = new URLSearchParams({
       query,
       sort: 'date',
       limit: String(limit),
     });
-    if (period === '7d') {
-      params.set('start', new Date(sevenDaysAgo).toISOString());
-      params.set('end', new Date().toISOString());
-    } else {
-      params.set('statsPeriod', period);
-    }
+    params.set('statsPeriod', period === '7d' ? '14d' : period);
 
     const response = await this.request(`/api/0/projects/${organization}/${project}/issues/?${params}`);
     if (response.statusCode >= 400) {
@@ -104,10 +106,37 @@ export class SentryIssueService {
         if (period !== '7d') {
           return true;
         }
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
         return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
       });
 
-    return normalizedIssues.filter((issue) => !issue.excludedAppVersionOnly);
+    if (!options.enrichVersions) {
+      return normalizedIssues.filter((issue) => !issue.excludedAppVersionOnly);
+    }
+
+    const enrichedIssues = await this.enrichIssueSummaries(normalizedIssues);
+    return enrichedIssues.filter((issue) => !issue.excludedAppVersionOnly);
+  }
+
+  async enrichIssueSummaries(issues: SentryIssueSummary[]): Promise<SentryIssueSummary[]> {
+    const enriched: SentryIssueSummary[] = [];
+    const concurrency = 5;
+    for (let index = 0; index < issues.length; index += concurrency) {
+      const batch = issues.slice(index, index + concurrency);
+      enriched.push(...await Promise.all(batch.map(async (issue) => {
+        try {
+          return await this.enrichIssueVersionRange(issue);
+        } catch (error) {
+          logger.warn('补充 Sentry issue 版本信息失败，保留基础问题数据', {
+            issueId: issue.id,
+            shortId: issue.shortId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return issue;
+        }
+      })));
+    }
+    return enriched;
   }
 
   async getLatestEvent(issueId: string): Promise<SentryEventDetail | undefined> {
@@ -415,7 +444,7 @@ export class SentryIssueService {
 
   private async enrichIssueVersionRange(issue: SentryIssueSummary): Promise<SentryIssueSummary> {
     const resolvedIssueId = await this.resolveIssueId(issue.id);
-    const eventsResponse = await this.request(`/api/0/issues/${resolvedIssueId}/events/?limit=20`);
+    const eventsResponse = await this.requestWithRetry(`/api/0/issues/${resolvedIssueId}/events/?limit=20`);
     let events: any[] = [];
     if (eventsResponse.statusCode >= 200 && eventsResponse.statusCode < 300) {
       const data = JSON.parse(eventsResponse.body.toString('utf8'));
@@ -423,7 +452,7 @@ export class SentryIssueService {
     }
 
     let latestEvent: any;
-    const latestResponse = await this.request(`/api/0/issues/${resolvedIssueId}/events/latest/`);
+    const latestResponse = await this.requestWithRetry(`/api/0/issues/${resolvedIssueId}/events/latest/`);
     if (latestResponse.statusCode >= 200 && latestResponse.statusCode < 300) {
       latestEvent = JSON.parse(latestResponse.body.toString('utf8'));
     }
@@ -434,6 +463,7 @@ export class SentryIssueService {
       ...this.collectVersionCandidates(latestEvent),
     ];
     const versionRange = this.buildVersionRange(rawVersions);
+    const eventId = latestEvent?.id || events[0]?.id || issue.eventId;
 
     if (this.isExcludedOnlyVersionSet(rawVersions)) {
       logger.info('过滤 Sentry TestFlight 版本 issue', {
@@ -444,6 +474,7 @@ export class SentryIssueService {
       });
       return {
         ...issue,
+        eventId,
         appVersionRange: undefined,
         minAppVersion: undefined,
         maxAppVersion: undefined,
@@ -453,11 +484,12 @@ export class SentryIssueService {
     }
 
     if (versionRange.versions.length === 0) {
-      return issue;
+      return { ...issue, eventId };
     }
 
     return {
       ...issue,
+      eventId,
       appVersionRange: versionRange.range,
       minAppVersion: versionRange.min,
       maxAppVersion: versionRange.max,
@@ -568,7 +600,9 @@ export class SentryIssueService {
       return;
     }
 
-    const isFresh = this.sessionCookies.has('sentrysid') && Date.now() - this.lastLoginAt < this.sessionTtlMs;
+    const isFresh =
+      hasSentryCookie('sentrysid') &&
+      Date.now() - Math.max(this.lastLoginAt, getSentryCookieJarUpdatedAt()) < this.sessionTtlMs;
     if (isFresh) {
       return;
     }
@@ -576,7 +610,7 @@ export class SentryIssueService {
     if (!this.loginPromise) {
       this.loginPromise = this.performLogin()
         .catch((error) => {
-          this.sessionCookies.clear();
+          clearSentryCookieJar();
           logger.warn('Sentry issue API 自动登录失败', {
             error: error instanceof Error ? error.message : String(error),
           });
@@ -591,7 +625,7 @@ export class SentryIssueService {
   }
 
   private async performLogin() {
-    this.sessionCookies.clear();
+    clearSentryCookieJar();
     const loginPage = await this.request('/auth/login/sentry/');
     const csrfToken = this.extractCSRFToken(loginPage.body.toString('utf8'));
     if (!csrfToken) {
@@ -614,7 +648,7 @@ export class SentryIssueService {
     });
 
     this.lastLoginAt = Date.now();
-    if (!this.sessionCookies.has('sentrysid')) {
+    if (!hasSentryCookie('sentrysid')) {
       throw new Error('Sentry login session cookie missing');
     }
   }
@@ -633,7 +667,7 @@ export class SentryIssueService {
       host: targetURL.host,
       'accept-encoding': 'identity',
     };
-    const cookieHeader = buildSentryCookieHeader(this.buildCookieHeader());
+    const cookieHeader = buildSentryCookieHeader();
     if (cookieHeader) {
       headers.cookie = cookieHeader;
     }
@@ -644,7 +678,6 @@ export class SentryIssueService {
         { method: options.method || 'GET', headers },
         (response) => {
           const chunks: Buffer[] = [];
-          this.updateCookieJar(response.headers['set-cookie']);
           updateSentryCookieJar(response.headers['set-cookie']);
           response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
           response.on('end', () => resolve({
@@ -664,41 +697,23 @@ export class SentryIssueService {
     });
   }
 
-  private buildCookieHeader(): string | undefined {
-    if (this.sessionCookies.size === 0) {
-      return undefined;
-    }
-
-    return Array.from(this.sessionCookies.entries())
-      .map(([name, value]) => `${name}=${value}`)
-      .join('; ');
-  }
-
-  private updateCookieJar(setCookie: string | string[] | undefined) {
-    if (!setCookie) {
-      return;
-    }
-
-    const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-    cookies.forEach((cookie) => {
-      const firstPart = cookie.split(';')[0];
-      const equalIndex = firstPart.indexOf('=');
-      if (equalIndex <= 0) {
-        return;
+  private async requestWithRetry(path: string): Promise<SentryHTTPResponse> {
+    try {
+      const response = await this.request(path);
+      if (response.statusCode !== 429 && response.statusCode < 500) {
+        return response;
       }
-      const name = firstPart.substring(0, equalIndex).trim();
-      const value = firstPart.substring(equalIndex + 1).trim();
-      if (name && value) {
-        this.sessionCookies.set(name, value);
-      }
-    });
+    } catch {
+      // 瞬时网络异常时立即重试一次。
+    }
+    return this.request(path);
   }
 
   private extractCSRFToken(html: string): string {
     const token =
       html.match(/name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)/i)?.[1] ||
       html.match(/value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken/i)?.[1] ||
-      this.sessionCookies.get('sc') ||
+      getSentryCookie('sc') ||
       '';
     return token
       .replace(/&quot;/g, '"')

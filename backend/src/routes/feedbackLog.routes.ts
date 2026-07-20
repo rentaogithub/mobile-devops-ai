@@ -9,6 +9,7 @@ import { promisify } from 'util';
 import { URL } from 'url';
 import { buildOpCookieHeader } from '../services/OpCookieJar';
 import logger from '../utils/logger';
+import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 
 const router = Router();
 const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
@@ -280,11 +281,20 @@ router.post('/read', async (req: Request, res: Response) => {
     const rawPath = typeof req.body?.path === 'string' ? req.body.path : '';
     const filePath = await assertSafePreviewPath(rawPath);
     const content = await fsPromises.readFile(filePath, 'utf8');
+    const rows = parseFeedbackLogContent(content);
+    const workflowSync = workflowIntegrationService.syncFeedbackLog(rows, {
+      ...(req.body?.context || {}),
+      path: filePath,
+      uid: req.body?.uid,
+      appVersion: req.body?.appVersion,
+      buildNumber: req.body?.buildNumber,
+    });
     res.json({
       success: true,
       data: {
         path: filePath,
-        rows: parseFeedbackLogContent(content),
+        rows,
+        workflowSync: workflowSync ? { artifactId: workflowSync.artifactId, issueCount: workflowSync.issueCount } : undefined,
       },
     });
   } catch (error: any) {

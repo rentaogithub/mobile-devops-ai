@@ -71,6 +71,7 @@ const LEIGOD_IM_SDK_DIR_CANDIDATES = [
   '/Volumes/share/IMSDK',
   '/Volumes/share',
 ].filter(Boolean) as string[];
+const LEIGOD_IM_SDK_SMB_URL = 'smb://192.168.3.30/share/IMSDK';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -865,9 +866,24 @@ ${sourceLine}
       }
     });
     if (!root) {
-      throw new Error(`未找到 IMSDK 共享目录，请先挂载 smb://192.168.3.30/share/IMSDK，或配置 LEIGOD_IM_SDK_DIR`);
+      this.openLeigodIMSDKShare();
+      throw new Error(`IMSDK 共享目录未挂载，已尝试打开 ${LEIGOD_IM_SDK_SMB_URL}。请完成登录后重试，或配置 LEIGOD_IM_SDK_DIR`);
     }
     return root;
+  }
+
+  private openLeigodIMSDKShare(): void {
+    if (process.platform !== 'darwin') return;
+    try {
+      execSync(`open ${shellQuote(LEIGOD_IM_SDK_SMB_URL)}`, {
+        encoding: 'utf-8',
+        timeout: 5000,
+        stdio: 'ignore',
+      });
+      logger.info('已尝试打开 IMSDK SMB 共享目录', { url: LEIGOD_IM_SDK_SMB_URL });
+    } catch (error: any) {
+      logger.warn('打开 IMSDK SMB 共享目录失败', { url: LEIGOD_IM_SDK_SMB_URL, error: error.message });
+    }
   }
 
   private resolveLeigodIMSDKVersionDir(version: string): string {

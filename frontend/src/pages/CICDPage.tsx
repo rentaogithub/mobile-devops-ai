@@ -16,7 +16,7 @@ import {
   BranchesOutlined,
   BulbOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
@@ -116,6 +116,28 @@ function qualitySuiteLabel(summary?: JenkinsQualityBuild['qualitySummary']) {
   return summary?.testSuite || '-';
 }
 
+function qualitySuiteName(suite?: string) {
+  return QUALITY_SUITE_OPTIONS.find((option) => option.value === suite)?.label || suite || '质检';
+}
+
+function releaseGateItemLabel(code?: string) {
+  const labels: Record<string, string> = {
+    build_failed: '构建状态',
+    required_suite_missing: '缺少质检',
+    suite_commit_mismatch: 'Commit 不匹配',
+    suite_branch_mismatch: '分支不匹配',
+    suite_expired: '质检已过期',
+    suite_failed: '质检失败',
+    suite_incomplete: '质检未完成',
+    open_issue: '阻断 Issue',
+    crash_threshold: 'Crash 门限',
+    failed_test_threshold: '失败用例',
+    metric_regression: '指标回退',
+    baseline_missing: '缺少基线',
+  };
+  return labels[String(code || '')] || '质量问题';
+}
+
 function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(branch.trim());
 }
@@ -174,6 +196,10 @@ function compareBranchOptions(a: string, b: string) {
   const bIsFeature = normalizedB.startsWith('feature/');
   if (aIsFeature && bIsFeature) return compareBranchVersionsDesc(normalizedA, normalizedB);
   return normalizedA.localeCompare(normalizedB);
+}
+
+function isSameBranch(a: string, b: string) {
+  return a.trim().replace(/^origin\//, '') === b.trim().replace(/^origin\//, '');
 }
 
 function getHighestReleaseBranch(list: string[]) {
@@ -2331,6 +2357,37 @@ export default function CICDPage() {
   const [branches, setBranches] = useState<string[]>([]);
   const [branchLoading, setBranchLoading] = useState(false);
   const [verificationPassword, setVerificationPassword] = useState('');
+  const [publishGateBuildNumber, setPublishGateBuildNumber] = useState<number>();
+  const [releaseGateOverrideReason, setReleaseGateOverrideReason] = useState('');
+  const [releaseGatePreview, setReleaseGatePreview] = useState<WorkflowReleaseGate>();
+  const [releaseGateMissingSuites, setReleaseGateMissingSuites] = useState<JenkinsQualitySuite[]>([]);
+  const [releaseGatePreviewLoading, setReleaseGatePreviewLoading] = useState(false);
+
+  useEffect(() => {
+    if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
+      setReleaseGatePreview(undefined);
+      setReleaseGateMissingSuites([]);
+      return;
+    }
+    let canceled = false;
+    setReleaseGatePreviewLoading(true);
+    void jenkinsApi.previewReleaseGate({ gateBuildNumber: publishGateBuildNumber, branch: publishBranch })
+      .then((response) => {
+        if (canceled) return;
+        setReleaseGatePreview(response.data?.releaseGate);
+        setReleaseGateMissingSuites(response.data?.missingSuites || []);
+      })
+      .catch((error: any) => {
+        if (canceled) return;
+        setReleaseGatePreview(undefined);
+        setReleaseGateMissingSuites([]);
+        message.warning(error?.error || error?.message || '质量门禁预检失败');
+      })
+      .finally(() => {
+        if (!canceled) setReleaseGatePreviewLoading(false);
+      });
+    return () => { canceled = true; };
+  }, [publishModalOpen, publishGateBuildNumber, publishBranch]);
 
   const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }) => {
     if (!options?.silent) {
@@ -2647,14 +2704,18 @@ export default function CICDPage() {
     const publishTarget = deployTarget;
     const previousLatestBuild = data?.job.lastBuild?.number;
     try {
-      await jenkinsApi.publishNN({
+      const response = await jenkinsApi.publishNN({
         deployTarget: publishTarget,
         branch: publishBranch.trim(),
         verificationPassword: verificationPassword.trim(),
+        gateBuildNumber: publishGateBuildNumber,
+        releaseGateOverrideReason: releaseGateOverrideReason.trim() || undefined,
       });
-      message.success(`已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === publishTarget)?.label} 发布构建，正在刷新构建列表`);
+      const gateMessage = response.data?.releaseGate ? `质量门禁 ${response.data.releaseGate.status}，` : '';
+      message.success(`${gateMessage}已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === publishTarget)?.label} 发布构建`);
       setPublishModalOpen(false);
       setVerificationPassword('');
+      setReleaseGateOverrideReason('');
       const nextFilter = filterDeployTarget && filterDeployTarget !== publishTarget ? publishTarget : filterDeployTarget;
       if (nextFilter !== filterDeployTarget) {
         setFilterDeployTarget(nextFilter);
@@ -2823,13 +2884,18 @@ export default function CICDPage() {
     setDeployTarget('Pgyer');
     setVerificationPassword('');
     setPublishBranch(build.branchName || 'develop');
+    setPublishGateBuildNumber(undefined);
+    setReleaseGateOverrideReason('');
     setPublishModalOpen(true);
   };
 
   const openPublishModal = () => {
+    const nextBranch = deployTarget !== 'Pgyer' ? getHighestReleaseBranch(branches) : publishBranch;
     if (deployTarget !== 'Pgyer') {
-      setPublishBranch(getHighestReleaseBranch(branches));
+      setPublishBranch(nextBranch);
     }
+    setPublishGateBuildNumber(undefined);
+    setReleaseGateOverrideReason('');
     setPublishModalOpen(true);
   };
 
@@ -3000,9 +3066,11 @@ export default function CICDPage() {
 
   useEffect(() => {
     if (deployTarget !== 'Pgyer' && branches.length > 0) {
-      setPublishBranch(getHighestReleaseBranch(branches));
+      const nextBranch = getHighestReleaseBranch(branches);
+      setPublishBranch(nextBranch);
+      setPublishGateBuildNumber(undefined);
     }
-  }, [deployTarget, branches]);
+  }, [deployTarget, branches, data?.builds]);
 
   useEffect(() => {
     if (!qualityReportBuild) return;
@@ -3134,6 +3202,15 @@ export default function CICDPage() {
   const publishBranchOptions = useMemo(
     () => [...branches].sort(compareBranchOptions).map((branch) => ({ value: branch, label: branch })),
     [branches],
+  );
+  const publishGateBuildOptions = useMemo(
+    () => (data?.builds || [])
+      .filter((build) => build.result === 'SUCCESS' && isSameBranch(build.branchName || '', publishBranch))
+      .map((build) => ({
+        value: build.number,
+        label: `#${build.number} · ${build.appVersion || '-'} · ${build.publishChannel || '-'} · ${build.commitHash?.slice(0, 8) || '-'}`,
+      })),
+    [data?.builds, publishBranch],
   );
   const releaseBaseBranchOptions = useMemo(() => {
     const items = ['develop', ...getLatestReleaseBranches(branches, 2)];
@@ -3763,6 +3840,8 @@ export default function CICDPage() {
       <Modal
         title="选择发布分支和渠道"
         open={publishModalOpen}
+        width={640}
+        styles={{ body: { maxHeight: 'calc(100vh - 180px)', overflowY: 'auto', paddingRight: 4 } }}
         okText="发布"
         cancelText="取消"
         confirmLoading={publishing}
@@ -3776,7 +3855,10 @@ export default function CICDPage() {
               <AutoComplete
                 value={publishBranch}
                 options={publishBranchOptions}
-                onChange={setPublishBranch}
+                onChange={(value) => {
+                  setPublishBranch(value);
+                  setPublishGateBuildNumber(undefined);
+                }}
                 placeholder="请输入分支名，如 develop 或 release/5.14.7"
                 style={{ marginTop: 8, width: '100%' }}
                 filterOption={(inputValue, option) =>
@@ -3816,7 +3898,9 @@ export default function CICDPage() {
               const nextTarget = event.target.value as DeployTarget;
               setDeployTarget(nextTarget);
               if (nextTarget !== 'Pgyer') {
-                setPublishBranch(getHighestReleaseBranch(branches));
+                const nextBranch = getHighestReleaseBranch(branches);
+                setPublishBranch(nextBranch);
+                setPublishGateBuildNumber(undefined);
               }
               if (nextTarget === 'Pgyer') {
                 setVerificationPassword('');
@@ -3834,6 +3918,111 @@ export default function CICDPage() {
             type={deployTarget === 'Pgyer' ? 'info' : 'warning'}
             showIcon
             message={deployTarget === 'Pgyer' ? '蒲公英发布无需验证密码' : 'TestFlight / 苹果商店发布需要验证密码'}
+          />
+          <Collapse
+            className="publish-advanced-options"
+            size="small"
+            ghost
+            items={[{
+              key: 'quality-gate',
+              label: '发布前检查（可选）',
+              children: (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <Text type="secondary">如需执行质量门禁，可选择一个已完成构建；未选择时直接按常规 CI/CD 流程发布。</Text>
+                  <Select
+                    allowClear
+                    value={publishGateBuildNumber}
+                    options={publishGateBuildOptions}
+                    onChange={(value) => {
+                      setPublishGateBuildNumber(value);
+                      setReleaseGateOverrideReason('');
+                    }}
+                    placeholder="选择门禁源构建"
+                    style={{ width: '100%' }}
+                    notFoundContent="当前分支没有可用的成功构建"
+                  />
+                  {releaseGatePreviewLoading && <Text type="secondary">正在执行质量门禁预检...</Text>}
+                  {releaseGatePreview && !releaseGatePreviewLoading && (
+                    <Alert
+                      className="release-gate-preview"
+                      showIcon
+                      type={releaseGatePreview.status === 'passed' ? 'success' : releaseGatePreview.status === 'warning' ? 'warning' : 'error'}
+                      message={(
+                        <div className="release-gate-preview-title">
+                          <span>{releaseGatePreview.status === 'passed' ? '质量门禁通过' : releaseGatePreview.status === 'warning' ? '存在发布风险' : '发布已阻断'}</span>
+                          <Space size={4} wrap>
+                            {(releaseGatePreview.result.blockers || []).length > 0 && <Tag color="error">{releaseGatePreview.result.blockers?.length} 项阻断</Tag>}
+                            {(releaseGatePreview.result.warnings || []).length > 0 && <Tag color="warning">{releaseGatePreview.result.warnings?.length} 项风险</Tag>}
+                            <Tag>{releaseGatePreview.score} 分</Tag>
+                          </Space>
+                        </div>
+                      )}
+                      description={(
+                        <div className="release-gate-preview-content">
+                          {releaseGateMissingSuites.length > 0 && (
+                            <div className="release-gate-preview-action">
+                              <Text type="secondary">需要先完成 {releaseGateMissingSuites.map(qualitySuiteName).join('、')}，再重新预检。</Text>
+                              <Button type="primary" size="small" onClick={() => {
+                                const build = data?.builds?.find((item) => item.number === publishGateBuildNumber);
+                                setPublishModalOpen(false);
+                                openQualityModal(build);
+                                setQualitySuite(releaseGateMissingSuites[0]);
+                              }}>
+                                执行{qualitySuiteName(releaseGateMissingSuites[0])}
+                              </Button>
+                            </div>
+                          )}
+                          {((releaseGatePreview.result.blockers || []).length > 0 || (releaseGatePreview.result.warnings || []).length > 0) && (
+                            <Collapse
+                              size="small"
+                              items={[
+                                ...((releaseGatePreview.result.blockers || []).length > 0 ? [{
+                                  key: 'blockers',
+                                  label: `查看 ${(releaseGatePreview.result.blockers || []).length} 项阻断详情`,
+                                  children: (
+                                    <ul className="release-gate-preview-list">
+                                      {(releaseGatePreview.result.blockers || []).map((item, index) => (
+                                        <li key={`${item.code}-${index}`}>
+                                          <Tag color="error">{releaseGateItemLabel(item.code)}</Tag>
+                                          <Paragraph ellipsis={{ rows: 2, tooltip: item.message }}>{item.message}</Paragraph>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  ),
+                                }] : []),
+                                ...((releaseGatePreview.result.warnings || []).length > 0 ? [{
+                                  key: 'warnings',
+                                  label: `查看 ${(releaseGatePreview.result.warnings || []).length} 项风险详情`,
+                                  children: (
+                                    <ul className="release-gate-preview-list">
+                                      {(releaseGatePreview.result.warnings || []).map((item, index) => (
+                                        <li key={`${item.code}-${index}`}>
+                                          <Tag color="warning">{releaseGateItemLabel(item.code)}</Tag>
+                                          <Paragraph ellipsis={{ rows: 2, tooltip: item.message }}>{item.message}</Paragraph>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  ),
+                                }] : []),
+                              ]}
+                            />
+                          )}
+                          {releaseGatePreview.status === 'passed' && <Text type="secondary">构建状态、必需测试套件、Crash 和阻塞级 Issue 均已通过检查。</Text>}
+                        </div>
+                      )}
+                    />
+                  )}
+                  {deployTarget !== 'Pgyer' && publishGateBuildNumber && (
+                    <Input.TextArea
+                      rows={2}
+                      placeholder="门禁仅有警告时的人工放行原因（门禁阻断不可覆盖）"
+                      value={releaseGateOverrideReason}
+                      onChange={(event) => setReleaseGateOverrideReason(event.target.value)}
+                    />
+                  )}
+                </Space>
+              ),
+            }]}
           />
         </Space>
       </Modal>

@@ -43,6 +43,7 @@ export interface SymbolicationResult {
 
 export interface SentryIssueSummary {
   id: string;
+  eventId?: string;
   shortId?: string;
   title: string;
   culprit?: string;

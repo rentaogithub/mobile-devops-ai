@@ -28,7 +28,7 @@ Jenkins:     http://10.1.3.177:8080/job/nn/
 ```text
 Sonic Web:    http://127.0.0.1:3002
 Sonic API:    http://127.0.0.1:8094
-Sonic Agent:  建议直连 http://127.0.0.1:8094
+Sonic Agent:  直连 http://127.0.0.1:3002（WebSocket /server 代理）
 ```
 
 ## 角色分工
@@ -147,13 +147,16 @@ SONIC_MYSQL_PORT=3307
 SONIC_REDIS_PORT=6380
 
 SONIC_WEB_IMAGE=sonicorg/sonic-client-web:v2.7.2
-SONIC_SERVER_IMAGE=sonicorg/sonic-server-simple:v1.3.2-release
+SONIC_EUREKA_IMAGE=sonicorg/sonic-server-eureka:v2.7.2
+SONIC_GATEWAY_IMAGE=sonicorg/sonic-server-gateway:v2.7.2
+SONIC_CONTROLLER_IMAGE=sonicorg/sonic-server-controller:v2.7.2
+SONIC_FOLDER_IMAGE=sonicorg/sonic-server-folder:v2.7.2
 
 SONIC_MYSQL_PASSWORD=自动生成
 SONIC_MYSQL_ROOT_PASSWORD=自动生成
 ```
 
-如果内部网络无法拉取 Docker Hub，可把 `SONIC_WEB_IMAGE` 和 `SONIC_SERVER_IMAGE` 覆盖成内部镜像仓库地址。
+如果内部网络无法拉取 Docker Hub，可把这些 `SONIC_*_IMAGE` 覆盖成内部镜像仓库地址。Apple Silicon 会自动从官方 JAR 构建本地 arm64 兼容镜像。
 
 启动：
 
@@ -170,7 +173,7 @@ docker compose --env-file .env ps
 查看日志：
 
 ```bash
-docker compose --env-file .env logs -f sonic-server
+docker compose --env-file .env logs -f sonic-server-controller sonic-server-gateway
 docker compose --env-file .env logs -f sonic-web
 ```
 
@@ -207,13 +210,13 @@ curl -I http://10.1.3.177:5173/sonic-api
 
 ## 启动 Sonic Agent
 
-Sonic Agent 运行在同一台 Mac 上，建议直连本机 Sonic API：
+Sonic Agent 运行在同一台 Mac 上，通过 Sonic Web 的 `/server` WebSocket 代理连接：
 
 ```text
-http://127.0.0.1:8094
+http://127.0.0.1:3002
 ```
 
-不要优先让 Agent 走 `http://10.1.3.177:5173/sonic-api`，因为 Agent 是基础设施组件，直连少一层代理更稳定。
+不要把 Agent 指向 Gateway 的 `8094`：该端口供平台 API 调用；Agent 2.7.2 需要连接 Web 暴露的 `3002`，由 `/server` 转发到 Controller WebSocket。
 
 Agent 需要配置：
 

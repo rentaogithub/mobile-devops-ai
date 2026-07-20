@@ -47,3 +47,4 @@
 - [iOS 自动质检整体架构与功能说明](AUTO_IOS_QUALITY_ARCHITECTURE.md) - 自动质检架构、任务流程、设备池、Monkey、卡顿检测与报告产物
 - [Sonic iOS 自动质检](SONIC_IOS_QUALITY_GUIDE.md) - Jenkins + Sonic 云真机自动化质检接入
 - [Sonic 单 Mac 部署说明](SONIC_SINGLE_MAC_DEPLOYMENT_GUIDE.md) - 一台 Mac 同时承载打包、平台、Sonic 和真机 Agent
+- [移动研发 AI Workflow](MOBILE_AI_WORKFLOW_GUIDE.md) - Artifact 血缘、统一任务、Issue 中心、变更影响、发布门禁、回归候选、知识库和发布观察

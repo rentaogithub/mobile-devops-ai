@@ -37,52 +37,107 @@ services:
       timeout: 5s
       retries: 10
 
-  sonic-server:
-    image: ${SONIC_SERVER_IMAGE}
-    container_name: nn-sonic-server
+  sonic-server-eureka:
+    image: ${SONIC_EUREKA_IMAGE:-sonicorg/sonic-server-eureka:v2.7.2}
+    container_name: nn-sonic-eureka
+    hostname: sonic-server-eureka
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      SONIC_EUREKA_USERNAME: ${SONIC_EUREKA_USERNAME:-sonic}
+      SONIC_EUREKA_PASSWORD: ${SONIC_EUREKA_PASSWORD:-sonic}
+      SONIC_EUREKA_PORT: ${SONIC_EUREKA_PORT:-8761}
+      SONIC_EUREKA_HOST: sonic-server-eureka
+    volumes:
+      - sonic-server-logs:/logs
+
+  sonic-server-gateway:
+    image: ${SONIC_GATEWAY_IMAGE:-sonicorg/sonic-server-gateway:v2.7.2}
+    container_name: nn-sonic-gateway
+    hostname: sonic-server-gateway
+    restart: unless-stopped
+    depends_on:
+      - sonic-server-eureka
+    environment:
+      TZ: Asia/Shanghai
+      SONIC_EUREKA_USERNAME: ${SONIC_EUREKA_USERNAME:-sonic}
+      SONIC_EUREKA_PASSWORD: ${SONIC_EUREKA_PASSWORD:-sonic}
+      SONIC_EUREKA_PORT: ${SONIC_EUREKA_PORT:-8761}
+      SONIC_EUREKA_HOST: sonic-server-eureka
+      SECRET_KEY: ${SONIC_SECRET_KEY:-sonic}
+      EXPIRE_DAY: ${SONIC_EXPIRE_DAY:-14}
+    ports:
+      - "${SONIC_API_PORT:-8094}:3000"
+    volumes:
+      - sonic-server-logs:/logs
+
+  sonic-server-controller:
+    image: ${SONIC_CONTROLLER_IMAGE:-sonicorg/sonic-server-controller:v2.7.2}
+    container_name: nn-sonic-controller
     restart: unless-stopped
     depends_on:
       sonic-mysql:
         condition: service_healthy
-      sonic-redis:
-        condition: service_healthy
+      sonic-server-eureka:
+        condition: service_started
     environment:
       TZ: Asia/Shanghai
-      SERVER_PORT: 8094
+      SONIC_EUREKA_USERNAME: ${SONIC_EUREKA_USERNAME:-sonic}
+      SONIC_EUREKA_PASSWORD: ${SONIC_EUREKA_PASSWORD:-sonic}
+      SONIC_EUREKA_PORT: ${SONIC_EUREKA_PORT:-8761}
+      SONIC_EUREKA_HOST: sonic-server-eureka
       MYSQL_HOST: sonic-mysql
       MYSQL_PORT: 3306
       MYSQL_DATABASE: ${SONIC_MYSQL_DATABASE:-sonic}
       MYSQL_USERNAME: ${SONIC_MYSQL_USER:-sonic}
       MYSQL_PASSWORD: ${SONIC_MYSQL_PASSWORD}
-      SPRING_DATASOURCE_URL: jdbc:mysql://sonic-mysql:3306/${SONIC_MYSQL_DATABASE:-sonic}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-      SPRING_DATASOURCE_USERNAME: ${SONIC_MYSQL_USER:-sonic}
-      SPRING_DATASOURCE_PASSWORD: ${SONIC_MYSQL_PASSWORD}
-      REDIS_HOST: sonic-redis
-      REDIS_PORT: 6379
-      SPRING_REDIS_HOST: sonic-redis
-      SPRING_REDIS_PORT: 6379
-    ports:
-      - "${SONIC_API_PORT:-8094}:8094"
+      SONIC_SERVER_HOST: ${SONIC_HOST:-127.0.0.1}
+      SONIC_SERVER_PORT: ${SONIC_WEB_PORT:-3002}
+      SECRET_KEY: ${SONIC_SECRET_KEY:-sonic}
+      EXPIRE_DAY: ${SONIC_EXPIRE_DAY:-14}
+      REGISTER_ENABLE: ${SONIC_REGISTER_ENABLE:-true}
+      NORMAL_USER_ENABLE: ${SONIC_NORMAL_USER_ENABLE:-true}
+      LDAP_USER_ENABLE: ${SONIC_LDAP_USER_ENABLE:-false}
     volumes:
-      - sonic-server-data:/data
-    networks:
-      default:
-        aliases:
-          - sonic-server-gateway
+      - sonic-server-logs:/logs
+
+  sonic-server-folder:
+    image: ${SONIC_FOLDER_IMAGE:-sonicorg/sonic-server-folder:v2.7.2}
+    container_name: nn-sonic-folder
+    restart: unless-stopped
+    depends_on:
+      - sonic-server-eureka
+    environment:
+      TZ: Asia/Shanghai
+      SONIC_EUREKA_USERNAME: ${SONIC_EUREKA_USERNAME:-sonic}
+      SONIC_EUREKA_PASSWORD: ${SONIC_EUREKA_PASSWORD:-sonic}
+      SONIC_EUREKA_PORT: ${SONIC_EUREKA_PORT:-8761}
+      SONIC_EUREKA_HOST: sonic-server-eureka
+      SONIC_SERVER_HOST: ${SONIC_HOST:-127.0.0.1}
+      SONIC_SERVER_PORT: ${SONIC_WEB_PORT:-3002}
+      SECRET_KEY: ${SONIC_SECRET_KEY:-sonic}
+      EXPIRE_DAY: ${SONIC_EXPIRE_DAY:-14}
+    volumes:
+      - sonic-server-logs:/logs
+      - sonic-package-files:/packageFiles
+      - sonic-image-files:/imageFiles
+      - sonic-record-files:/recordFiles
+      - sonic-keep-files:/keepFiles
 
   sonic-web:
     image: ${SONIC_WEB_IMAGE}
     container_name: nn-sonic-web
     restart: unless-stopped
     depends_on:
-      - sonic-server
-    environment:
-      TZ: Asia/Shanghai
-      SONIC_API_BASE: http://${SONIC_HOST:-127.0.0.1}:${SONIC_API_PORT:-8094}
+      - sonic-server-gateway
     ports:
       - "${SONIC_WEB_PORT:-3002}:80"
 
 volumes:
   sonic-mysql-data:
   sonic-redis-data:
-  sonic-server-data:
+  sonic-server-logs:
+  sonic-package-files:
+  sonic-image-files:
+  sonic-record-files:
+  sonic-keep-files:

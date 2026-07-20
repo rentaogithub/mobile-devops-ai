@@ -9,6 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${SONIC_AGENT_ENV_FILE:-$PROJECT_ROOT/backend/.env}"
+STACK_ENV_FILE="${SONIC_STACK_ENV_FILE:-$PROJECT_ROOT/deploy/sonic/.env}"
 DATA_DIR="${SONIC_AGENT_DATA_DIR:-$PROJECT_ROOT/nn-ios-platform-data}"
 LOG_FILE="${SONIC_AGENT_LOG_FILE:-$PROJECT_ROOT/sonic-agent.log}"
 PID_FILE="${SONIC_AGENT_PID_FILE:-$DATA_DIR/sonic-agent.pid}"
@@ -20,7 +21,7 @@ load_agent_env() {
 
   while IFS='=' read -r key value; do
     case "$key" in
-      SONIC_AGENT_*|SONIC_API_PROXY_TARGET|SONIC_API_BASE)
+      SONIC_AGENT_*|SONIC_API_PROXY_TARGET|SONIC_API_BASE|SONIC_HOST|CURRENT_DEVICE_IP)
         if [ -z "${!key:-}" ]; then
           value="${value%%#*}"
           value="${value%$'\r'}"
@@ -32,12 +33,89 @@ load_agent_env() {
         fi
         ;;
     esac
-  done < <(grep -E '^(SONIC_AGENT_|SONIC_API_PROXY_TARGET=|SONIC_API_BASE=)' "$ENV_FILE" || true)
+  done < <(grep -E '^(SONIC_AGENT_|SONIC_API_PROXY_TARGET=|SONIC_API_BASE=|SONIC_HOST=|CURRENT_DEVICE_IP=)' "$ENV_FILE" || true)
+
+  if [ -f "$STACK_ENV_FILE" ]; then
+    while IFS='=' read -r key value; do
+      case "$key" in
+        SONIC_HOST|SONIC_AGENT_SERVER_PORT)
+          if [ -z "${!key:-}" ]; then
+            value="${value%%#*}"
+            value="${value%$'\r'}"
+            export "$key=$value"
+          fi
+          ;;
+      esac
+    done < <(grep -E '^(SONIC_HOST=|SONIC_AGENT_SERVER_PORT=)' "$STACK_ENV_FILE" || true)
+  fi
 }
 
 is_process_alive() {
   local pid="$1"
   [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+detect_local_ipv4() {
+  local interface address
+  interface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+  if [ -n "$interface" ] && command -v ipconfig >/dev/null 2>&1; then
+    address="$(ipconfig getifaddr "$interface" 2>/dev/null || true)"
+  fi
+  if [ -z "$address" ] && command -v ipconfig >/dev/null 2>&1; then
+    address="$(ipconfig getifaddr en0 2>/dev/null || true)"
+  fi
+  printf '%s' "$address"
+}
+
+is_local_ipv4() {
+  local address="$1"
+  [ -n "$address" ] && ifconfig 2>/dev/null | grep -Eq "inet[[:space:]]+$address([[:space:]]|$)"
+}
+
+resolve_agent_host() {
+  local configured detected
+  configured="${SONIC_AGENT_HOST:-${CURRENT_DEVICE_IP:-${SONIC_HOST:-}}}"
+  detected="$(detect_local_ipv4)"
+  if is_local_ipv4 "$configured"; then
+    printf '%s' "$configured"
+  elif [ -n "$detected" ]; then
+    printf '%s' "$detected"
+  else
+    printf '%s' "${configured:-127.0.0.1}"
+  fi
+}
+
+resolve_server_port() {
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-gateway$'; then
+    printf '%s' "${SONIC_WEB_PORT:-3002}"
+  else
+    printf '%s' "${SONIC_AGENT_SERVER_PORT:-8095}"
+  fi
+}
+
+resolve_server_host() {
+  local server_port="$1"
+  if [ -n "${SONIC_AGENT_SERVER_HOST:-}" ]; then
+    printf '%s' "$SONIC_AGENT_SERVER_HOST"
+  elif nc -z 127.0.0.1 "$server_port" >/dev/null 2>&1; then
+    printf '%s' '127.0.0.1'
+  else
+    printf '%s' "${SONIC_HOST:-127.0.0.1}"
+  fi
+}
+
+resolve_agent_key() {
+  if [ -n "${SONIC_AGENT_KEY:-}" ]; then
+    printf '%s' "$SONIC_AGENT_KEY"
+    return
+  fi
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-mysql$'; then
+    docker exec \
+      -e SONIC_AGENT_NAME="${SONIC_AGENT_NAME:-nn-ios-platform-mac}" \
+      nn-sonic-mysql \
+      sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -N -e "SELECT secret_key FROM sonic.agents WHERE name = \"$SONIC_AGENT_NAME\" ORDER BY id DESC LIMIT 1"' \
+      2>/dev/null || true
+  fi
 }
 
 load_agent_env
@@ -110,17 +188,31 @@ fi
 if [ -n "$AGENT_CMD" ]; then
   echo "Starting Sonic Agent by SONIC_AGENT_CMD..."
   nohup /bin/bash -lc "$AGENT_CMD" > "$LOG_FILE" 2>&1 &
+elif [ -n "$AGENT_DIR" ] && find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
+  AGENT_JAR="$(find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1)"
+  AGENT_HOST="$(resolve_agent_host)"
+  SERVER_PORT="$(resolve_server_port)"
+  SERVER_HOST="$(resolve_server_host "$SERVER_PORT")"
+  AGENT_KEY="$(resolve_agent_key)"
+  echo "Starting Sonic Agent jar: $AGENT_JAR"
+  echo "Agent host: $AGENT_HOST, Sonic Server: $SERVER_HOST:$SERVER_PORT"
+  pushd "$AGENT_DIR" >/dev/null
+  AGENT_ARGS=(
+    --sonic.agent.host="$AGENT_HOST" \
+    --sonic.server.host="$SERVER_HOST" \
+    --sonic.server.port="$SERVER_PORT"
+  )
+  if [ -n "$AGENT_KEY" ]; then
+    AGENT_ARGS+=(--sonic.agent.key="$AGENT_KEY")
+  fi
+  nohup java -jar "$AGENT_JAR" \
+    "${AGENT_ARGS[@]}" \
+    > "$LOG_FILE" 2>&1 &
+  popd >/dev/null
 elif [ -n "$AGENT_DIR" ] && [ -x "$AGENT_DIR/start.sh" ]; then
   echo "Starting Sonic Agent from $AGENT_DIR/start.sh..."
   pushd "$AGENT_DIR" >/dev/null
   nohup ./start.sh > "$LOG_FILE" 2>&1 &
-  popd >/dev/null
-elif [ -n "$AGENT_DIR" ] && find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1 | grep -q .; then
-  AGENT_JAR="$(find "$AGENT_DIR" -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1)"
-  API_BASE="${SONIC_AGENT_API_BASE:-${SONIC_API_PROXY_TARGET:-${SONIC_API_BASE:-http://127.0.0.1:8094}}}"
-  echo "Starting Sonic Agent jar: $AGENT_JAR"
-  pushd "$AGENT_DIR" >/dev/null
-  nohup java -jar "$AGENT_JAR" --server.host="$API_BASE" > "$LOG_FILE" 2>&1 &
   popd >/dev/null
 else
   echo "Sonic Agent not configured or not found."

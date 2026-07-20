@@ -14,6 +14,7 @@ import {
   CloudUploadOutlined,
   SafetyCertificateOutlined,
   RightOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
@@ -161,7 +162,15 @@ export default function HomePage() {
         </Paragraph>
 
         <section className="service-chain" aria-label="iOS 移动管理平台服务链">
-          <div className="service-chain-label">你可以用平台完成</div>
+          <button type="button" className="service-chain-workflow" onClick={() => navigate('/workflow')}>
+            <span className="service-chain-workflow-icon"><ApartmentOutlined /></span>
+            <span className="service-chain-workflow-content">
+              <span className="service-chain-workflow-title">移动研发质量中心</span>
+              <span className="service-chain-workflow-description">汇聚构建、质检与线上问题，辅助识别变更风险、发布风险并沉淀回归与质量知识</span>
+            </span>
+            <RightOutlined className="service-chain-workflow-arrow" />
+          </button>
+          <div className="service-chain-label">移动研发服务链</div>
           <div className="service-chain-flow">
             {serviceChain.map((stage, index) => (
               <div className="service-chain-segment" key={stage.key}>

@@ -9,6 +9,7 @@ import logger from '../utils/logger';
 import { adminMiddleware } from '../middleware/auth';
 import historyService from '../services/HistoryService';
 import symbolicationCache from '../services/SymbolicationCacheService';
+import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 
 const router = Router();
 
@@ -125,6 +126,10 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
     logger.info('开始保存 dSYM');
     const dsymInfo = await saveDSYMToStorage(dsymPath);
     permanentPath = dsymInfo.filePath;
+    workflowIntegrationService.syncDSYM(dsymInfo, {
+      source: 'upload',
+      originalFileName: req.file.originalname,
+    });
 
     // 上传成功后只保留永久存储中的 .dSYM，清理压缩包和解压外层目录
     await fileHandler.cleanupUploadArtifacts(tempPath, dsymPath, permanentPath);
@@ -199,6 +204,11 @@ router.post('/upload-from-xcarchive', adminMiddleware, async (req: Request, res:
 
     const dsymInfo = await saveDSYMToStorage(dsymPath);
     permanentPath = dsymInfo.filePath;
+    workflowIntegrationService.syncDSYM(dsymInfo, {
+      source: 'xcarchive',
+      xcarchivePath: archivePath,
+      buildNumber: req.body?.buildNumber,
+    });
     await fileHandler.cleanupUploadArtifacts(tempDir, dsymPath, permanentPath);
 
     res.json({
@@ -230,6 +240,7 @@ router.post('/upload-from-xcarchive', adminMiddleware, async (req: Request, res:
 router.get('/list', async (req: Request, res: Response) => {
   try {
     const dsyms = await storage.getAllDSYMs();
+    dsyms.forEach((dsym) => workflowIntegrationService.syncDSYM(dsym, { source: 'list_backfill' }));
 
     res.json({
       success: true,

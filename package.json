@@ -21,6 +21,9 @@
     "build:actual": "npm run build --workspaces",
     "build:backend": "npm run build --workspace=backend",
     "build:frontend": "npm run build --workspace=frontend",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "check": "npm run typecheck && npm run test",
     "start": "node scripts/run-with-supported-node.mjs start:actual",
     "start:actual": "npm run ensure:native && env UPLOAD_DIR=nn-ios-platform-data/uploads DSYM_DIR=nn-ios-platform-data/dsyms DB_PATH=nn-ios-platform-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
     "start:dev-backend": "node scripts/run-with-supported-node.mjs start:actual"

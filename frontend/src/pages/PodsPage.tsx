@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Typography, Card, Table, Tag, Space, Button, Input, Modal, Form,
-  Upload, message, Drawer, Descriptions, Tooltip, Badge, List, Empty, Select, Tabs, Checkbox, Popconfirm, Progress,
+  Upload, message, Drawer, Descriptions, Tooltip, Badge, List, Empty, Select, Tabs, Checkbox, Popconfirm, Progress, Alert,
 } from 'antd';
 import {
   AppstoreOutlined, SearchOutlined, PlusOutlined, SyncOutlined,
@@ -186,6 +186,7 @@ export default function PodsPage() {
   const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
   const [leigodIMSDKVersions, setLeigodIMSDKVersions] = useState<LeigodIMSDKVersion[]>([]);
   const [leigodIMSDKLoading, setLeigodIMSDKLoading] = useState(false);
+  const [leigodIMSDKError, setLeigodIMSDKError] = useState('');
   const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
   const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
   const nnrtcTaskContextRef = useRef<{
@@ -273,10 +274,24 @@ export default function PodsPage() {
   const loadLeigodIMSDKVersions = useCallback(async () => {
     if (!isAdmin) return;
     setLeigodIMSDKLoading(true);
+    setLeigodIMSDKError('');
     try {
       const res = await podsApi.listLeigodIMSDKVersions();
       const versions = res.data || [];
       setLeigodIMSDKVersions(versions);
+      if (versions.length === 0) {
+        const currentHighestVersion = components
+          .filter((item) => isLeigodIMCrossSDK(item.name))
+          .map((item) => String(item.version || '').trim())
+          .filter(Boolean)
+          .sort(compareVersionText)
+          .at(-1);
+        setLeigodIMSDKError(
+          currentHighestVersion
+            ? `已挂载 IMSDK 共享目录，但未找到高于当前已发布版本 ${currentHighestVersion} 的 IMSDK 版本`
+            : '已挂载 IMSDK 共享目录，但未找到可发布版本'
+        );
+      }
       const current = form.getFieldValue('leigod_im_sdk_version');
       const next = versions.some((item) => item.version === current)
         ? current
@@ -288,11 +303,14 @@ export default function PodsPage() {
         });
       }
     } catch (error: any) {
-      message.warning(error?.error || error?.message || '加载 IMSDK 版本失败');
+      const errorMessage = error?.error || error?.message || '加载 IMSDK 版本失败';
+      setLeigodIMSDKVersions([]);
+      setLeigodIMSDKError(errorMessage);
+      message.warning(errorMessage);
     } finally {
       setLeigodIMSDKLoading(false);
     }
-  }, [form, isAdmin]);
+  }, [components, form, isAdmin]);
 
   const fetchComponents = useCallback(async () => {
     setLoading(true);
@@ -358,9 +376,17 @@ export default function PodsPage() {
       message.warning('未选择 nnios 分支，已跳过 nnios 构建任务');
       return;
     }
+    const buildsResponse = await jenkinsApi.listNNBuilds();
+    const gateBuild = buildsResponse.data?.builds?.find((build) => (
+      build.result === 'SUCCESS' && String(build.branchName || '').replace(/^origin\//, '') === targetBranch.replace(/^origin\//, '')
+    ));
+    if (!gateBuild) {
+      throw new Error(`未找到 ${targetBranch} 可用的成功源构建，无法通过发布质量门禁`);
+    }
     await jenkinsApi.publishNN({
       deployTarget: 'Pgyer',
       branch: targetBranch,
+      gateBuildNumber: gateBuild.number,
     });
     message.success(`已触发 nnios/${targetBranch} 构建任务`);
   }, []);
@@ -1591,6 +1617,7 @@ export default function PodsPage() {
           setNniosBranches([]);
           setNnrtcBuilds([]);
           setLeigodIMSDKVersions([]);
+          setLeigodIMSDKError('');
         }}
         footer={null}
         width={560}
@@ -1620,6 +1647,14 @@ export default function PodsPage() {
                           name="leigod_im_sdk_version"
                           label="IMSDK 发布版本"
                           rules={[{ required: true, message: '请选择 IMSDK 发布版本' }]}
+                          extra={leigodIMSDKError ? (
+                            <Alert
+                              type="warning"
+                              showIcon
+                              message={leigodIMSDKError}
+                              style={{ marginTop: 8 }}
+                            />
+                          ) : undefined}
                         >
                           <Select
                             showSearch

@@ -4,6 +4,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { getJenkinsBaseUrl } from '../config/externalServices';
+import { workflowService } from '../services/WorkflowService';
 
 const router = Router();
 
@@ -234,7 +235,14 @@ function buildWdaUrl(deviceKey: string, poolValue: string) {
 
 function normalizeTaskId(value: string) {
   const text = String(value || '').trim();
-  const buildNumber = Number(text.match(/(?:jenkins:)?(?:nn-auto-quality:)?(\d+)$/)?.[1] || text.match(/^qa-(\d+)-/)?.[1] || text);
+  const workflowTask = text ? workflowService.getTask(text) : null;
+  const externalId = String(workflowTask?.externalId || '');
+  const buildNumber = Number(
+    text.match(/(?:jenkins:)?(?:nn-auto-quality:)?(\d+)$/)?.[1] ||
+    text.match(/^qa-(\d+)-/)?.[1] ||
+    externalId.match(/(?:nn-auto-quality:|\/)(\d+)(?:\/|$)/)?.[1] ||
+    text
+  );
   return Number.isFinite(buildNumber) && buildNumber > 0 ? buildNumber : 0;
 }
 
@@ -370,8 +378,10 @@ function mapBuildToTask(buildNumber: number) {
     readXmlParameter(buildXml, 'WDA_URL') ||
     parseLogField(buildLog, /WDA 已可访问:\s*([^\s\n\r]+)/) ||
     parseLogField(buildLog, /WDA 当前不可访问:\s*([^\s\n\r]+)/);
+  const platformTaskId = readXmlParameter(buildXml, 'PLATFORM_TASK_ID') || summary?.platformTaskId;
   const task = {
-    task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`,
+    task_id: platformTaskId || `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`,
+    external_task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`,
     task_type: requestedSuite === 'monkey' ? 'ios_monkey' : `ios_${requestedSuite || 'quality'}`,
     status,
     progress: progress?.progressPercent ?? (status === 'running' ? 0 : 100),
@@ -411,15 +421,14 @@ function mapBuildToTask(buildNumber: number) {
   return task;
 }
 
-function listAllLocalMonkeyTasks() {
+function listAllLocalQualityTasks() {
   const buildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
   if (!fs.existsSync(buildsDir)) return [];
   return fs.readdirSync(buildsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
     .map((entry) => Number(entry.name))
     .sort((a, b) => b - a)
-    .map(mapBuildToTask)
-    .filter((task) => task.task_type === 'ios_monkey');
+    .map(mapBuildToTask);
 }
 
 function isActiveTask(task: any) {
@@ -432,15 +441,19 @@ function isActiveTask(task: any) {
 }
 
 function listLocalTasks() {
-  const tasks = listAllLocalMonkeyTasks();
+  const tasks = listAllLocalQualityTasks();
   const activeTasks = tasks.filter(isActiveTask);
-  const latestCompletedTask = tasks.find((task) => !isActiveTask(task));
-  return latestCompletedTask ? [...activeTasks, latestCompletedTask] : activeTasks;
+  const latestCompletedBySuite = new Map<string, any>();
+  tasks.filter((task) => !isActiveTask(task)).forEach((task) => {
+    const suite = String(task.task_type || 'ios_quality');
+    if (!latestCompletedBySuite.has(suite)) latestCompletedBySuite.set(suite, task);
+  });
+  return [...activeTasks, ...latestCompletedBySuite.values()];
 }
 
 function findActiveTaskOnDevice(deviceKey: string) {
   if (!deviceKey) return null;
-  return listAllLocalMonkeyTasks().find((task: any) => {
+  return listAllLocalQualityTasks().find((task: any) => {
     if (!isActiveTask(task)) return false;
     const taskDevice = String(task?.config?.device_udid || task?.summary?.deviceUdid || '').trim();
     return taskDevice && taskDevice === deviceKey;
@@ -457,10 +470,89 @@ function selectAvailableDeviceFromPool(pool: any, fallback: string) {
   return { deviceKey: firstDeviceKey, activeTask: findActiveTaskOnDevice(firstDeviceKey), deviceKeys };
 }
 
-async function triggerJenkinsMonkey(req: Request, payload: any) {
+const SUPPORTED_QUALITY_SUITES = new Set(['monkey', 'stutter', 'smoke', 'login', 'im', 'rtc', 'full']);
+
+function suiteFromTaskType(taskType: string, payload: any) {
+  const explicitSuite = String(payload.suite || payload.testSuite || '').trim().toLowerCase();
+  const typeSuite = taskType.replace(/^ios_/, '').trim().toLowerCase();
+  const suite = explicitSuite || typeSuite || 'smoke';
+  if (!SUPPORTED_QUALITY_SUITES.has(suite)) {
+    throw new Error(`不支持的质量套件: ${suite}`);
+  }
+  return suite;
+}
+
+function syncTaskToWorkflow(task: any) {
+  const suite = String(task.task_type || '').replace(/^ios_/, '') || 'quality';
+  const artifactId = task.build ? `artifact_build_${String(task.build).replace(/[^A-Za-z0-9_.-]/g, '_')}` : undefined;
+  if (artifactId && !workflowService.getArtifact(artifactId)) {
+    workflowService.createArtifact({
+      id: artifactId,
+      artifactType: 'ios_app_build',
+      name: `NNIM Build #${task.build}`,
+      version: task.app_version,
+      buildNumber: task.build,
+      commitHash: task.summary?.commitHash,
+      branch: task.summary?.branch,
+      uri: task.summary?.packageUrl || task.summary?.archiveUrl,
+      metadata: { source: 'jenkins', summary: task.summary || {} },
+    });
+  }
+  const workflowTask = workflowService.upsertTask({
+    id: task.task_id,
+    projectId: task.project_id || 'nn-ios',
+    taskType: task.task_type,
+    suite,
+    status: task.status,
+    source: 'jenkins',
+    externalId: task.external_task_id || task.task_id,
+    externalUrl: task.links?.job_url || task.links?.report_url,
+    buildNumber: task.build,
+    commitHash: task.summary?.commitHash,
+    branch: task.summary?.branch,
+    artifactId,
+    deviceUdid: task.config?.device_udid,
+    progress: task.progress,
+    config: { ...task.config, appVersion: task.app_version },
+    result: task.result,
+    startedAt: task.started_at,
+    finishedAt: task.finished_at,
+  });
+  if (artifactId && workflowTask) {
+    workflowService.addRelation({ fromType: 'artifact', fromId: artifactId, relation: 'tested_by', toType: 'task', toId: workflowTask.id });
+  }
+  (task.issues || []).forEach((issue: any) => {
+    const savedIssue = workflowService.upsertIssue({
+      source: 'quality',
+      sourceRef: `${task.task_id}:${issue.id || issue.fingerprint || issue.title}`,
+      fingerprint: issue.fingerprint || [suite, issue.type, issue.title, issue.screen].filter(Boolean).join('|'),
+      category: issue.type || issue.category || 'quality_failure',
+      severity: issue.severity === 'warning' ? 'medium' : issue.severity,
+      title: issue.title || issue.message || '自动质检问题',
+      summary: issue.message || issue.title,
+      businessDomain: issue.businessDomain || task.summary?.dominantBusinessDomain,
+      businessPath: issue.businessPath || task.summary?.lastBusinessPath,
+      taskId: task.task_id,
+      artifactId,
+      buildNumber: task.build,
+      commitHash: task.summary?.commitHash,
+      evidence: [{ artifactRefs: issue.artifact_refs || {}, screen: issue.screen, raw: issue }],
+      metadata: { suite, qualityBuild: task.task_id, riskLevel: issue.riskLevel },
+      lastSeen: task.finished_at || task.created_at,
+    });
+    if (savedIssue) {
+      workflowService.addRelation({ fromType: 'task', fromId: task.task_id, relation: 'discovered', toType: 'issue', toId: savedIssue.id });
+    }
+  });
+  return workflowTask;
+}
+
+async function triggerJenkinsQuality(req: Request, payload: any) {
   const app = payload.app || {};
   const monkey = payload.monkey || {};
-  const devicePool = String(monkey.device_pool || payload.devicePool || 'ios-default').trim();
+  const taskType = String(payload.task_type || payload.taskType || 'ios_smoke').trim();
+  const suite = suiteFromTaskType(taskType, payload);
+  const devicePool = String(monkey.device_pool || payload.devicePool || payload.quality?.device_pool || 'ios-default').trim();
   const pool = getQualityDevicePools().find((item: any) => item.value === devicePool) || getQualityDevicePools()[0];
   const selectedDevice = selectAvailableDeviceFromPool(pool, devicePool);
   const deviceKey = selectedDevice.deviceKey;
@@ -472,6 +564,19 @@ async function triggerJenkinsMonkey(req: Request, payload: any) {
   const durationMinutes = Number(monkey.duration_minutes || payload.durationMinutes || 120);
   const durationSeconds = Math.max(1, Math.round(durationMinutes * 60));
   const wdaUrl = buildWdaUrl(deviceKey, devicePool);
+  const platformTask = workflowService.upsertTask({
+    id: payload.platformTaskId,
+    taskType: `ios_${suite}`,
+    suite,
+    status: 'created',
+    source: 'jenkins',
+    buildNumber: sourceBuild,
+    commitHash: payload.commitHash || app.commit_hash,
+    branch: payload.branch || app.branch,
+    deviceUdid: deviceKey,
+    progress: 0,
+    config: { ...payload, suite, devicePool, wdaUrl },
+  });
   const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
   const crumb = await getCrumb();
   const params = new URLSearchParams({
@@ -483,18 +588,20 @@ async function triggerJenkinsMonkey(req: Request, payload: any) {
     PACKAGE_URL: String(app.ipa_url || payload.packageUrl || ''),
     XCARCHIVE_PATH: String(app.xcarchive_path || payload.xcarchivePath || ''),
     ARCHIVE_URL: String(app.archive_url || payload.archiveUrl || ''),
-    TEST_SUITE: 'smoke',
-    REQUESTED_TEST_SUITE: 'monkey',
-    RUN_MONKEY: '1',
+    TEST_SUITE: suite,
+    REQUESTED_TEST_SUITE: suite,
+    RUN_MONKEY: suite === 'monkey' ? '1' : '0',
     DEVICE_POOL: devicePool,
-    DEVICE_POOL_LABEL: `${pool.label || devicePool} [suite:monkey]`,
+    DEVICE_POOL_LABEL: `${pool.label || devicePool} [suite:${suite}]`,
     DEVICE_UDID: deviceKey,
     DEVICE_SELECTOR: deviceKey,
     DEVICE_CLOUD: 'LocalMac',
-    QUALITY_TASK_TYPE: 'ios_monkey',
-    QUALITY_RUNNER: 'local-ios-device-monkey',
-    QA_RUNNER_MODE: 'local-usb-monkey',
+    QUALITY_TASK_TYPE: `ios_${suite}`,
+    QUALITY_RUNNER: `local-ios-device-${suite}`,
+    QA_RUNNER_MODE: `local-usb-${suite}`,
+    PLATFORM_TASK_ID: String(platformTask?.id || payload.platformTaskId || ''),
     APP_BUNDLE_ID: String(app.bundle_id || process.env.QA_APP_BUNDLE_ID || 'com.nndev.im'),
+    SKIP_APP_INSTALL: app.skip_install || payload.skipAppInstall ? '1' : '0',
     WDA_URL: wdaUrl,
     WDA_AUTO_START: String(process.env.QA_WDA_AUTO_START || '1'),
     WDA_AUTO_INSTALL: String(process.env.QA_WDA_AUTO_INSTALL || '1'),
@@ -510,6 +617,11 @@ async function triggerJenkinsMonkey(req: Request, payload: any) {
     MONKEY_INTERVAL_SECONDS: String(monkey.interval_seconds || process.env.QA_MONKEY_INTERVAL_SECONDS || '0.35'),
     MONKEY_FORBIDDEN_TEXTS: String(monkey.text_blacklist || process.env.QA_MONKEY_FORBIDDEN_TEXTS || ''),
     MONKEY_FORBIDDEN_PAGE_TEXTS: String(monkey.page_blacklist || process.env.QA_MONKEY_FORBIDDEN_PAGE_TEXTS || ''),
+    MONKEY_BUSINESS_AWARE: suite === 'monkey' ? '1' : '0',
+    MONKEY_BUSINESS_MAP_PATH: path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json'),
+    MONKEY_BUSINESS_DOMAINS: String(monkey.business_domains || 'login,im,community,voice_room,profile,playwith'),
+    MONKEY_GUARDED_ACTION_POLICY: 'read_only',
+    STUTTER_SCENARIO: String(payload.stutter?.scenario || payload.stutterScenario || 'community'),
     NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
   });
 
@@ -520,8 +632,24 @@ async function triggerJenkinsMonkey(req: Request, payload: any) {
     ...buildAuthConfig(),
   });
 
+  const workflowTask = workflowService.upsertTask({
+    id: platformTask?.id || payload.platformTaskId,
+    taskType: `ios_${suite}`,
+    suite,
+    status: 'queued',
+    source: 'jenkins',
+    externalId: String(response.headers.location || ''),
+    externalUrl: publicJenkinsUrl(req, response.headers.location || ''),
+    buildNumber: sourceBuild,
+    commitHash: payload.commitHash || app.commit_hash,
+    branch: payload.branch || app.branch,
+    deviceUdid: deviceKey,
+    progress: 0,
+    config: { ...payload, suite, devicePool, wdaUrl },
+  });
+
   return {
-    task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:queued:${Date.now()}`,
+    task_id: workflowTask?.id || `jenkins:${DEFAULT_QA_JOB_NAME}:queued:${Date.now()}`,
     status: 'queued',
     queue_url: publicJenkinsUrl(req, response.headers.location || ''),
     job_url: publicJenkinsUrl(req, `${JENKINS_BASE_URL}/${jobPath}/`),
@@ -530,20 +658,19 @@ async function triggerJenkinsMonkey(req: Request, payload: any) {
 
 router.post('/tasks', async (req: Request, res: Response) => {
   try {
-    const taskType = String(req.body?.task_type || '').trim();
-    if (taskType !== 'ios_monkey') {
-      res.status(400).json({ success: false, error: '当前仅支持 task_type=ios_monkey' });
-      return;
-    }
-    const data = await triggerJenkinsMonkey(req, req.body);
+    const taskType = String(req.body?.task_type || req.body?.taskType || 'ios_smoke').trim();
+    suiteFromTaskType(taskType, req.body || {});
+    const data = await triggerJenkinsQuality(req, { ...req.body, task_type: taskType });
     res.json({ success: true, data });
   } catch (error: any) {
-    res.status(502).json({ success: false, error: error.message || '创建 Monkey 任务失败' });
+    res.status(502).json({ success: false, error: error.message || '创建质量任务失败' });
   }
 });
 
 router.get('/tasks', (_req: Request, res: Response) => {
-  res.json({ success: true, data: { tasks: listLocalTasks() } });
+  const tasks = listLocalTasks();
+  tasks.forEach(syncTaskToWorkflow);
+  res.json({ success: true, data: { tasks } });
 });
 
 router.get('/tasks/:taskId', (req: Request, res: Response) => {
@@ -552,7 +679,9 @@ router.get('/tasks/:taskId', (req: Request, res: Response) => {
     res.status(404).json({ success: false, error: '任务不存在或仍在 Jenkins 队列中' });
     return;
   }
-  res.json({ success: true, data: mapBuildToTask(buildNumber) });
+  const task = mapBuildToTask(buildNumber);
+  syncTaskToWorkflow(task);
+  res.json({ success: true, data: task });
 });
 
 router.get('/tasks/:taskId/issues', (req: Request, res: Response) => {
@@ -562,6 +691,7 @@ router.get('/tasks/:taskId/issues', (req: Request, res: Response) => {
     return;
   }
   const task = mapBuildToTask(buildNumber);
+  syncTaskToWorkflow(task);
   res.json({ success: true, data: { task_id: task.task_id, issues: task.issues || [] } });
 });
 
@@ -571,7 +701,9 @@ router.post('/tasks/:taskId/rerun', async (req: Request, res: Response) => {
     if (!buildNumber) throw new Error('任务不存在');
     const task = mapBuildToTask(buildNumber);
     const seedStrategy = String(req.body?.seed_strategy || 'reuse');
-    const data = await triggerJenkinsMonkey(req, {
+    const data = await triggerJenkinsQuality(req, {
+      task_type: task.task_type,
+      suite: String(task.task_type || '').replace(/^ios_/, ''),
       buildNumber: task.build,
       branch: task.summary?.branch,
       commitHash: task.summary?.commitHash,
@@ -584,6 +716,9 @@ router.post('/tasks/:taskId/rerun', async (req: Request, res: Response) => {
         seed: seedStrategy === 'new' ? '' : task.config.seed,
         max_actions: task.config.max_actions,
         device_pool: task.config.device_pool || 'ios-default',
+      },
+      stutter: {
+        scenario: task.summary?.stutterScenario,
       },
     });
     res.json({ success: true, data });
@@ -602,6 +737,10 @@ router.post('/tasks/:taskId/cancel', async (req: Request, res: Response) => {
       headers: crumb.headers,
       ...buildAuthConfig(),
     });
+    const workflowTask = workflowService.getTask(req.params.taskId);
+    if (workflowTask) {
+      workflowService.upsertTask({ ...workflowTask, id: workflowTask.id, status: 'canceled', progress: workflowTask.progress });
+    }
     res.json({ success: true, data: { task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`, status: 'canceled' } });
   } catch (error: any) {
     res.status(502).json({ success: false, error: error.message || '终止 Monkey 任务失败' });

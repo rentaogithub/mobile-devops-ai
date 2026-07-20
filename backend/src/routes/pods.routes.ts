@@ -7,6 +7,7 @@ import podService from '../services/PodService';
 import logger from '../utils/logger';
 import { adminMiddleware } from '../middleware/auth';
 import { getNNRtcJenkinsConfig } from '../config/externalServices';
+import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 
 const router = Router();
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
@@ -350,6 +351,8 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
       fs.unlinkSync(tempPath);
     }
 
+    workflowIntegrationService.syncPodComponent(component, 'publish');
+
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('Pod 组件发布失败', { error: error.message });
@@ -435,6 +438,8 @@ router.post('/leigod-im/imsdk/publish', adminMiddleware, async (req: Request, re
       target_branch: targetBranch,
     });
 
+    workflowIntegrationService.syncPodComponent(component, 'publish_imsdk');
+
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('从 IMSDK 发布 leigod_im_cross_sdk 失败', { error: error.message });
@@ -478,6 +483,7 @@ router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res:
     });
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    workflowIntegrationService.syncPodComponent(component, 'publish_jenkins');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('从 Jenkins 发布 NNRtc 失败', { error: error.message });
@@ -523,6 +529,7 @@ router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request,
           build_id: String(build_number || ''),
         });
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        workflowIntegrationService.syncPodComponent(component, 'publish_jenkins');
         updateNNRtcTask(task, {
           status: 'success',
           progress: 100,
@@ -578,6 +585,7 @@ router.post('/nnrtc/:version/jenkins/replace', adminMiddleware, async (req: Requ
     );
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    workflowIntegrationService.syncPodComponent(component, 'replace_jenkins');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('从 Jenkins 替换 NNRtc 失败', { error: error.message });
@@ -613,6 +621,7 @@ router.post('/nnrtc/:version/jenkins/replace-task', adminMiddleware, async (req:
         });
         const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch, String(build_number || ''), syncDSYM);
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        workflowIntegrationService.syncPodComponent(component, 'replace_jenkins');
         updateNNRtcTask(task, {
           status: 'success',
           progress: 100,
@@ -705,6 +714,7 @@ router.post('/nnrtc/:version/dsym/backfill', adminMiddleware, async (req: Reques
 router.get('/list', async (_req: Request, res: Response) => {
   try {
     const components = await podService.getAll();
+    components.forEach((component) => workflowIntegrationService.syncPodComponent(component, 'list_backfill'));
     res.json({ success: true, data: components });
   } catch (error: any) {
     logger.error('获取组件列表失败', { error: error.message });
@@ -762,6 +772,7 @@ router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: 
   try {
     const targetBranch = requireTargetBranch(req.body?.target_branch);
     const component = await podService.retrySync(req.params.name, req.params.version, targetBranch);
+    workflowIntegrationService.syncPodComponent(component, 'retry_sync');
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('重试同步失败', { error: error.message });
@@ -781,6 +792,7 @@ router.post('/:name/:version/sync-branch', adminMiddleware, async (req: Request,
       ? requireTargetBranch(req.body.target_branch)
       : (isTestPackage ? undefined : requireTargetBranch(req.body?.target_branch));
     const component = await podService.syncVersionToBranch(req.params.name, req.params.version, targetBranch);
+    workflowIntegrationService.syncPodComponent(component, 'sync_branch');
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('同步组件版本到 nnios 分支失败', { error: error.message });
@@ -800,6 +812,7 @@ router.put('/:name/:version/podspec', adminMiddleware, async (req: Request, res:
     }
     const targetBranch = requireTargetBranch(target_branch);
     const component = await podService.updatePodspec(req.params.name, req.params.version, podspec_content, targetBranch);
+    workflowIntegrationService.syncPodComponent(component, 'update_podspec');
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('更新 podspec 失败', { error: error.message });
@@ -833,6 +846,7 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
     }
 
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    workflowIntegrationService.syncPodComponent(component, 'replace');
     res.json({ success: true, data: component });
   } catch (error: any) {
     logger.error('替换 zip 失败', { error: error.message });
@@ -850,6 +864,7 @@ router.post('/leigod-im/:version/imsdk/replace', adminMiddleware, async (req: Re
     const { target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
     const component = await podService.replaceLeigodIMCrossSDKFromIMSDK(req.params.version, targetBranch);
+    workflowIntegrationService.syncPodComponent(component, 'replace_imsdk');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
     logger.error('从 IMSDK 替换 leigod_im_cross_sdk 失败', { version: req.params.version, error: error.message });

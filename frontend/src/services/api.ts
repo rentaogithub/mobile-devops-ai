@@ -927,19 +927,13 @@ async function listSentryIssuesFromProxy(params: {
   const period = params.period || '24h';
   const limit = Math.min(Math.max(params.limit || 5, 1), 20);
   const query = params.query || 'is:unresolved';
-  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const search = new URLSearchParams({
     query,
     sort: 'date',
     limit: String(limit),
   });
 
-  if (period === '7d') {
-    search.set('start', new Date(sevenDaysAgo).toISOString());
-    search.set('end', new Date().toISOString());
-  } else {
-    search.set('statsPeriod', period);
-  }
+  search.set('statsPeriod', period === '7d' ? '14d' : period);
 
   const data = await sentryProxyGet<any[] | { results?: any[] }>(
     `/api/0/projects/sentry/nn-ios/issues/?${search.toString()}`
@@ -951,6 +945,7 @@ async function listSentryIssuesFromProxy(params: {
       if (period !== '7d') {
         return true;
       }
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
       return (Date.parse(issue.lastSeen || issue.firstSeen || '') || 0) >= sevenDaysAgo;
     });
   return {
@@ -971,7 +966,21 @@ export const sentryAnalysisApi = {
     query?: string;
   }): Promise<ApiResponse<SentryIssueListResult>> => {
     try {
-      return await listSentryIssuesFromProxy(params);
+      const proxyResponse = await listSentryIssuesFromProxy(params);
+      const issues = proxyResponse.data?.issues || [];
+      if (issues.length === 0) {
+        return proxyResponse;
+      }
+
+      api.post<ApiResponse<{
+        total: number;
+        synced: number;
+        issues: SentryIssueSummary[];
+      }>>('/sentry-analysis/sync-issues', { issues }, { timeout: 60000 }).catch(() => {
+        // Workflow 同步失败不影响 Sentry 列表本身可用。
+      });
+
+      return proxyResponse;
     } catch (error) {
       const response = await api.post<ApiResponse<SentryIssueListResult>>(
         '/sentry-analysis/issues',
@@ -2246,7 +2255,7 @@ export interface JenkinsQualityPerformanceSamples {
   };
 }
 
-export type QualityTaskType = 'ios_monkey';
+export type QualityTaskType = 'ios_monkey' | 'ios_stutter' | 'ios_smoke' | 'ios_login' | 'ios_im' | 'ios_rtc' | 'ios_full';
 export type QualityTaskStatus = 'created' | 'queued' | 'preparing' | 'installing' | 'running' | 'collecting' | 'analyzing' | 'reporting' | 'notifying' | 'success' | 'failed' | 'unstable' | 'canceled' | string;
 
 export interface QualityIssue {
@@ -2386,8 +2395,26 @@ export const jenkinsApi = {
     deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
     verificationPassword?: string;
     branch?: string;
-  }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string }>>('/jenkins/nn/build', payload);
+    gateBuildNumber?: number;
+    releaseGateOverrideReason?: string;
+  }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>>('/jenkins/nn/build', payload);
+    return response.data;
+  },
+
+  previewReleaseGate: async (payload: {
+    gateBuildNumber: number;
+    branch?: string;
+  }): Promise<ApiResponse<{
+    build: JenkinsBuild;
+    releaseGate: WorkflowReleaseGate;
+    missingSuites: JenkinsQualitySuite[];
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      build: JenkinsBuild;
+      releaseGate: WorkflowReleaseGate;
+      missingSuites: JenkinsQualitySuite[];
+    }>>('/jenkins/nn/release-gate/preview', payload);
     return response.data;
   },
 
@@ -2605,6 +2632,154 @@ export const qualityApi = {
     const response = await api.post<ApiResponse<{ task_id: string; status: QualityTaskStatus }>>(`/quality/tasks/${encodeURIComponent(taskId)}/cancel`);
     return response.data;
   },
+};
+
+export interface WorkflowOverview {
+  projectId: string;
+  artifacts: number;
+  tasks: number;
+  activeTasks: number;
+  openIssues: number;
+  regressionCandidates: number;
+  knowledgeEntries: number;
+  tasksByStatus: Record<string, number>;
+  issuesBySeverity: Record<string, number>;
+  latestGate?: WorkflowReleaseGate | null;
+  latestTasks: WorkflowTask[];
+  latestIssues: WorkflowIssue[];
+}
+
+export interface WorkflowTask {
+  id: string;
+  taskType: string;
+  suite?: string;
+  status: string;
+  source: string;
+  buildNumber?: string;
+  branch?: string;
+  commitHash?: string;
+  deviceUdid?: string;
+  progress: number;
+  config: Record<string, unknown>;
+  result: Record<string, any>;
+  updatedAt: string;
+}
+
+export interface WorkflowIssue {
+  id: string;
+  fingerprint: string;
+  source: string;
+  category: string;
+  severity: string;
+  status: string;
+  title: string;
+  summary?: string;
+  module?: string;
+  ownerHint?: string;
+  businessDomain?: string;
+  businessPath?: string;
+  taskId?: string;
+  buildNumber?: string;
+  occurrenceCount: number;
+  lastSeen: string;
+  evidence: unknown[];
+  metadata: Record<string, any>;
+}
+
+export interface WorkflowImpactResult {
+  repoPath: string;
+  baseRef?: string;
+  headRef: string;
+  totalFiles: number;
+  changedLines: number;
+  riskScore: number;
+  riskLevel: string;
+  modules: string[];
+  domains: string[];
+  risks: string[];
+  recommendedSuites: string[];
+  recommendedChecks: string[];
+  files: Array<{ path: string; kind: string; module: string; domains: string[]; risks: string[]; added: number; deleted: number }>;
+}
+
+export interface WorkflowReleaseGate {
+  id: string;
+  buildNumber: string;
+  branch?: string;
+  status: string;
+  score: number;
+  result: {
+    summary?: string;
+    blockers?: Array<{ code: string; message: string }>;
+    warnings?: Array<{ code: string; message: string }>;
+    passed?: Array<{ code: string; message: string }>;
+  };
+  createdAt: string;
+}
+
+export interface WorkflowRegressionCandidate {
+  id: string;
+  issueId?: string;
+  title: string;
+  suite: string;
+  businessDomain?: string;
+  businessPath?: string;
+  preconditions: string[];
+  steps: string[];
+  assertions: string[];
+  confidence: number;
+  status: string;
+  generatedCode?: string;
+  metadata: Record<string, any>;
+  updatedAt: string;
+}
+
+export interface WorkflowKnowledgeEntry {
+  id: string;
+  kind: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  confidence: number;
+  updatedAt: string;
+  content: Record<string, any>;
+}
+
+export interface WorkflowReleaseObservation {
+  id: string;
+  releaseVersion: string;
+  buildNumber?: string;
+  channel?: string;
+  metric: string;
+  value: number;
+  baselineValue?: number;
+  status: string;
+  observedAt: string;
+}
+
+export const workflowApi = {
+  overview: async (): Promise<ApiResponse<WorkflowOverview>> => (await api.get('/workflow/overview')).data,
+  listTasks: async (): Promise<ApiResponse<WorkflowTask[]>> => (await api.get('/workflow/tasks')).data,
+  listIssues: async (params?: Record<string, unknown>): Promise<ApiResponse<WorkflowIssue[]>> => (await api.get('/workflow/issues', { params })).data,
+  updateIssue: async (issueId: string, payload: Record<string, unknown>): Promise<ApiResponse<WorkflowIssue>> => (await api.patch(`/workflow/issues/${issueId}`, payload)).data,
+  analyzeImpact: async (payload: { repoPath?: string; baseRef?: string; headRef?: string; files?: string[] }): Promise<ApiResponse<WorkflowImpactResult>> => (await api.post('/workflow/impact/analyze', payload, { timeout: 120000 })).data,
+  evaluateGate: async (payload: Record<string, unknown>): Promise<ApiResponse<WorkflowReleaseGate>> => (await api.post('/workflow/release-gates/evaluate', payload)).data,
+  listGates: async (): Promise<ApiResponse<WorkflowReleaseGate[]>> => (await api.get('/workflow/release-gates')).data,
+  proposeRegression: async (issueId: string): Promise<ApiResponse<WorkflowRegressionCandidate>> => (await api.post(`/workflow/issues/${issueId}/regression-candidates`)).data,
+  listRegressionCandidates: async (): Promise<ApiResponse<WorkflowRegressionCandidate[]>> => (await api.get('/workflow/regression-candidates')).data,
+  generateXCUITest: async (candidateId: string, apiKey?: string): Promise<ApiResponse<{ candidate: WorkflowRegressionCandidate; generation: Record<string, any> }>> => (await api.post(`/workflow/regression-candidates/${candidateId}/generate-xcuitest`, { apiKey }, { timeout: 120000 })).data,
+  exportXCUITest: async (candidateId: string): Promise<ApiResponse<{ candidate: WorkflowRegressionCandidate; filePath: string; className: string; testNames: string[] }>> => (await api.post(`/workflow/regression-candidates/${candidateId}/export-xcuitest`)).data,
+  verifyXCUITest: async (candidateId: string): Promise<ApiResponse<{ candidate: WorkflowRegressionCandidate; passed: boolean; logPath: string; mode: string }>> => (await api.post(`/workflow/regression-candidates/${candidateId}/verify-xcuitest`, {}, { timeout: 5 * 60 * 1000 })).data,
+  runXCUITest: async (candidateId: string, destination?: string): Promise<ApiResponse<{ candidate: WorkflowRegressionCandidate; executed: boolean; passed: boolean; [key: string]: any }>> => (await api.post(`/workflow/regression-candidates/${candidateId}/run-xcuitest`, { allowRun: true, destination }, { timeout: 45 * 60 * 1000 })).data,
+  suggestFix: async (issueId: string, context: Record<string, unknown> = {}, apiKey?: string): Promise<ApiResponse<Record<string, any>>> => (await api.post(`/workflow/issues/${issueId}/fix-suggestion`, { context, apiKey }, { timeout: 120000 })).data,
+  listKnowledge: async (): Promise<ApiResponse<WorkflowKnowledgeEntry[]>> => (await api.get('/workflow/knowledge')).data,
+  synthesizeKnowledge: async (payload: Record<string, unknown>): Promise<ApiResponse<WorkflowKnowledgeEntry>> => (await api.post('/workflow/knowledge/synthesize', payload, { timeout: 120000 })).data,
+  listAIEvaluations: async (): Promise<ApiResponse<any[]>> => (await api.get('/workflow/ai-evaluations')).data,
+  recordAIEvaluation: async (payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> => (await api.post('/workflow/ai-evaluations', payload)).data,
+  updateAIEvaluation: async (evaluationId: string, payload: Record<string, unknown>): Promise<ApiResponse<any>> => (await api.patch(`/workflow/ai-evaluations/${evaluationId}`, payload)).data,
+  addReleaseObservation: async (payload: Record<string, unknown>): Promise<ApiResponse<{ id: string }>> => (await api.post('/workflow/release-observations', payload)).data,
+  listReleaseObservations: async (releaseVersion?: string): Promise<ApiResponse<WorkflowReleaseObservation[]>> => (await api.get('/workflow/release-observations', { params: releaseVersion ? { releaseVersion } : undefined })).data,
+  releaseHealth: async (releaseVersion: string): Promise<ApiResponse<Record<string, any>>> => (await api.get(`/workflow/release-health/${encodeURIComponent(releaseVersion)}`)).data,
 };
 
 export default api;

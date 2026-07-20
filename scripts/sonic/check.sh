@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Diagnose Sonic Server/Web deployment on the fixed build Mac.
+# Diagnose Sonic Server/Web deployment on the current build Mac.
 
 set +e
 
@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SONIC_DIR="${SONIC_STACK_DIR:-$PROJECT_ROOT/deploy/sonic}"
 SONIC_ENV_FILE="${SONIC_STACK_ENV_FILE:-$SONIC_DIR/.env}"
-PLATFORM_HOST="${PLATFORM_HOST:-10.1.3.177}"
+PLATFORM_HOST="${PLATFORM_HOST:-$(ipconfig getifaddr en0 2>/dev/null || printf '127.0.0.1')}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 section() {
@@ -28,11 +28,12 @@ check_command() {
 check_http() {
   local url="$1"
   local name="$2"
+  local allow_not_found="${3:-false}"
   local code
   code="$(curl -s -o /tmp/nn-ios-platform-sonic-check.out -w "%{http_code}" --connect-timeout 2 "$url")"
   if [ "$code" = "000" ]; then
     echo "FAIL: $name $url -> connect failed"
-  elif [ "$code" -ge 200 ] && [ "$code" -lt 400 ]; then
+  elif [ "$code" -ge 200 ] && { [ "$code" -lt 400 ] || { [ "$allow_not_found" = "true" ] && [ "$code" -lt 500 ]; }; }; then
     echo "OK: $name $url -> HTTP $code"
   else
     echo "WARN: $name $url -> HTTP $code"
@@ -54,22 +55,22 @@ print_container_logs() {
   docker logs --tail 100 "$container_name" 2>&1 | sed 's/^/  /'
 }
 
-check_sonic_server_inside_container() {
+check_sonic_gateway_inside_container() {
   if ! command -v docker >/dev/null 2>&1; then
     return
   fi
-  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-gateway$'; then
     return
   fi
 
-  section "Sonic Server Container HTTP"
-  docker exec nn-sonic-server sh -lc '
+  section "Sonic Gateway Container HTTP"
+  docker exec nn-sonic-gateway sh -lc '
     if command -v curl >/dev/null 2>&1; then
-      curl -s -o /dev/null -w "container localhost:8094 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:8094 || true
+      curl -s -o /dev/null -w "container localhost:3000 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:3000 || true
     elif command -v wget >/dev/null 2>&1; then
-      wget -q -S -O /dev/null http://127.0.0.1:8094 2>&1 | head -n 8 || true
+      wget -q -S -O /dev/null http://127.0.0.1:3000 2>&1 | head -n 8 || true
     else
-      echo "curl/wget not found in nn-sonic-server"
+      echo "curl/wget not found in nn-sonic-gateway"
     fi
   ' 2>&1 || true
 }
@@ -117,7 +118,7 @@ fi
 
 section "Sonic Env"
 if [ -f "$SONIC_ENV_FILE" ]; then
-  sed -n '1,120p' "$SONIC_ENV_FILE" | sed -E 's/^(.*PASSWORD=).*/\1******/'
+  sed -n '1,120p' "$SONIC_ENV_FILE" | sed -E 's/^([^=]*(PASSWORD|SECRET|TOKEN)[^=]*=).*/\1******/'
 else
   echo "missing $SONIC_ENV_FILE"
 fi
@@ -136,16 +137,19 @@ lsof -nP -iTCP:8094 -sTCP:LISTEN
 
 section "HTTP"
 check_http "http://127.0.0.1:3002" "Sonic Web"
-check_http "http://127.0.0.1:8094" "Sonic API"
+check_http "http://127.0.0.1:8094" "Sonic API Gateway" true
 check_http "http://127.0.0.1:5173/sonic-admin" "Platform Sonic Admin Proxy"
-check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy"
+check_http "http://127.0.0.1:5173/sonic-api" "Platform Sonic API Proxy" true
 check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-admin" "External Platform Sonic Admin Proxy"
-check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-api" "External Platform Sonic API Proxy"
+check_http "http://${PLATFORM_HOST}:${FRONTEND_PORT}/sonic-api" "External Platform Sonic API Proxy" true
 
-check_sonic_server_inside_container
-print_container_logs "nn-sonic-server" "Sonic Server"
+check_sonic_gateway_inside_container
+print_container_logs "nn-sonic-eureka" "Sonic Eureka"
+print_container_logs "nn-sonic-gateway" "Sonic Gateway"
+print_container_logs "nn-sonic-controller" "Sonic Controller"
+print_container_logs "nn-sonic-folder" "Sonic Folder"
 
 section "Hint"
 echo "如果 3002 不通：Sonic Web 容器未启动或启动失败。"
-echo "如果 8094 不通：Sonic Server/API 容器未启动或启动失败。"
+echo "如果 8094 不通：Sonic Gateway 容器未启动或启动失败。"
 echo "如果 .env 缺失或仍是占位配置，执行 sh scripts/sonic/sonic.sh stack 自动初始化。"

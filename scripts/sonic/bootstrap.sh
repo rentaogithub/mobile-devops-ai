@@ -39,22 +39,25 @@ print_sonic_server_diagnostics() {
     return
   fi
 
-  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-server$'; then
-    echo "nn-sonic-server 容器未运行。"
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^nn-sonic-gateway$'; then
+    echo "nn-sonic-gateway 容器未运行。"
     return
   fi
 
   echo
-  echo "nn-sonic-server 最近日志:"
-  docker logs --tail 80 nn-sonic-server 2>&1 | sed 's/^/  /' || true
+  echo "nn-sonic-gateway 最近日志:"
+  docker logs --tail 80 nn-sonic-gateway 2>&1 | sed 's/^/  /' || true
+  echo
+  echo "nn-sonic-controller 最近日志:"
+  docker logs --tail 80 nn-sonic-controller 2>&1 | sed 's/^/  /' || true
 
   echo
-  echo "nn-sonic-server 容器内探测:"
-  docker exec nn-sonic-server sh -lc '
+  echo "nn-sonic-gateway 容器内探测:"
+  docker exec nn-sonic-gateway sh -lc '
     if command -v curl >/dev/null 2>&1; then
-      curl -s -o /dev/null -w "  container localhost:8094 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:8094 || true
+      curl -s -o /dev/null -w "  container localhost:3000 -> HTTP %{http_code}\n" --connect-timeout 2 http://127.0.0.1:3000 || true
     elif command -v wget >/dev/null 2>&1; then
-      wget -q -S -O /dev/null http://127.0.0.1:8094 2>&1 | head -n 5 | sed "s/^/  /" || true
+      wget -q -S -O /dev/null http://127.0.0.1:3000 2>&1 | head -n 5 | sed "s/^/  /" || true
     else
       echo "  curl/wget 不存在，跳过容器内 HTTP 探测"
     fi

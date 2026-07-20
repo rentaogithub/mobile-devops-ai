@@ -13,6 +13,7 @@ import {
   BarChartOutlined,
   ApiOutlined,
   MobileOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 
@@ -44,6 +45,11 @@ export default function MainLayout() {
       key: '/',
       icon: <HomeOutlined />,
       label: '首页',
+    },
+    {
+      key: '/workflow',
+      icon: <ApartmentOutlined />,
+      label: '质量中心',
     },
     {
       key: '/symbolicate-group',

@@ -40,13 +40,14 @@ cd deploy/sonic
 脚本会自动生成 `deploy/sonic/.env`：
 
 - `SONIC_WEB_IMAGE`：Sonic Web 后台镜像
-- `SONIC_SERVER_IMAGE`：Sonic Server/API 镜像
+- `SONIC_EUREKA_IMAGE` / `SONIC_GATEWAY_IMAGE`：Sonic 注册中心与 API 网关镜像
+- `SONIC_CONTROLLER_IMAGE` / `SONIC_FOLDER_IMAGE`：Sonic 控制面与文件服务镜像
 - `SONIC_HOST`：部署主机 IP，例如 `10.1.3.177`
 - `SONIC_WEB_PORT`：Sonic 后台端口，默认 `3002`
 - `SONIC_API_PORT`：Sonic API 端口，默认 `8094`
 - `SONIC_MYSQL_PASSWORD` / `SONIC_MYSQL_ROOT_PASSWORD`：数据库密码，默认自动生成
 
-默认使用 `sonicorg/sonic-client-web:v2.7.2` 和 `sonicorg/sonic-server-simple:v1.3.2-release`。如果内部网络无法拉取 Docker Hub，可在 `.env` 中覆盖为内部镜像仓库地址。
+默认整套使用 Sonic `v2.7.2`，确保 Web、Server 与 Agent 协议一致。在 Apple Silicon 上，启动脚本会从官方 JAR 自动构建原生 arm64 兼容镜像，避免 amd64 JVM 模拟卡死。如果内部网络无法拉取 Docker Hub，可在 `.env` 中覆盖为内部镜像仓库地址。
 
 ## 启动
 
@@ -77,6 +78,8 @@ SONIC_TEST_PLAN_ID=
 ## 真机接入
 
 iOS 真机通常接在 Mac mini 上，由 Sonic Agent 管理。Sonic Server 可以部署在 `10.1.3.177`，Agent 可以部署在接真机的 Mac 上。
+
+同机部署时 Agent 连接 `127.0.0.1:3002`，通过 Sonic Web 的 `/server` WebSocket 代理完成鉴权；`8094` 仅作为平台后端直连 Gateway 的 API 端口。
 
 推荐维护方式：
 

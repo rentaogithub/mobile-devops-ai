@@ -234,6 +234,42 @@ ${compactLog}`;
   }
 
   /**
+   * Workflow 平台通用结构化 AI 能力。
+   * 上层负责定义 JSON Schema 语义，本方法只负责调用模型并返回可解析对象。
+   */
+  async runStructuredAnalysis<T extends Record<string, any>>(input: {
+    systemPrompt: string;
+    userPrompt: string;
+    apiKey?: string;
+    fallback: T;
+  }): Promise<T> {
+    const candidateApiKeys = this.getCandidateAPIKeys(input.apiKey);
+    if (candidateApiKeys.length === 0) {
+      return input.fallback;
+    }
+
+    const response = await this.callAIAPIWithFallback(JSON.stringify({
+      systemPrompt: input.systemPrompt,
+      userPrompt: input.userPrompt,
+    }), candidateApiKeys);
+
+    try {
+      let jsonStr = response.trim();
+      const codeBlockMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (codeBlockMatch) jsonStr = codeBlockMatch[1];
+      if (!codeBlockMatch) {
+        const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
+        if (objectMatch) jsonStr = objectMatch[0];
+      }
+      const parsed = JSON.parse(jsonStr);
+      return parsed && typeof parsed === 'object' ? parsed as T : input.fallback;
+    } catch (error: any) {
+      logger.warn('Workflow 结构化 AI 响应解析失败，使用规则结果', { error: error.message });
+      return input.fallback;
+    }
+  }
+
+  /**
    * 从崩溃日志中提取基本信息
    */
   private extractBasicInfo(crashLog: string): {

@@ -170,14 +170,26 @@ set -e
 cd "\$(dirname "\$0")"
 
 AGENT_JAR="\$(find . -maxdepth 4 -type f -name 'sonic-agent*.jar' | head -n 1)"
-API_BASE="\${SONIC_AGENT_API_BASE:-$API_BASE}"
+AGENT_HOST="\${SONIC_AGENT_HOST:-\${CURRENT_DEVICE_IP:-\${SONIC_HOST:-127.0.0.1}}}"
+SERVER_HOST="\${SONIC_AGENT_SERVER_HOST:-\${SONIC_HOST:-127.0.0.1}}"
+SERVER_PORT="\${SONIC_AGENT_SERVER_PORT:-3002}"
+AGENT_KEY="\${SONIC_AGENT_KEY:-}"
 
 if [ -z "\$AGENT_JAR" ]; then
   echo "No sonic-agent*.jar found in \$(pwd)" >&2
   exit 1
 fi
 
-exec java -jar "\$AGENT_JAR" --server.host="\$API_BASE"
+AGENT_ARGS=(
+  --sonic.agent.host="\$AGENT_HOST" \
+  --sonic.server.host="\$SERVER_HOST" \
+  --sonic.server.port="\$SERVER_PORT"
+)
+if [ -n "\$AGENT_KEY" ]; then
+  AGENT_ARGS+=(--sonic.agent.key="\$AGENT_KEY")
+fi
+
+exec java -jar "\$AGENT_JAR" "\${AGENT_ARGS[@]}"
 EOF
 
   chmod +x "$AGENT_DIR/start.sh"

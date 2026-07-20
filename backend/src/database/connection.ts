@@ -4,14 +4,18 @@ import fs from 'fs';
 
 let db: Database.Database | null = null;
 
+export function getDatabasePath(): string {
+  const projectRoot = path.resolve(__dirname, '../../../');
+  return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite'));
+}
+
 export function getDatabase(): Database.Database {
   if (db) {
     return db;
   }
 
   // 使用绝对路径，相对于项目根目录
-  const projectRoot = path.resolve(__dirname, '../../../');
-  const dbPath = process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite');
+  const dbPath = getDatabasePath();
   const dbDir = path.dirname(dbPath);
 
   // 确保数据库目录存在

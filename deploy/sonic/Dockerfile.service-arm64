@@ -1,0 +1,9 @@
+ARG SONIC_SOURCE_IMAGE
+FROM --platform=linux/amd64 ${SONIC_SOURCE_IMAGE} AS sonic-source
+
+FROM eclipse-temurin:17-jre-jammy
+ARG SONIC_JAR_NAME
+WORKDIR /app
+COPY --from=sonic-source /${SONIC_JAR_NAME} /app/server.jar
+
+ENTRYPOINT ["java", "-server", "-XX:+UseG1GC", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/server.jar"]

@@ -28,10 +28,12 @@ import userQueryRecordsRoutes from './routes/userQueryRecords.routes';
 import feedbackLogRoutes from './routes/feedbackLog.routes';
 import accessStatsRoutes from './routes/accessStats.routes';
 import apiDocsRoutes from './routes/apiDocs.routes';
+import workflowRoutes from './routes/workflow.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
 import { browserLogWebSocketService } from './services/BrowserLogWebSocketService';
+import { platformOperationsService } from './services/PlatformOperationsService';
 import { clearOpAccessToken, getOpAccessToken, isOpAccessTokenUsable, updateOpAccessToken } from './services/OpCookieJar';
 import logger from './utils/logger';
 
@@ -72,9 +74,24 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', database: 'connected' });
+// Health checks
+app.get('/health/live', (_req, res) => {
+  res.json({ status: 'ok', pid: process.pid, uptimeSeconds: Math.round(process.uptime()), checkedAt: new Date().toISOString() });
+});
+
+app.get('/health/ready', (_req, res) => {
+  const readiness = platformOperationsService.readiness();
+  res.status(readiness.ready ? 200 : 503).json(readiness);
+});
+
+app.get('/health', (_req, res) => {
+  const readiness = platformOperationsService.readiness();
+  res.status(readiness.ready ? 200 : 503).json({ status: readiness.ready ? 'ok' : 'error', ...readiness });
+});
+
+app.get('/api/health/dependencies', async (_req, res) => {
+  const result = await platformOperationsService.dependencies();
+  res.status(result.status === 'healthy' ? 200 : 207).json({ success: true, data: result });
 });
 
 app.post('/api/op-auth/sync', (req, res) => {
@@ -204,6 +221,7 @@ app.use('/api/user-query-records', userQueryRecordsRoutes);
 app.use('/api/feedback-log', feedbackLogRoutes);
 app.use('/api/access-stats', accessStatsRoutes);
 app.use('/api/api-docs', apiDocsRoutes);
+app.use('/api/workflow', workflowRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');
@@ -237,6 +255,7 @@ server.listen(PORT, '0.0.0.0', () => {
   logger.info(`WebSocket relay is running on ws://0.0.0.0:${PORT}/ws/logs`);
   console.log(`Server is running on http://0.0.0.0:${PORT}`);
   cleanupService.start();
+  platformOperationsService.start(PORT);
 });
 
 export default app;
