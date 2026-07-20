@@ -14,10 +14,9 @@ import {
   PlusOutlined,
   DeleteOutlined,
   BranchesOutlined,
-  UploadOutlined,
   BulbOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
 
 const { Title, Paragraph, Text } = Typography;
@@ -2320,12 +2319,12 @@ export default function CICDPage() {
     log: string;
     thirdSdkBranch: string;
     thirdSdkRevision?: string;
-    thirdSdkDependencies: Array<{ name: string; version: string; source: string }>;
-    thirdSdkMissingFiles?: string[];
-    thirdSdkError?: string;
-  } | null>(null);
-  const [buildDsymUploading, setBuildDsymUploading] = useState(false);
-  const [buildDsymUploaded, setBuildDsymUploaded] = useState<DSYMInfo | null>(null);
+	    thirdSdkDependencies: Array<{ name: string; version: string; source: string }>;
+	    thirdSdkMissingFiles?: string[];
+	    thirdSdkError?: string;
+	  } | null>(null);
+	  const [buildDsymSyncing, setBuildDsymSyncing] = useState(false);
+	  const [buildDsymSync, setBuildDsymSync] = useState<JenkinsBuildDsymSync | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [publishBranch, setPublishBranch] = useState('develop');
@@ -2896,10 +2895,10 @@ export default function CICDPage() {
     }
   };
 
-  const showBuildLog = async (build: JenkinsBuild) => {
-    setLogModalOpen(true);
-    setBuildDsymUploaded(null);
-    setBuildFailureAnalysis(null);
+	  const showBuildLog = async (build: JenkinsBuild) => {
+	    setLogModalOpen(true);
+	    setBuildDsymSync(build.dsymSync || null);
+	    setBuildFailureAnalysis(null);
     setSelectedBuildLog({ build, log: '', thirdSdkBranch: build.branchName || 'develop', thirdSdkDependencies: [] });
     setLogLoading(true);
     try {
@@ -2909,11 +2908,12 @@ export default function CICDPage() {
         log: response.data?.log || '',
         thirdSdkBranch: response.data?.thirdSdkBranch || build.branchName || 'develop',
         thirdSdkRevision: response.data?.thirdSdkRevision,
-        thirdSdkDependencies: response.data?.thirdSdkDependencies || [],
-        thirdSdkMissingFiles: response.data?.thirdSdkMissingFiles || [],
-        thirdSdkError: response.data?.thirdSdkError,
-      });
-      setBuildFailureAnalysis(response.data?.failureAnalysis || null);
+	        thirdSdkDependencies: response.data?.thirdSdkDependencies || [],
+	        thirdSdkMissingFiles: response.data?.thirdSdkMissingFiles || [],
+	        thirdSdkError: response.data?.thirdSdkError,
+	      });
+	      setBuildDsymSync(response.data?.dsymSync || build.dsymSync || null);
+	      setBuildFailureAnalysis(response.data?.failureAnalysis || null);
     } catch (err: any) {
       message.error(err?.error || err?.message || '加载打包日志失败');
       setSelectedBuildLog({
@@ -2948,28 +2948,22 @@ export default function CICDPage() {
     void analyzeSelectedBuildFailure(false);
   };
 
-  const handleBuildDsymUpload = async () => {
-    const xcarchivePath = selectedBuildLog?.build.xcarchivePath;
-    if (!xcarchivePath) {
-      message.error('当前构建未记录 xcarchivePath，无法自动匹配 dSYM');
-      return;
-    }
-
-    setBuildDsymUploading(true);
-    setBuildDsymUploaded(null);
-    try {
-      const response = await dsymApi.uploadFromXcarchive(xcarchivePath);
-      if (!response.success || !response.data) {
-        throw new Error(response.error || '上传 dSYM 失败');
-      }
-      setBuildDsymUploaded(response.data);
-      message.success(`主工程 dSYM 上传成功：${response.data.appName}@${response.data.version}`);
-    } catch (err: any) {
-      message.error(err?.error || err?.message || '上传 dSYM 失败');
-    } finally {
-      setBuildDsymUploading(false);
-    }
-  };
+	  const handleBuildDsymSync = async (force = true) => {
+	    if (!selectedBuildLog) return;
+	    setBuildDsymSyncing(true);
+	    try {
+	      const response = await jenkinsApi.syncBuildDsyms(selectedBuildLog.build.number, force);
+	      if (!response.success || !response.data) {
+	        throw new Error(response.error || '同步 dSYM 失败');
+	      }
+	      setBuildDsymSync(response.data);
+	      message.success(response.data.message || 'dSYM 同步完成');
+	    } catch (err: any) {
+	      message.error(err?.error || err?.message || '同步 dSYM 失败');
+	    } finally {
+	      setBuildDsymSyncing(false);
+	    }
+	  };
 
   const downloadBuildLog = () => {
     if (!selectedBuildLog) return;
@@ -4456,33 +4450,64 @@ export default function CICDPage() {
               {selectedBuildLog.build.appVersion && <Tag color="purple">APP {selectedBuildLog.build.appVersion}</Tag>}
             </Space>
           )}
-          {selectedBuildLog?.build.publishChannel === 'AppStore' && (
-            <Card size="small">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-                <Space direction="vertical" size={4}>
-                  <Text strong>上传主工程 dSYM 文件</Text>
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    上传后会进入 Crash 符号化的 dSYM 文件管理，可直接用于线上崩溃符号化。
-                  </Text>
-                  {buildDsymUploaded && (
-                    <Space size={6} wrap>
-                      <Tag color="green">已上传</Tag>
-                      <Text>{buildDsymUploaded.appName}@{buildDsymUploaded.version}</Text>
-                      <Text code>{buildDsymUploaded.uuid}</Text>
-                    </Space>
-                  )}
-                </Space>
-                <Button
-                  icon={<UploadOutlined />}
-                  loading={buildDsymUploading}
-                  disabled={!selectedBuildLog.build.xcarchivePath}
-                  onClick={handleBuildDsymUpload}
-                >
-                  {buildDsymUploading ? '上传中...' : '上传 dSYM'}
-                </Button>
-              </div>
-            </Card>
-          )}
+	          {selectedBuildLog?.build.publishChannel === 'AppStore' && (
+	            <Card size="small">
+	              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+	                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+	                  <Space direction="vertical" size={4}>
+	                    <Space wrap>
+	                      <Text strong>AppStore dSYM 同步</Text>
+	                      {buildDsymSync?.status && (
+	                        <Tag color={buildDsymSync.status === 'success' ? 'green' : (buildDsymSync.status === 'partial' ? 'orange' : (buildDsymSync.status === 'running' ? 'blue' : 'red'))}>
+	                          {buildDsymSync.status === 'success' ? '已同步' : (buildDsymSync.status === 'partial' ? '部分缺失' : (buildDsymSync.status === 'running' ? '同步中' : '同步失败'))}
+	                        </Tag>
+	                      )}
+	                    </Space>
+	                    <Text type="secondary" style={{ fontSize: 12 }}>
+	                      自动同步主包 dSYM，并将已上传的 leigod_im_cross_sdk、NNRtc 对应版本关联到本次 APP 版本。
+	                    </Text>
+	                  </Space>
+	                  <Button
+	                    icon={<ReloadOutlined />}
+	                    loading={buildDsymSyncing}
+	                    onClick={() => handleBuildDsymSync(true)}
+	                  >
+	                    {buildDsymSyncing ? '同步中...' : '重新同步'}
+	                  </Button>
+	                </div>
+	                {buildDsymSync ? (
+	                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+	                    <Alert
+	                      showIcon
+	                      type={buildDsymSync.status === 'success' ? 'success' : (buildDsymSync.status === 'partial' || buildDsymSync.status === 'running' ? 'warning' : 'error')}
+	                      message={buildDsymSync.message || '等待 dSYM 同步结果'}
+	                    />
+	                    {buildDsymSync.main && (
+	                      <Space size={6} wrap>
+	                        <Tag color="green">{buildDsymSync.main.skipped ? '主包已存在' : '主包已入库'}</Tag>
+	                        <Text>{buildDsymSync.main.appName}@{buildDsymSync.main.version}</Text>
+	                        <Text code>{buildDsymSync.main.uuid}</Text>
+	                      </Space>
+	                    )}
+	                    {buildDsymSync.components?.length ? (
+	                      <Space size={[6, 6]} wrap>
+	                        {buildDsymSync.components.map((component) => (
+	                          <Tag
+	                            key={`${component.name}-${component.version}`}
+	                            color={component.status === 'linked' ? 'purple' : 'orange'}
+	                          >
+	                            {component.name} {component.version} {component.status === 'linked' ? '已关联' : '未找到'}
+	                          </Tag>
+	                        ))}
+	                      </Space>
+	                    ) : null}
+	                  </Space>
+	                ) : (
+	                  <Text type="secondary">构建成功后会自动同步；如未看到结果，可手动重新同步一次。</Text>
+	                )}
+	              </Space>
+	            </Card>
+	          )}
           <Tabs
             key={selectedBuildLog?.build.number || 'build-log'}
             defaultActiveKey="build-log"

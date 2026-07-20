@@ -8,6 +8,11 @@ import path from 'path';
 import os from 'os';
 import podDepsResolver from '../services/PodDependencyResolver';
 import aiAnalysisService from '../services/AIAnalysisService';
+import { FileHandlerService, StorageService } from '../services';
+import { PodService } from '../services/PodService';
+import symbolicationCache from '../services/SymbolicationCacheService';
+import logger from '../utils/logger';
+import { AppError, ErrorCode } from '../types';
 import { getJenkinsBaseUrl } from '../config/externalServices';
 
 const router = Router();
@@ -32,8 +37,13 @@ const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
 const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
+const BUILD_DSYM_SYNC_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-dsym-sync.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
+const fileHandler = new FileHandlerService();
+const storage = new StorageService();
+const podService = new PodService();
+const BUILD_DSYM_SYNC_RUNNING = new Set<string>();
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -747,6 +757,251 @@ function saveBuildFailureAnalysis(buildNumber: number, analysis: any, context: a
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
   fs.renameSync(tmpPath, BUILD_FAILURE_ANALYSIS_CACHE_PATH);
   return nextCache.analyses[String(buildNumber)];
+}
+
+function readBuildDsymSyncCache() {
+  const cache = readJsonFile(BUILD_DSYM_SYNC_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { builds: {} };
+}
+
+function getSavedBuildDsymSync(buildNumber: number) {
+  const cache = readBuildDsymSyncCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function saveBuildDsymSync(buildNumber: number, sync: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const cache = readBuildDsymSyncCache();
+  const nextCache = {
+    ...cache,
+    builds: {
+      ...(cache.builds || {}),
+      [String(buildNumber)]: {
+        ...sync,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  };
+  const tmpPath = `${BUILD_DSYM_SYNC_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
+  fs.renameSync(tmpPath, BUILD_DSYM_SYNC_CACHE_PATH);
+  return nextCache.builds[String(buildNumber)];
+}
+
+function normalizeDSYMVersion(value?: string) {
+  return String(value || '').trim();
+}
+
+function isMainAppDSYMName(appName: string) {
+  return ['NNIM', 'nnios', 'NN'].includes(String(appName || '').trim()) || /NNIM/i.test(appName);
+}
+
+async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: string) {
+  const archivePath = String(xcarchivePath || '').trim();
+  const desiredVersion = normalizeDSYMVersion(appVersion);
+  if (!archivePath) {
+    throw new AppError(ErrorCode.INVALID_FILE_FORMAT, '当前构建未记录 xcarchivePath，无法自动同步主包 dSYM', 400);
+  }
+  if (!archivePath.endsWith('.xcarchive')) {
+    throw new AppError(ErrorCode.INVALID_FILE_FORMAT, '当前构建产物不是 .xcarchive，无法自动同步主包 dSYM', 400);
+  }
+  if (!fs.existsSync(archivePath)) {
+    throw new AppError(ErrorCode.INVALID_FILE_FORMAT, `服务器本机未找到 xcarchive：${archivePath}`, 404);
+  }
+  if (!desiredVersion) {
+    throw new AppError(ErrorCode.INVALID_FILE_FORMAT, '当前构建未解析到 APP 版本，无法关联 dSYM', 400);
+  }
+
+  const archiveDSYMPath = await fileHandler.identifyAndExtractDSYM(archivePath);
+  const uuid = await fileHandler.extractUUID(archiveDSYMPath);
+  const appInfo = await fileHandler.extractAppInfo(archiveDSYMPath);
+  const appName = isMainAppDSYMName(appInfo.appName) ? 'NNIM' : appInfo.appName;
+  const version = desiredVersion || appInfo.version;
+  const existingByUuid = await storage.findByUUID(uuid);
+  if (existingByUuid) {
+    const updates: { version?: string; notes?: string } = {};
+    if (existingByUuid.version !== version) updates.version = version;
+    const nextNotes = existingByUuid.notes || `自动同步自 AppStore 构建 archive`;
+    if (nextNotes !== existingByUuid.notes) updates.notes = nextNotes;
+    if (Object.keys(updates).length > 0) {
+      await storage.updateDSYMInfo(uuid, updates);
+    }
+    return {
+      ...(await storage.findByUUID(uuid))!,
+      skipped: true,
+      message: `主包 dSYM 已存在，已确认版本 ${version}`,
+    };
+  }
+
+  const sameVersionDsyms = await storage.findByAppNameAndVersion(appName, version);
+  for (const existing of sameVersionDsyms) {
+    logger.info('覆盖 AppStore 主包同版本 dSYM，删除旧记录', {
+      appName: existing.appName,
+      version: existing.version,
+      uuid: existing.uuid,
+    });
+    await storage.deleteDSYM(existing.uuid);
+  }
+
+  const uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+  const tempDir = path.join(uploadDir, `appstore_dsym_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  let dsymPath = '';
+  let permanentPath = '';
+  try {
+    fs.mkdirSync(tempDir, { recursive: true });
+    dsymPath = path.join(tempDir, path.basename(archiveDSYMPath));
+    fs.cpSync(archiveDSYMPath, dsymPath, { recursive: true });
+    const permanent = await fileHandler.moveToPermanentStorage(dsymPath, uuid);
+    permanentPath = permanent;
+    const fileSize = fileHandler.getFileSize(permanent);
+    const saved = await storage.saveDSYMInfo({
+      uuid,
+      appName,
+      version,
+      buildNumber: appInfo.buildNumber,
+      architecture: appInfo.architecture,
+      filePath: permanent,
+      fileSize,
+      notes: '自动同步自 AppStore 构建 archive',
+    });
+    symbolicationCache.clear();
+    logger.info('AppStore 主包 dSYM 已自动同步', { uuid, appName, version, xcarchivePath: archivePath });
+    return {
+      ...saved,
+      skipped: false,
+      message: `主包 dSYM 已同步：${saved.appName}@${saved.version}`,
+    };
+  } finally {
+    await fileHandler.cleanupUploadArtifacts(tempDir, dsymPath, permanentPath);
+  }
+}
+
+function pickDSYMSyncComponentDependencies(dependencies: ThirdSdkDependency[]) {
+  const targetNames = new Set(['leigod_im_cross_sdk', 'NNRtc']);
+  return dependencies
+    .filter((item) => targetNames.has(item.name))
+    .map((item) => ({
+      name: item.name,
+      version: String(item.version || '').trim(),
+    }))
+    .filter((item) => item.version && item.version !== '-');
+}
+
+async function linkExistingComponentDSYMsToAppVersion(dependencies: ThirdSdkDependency[], appVersion: string) {
+  const components = [];
+  for (const dependency of pickDSYMSyncComponentDependencies(dependencies)) {
+    const dsyms = await storage.findByAppNameAndVersion(dependency.name, dependency.version);
+    if (dsyms.length === 0) {
+      components.push({
+        ...dependency,
+        status: 'missing',
+        message: `dSYM 管理中未找到 ${dependency.name}@${dependency.version}`,
+      });
+      continue;
+    }
+    await podService.associateComponentDSYMWithAppVersion(dependency.name, dependency.version, appVersion);
+    components.push({
+      ...dependency,
+      status: 'linked',
+      uuids: dsyms.map((dsym) => dsym.uuid),
+      message: `已关联 ${dependency.name}@${dependency.version} 到主包 ${appVersion}`,
+    });
+  }
+  return components;
+}
+
+async function syncAppStoreBuildDsyms(buildNumber: number, options: { force?: boolean } = {}) {
+  const cacheKey = String(buildNumber);
+  const existing = getSavedBuildDsymSync(buildNumber);
+  if (!options.force && existing && ['success', 'partial', 'running'].includes(String(existing.status || ''))) {
+    return existing;
+  }
+  if (BUILD_DSYM_SYNC_RUNNING.has(cacheKey)) {
+    return saveBuildDsymSync(buildNumber, {
+      ...(existing || {}),
+      buildNumber,
+      status: 'running',
+      message: 'dSYM 自动同步正在进行中',
+    });
+  }
+
+  BUILD_DSYM_SYNC_RUNNING.add(cacheKey);
+  saveBuildDsymSync(buildNumber, {
+    ...(existing || {}),
+    buildNumber,
+    status: 'running',
+    message: '正在同步 AppStore 主包 dSYM，并关联组件库 dSYM',
+  });
+
+  try {
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const [buildResponse, logResponse] = await Promise.all([
+      fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url'),
+      axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+        timeout: 30000,
+        responseType: 'text',
+        ...buildAuthConfig(),
+      }),
+    ]);
+    const build = buildResponse.data || {};
+    const log = String(logResponse.data || '');
+    const consoleMetadata = parseConsoleMetadata(log);
+    const descriptionMetadata = parseBuildDescription(build.description);
+    const publishChannel = consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel);
+    if (normalizeDeployTarget(publishChannel) !== 'AppStore') {
+      throw new Error('当前构建不是苹果商店包，无需同步 AppStore dSYM');
+    }
+    if (build.building || String(build.result || '').toUpperCase() !== 'SUCCESS') {
+      throw new Error('当前 AppStore 构建尚未成功完成，暂不同步 dSYM');
+    }
+
+    const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
+    const checkoutRevision = parseCheckoutRevision(log);
+    const thirdSdk = await fetchThirdSdkDependencies(buildParameters.branchName || 'develop', checkoutRevision);
+    const appVersion = consoleMetadata.appVersion;
+    const main = await saveMainAppDSYMFromXcarchive(consoleMetadata.xcarchivePath, appVersion);
+    const components = await linkExistingComponentDSYMsToAppVersion(thirdSdk.dependencies, appVersion);
+    const missing = components.filter((item) => item.status === 'missing');
+    const status = missing.length > 0 ? 'partial' : 'success';
+    return saveBuildDsymSync(buildNumber, {
+      buildNumber,
+      status,
+      message: missing.length > 0
+        ? `主包 dSYM 已同步，${missing.length} 个组件 dSYM 未在 dSYM 管理中找到`
+        : '主包与组件库 dSYM 已同步关联',
+      appVersion,
+      publishChannel,
+      xcarchivePath: consoleMetadata.xcarchivePath,
+      main,
+      components,
+      thirdSdkBranch: thirdSdk.branch,
+      thirdSdkRevision: thirdSdk.revision,
+      thirdSdkError: thirdSdk.error,
+    });
+  } catch (error: any) {
+    logger.error('AppStore dSYM 自动同步失败', { buildNumber, error: error.message });
+    return saveBuildDsymSync(buildNumber, {
+      buildNumber,
+      status: 'failed',
+      message: error.message || 'AppStore dSYM 自动同步失败',
+    });
+  } finally {
+    BUILD_DSYM_SYNC_RUNNING.delete(cacheKey);
+  }
+}
+
+function scheduleAppStoreBuildDsymSync(build: any) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return;
+  if (normalizeDeployTarget(build?.publishChannel) !== 'AppStore') return;
+  if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') return;
+  const saved = getSavedBuildDsymSync(buildNumber);
+  if (saved && ['success', 'partial', 'running'].includes(String(saved.status || ''))) return;
+  void syncAppStoreBuildDsyms(buildNumber).catch((error) => {
+    logger.error('后台触发 AppStore dSYM 自动同步失败', { buildNumber, error: error.message });
+  });
 }
 
 function parseIpsJson(content: string) {
@@ -2158,24 +2413,26 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
         build.number,
       );
-      return {
-        ...build,
-        url: normalizeJenkinsUrl(build.url),
-        branchName: buildParameters.branchName,
-        publishChannel,
+	      return {
+	        ...build,
+	        url: normalizeJenkinsUrl(build.url),
+	        branchName: buildParameters.branchName,
+	        publishChannel,
         commitHash: consoleMetadata.commitHash,
         buildNumber,
         appVersion,
         packageUrl: consoleMetadata.packageUrl,
-        installPackageUrl: consoleMetadata.installPackageUrl,
-        channelQrUrl: consoleMetadata.channelQrUrl,
-        xcarchivePath: consoleMetadata.xcarchivePath,
-        archiveUrl: consoleMetadata.archiveUrl,
-      };
-    }));
-    const builds = deployTargetFilter
-      ? buildsWithMetadata.filter((build: any) => normalizeDeployTarget(build.publishChannel) === deployTargetFilter)
-      : buildsWithMetadata;
+	        installPackageUrl: consoleMetadata.installPackageUrl,
+	        channelQrUrl: consoleMetadata.channelQrUrl,
+	        xcarchivePath: consoleMetadata.xcarchivePath,
+	        archiveUrl: consoleMetadata.archiveUrl,
+	        dsymSync: getSavedBuildDsymSync(build.number),
+	      };
+	    }));
+	    buildsWithMetadata.forEach(scheduleAppStoreBuildDsymSync);
+	    const builds = deployTargetFilter
+	      ? buildsWithMetadata.filter((build: any) => normalizeDeployTarget(build.publishChannel) === deployTargetFilter)
+	      : buildsWithMetadata;
     const running = builds.filter((build: any) => build.building).length;
     const success = builds.filter((build: any) => build.result === 'SUCCESS').length;
     const finished = builds.filter((build: any) => !build.building && build.result).length;
@@ -2235,20 +2492,29 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       ...buildAuthConfig(),
     });
     const log = String(response.data || '');
-    const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
-    const checkoutRevision = parseCheckoutRevision(log);
-    const thirdSdk = await fetchThirdSdkDependencies(buildParameters.branchName || 'develop', checkoutRevision);
-    const savedFailureAnalysis = getSavedBuildFailureAnalysis(buildNumber);
+	    const buildParameters = await fetchBuildParameters(jobPath, buildNumber);
+	    const checkoutRevision = parseCheckoutRevision(log);
+	    const thirdSdk = await fetchThirdSdkDependencies(buildParameters.branchName || 'develop', checkoutRevision);
+	    const savedFailureAnalysis = getSavedBuildFailureAnalysis(buildNumber);
+	    const buildMetadata = parseConsoleMetadata(log);
+	    const buildResponse = await fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url');
+	    const buildInfo = buildResponse.data || {};
+	    const dsymSync = getSavedBuildDsymSync(buildNumber);
+	    scheduleAppStoreBuildDsymSync({
+	      ...buildInfo,
+	      publishChannel: buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel),
+	    });
 
-    res.json({
-      success: true,
-      data: {
-        jobName: DEFAULT_JOB_NAME,
-        buildNumber,
-        log,
-        failureAnalysis: savedFailureAnalysis?.analysis,
-        failureAnalysisUpdatedAt: savedFailureAnalysis?.updatedAt,
-        thirdSdkBranch: thirdSdk.branch,
+	    res.json({
+	      success: true,
+	      data: {
+	        jobName: DEFAULT_JOB_NAME,
+	        buildNumber,
+	        log,
+	        failureAnalysis: savedFailureAnalysis?.analysis,
+	        failureAnalysisUpdatedAt: savedFailureAnalysis?.updatedAt,
+	        dsymSync,
+	        thirdSdkBranch: thirdSdk.branch,
         thirdSdkRevision: thirdSdk.revision,
         thirdSdkDependencies: thirdSdk.dependencies,
         thirdSdkMissingFiles: thirdSdk.missingFiles,
@@ -2260,6 +2526,30 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       success: false,
       error: extractErrorMessage(error, '获取 Jenkins 打包日志失败'),
       status: error.response?.status,
+    });
+  }
+});
+
+router.post('/nn/builds/:number/sync-dsyms', async (req: Request, res: Response) => {
+  try {
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const result = await syncAppStoreBuildDsyms(buildNumber, { force: Boolean(req.body?.force) });
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    res.status(error.statusCode || 500).json({
+      success: false,
+      error: error.message || '同步 AppStore dSYM 失败',
     });
   }
 });

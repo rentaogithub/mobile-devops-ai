@@ -1845,6 +1845,7 @@ export interface JenkinsBuild {
   channelQrUrl?: string;
   xcarchivePath?: string;
   archiveUrl?: string;
+  dsymSync?: JenkinsBuildDsymSync;
 }
 
 export interface JenkinsJobInfo {
@@ -1873,6 +1874,7 @@ export interface JenkinsBuildLogResult {
   log: string;
   failureAnalysis?: JenkinsBuildFailureAnalysis;
   failureAnalysisUpdatedAt?: string;
+  dsymSync?: JenkinsBuildDsymSync;
   thirdSdkBranch: string;
   thirdSdkRevision?: string;
   thirdSdkDependencies: Array<{
@@ -1881,6 +1883,30 @@ export interface JenkinsBuildLogResult {
     source: string;
   }>;
   thirdSdkMissingFiles?: string[];
+  thirdSdkError?: string;
+}
+
+export interface JenkinsBuildDsymSync {
+  buildNumber: number;
+  status: 'running' | 'success' | 'partial' | 'failed';
+  message?: string;
+  appVersion?: string;
+  publishChannel?: string;
+  xcarchivePath?: string;
+  updatedAt?: string;
+  main?: DSYMInfo & {
+    skipped?: boolean;
+    message?: string;
+  };
+  components?: Array<{
+    name: string;
+    version: string;
+    status: 'linked' | 'missing';
+    uuids?: string[];
+    message?: string;
+  }>;
+  thirdSdkBranch?: string;
+  thirdSdkRevision?: string;
   thirdSdkError?: string;
 }
 
@@ -2402,6 +2428,15 @@ export const jenkinsApi = {
       `/jenkins/nn/builds/${buildNumber}/analyze-failure`,
       { force },
       { timeout: 120000 },
+    );
+    return response.data;
+  },
+
+  syncBuildDsyms: async (buildNumber: number, force = false): Promise<ApiResponse<JenkinsBuildDsymSync>> => {
+    const response = await api.post<ApiResponse<JenkinsBuildDsymSync>>(
+      `/jenkins/nn/builds/${buildNumber}/sync-dsyms`,
+      { force },
+      { timeout: 600000 },
     );
     return response.data;
   },

@@ -1097,6 +1097,16 @@ ${sourceLine}
     return dsyms.length > 0;
   }
 
+  async associateComponentDSYMWithAppVersion(componentName: string, version: string, appVersion: string): Promise<void> {
+    const cleanAppVersion = String(appVersion || '').trim();
+    if (!cleanAppVersion) return;
+    const dsyms = await this.storage.findByAppNameAndVersion(componentName, version);
+    for (const dsym of dsyms) {
+      const nextVersions = Array.from(new Set([...(dsym.relatedAppVersions || []), cleanAppVersion]));
+      await this.storage.updateDSYMInfo(dsym.uuid, { relatedAppVersions: nextVersions });
+    }
+  }
+
   async syncNNRtcDSYMFromPackage(packagePath: string, originalFileName: string, version: string, buildId?: string): Promise<void> {
     if (isNNRtcTestVersion(version)) {
       await this.deleteNNRtcDSYMs(version);

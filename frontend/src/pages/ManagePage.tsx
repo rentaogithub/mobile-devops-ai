@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List } from 'antd';
-import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List, Modal, Select } from 'antd';
+import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { dsymApi, moduleApi } from '../services/api';
 import { DSYMInfo } from '../types';
@@ -13,6 +13,10 @@ export default function ManagePage() {
   const [dsyms, setDsyms] = useState<DSYMInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [relationModalOpen, setRelationModalOpen] = useState(false);
+  const [relationTarget, setRelationTarget] = useState<DSYMInfo | null>(null);
+  const [selectedUnsupportedVersions, setSelectedUnsupportedVersions] = useState<string[]>([]);
+  const [relationSaving, setRelationSaving] = useState(false);
   
   // 模块配置相关状态
   const [customModules, setCustomModules] = useState<string[]>([]);
@@ -94,6 +98,36 @@ export default function ManagePage() {
       }, 1000);
     } catch (error: any) {
       message.error({ content: '下载失败', key: 'download', duration: 2 });
+    }
+  };
+
+  const openRelationEditor = (componentDsym: DSYMInfo) => {
+    setRelationTarget(componentDsym);
+    setSelectedUnsupportedVersions([]);
+    setRelationModalOpen(true);
+  };
+
+  const handleSaveRelations = async () => {
+    if (!relationTarget) {
+      return;
+    }
+
+    try {
+      setRelationSaving(true);
+      const nextVersions = Array.from(new Set([
+        ...(relationTarget.relatedAppVersions || []),
+        ...selectedUnsupportedVersions,
+      ]));
+      await dsymApi.update(relationTarget.uuid, {
+        relatedAppVersions: nextVersions,
+      });
+      message.success('关联主应用版本已更新');
+      setRelationModalOpen(false);
+      await loadDsyms();
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '更新关联主应用版本失败');
+    } finally {
+      setRelationSaving(false);
     }
   };
 
@@ -276,7 +310,9 @@ export default function ManagePage() {
                         <GroupedView 
                           dsyms={filteredDsyms.filter(d => d.appName.toUpperCase() !== 'NNIM')} 
                           loading={loading}
+                          isAdmin={isAdmin}
                           onDownload={handleDownload}
+                          onEditRelations={openRelationEditor}
                         />
                       ),
                     },
@@ -353,6 +389,44 @@ export default function ManagePage() {
         ]}
       />
 
+      <Modal
+        title={`编辑关联主应用版本 - ${relationTarget?.appName || ''} ${relationTarget?.version || ''}`}
+        open={relationModalOpen}
+        onCancel={() => setRelationModalOpen(false)}
+        onOk={handleSaveRelations}
+        confirmLoading={relationSaving}
+        okText="保存"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Alert
+            type="info"
+            showIcon
+            message="选择该组件库 dSYM 还未支持的主工程版本"
+            description="只展示尚未关联的版本，保存后会追加到当前组件库的支持版本中。"
+          />
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="选择未支持版本"
+            value={selectedUnsupportedVersions}
+            onChange={setSelectedUnsupportedVersions}
+            style={{ width: '100%' }}
+            options={dsyms
+              .filter((dsym) => dsym.appName.toUpperCase() === 'NNIM')
+              .filter((dsym) => !relationTarget?.relatedAppVersions?.includes(dsym.version))
+              .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))
+              .map((dsym) => ({
+                label: dsym.version,
+                value: dsym.version,
+              }))}
+            optionFilterProp="label"
+            notFoundContent="暂无未支持版本"
+          />
+        </Space>
+      </Modal>
+
     </div>
   );
 }
@@ -361,10 +435,12 @@ export default function ManagePage() {
 interface GroupedViewProps {
   dsyms: DSYMInfo[];
   loading: boolean;
+  isAdmin: boolean;
   onDownload: (dsym: DSYMInfo) => void;
+  onEditRelations: (dsym: DSYMInfo) => void;
 }
 
-function GroupedView({ dsyms, loading, onDownload }: GroupedViewProps) {
+function GroupedView({ dsyms, loading, isAdmin, onDownload, onEditRelations }: GroupedViewProps) {
   // 按应用名称分组
   const groupedDsyms = dsyms.reduce((acc, dsym) => {
     const appName = dsym.appName;
@@ -415,7 +491,7 @@ function GroupedView({ dsyms, loading, onDownload }: GroupedViewProps) {
               return (
                 <Space size={[0, 4]} wrap>
                   {versions.map((version, index) => (
-                    <Tag key={index} color="green">NNIM {version}</Tag>
+                    <Tag key={index} color="green">{version}</Tag>
                   ))}
                 </Space>
               );
@@ -449,10 +525,19 @@ function GroupedView({ dsyms, loading, onDownload }: GroupedViewProps) {
           {
             title: '操作',
             key: 'action',
-            width: 100,
+            width: 180,
             fixed: 'right' as const,
             render: (_, record) => (
               <Space>
+                {isAdmin && (
+                  <Button
+                    type="link"
+                    icon={<EditOutlined />}
+                    onClick={() => onEditRelations(record)}
+                  >
+                    编辑关联
+                  </Button>
+                )}
                 <Button 
                   type="link" 
                   icon={<DownloadOutlined />} 
