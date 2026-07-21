@@ -28,58 +28,135 @@ export function extractLastStackCall(symbolicatedLog: string): string | undefine
  * 格式：NNIM - ClassName(methodName)
  */
 export function extractCrashModule(symbolicatedLog: string): string | undefined {
-  // 查找 "Thread 0 Crashed:" 后的第一行堆栈
-  const threadCrashedMatch = symbolicatedLog.match(/Thread \d+ Crashed:?\s*\n\s*\d+\s+([^\s]+)\s+[^\s]+\s+([^\n]+)/i);
-  
-  if (threadCrashedMatch) {
-    const moduleName = threadCrashedMatch[1];
-    const symbolInfo = threadCrashedMatch[2];
-    
-    // 如果不是系统模块，尝试提取类名和方法名
-    if (!isSystemModule(moduleName)) {
-      const classMethod = extractClassAndMethod(symbolInfo);
-      if (classMethod) {
-        return `${moduleName} - ${classMethod}`;
-      }
-      return moduleName;
-    }
+  const crashedThreadFrame = findFirstNonSystemFrame(extractCrashedThreadLines(symbolicatedLog));
+  if (crashedThreadFrame) {
+    return formatCrashModule(crashedThreadFrame.moduleName, crashedThreadFrame.symbolInfo);
   }
   
   // 如果没有找到 Thread Crashed，尝试查找第一个非系统库的堆栈
   const stackLines = symbolicatedLog.split('\n');
-  for (const line of stackLines) {
-    const stackMatch = line.match(/^\s*\d+\s+([^\s]+)\s+[^\s]+\s+([^\n]+)/);
-    if (stackMatch) {
-      const moduleName = stackMatch[1];
-      const symbolInfo = stackMatch[2];
-      
-      if (!isSystemModule(moduleName)) {
-        const classMethod = extractClassAndMethod(symbolInfo);
-        if (classMethod) {
-          return `${moduleName} - ${classMethod}`;
-        }
-        return moduleName;
-      }
-    }
+  const fallbackFrame = findFirstNonSystemFrame(stackLines);
+  if (fallbackFrame) {
+    return formatCrashModule(fallbackFrame.moduleName, fallbackFrame.symbolInfo);
   }
   
   return undefined;
+}
+
+function extractCrashedThreadLines(symbolicatedLog: string): string[] {
+  const crashedThreadNumber = symbolicatedLog.match(/Crashed Thread:\s*(\d+)/i)?.[1];
+  const nextSectionPattern = '(?=\\n\\s*\\n[ \\t]*Thread\\s+\\d+|\\n[ \\t]*Binary Images:|\\s*$)';
+  const patterns = crashedThreadNumber
+    ? [
+        new RegExp(`(?:^|\\n)Thread\\s+${crashedThreadNumber}\\s+Crashed:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+        new RegExp(`(?:^|\\n)Thread\\s+${crashedThreadNumber}:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+      ]
+    : [
+        new RegExp(`(?:^|\\n)Thread\\s+\\d+\\s+Crashed:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+      ];
+
+  for (const pattern of patterns) {
+    const match = symbolicatedLog.match(pattern);
+    if (match?.[1]) {
+      return match[1].split('\n');
+    }
+  }
+
+  return [];
+}
+
+function findFirstNonSystemFrame(lines: string[]): { moduleName: string; symbolInfo: string } | undefined {
+  let firstPreferredFrame: { moduleName: string; symbolInfo: string } | undefined;
+  let firstNonSystemFrame: { moduleName: string; symbolInfo: string } | undefined;
+  let firstNonSystemFrameWithSymbol: { moduleName: string; symbolInfo: string } | undefined;
+
+  for (const line of lines) {
+    const stackMatch = line.match(/^\s*\d+\s+([^\s]+)\s+[^\s]+\s+([^\n]+)/);
+    if (!stackMatch) {
+      continue;
+    }
+
+    const rawModuleName = stackMatch[1];
+    const symbolInfo = stackMatch[2];
+    const moduleName = normalizeFrameModule(rawModuleName, symbolInfo);
+
+    if (moduleName && !isSystemModule(moduleName)) {
+      const frame = { moduleName, symbolInfo };
+      if (isPreferredAppModule(moduleName)) {
+        if (extractClassAndMethod(symbolInfo)) {
+          return frame;
+        }
+        if (!firstPreferredFrame) {
+          firstPreferredFrame = frame;
+        }
+      }
+      if (!firstNonSystemFrame) {
+        firstNonSystemFrame = frame;
+      }
+      if (!firstNonSystemFrameWithSymbol && extractClassAndMethod(symbolInfo)) {
+        firstNonSystemFrameWithSymbol = frame;
+      }
+    }
+  }
+
+  return firstPreferredFrame || firstNonSystemFrameWithSymbol || firstNonSystemFrame;
+}
+
+function formatCrashModule(moduleName: string, symbolInfo: string): string {
+  const classMethod = extractClassAndMethod(symbolInfo);
+  if (classMethod) {
+    return `${moduleName} - ${classMethod}`;
+  }
+  return moduleName;
+}
+
+function normalizeFrameModule(moduleName: string, symbolInfo: string): string | undefined {
+  if (moduleName && moduleName !== '<unknown>') {
+    return moduleName;
+  }
+
+  return symbolInfo.match(/\(in\s+([^)]+)\)/)?.[1]?.trim();
 }
 
 /**
  * 从符号信息中提取类名和方法名
  */
 function extractClassAndMethod(symbolInfo: string): string | null {
+  const cleanedSymbol = symbolInfo
+    .replace(/\s+\(in\s+[^)]+\).*$/i, '')
+    .replace(/\s+\([^)]+:\d+\)\s*$/i, '')
+    .trim();
+
+  if (!cleanedSymbol || cleanedSymbol === '<unknown>' || cleanedSymbol === '<deduplicated_symbol>') {
+    return null;
+  }
+
   // Objective-C 格式: -[ClassName methodName:] 或 +[ClassName methodName:]
-  const objcMatch = symbolInfo.match(/^[-+]\[([^\s]+)\s+([^\]]+)\]/);
+  const objcMatch = cleanedSymbol.match(/^[-+]\[([^\s]+)\s+([^\]]+)\]/);
   if (objcMatch) {
     const className = objcMatch[1];
     const methodName = objcMatch[2].split(':')[0]; // 去掉参数
     return `${className}(${methodName})`;
   }
+
+  // C++ 格式: namespace::Class::method(...) 或 namespace::function(...)
+  const cppSymbol = cleanedSymbol
+    .replace(/\(anonymous namespace\)::/g, '')
+    .replace(/^(?:non-virtual thunk to|virtual thunk to)\s+/i, '')
+    .trim();
+  const cppMatch = cppSymbol.match(/^(.+?)\s*\(/);
+  if (cppMatch && cppMatch[1].includes('::')) {
+    const qualifiedName = cppMatch[1].trim();
+    const parts = qualifiedName.split('::').filter(Boolean);
+    if (parts.length >= 2) {
+      const methodName = parts.pop();
+      return `${parts.join('::')}(${methodName})`;
+    }
+    return qualifiedName;
+  }
   
   // Swift 格式: ClassName.methodName() 或 functionName
-  const swiftMatch = symbolInfo.match(/^([^\s(]+(?:\.[^\s(]+)?)\s*\(/);
+  const swiftMatch = cleanedSymbol.match(/^([^\s(]+(?:\.[^\s(]+)?)\s*\(/);
   if (swiftMatch) {
     const parts = swiftMatch[1].split('.');
     if (parts.length >= 2) {
@@ -94,6 +171,10 @@ function extractClassAndMethod(symbolInfo: string): string | null {
       
       return `${className}(${methodName})`;
     }
+  }
+
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(cleanedSymbol) && !isGenericEntrySymbol(cleanedSymbol)) {
+    return cleanedSymbol;
   }
   
   return null;
@@ -185,53 +266,53 @@ function isSystemModule(module: string): boolean {
   const systemModules = [
     'libsystem',
     'libobjc',
+    'libxpc',
     'CoreFoundation',
     'Foundation',
     'UIKit',
     'UIKitCore',
+    'ImageIO',
+    'AudioSession',
+    'CFNetwork',
+    'Security',
+    'CoreGraphics',
+    'AVFoundation',
+    'CoreMedia',
+    'CoreVideo',
+    'Metal',
     'QuartzCore',
     'libdispatch',
     'libswift',
     'dyld',
   ];
   
-  return systemModules.some(sys => module.includes(sys));
+  return systemModules.some(sys => module.includes(sys)) ||
+    (module.startsWith('lib') && module.endsWith('.dylib'));
+}
+
+function isPreferredAppModule(module: string): boolean {
+  const preferredModules = ['NNIM', 'NNRtc', 'leigod_im_cross_sdk'];
+  return preferredModules.some(preferred => module.toLowerCase().includes(preferred.toLowerCase()));
+}
+
+function isGenericEntrySymbol(symbol: string): boolean {
+  return ['main', 'start', '_main', '_start'].includes(symbol.toLowerCase());
 }
 
 /**
  * 提取崩溃位置（只提取函数名，不包含模块名）
  */
 export function extractCrashLocation(symbolicatedLog: string): string | undefined {
-  // 查找 "Thread 0 Crashed:" 后的第一行堆栈
-  const threadCrashedMatch = symbolicatedLog.match(/Thread \d+ Crashed:?\s*\n\s*\d+\s+([^\s]+)\s+[^\s]+\s+([^\n]+)/i);
-  
-  if (threadCrashedMatch) {
-    const moduleName = threadCrashedMatch[1];
-    const symbolInfo = threadCrashedMatch[2];
-    
-    if (!isSystemModule(moduleName)) {
-      const classMethod = extractClassAndMethod(symbolInfo);
-      if (classMethod) {
-        return classMethod;
-      }
-    }
+  const crashedThreadFrame = findFirstNonSystemFrame(extractCrashedThreadLines(symbolicatedLog));
+  if (crashedThreadFrame) {
+    return extractClassAndMethod(crashedThreadFrame.symbolInfo) || undefined;
   }
   
   // 如果没有找到，尝试查找第一个非系统库的堆栈
   const stackLines = symbolicatedLog.split('\n');
-  for (const line of stackLines) {
-    const stackMatch = line.match(/^\s*\d+\s+([^\s]+)\s+[^\s]+\s+([^\n]+)/);
-    if (stackMatch) {
-      const moduleName = stackMatch[1];
-      const symbolInfo = stackMatch[2];
-      
-      if (!isSystemModule(moduleName)) {
-        const classMethod = extractClassAndMethod(symbolInfo);
-        if (classMethod) {
-          return classMethod;
-        }
-      }
-    }
+  const fallbackFrame = findFirstNonSystemFrame(stackLines);
+  if (fallbackFrame) {
+    return extractClassAndMethod(fallbackFrame.symbolInfo) || undefined;
   }
   
   return undefined;

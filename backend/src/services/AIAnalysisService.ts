@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
+import { extractCrashInfo } from '../utils/crashLogParser';
 
 export interface CrashAnalysis {
   summary: string;
@@ -324,9 +325,17 @@ ${compactLog}`;
       info.crashThread = `Thread ${threadNum}`;
     }
 
+    const parsedCrashInfo = extractCrashInfo(crashLog, crashLog);
+    if (parsedCrashInfo.crashModule) {
+      info.crashModule = parsedCrashInfo.crashModule;
+    }
+    if (parsedCrashInfo.crashLocation) {
+      info.crashLocation = parsedCrashInfo.crashLocation;
+    }
+
     // 提取崩溃模块（优先选择自己管理的模块，格式：模块名 - 类名.方法名）
     // 查找崩溃线程的堆栈
-    if (info.crashThread) {
+    if (info.crashThread && !info.crashModule) {
       const threadNum = info.crashThread.replace('Thread ', '');
       const threadPattern = new RegExp(`Thread\\s+${threadNum}[^\\n]*Crashed[^\\n]*\\n([\\s\\S]*?)(?=\\n\\nThread|\\n\\n[A-Z]|$)`, 'i');
       const threadMatch = crashLog.match(threadPattern);
@@ -474,7 +483,7 @@ ${compactLog}`;
         
         // 优先使用我们自己模块的最后一个位置，否则使用第一个非系统库的位置
         const selectedLocation = lastOurModuleLocation || firstNonSystemLocation;
-        if (selectedLocation) {
+        if (selectedLocation && !info.crashLocation) {
           info.crashLocation = selectedLocation.location;
         }
       }

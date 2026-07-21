@@ -158,6 +158,19 @@ export default function HistoryPage() {
     }
   };
 
+  const updateRecordFixedState = (recordId: number, isFixed: boolean, fixedVersion?: string) => {
+    const updater = (record: HistoryRecord): HistoryRecord =>
+      record.id === recordId
+        ? {
+          ...record,
+          isFixed,
+          fixedVersion: isFixed ? fixedVersion : undefined,
+        }
+        : record;
+    setHistoryData((prev) => prev.map(updater));
+    setSelectedRecord((record) => record ? updater(record) : record);
+  };
+
   const handleToggleFixed = async (record: HistoryRecord) => {
     try {
       const newStatus = !record.isFixed;
@@ -186,6 +199,7 @@ export default function HistoryPage() {
             }
             
             await historyApi.updateFixedStatus(record.id, true, fixedVersion);
+            updateRecordFixedState(record.id, true, fixedVersion);
             message.success('已标记为已修复');
             loadHistory();
           },
@@ -193,6 +207,7 @@ export default function HistoryPage() {
       } else {
         // 标记为未修复，直接更新
         await historyApi.updateFixedStatus(record.id, false);
+        updateRecordFixedState(record.id, false);
         message.success('已标记为未修复');
         loadHistory();
       }
@@ -486,26 +501,14 @@ export default function HistoryPage() {
                     }
                     extra={
                       <Space>
-                        {/* 未修复状态：显示"标记已修复"按钮，所有人可见 */}
-                        {!record.isFixed && (
-                          <Button
-                            type="link"
-                            icon={<CheckCircleOutlined />}
-                            onClick={() => handleToggleFixed(record)}
-                          >
-                            标记已修复
-                          </Button>
-                        )}
-                        {/* 已修复状态：显示"标记未修复"按钮，仅管理员可见 */}
-                        {record.isFixed && isAdmin && (
-                          <Button
-                            type="link"
-                            icon={<CloseCircleOutlined />}
-                            onClick={() => handleToggleFixed(record)}
-                          >
-                            标记未修复
-                          </Button>
-                        )}
+                        <Button
+                          type="link"
+                          icon={<CheckCircleOutlined />}
+                          disabled={record.isFixed}
+                          onClick={() => handleToggleFixed(record)}
+                        >
+                          {record.isFixed ? '已修复' : '未修复'}
+                        </Button>
                         <Button
                           type="link"
                           icon={<ShareAltOutlined />}
@@ -563,29 +566,45 @@ export default function HistoryPage() {
       </Space>
 
       <Modal
-        title="历史记录详情"
+        title={
+          <Space wrap style={{ width: '100%', justifyContent: 'space-between', paddingRight: 32 }}>
+            <Text strong>历史记录详情</Text>
+            <Space wrap>
+              {selectedRecord && !selectedRecord.isFixed && (
+                <Button
+                  icon={<CheckCircleOutlined />}
+                  onClick={() => handleToggleFixed(selectedRecord)}
+                >
+                  未修复
+                </Button>
+              )}
+              {selectedRecord && selectedRecord.isFixed && (
+                <Button
+                  icon={<CheckCircleOutlined />}
+                  disabled
+                >
+                  已修复
+                </Button>
+              )}
+              <Button
+                icon={<ShareAltOutlined />}
+                onClick={() => selectedRecord && handleShareToWechat(selectedRecord)}
+              >
+                分享
+              </Button>
+              <Button
+                type="primary"
+                icon={<DownloadOutlined />}
+                onClick={() => selectedRecord && historyApi.downloadReport(selectedRecord.id, selectedRecord.appVersion)}
+              >
+                下载
+              </Button>
+            </Space>
+          </Space>
+        }
         open={detailModalVisible}
         onCancel={handleCloseDetail}
-        footer={[
-          <Button 
-            key="share"
-            icon={<ShareAltOutlined />}
-            onClick={() => selectedRecord && handleShareToWechat(selectedRecord)}
-          >
-            分享到企业微信
-          </Button>,
-          <Button 
-            key="download" 
-            type="primary"
-            icon={<DownloadOutlined />}
-            onClick={() => selectedRecord && historyApi.downloadReport(selectedRecord.id, selectedRecord.appVersion)}
-          >
-            下载
-          </Button>,
-          <Button key="close" onClick={handleCloseDetail}>
-            关闭
-          </Button>,
-        ]}
+        footer={null}
         width={1200}
       >
         {selectedRecord && (
@@ -598,6 +617,15 @@ export default function HistoryPage() {
                 <Text>{selectedRecord.appVersion}</Text>
                 <Text type="secondary" style={{ marginLeft: 16 }}>时间：</Text>
                 <Text>{formatDateTime(selectedRecord.createdAt)}</Text>
+                {selectedRecord.isFixed ? (
+                  <Tag color="success" icon={<CheckCircleOutlined />} style={{ marginLeft: 16 }}>
+                    已修复 {selectedRecord.fixedVersion && `(v${selectedRecord.fixedVersion})`}
+                  </Tag>
+                ) : (
+                  <Tag color="default" icon={<CloseCircleOutlined />} style={{ marginLeft: 16 }}>
+                    未修复
+                  </Tag>
+                )}
               </div>
               <Space size={[8, 8]} wrap>
                 {selectedRecord.crashType && <Tag color="red">{selectedRecord.crashType}</Tag>}
