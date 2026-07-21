@@ -22,7 +22,7 @@ const { Title, Text, Paragraph } = Typography;
 const { TextArea, Search } = Input;
 
 const SENTRY_SERVICE_URL = '/sentry-service';
-const SENTRY_OVERVIEW_PATH = '/organizations/sentry/issues/';
+const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved !release:"10.0.0"';
 const TOP_PERIOD = '7d';
 const RECENT_PERIOD = '24h';
@@ -186,7 +186,7 @@ function getIssueAppVersionLabel(issue: SentryIssueSummary) {
 function buildOverviewURL(version: number) {
   const params = new URLSearchParams({
     project: '6',
-    statsPeriod: '7d',
+    statsPeriod: '14d',
     _: String(version),
   });
   return `${SENTRY_OVERVIEW_PATH}?${params.toString()}`;

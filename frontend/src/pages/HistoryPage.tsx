@@ -42,6 +42,7 @@ export default function HistoryPage() {
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
   const openedUrlHistoryIdRef = useRef<number | null>(null);
   const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const autoAnalyzingRecordIds = useRef(new Set<number>());
   const isAdmin = authUtils.isAdmin();
 
   // 从 localStorage 获取保存的 OpenAI API Key
@@ -222,10 +223,16 @@ export default function HistoryPage() {
 
   const handleTabChange = (activeKey: string) => {
     setActiveTab(activeKey); // 更新当前激活的标签
+    if (activeKey === 'analysis' && selectedRecord && !selectedRecord.aiAnalysis && !analyzing) {
+      if (!autoAnalyzingRecordIds.current.has(selectedRecord.id)) {
+        autoAnalyzingRecordIds.current.add(selectedRecord.id);
+        startAnalysis(getSavedApiKey() || '');
+      }
+    }
   };
 
   const startAnalysis = async (key: string) => {
-    if (!selectedRecord) {
+    if (!selectedRecord || analyzing) {
       return;
     }
 
@@ -252,6 +259,22 @@ export default function HistoryPage() {
       setAnalyzing(false);
     }
   };
+
+  useEffect(() => {
+    if (
+      !detailModalVisible ||
+      activeTab !== 'analysis' ||
+      !selectedRecord ||
+      selectedRecord.aiAnalysis ||
+      analyzing ||
+      autoAnalyzingRecordIds.current.has(selectedRecord.id)
+    ) {
+      return;
+    }
+
+    autoAnalyzingRecordIds.current.add(selectedRecord.id);
+    startAnalysis(getSavedApiKey() || '');
+  }, [detailModalVisible, activeTab, selectedRecord?.id, selectedRecord?.aiAnalysis, analyzing]);
 
   const detailSearchKeyword = detailSearchText.trim();
   const detailMatchCount = useMemo(() => {

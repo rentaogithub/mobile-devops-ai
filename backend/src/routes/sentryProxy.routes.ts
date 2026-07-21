@@ -20,7 +20,7 @@ const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLI
 const SENTRY_AUTO_LOGIN = process.env.SENTRY_AUTO_LOGIN === 'true';
 const SENTRY_LOGIN_USERNAME = process.env.SENTRY_LOGIN_USERNAME || '';
 const SENTRY_LOGIN_PASSWORD = process.env.SENTRY_LOGIN_PASSWORD || '';
-const SENTRY_DEFAULT_PATH = process.env.SENTRY_DEFAULT_PATH || '/organizations/sentry/issues/?project=6';
+const SENTRY_DEFAULT_PATH = process.env.SENTRY_DEFAULT_PATH || '/organizations/sentry/projects/nn-ios/?project=6';
 const SENTRY_SESSION_TTL_MS = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 
 type SentryHTTPResponse = {
