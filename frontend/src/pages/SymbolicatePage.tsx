@@ -548,7 +548,8 @@ export default function SymbolicatePage() {
       await symbolicateApi.downloadReport(
         result.symbolicated,
         result.analysis,
-        appVersion
+        appVersion,
+        crashLog
       );
       message.success('下载成功');
     } catch (error) {

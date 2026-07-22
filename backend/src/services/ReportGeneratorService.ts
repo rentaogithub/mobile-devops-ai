@@ -14,6 +14,13 @@ interface CrashAnalysis {
   crashStack?: string;
 }
 
+interface ReportZipOptions {
+  symbolicatedLog: string;
+  originalLog?: string;
+  analysis?: CrashAnalysis;
+  appVersion?: string;
+}
+
 /**
  * 报告生成服务
  * 用于生成符号化报告的PDF和ZIP文件
@@ -225,14 +232,36 @@ export class ReportGeneratorService {
 </html>`;
   }
 
+  generateEmptyAIAnalysisHTML(appVersion?: string): string {
+    return this.generateAIAnalysisHTML({
+      summary: '暂无 AI 分析结果。请在详情页切换到 AI 智能分析后生成分析，或稍后重新下载。',
+      crashType: '未分析',
+      possibleCauses: ['暂无 AI 分析数据'],
+      suggestions: ['先完成 AI 智能分析，再下载可获得完整分析结论。'],
+      severity: 'low',
+      affectedComponents: [],
+      appVersion,
+    });
+  }
+
   /**
    * 生成ZIP文件（包含符号化日志和AI分析报告）
    */
   async generateReportZip(
-    symbolicatedLog: string,
+    symbolicatedLogOrOptions: string | ReportZipOptions,
     analysis?: CrashAnalysis,
-    appVersion?: string
+    appVersion?: string,
+    originalLog?: string
   ): Promise<Buffer> {
+    const options: ReportZipOptions = typeof symbolicatedLogOrOptions === 'string'
+      ? {
+          symbolicatedLog: symbolicatedLogOrOptions,
+          analysis,
+          appVersion,
+          originalLog,
+        }
+      : symbolicatedLogOrOptions;
+
     return new Promise(async (resolve, reject) => {
       try {
         const archive = archiver('zip', {
@@ -248,22 +277,31 @@ export class ReportGeneratorService {
         });
         archive.on('error', reject);
 
+        const timestamp = Date.now();
+        const version = options.appVersion || 'unknown';
+
+        // 添加原始崩溃日志文件
+        const originalLogFileName = `original_crash_${version}_${timestamp}.crash`;
+        archive.append(options.originalLog || '暂无原始崩溃日志', { name: originalLogFileName });
+        logger.info('添加原始崩溃日志到ZIP', { fileName: originalLogFileName });
+
         // 添加符号化日志文件
-        const logFileName = `symbolicated_crash_${appVersion || 'unknown'}_${Date.now()}.txt`;
-        archive.append(symbolicatedLog, { name: logFileName });
+        const logFileName = `symbolicated_crash_${version}_${timestamp}.txt`;
+        archive.append(options.symbolicatedLog, { name: logFileName });
         logger.info('添加符号化日志到ZIP', { fileName: logFileName });
 
-        // 如果有AI分析，生成并添加HTML报告
-        if (analysis) {
-          try {
-            const htmlContent = this.generateAIAnalysisHTML(analysis);
-            const htmlFileName = `ai_analysis_report_${appVersion || 'unknown'}_${Date.now()}.html`;
-            archive.append(htmlContent, { name: htmlFileName });
-            logger.info('添加AI分析报告到ZIP', { fileName: htmlFileName });
-          } catch (error: any) {
-            logger.error('生成AI分析HTML失败', { error: error.message });
-            // 即使HTML生成失败，也继续打包日志文件
-          }
+        // 添加AI分析HTML报告。即使暂未分析，也保留固定文件，方便下载包结构稳定。
+        try {
+          const htmlContent = options.analysis
+            ? this.generateAIAnalysisHTML(options.analysis)
+            : this.generateEmptyAIAnalysisHTML(version);
+          const htmlFileName = `ai_analysis_report_${version}_${timestamp}.html`;
+          archive.append(htmlContent, { name: htmlFileName });
+          logger.info('添加AI分析报告到ZIP', { fileName: htmlFileName, hasAIAnalysis: !!options.analysis });
+        } catch (error: any) {
+          logger.error('生成AI分析HTML失败', { error: error.message });
+          const htmlFileName = `ai_analysis_report_${version}_${timestamp}.html`;
+          archive.append('<!DOCTYPE html><html><body><h1>AI分析报告生成失败</h1></body></html>', { name: htmlFileName });
         }
 
         // 完成打包

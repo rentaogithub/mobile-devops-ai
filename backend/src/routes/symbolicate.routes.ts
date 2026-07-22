@@ -391,7 +391,7 @@ router.post('/', async (req: Request, res: Response) => {
  */
 router.post('/download', async (req: Request, res: Response) => {
   try {
-    const { symbolicatedLog, analysis, appVersion } = req.body;
+    const { symbolicatedLog, originalLog, analysis, appVersion } = req.body;
 
     if (!symbolicatedLog) {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供符号化日志', 400);
@@ -406,11 +406,12 @@ router.post('/download', async (req: Request, res: Response) => {
     const { default: reportGenerator } = await import('../services/ReportGeneratorService');
 
     // 生成ZIP文件
-    const zipBuffer = await reportGenerator.generateReportZip(
+    const zipBuffer = await reportGenerator.generateReportZip({
       symbolicatedLog,
+      originalLog,
       analysis,
-      appVersion || 'unknown'
-    );
+      appVersion: appVersion || 'unknown',
+    });
 
     // 设置响应头
     const fileName = `crash_report_${appVersion || 'unknown'}_${Date.now()}.zip`;

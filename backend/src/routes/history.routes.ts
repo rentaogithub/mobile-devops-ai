@@ -180,11 +180,12 @@ router.get('/:id/download', async (req: Request, res: Response) => {
     });
 
     // 生成ZIP文件
-    const zipBuffer = await reportGenerator.generateReportZip(
-      record.symbolicatedLog,
-      record.aiAnalysis,
-      record.appVersion
-    );
+    const zipBuffer = await reportGenerator.generateReportZip({
+      symbolicatedLog: record.symbolicatedLog,
+      originalLog: record.originalLog,
+      analysis: record.aiAnalysis,
+      appVersion: record.appVersion,
+    });
 
     // 设置响应头
     const fileName = `crash_report_${record.appVersion}_${Date.now()}.zip`;

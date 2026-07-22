@@ -709,7 +709,8 @@ export const symbolicateApi = {
   downloadReport: async (
     symbolicatedLog: string,
     analysis: CrashAnalysis | undefined,
-    appVersion: string
+    appVersion: string,
+    originalLog?: string
   ): Promise<void> => {
     const token = authUtils.getToken();
     
@@ -722,6 +723,7 @@ export const symbolicateApi = {
         },
         body: JSON.stringify({
           symbolicatedLog,
+          originalLog,
           analysis,
           appVersion,
         }),
