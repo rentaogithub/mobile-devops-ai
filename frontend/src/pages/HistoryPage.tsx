@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input, Select } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, ReloadOutlined, UpOutlined, DownOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, UpOutlined, DownOutlined } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 import { formatDateTime } from '../utils/helpers';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -28,6 +28,8 @@ interface HistoryRecord {
   createdAt: string;
 }
 
+type ModuleFilter = 'rtc' | 'im' | 'other';
+
 export default function HistoryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
@@ -40,6 +42,7 @@ export default function HistoryPage() {
   const [detailSearchText, setDetailSearchText] = useState('');
   const [activeDetailMatchIndex, setActiveDetailMatchIndex] = useState(0);
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
+  const [moduleFilters, setModuleFilters] = useState<ModuleFilter[]>([]);
   const openedUrlHistoryIdRef = useRef<number | null>(null);
   const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const autoAnalyzingRecordIds = useRef(new Set<number>());
@@ -377,10 +380,87 @@ export default function HistoryPage() {
     return nodes;
   };
 
-  const normalizedQuery = queryText.trim().toLowerCase();
+  const normalizeSearchValue = (value: unknown): string => {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const compactSearchValue = (value: string): string => value.replace(/\s+/g, '');
+
+  const includesSearchQuery = (source: string, query: string): boolean => {
+    if (!query) return true;
+    return source.includes(query) || compactSearchValue(source).includes(compactSearchValue(query));
+  };
+
+  const extractCrashedThreadSearchText = (log: string): string => {
+    if (!log) return '';
+
+    const crashedThreadNumber = log.match(/Crashed Thread:\s*(\d+)/i)?.[1];
+    const nextSectionPattern = '(?=\\n\\s*\\n[ \\t]*Thread\\s+\\d+|\\n[ \\t]*Binary Images:|\\s*$)';
+    const patterns = crashedThreadNumber
+      ? [
+          new RegExp(`(?:^|\\n)Thread\\s+${crashedThreadNumber}\\s+Crashed:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+          new RegExp(`(?:^|\\n)Thread\\s+${crashedThreadNumber}:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+        ]
+      : [
+          new RegExp(`(?:^|\\n)Thread\\s+\\d+\\s+Crashed:?[^\\n]*\\n([\\s\\S]*?)${nextSectionPattern}`, 'i'),
+        ];
+
+    for (const pattern of patterns) {
+      const match = log.match(pattern);
+      if (match?.[1]) {
+        return match[1];
+      }
+    }
+
+    return log
+      .split(/\n\s*Binary Images:/i)[0]
+      .split('\n')
+      .slice(0, 80)
+      .join('\n');
+  };
+
+  const getRecordModuleGroups = (record: HistoryRecord): ModuleFilter[] => {
+    const searchable = normalizeSearchValue([
+      record.crashModule,
+      record.aiAnalysis?.crashModule,
+    ].filter(Boolean).join('\n'));
+
+    const groups = new Set<ModuleFilter>();
+    if (/\bnnrtc\b/i.test(searchable)) {
+      groups.add('rtc');
+    }
+    if (/leigod im cross sdk|im sdk/i.test(searchable)) {
+      groups.add('im');
+    }
+    if (groups.size === 0) {
+      groups.add('other');
+    }
+
+    return Array.from(groups);
+  };
+
+  const handleModuleFilterChange = (values: Array<ModuleFilter | 'all'>) => {
+    if (values.includes('all')) {
+      setModuleFilters([]);
+      return;
+    }
+    setModuleFilters(values.filter((value): value is ModuleFilter => value === 'rtc' || value === 'im' || value === 'other'));
+  };
+
+  const normalizedQuery = normalizeSearchValue(queryText);
   const records = historyData.filter((record) => {
     if (fixedFilter === 'fixed' && !record.isFixed) return false;
     if (fixedFilter === 'unfixed' && record.isFixed) return false;
+    if (moduleFilters.length > 0) {
+      const recordGroups = getRecordModuleGroups(record);
+      if (!moduleFilters.some((filter) => recordGroups.includes(filter))) {
+        return false;
+      }
+    }
     if (!normalizedQuery) return true;
 
     const idQuery = normalizedQuery.replace(/^#/, '');
@@ -388,7 +468,7 @@ export default function HistoryPage() {
       return true;
     }
 
-    const searchable = [
+    const visibleSearchable = normalizeSearchValue([
       record.id,
       record.appVersion,
       record.crashType,
@@ -397,14 +477,24 @@ export default function HistoryPage() {
       record.crashModule,
       record.crashLocation,
       record.fixedVersion,
-      record.symbolicatedLog,
+      record.createdAt,
+      formatDateTime(record.createdAt),
       record.aiAnalysis?.summary,
       record.aiAnalysis?.crashModule,
       record.aiAnalysis?.crashLocation,
       ...(record.usedUuids || []),
-    ].filter(Boolean).join('\n').toLowerCase();
+    ].filter(Boolean).join('\n'));
 
-    return searchable.includes(normalizedQuery);
+    if (includesSearchQuery(visibleSearchable, normalizedQuery)) {
+      return true;
+    }
+
+    const crashThreadSearchable = normalizeSearchValue([
+      extractCrashedThreadSearchText(record.symbolicatedLog),
+      extractCrashedThreadSearchText(record.originalLog),
+    ].filter(Boolean).join('\n'));
+
+    return includesSearchQuery(crashThreadSearchable, normalizedQuery);
   });
 
   if (loading) {
@@ -415,24 +505,11 @@ export default function HistoryPage() {
     );
   }
 
-  if (records.length === 0) {
-    return (
-      <div>
-        <Title level={2}>符号化历史记录</Title>
-        <Paragraph type="secondary">查看所有符号化过的崩溃日志记录。</Paragraph>
-        <Empty
-          description="暂无历史记录"
-          style={{ marginTop: 60 }}
-        />
-      </div>
-    );
-  }
-
   return (
     <div>
       <Title level={2}>符号化历史记录</Title>
       <Paragraph type="secondary">
-        查看所有符号化过的崩溃日志记录。共 {historyData.length} 条记录。
+        查看所有符号化过的崩溃日志记录。{historyData.length > 0 ? `共 ${historyData.length} 条记录。` : '暂无历史记录。'}
       </Paragraph>
 
       <Card size="small" style={{ marginTop: 16 }}>
@@ -455,15 +532,21 @@ export default function HistoryPage() {
               { value: 'fixed', label: '已修复' },
             ]}
           />
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => {
-              setQueryText('');
-              setFixedFilter('all');
-            }}
-          >
-            重置
-          </Button>
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="全部模块"
+            value={moduleFilters}
+            onChange={handleModuleFilterChange}
+            style={{ width: 180 }}
+            maxTagCount="responsive"
+            options={[
+              { value: 'all', label: '全部' },
+              { value: 'rtc', label: 'RTC' },
+              { value: 'im', label: 'IM' },
+              { value: 'other', label: '其他' },
+            ]}
+          />
           <Text type="secondary">
             当前 {records.length} 条
           </Text>
@@ -472,7 +555,10 @@ export default function HistoryPage() {
 
       <Space direction="vertical" style={{ width: '100%', marginTop: 24 }} size="middle">
         {records.length === 0 ? (
-          <Empty description="未找到匹配记录" style={{ marginTop: 40 }} />
+          <Empty
+            description={historyData.length === 0 ? '暂无历史记录' : '未找到匹配记录'}
+            style={{ marginTop: 40 }}
+          />
         ) : records.map((record) => (
                   <Card
                     key={record.id}
