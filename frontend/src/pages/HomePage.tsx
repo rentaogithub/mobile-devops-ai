@@ -51,7 +51,7 @@ const features: FeatureCard[] = [
   {
     key: 'cicd',
     title: 'CI/CD 管理',
-    description: 'nn-ios Jenkins 构建与发布蒲公英、TestFlight、苹果商店包',
+    description: 'nn-ios Jenkins 构建与发布蒲公英、TestFlight、苹果商店包，衔接自动质检与发布管理',
     icon: <RocketOutlined />,
     path: '/cicd',
     color: '#722ed1',
@@ -134,6 +134,7 @@ const serviceChain = [
     services: [
       { label: 'CI/CD 管理', path: '/cicd' },
       { label: '自动质检', path: '/cicd/quality' },
+      { label: '设备注册', path: '/cicd/devices' },
     ],
   },
   {
@@ -158,7 +159,7 @@ export default function HomePage() {
           iOS 移动管理平台
         </Title>
         <Paragraph type="secondary" style={{ fontSize: 16 }}>
-          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、日志、API 文档、DevOps 工具链、路由和跨端能力
+          一站式 iOS 应用开发管理工具，覆盖崩溃分析、组件管理、CI/CD、设备注册、日志、API 文档、DevOps 工具链、路由和跨端能力
         </Paragraph>
 
         <section className="service-chain" aria-label="iOS 移动管理平台服务链">

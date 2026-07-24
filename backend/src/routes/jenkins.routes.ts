@@ -33,6 +33,14 @@ const RELEASE_BUILD_LIST_LIMIT = Math.min(
   200,
   Math.max(20, Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 50) || 50),
 );
+const RELEASE_BRANCH_BUILD_SCAN_LIMIT = Math.min(
+  500,
+  Math.max(RELEASE_BUILD_LIST_LIMIT, Number(process.env.JENKINS_RELEASE_BRANCH_BUILD_SCAN_LIMIT || 200) || 200),
+);
+const RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT = Math.min(
+  500,
+  Math.max(RELEASE_BRANCH_BUILD_SCAN_LIMIT, Number(process.env.JENKINS_RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT || RELEASE_BRANCH_BUILD_SCAN_LIMIT) || RELEASE_BRANCH_BUILD_SCAN_LIMIT),
+);
 const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
 const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
 const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 3 * 60 * 1000);
@@ -2368,17 +2376,39 @@ async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
   });
 }
 
+async function fetchRecentJenkinsBuildBranches(jobPath: string) {
+  const tree = `builds[number]{0,${RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT}}`;
+  const response = await fetchJenkinsJobJson(jobPath, tree);
+  const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
+  const branches = await Promise.all(builds.map(async (build: any) => {
+    const buildNumber = Number(build?.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) return '';
+    const parameters = await fetchBuildParameters(jobPath, buildNumber);
+    return normalizeBranchName(parameters.branchName || '');
+  }));
+  return branches.filter(Boolean);
+}
+
 router.get('/nn/branches', async (_req: Request, res: Response) => {
   try {
     const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', DEFAULT_REPO_URL], {
       timeout: 30000,
       maxBuffer: 1024 * 1024,
     });
-    const branches = stdout
+    const remoteBranches = stdout
       .split('\n')
       .map((line) => line.match(/refs\/heads\/(.+)$/)?.[1])
       .filter((branch): branch is string => Boolean(branch))
       .filter((branch) => !branch.includes('HEAD'))
+      .map(normalizeBranchName);
+    let buildBranches: string[] = [];
+    try {
+      buildBranches = await fetchRecentJenkinsBuildBranches(encodeJobPath(DEFAULT_JOB_NAME));
+    } catch (error: any) {
+      logger.warn(`查询 Jenkins 历史构建分支失败: ${error.message || error}`);
+    }
+    const branches = Array.from(new Set([...remoteBranches, ...buildBranches]))
+      .filter(Boolean)
       .sort(compareBranchOptions);
 
     res.json({
@@ -2397,6 +2427,8 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
     const deployTargetFilter = normalizeDeployTarget(String(req.query.deployTarget || ''));
+    const branchFilter = normalizeBranchName(String(req.query.branch || ''));
+    const buildListLimit = branchFilter ? RELEASE_BRANCH_BUILD_SCAN_LIMIT : RELEASE_BUILD_LIST_LIMIT;
     const tree = [
       'displayName',
       'fullName',
@@ -2404,12 +2436,12 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
       'buildable',
       'color',
       'lastBuild[number,result,timestamp,duration,building,url,description]',
-      `builds[number,result,timestamp,duration,building,url,description]{0,${RELEASE_BUILD_LIST_LIMIT}}`,
+      `builds[number,result,timestamp,duration,building,url,description]{0,${buildListLimit}}`,
     ].join(',');
     const response = await fetchJenkinsJobJson(jobPath, tree);
 
     const job = response.data || {};
-    const rawBuilds = Array.isArray(job.builds) ? job.builds.slice(0, RELEASE_BUILD_LIST_LIMIT) : [];
+    const rawBuilds = Array.isArray(job.builds) ? job.builds.slice(0, buildListLimit) : [];
     const buildsWithMetadata = await Promise.all(rawBuilds.map(async (build: any) => {
       const descriptionMetadata = parseBuildDescription(build.description);
       const [consoleMetadata, buildParameters] = await Promise.all([
@@ -2441,9 +2473,10 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 	    }));
 	    buildsWithMetadata.forEach(scheduleAppStoreBuildDsymSync);
 	    workflowIntegrationService.syncJenkinsBuilds(buildsWithMetadata);
-	    const builds = deployTargetFilter
-	      ? buildsWithMetadata.filter((build: any) => normalizeDeployTarget(build.publishChannel) === deployTargetFilter)
-	      : buildsWithMetadata;
+	    const builds = buildsWithMetadata.filter((build: any) => (
+	      (!deployTargetFilter || normalizeDeployTarget(build.publishChannel) === deployTargetFilter) &&
+	      (!branchFilter || normalizeBranchName(build.branchName || '') === branchFilter)
+	    ));
     const running = builds.filter((build: any) => build.building).length;
     const success = builds.filter((build: any) => build.result === 'SUCCESS').length;
     const finished = builds.filter((build: any) => !build.building && build.result).length;

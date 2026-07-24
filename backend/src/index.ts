@@ -29,6 +29,7 @@ import feedbackLogRoutes from './routes/feedbackLog.routes';
 import accessStatsRoutes from './routes/accessStats.routes';
 import apiDocsRoutes from './routes/apiDocs.routes';
 import workflowRoutes from './routes/workflow.routes';
+import appleDeviceRoutes from './routes/appleDevice.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -65,6 +66,8 @@ app.use('/jeecg-boot', opProxyRoutes);
 app.use('/sys', opProxyRoutes);
 app.use('/sonic-admin', sonicProxyRoutes);
 app.use('/sonic-api', sonicProxyRoutes);
+// iOS Profile Service 回调是签名/原始请求体，必须在全局 body parser 前处理。
+app.use('/api/apple-devices', appleDeviceRoutes);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 

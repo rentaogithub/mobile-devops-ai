@@ -2388,6 +2388,7 @@ export const jenkinsApi = {
 
   listNNBuilds: async (params?: {
     deployTarget?: 'Pgyer' | 'TestFlight' | 'AppStore' | '';
+    branch?: string;
   }): Promise<ApiResponse<JenkinsBuildListResult>> => {
     const response = await api.get<ApiResponse<JenkinsBuildListResult>>('/jenkins/nn/builds', { params });
     return response.data;
@@ -2570,6 +2571,171 @@ export const jenkinsApi = {
       devicePool: string;
       url: string;
     }>>('/jenkins/nn/quality', payload);
+    return response.data;
+  },
+};
+
+export interface AppleDeviceConfigStatus {
+  configured: boolean;
+  missing: string[];
+  warnings?: string[];
+  keyId?: string;
+  issuerId?: string;
+  keyPath?: string;
+  keyPathConfigured?: boolean;
+  keyFileName?: string;
+  keyFileExists?: boolean;
+  keyLooksLikeSubscriptionKey?: boolean;
+  keyLooksLikeAppStoreConnectKey?: boolean;
+}
+
+export interface AppleDeviceEnrollment {
+  id: string;
+  createdAt: number;
+  status: 'pending' | 'completed';
+  device?: {
+    udid: string;
+    name?: string;
+    product?: string;
+    version?: string;
+    serial?: string;
+  };
+}
+
+export interface AppleDeviceEnrollmentCreateResult {
+  sessionId: string;
+  status: AppleDeviceEnrollment['status'];
+  enrollUrl: string;
+  expiresAt: string;
+}
+
+export interface AppleDeviceRegisterResult {
+  id?: string;
+  udid: string;
+  name: string;
+  platform: string;
+  status?: string;
+  alreadyExists: boolean;
+  message: string;
+}
+
+export interface AppleDeviceRegistrationRequest {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  status: 'pending' | 'registered' | 'rejected';
+  udid: string;
+  name: string;
+  platform: string;
+  source?: {
+    product?: string;
+    version?: string;
+    serial?: string;
+  };
+  appleDeviceId?: string;
+  appleStatus?: string;
+  alreadyExists?: boolean;
+  alreadyPending?: boolean;
+  message?: string;
+}
+
+export interface AppleDeviceRegistrationRequestListResult {
+  requests: AppleDeviceRegistrationRequest[];
+}
+
+export interface AppleDeveloperDevice {
+  id: string;
+  name: string;
+  udid: string;
+  platform: string;
+  status: string;
+  deviceClass?: string;
+  model?: string;
+  addedDate?: string;
+}
+
+export interface AppleDeveloperDeviceListResult {
+  devices: AppleDeveloperDevice[];
+  total: number;
+  platform: string;
+  source?: 'apple' | 'cache';
+  warning?: string;
+}
+
+export interface AppleDeveloperDeviceLookupResult {
+  registered: boolean;
+  device?: AppleDeveloperDevice;
+  source?: 'apple' | 'cache';
+  warning?: string;
+}
+
+export const appleDeviceApi = {
+  status: async (): Promise<ApiResponse<AppleDeviceConfigStatus>> => {
+    const response = await api.get<ApiResponse<AppleDeviceConfigStatus>>('/apple-devices/status');
+    return response.data;
+  },
+
+  updateConfig: async (payload: {
+    keyId: string;
+    issuerId: string;
+    keyPath?: string;
+    keyFile?: File | null;
+  }): Promise<ApiResponse<AppleDeviceConfigStatus & { message?: string }>> => {
+    const formData = new FormData();
+    formData.append('keyId', payload.keyId);
+    formData.append('issuerId', payload.issuerId);
+    if (payload.keyPath) formData.append('keyPath', payload.keyPath);
+    if (payload.keyFile) formData.append('keyFile', payload.keyFile, payload.keyFile.name);
+    const response = await api.post<ApiResponse<AppleDeviceConfigStatus & { message?: string }>>('/apple-devices/config', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  listDevices: async (params?: { platform?: 'IOS' | 'MAC_OS'; limit?: number }): Promise<ApiResponse<AppleDeveloperDeviceListResult>> => {
+    const response = await api.get<ApiResponse<AppleDeveloperDeviceListResult>>('/apple-devices/devices', { params });
+    return response.data;
+  },
+
+  lookupDevice: async (udid: string): Promise<ApiResponse<AppleDeveloperDeviceLookupResult>> => {
+    const response = await api.get<ApiResponse<AppleDeveloperDeviceLookupResult>>('/apple-devices/lookup', { params: { udid } });
+    return response.data;
+  },
+
+  createEnrollment: async (): Promise<ApiResponse<AppleDeviceEnrollmentCreateResult>> => {
+    const response = await api.post<ApiResponse<AppleDeviceEnrollmentCreateResult>>('/apple-devices/enrollments');
+    return response.data;
+  },
+
+  getEnrollment: async (sessionId: string): Promise<ApiResponse<AppleDeviceEnrollment>> => {
+    const response = await api.get<ApiResponse<AppleDeviceEnrollment>>(`/apple-devices/enrollments/${encodeURIComponent(sessionId)}`);
+    return response.data;
+  },
+
+  listRegistrationRequests: async (): Promise<ApiResponse<AppleDeviceRegistrationRequestListResult>> => {
+    const response = await api.get<ApiResponse<AppleDeviceRegistrationRequestListResult>>('/apple-devices/registration-requests');
+    return response.data;
+  },
+
+  createRegistrationRequest: async (payload: { udid: string; name?: string; platform?: 'IOS' | 'MAC_OS'; product?: string; version?: string; serial?: string }): Promise<ApiResponse<AppleDeviceRegistrationRequest>> => {
+    const response = await api.post<ApiResponse<AppleDeviceRegistrationRequest>>('/apple-devices/registration-requests', payload, {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  approveRegistrationRequest: async (id: string): Promise<ApiResponse<AppleDeviceRegistrationRequest & { result?: AppleDeviceRegisterResult }>> => {
+    const response = await api.post<ApiResponse<AppleDeviceRegistrationRequest & { result?: AppleDeviceRegisterResult }>>(`/apple-devices/registration-requests/${encodeURIComponent(id)}/approve`, {}, {
+      timeout: 60000,
+    });
+    return response.data;
+  },
+
+  register: async (payload: { udid: string; name?: string; platform?: 'IOS' | 'MAC_OS' }): Promise<ApiResponse<AppleDeviceRegisterResult>> => {
+    const response = await api.post<ApiResponse<AppleDeviceRegisterResult>>('/apple-devices/register', payload, {
+      timeout: 60000,
+    });
     return response.data;
   },
 };

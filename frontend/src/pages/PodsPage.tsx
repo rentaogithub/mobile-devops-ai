@@ -812,60 +812,21 @@ export default function PodsPage() {
   };
 
   const handleDelete = async (record: PodComponent) => {
-    const isNNRtcTestPackage = record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version));
-    const branches = isNNRtcTestPackage ? [] : (nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches());
-    const branchOptions = branches.length > 0 ? branches : ['develop'];
     let confirmText = '';
-    let targetBranch = isNNRtcTestPackage
-      ? (record.nnios_branch || detailTargetBranch)
-      : (detailTargetBranch && branchOptions.includes(detailTargetBranch)
-        ? detailTargetBranch
-        : (branchOptions.includes('develop') ? 'develop' : branchOptions[0]));
-    let confirmBranch = '';
     Modal.confirm({
       title: `删除版本 ${record.name}@${record.version}`,
       content: (
         <div>
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
-          <p>如果 nnios 目标分支正在引用该版本，会自动回退到此组件剩余的最新版本。</p>
+          <p>仅删除当前组件版本，不会修改 nnios 分支引用。</p>
           {(record.name === 'NNRtc' || record.name === 'leigod_im_cross_sdk') && (
             <p>将同时删除 dSYM 管理中的 <Text strong code>{record.name}@{record.version}</Text> 符号文件。</p>
-          )}
-          {isNNRtcTestPackage ? (
-            <div style={{ marginBottom: 12 }}>
-              <Text strong>nnios 目标分支</Text>
-              <div style={{ marginTop: 6 }}>
-                {targetBranch ? <Tag color="blue">{targetBranch}</Tag> : <Text type="secondary">未记录</Text>}
-              </div>
-            </div>
-          ) : (
-            <div style={{ marginBottom: 12 }}>
-              <Text strong>nnios 目标分支</Text>
-              <Select
-                showSearch
-                defaultValue={targetBranch}
-                style={{ width: '100%', marginTop: 6 }}
-                options={branchOptions.map((branch) => ({ value: branch, label: branch }))}
-                onChange={(value) => { targetBranch = value; }}
-              />
-            </div>
           )}
           <p>请输入版本号 <Text strong code>{record.version}</Text> 确认删除：</p>
           <Input
             placeholder={record.version}
             onChange={(e) => { confirmText = e.target.value; }}
           />
-          {!isNNRtcTestPackage && (
-            <>
-              <p style={{ marginTop: 12 }}>
-                请再次输入 nnios 目标分支 <Text strong code>{targetBranch}</Text> 确认：
-              </p>
-              <Input
-                placeholder={`请输入 ${targetBranch}`}
-                onChange={(e) => { confirmBranch = e.target.value.trim(); }}
-              />
-            </>
-          )}
         </div>
       ),
       okText: '确认删除',
@@ -876,20 +837,12 @@ export default function PodsPage() {
           message.error('版本号输入不匹配，取消删除');
           return Promise.reject();
         }
-        if (!targetBranch) {
-          message.error('当前测试包没有记录 nnios 集成分支，无法删除');
-          return Promise.reject();
-        }
-        if (!isNNRtcTestPackage && confirmBranch !== targetBranch) {
-          message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
-          return Promise.reject();
-        }
         try {
-          const res = await podsApi.delete(record.name, record.version, targetBranch);
+          const res = await podsApi.delete(record.name, record.version);
           if (res.warning || res.data?.warning) {
             message.warning(res.warning || res.data?.warning);
           } else if (res.data?.fallbackVersion) {
-            message.success(`删除成功，nnios/${targetBranch} 已回退到 ${record.name}@${res.data.fallbackVersion}`);
+            message.success(`删除成功，nnios 已回退到 ${record.name}@${res.data.fallbackVersion}`);
           } else {
             message.success('删除成功');
           }

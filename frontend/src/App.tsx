@@ -61,6 +61,7 @@ function App() {
             {/* CI/CD 管理 */}
             <Route path="cicd" element={<CICDPage />} />
             <Route path="cicd/quality" element={<CICDPage />} />
+            <Route path="cicd/devices" element={<CICDPage />} />
             {/* 日志服务 */}
             <Route path="logs" element={<LogsPage />} />
             <Route path="logs/pair" element={<LogsPairPage />} />

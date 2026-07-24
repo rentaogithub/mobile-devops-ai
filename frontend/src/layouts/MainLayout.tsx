@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Layout, Menu, Dropdown, Space, Avatar, Button } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -22,8 +23,19 @@ const { Header, Content } = Layout;
 export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const isAdmin = authUtils.isAdmin();
+  const [, setAuthVersion] = useState(0);
   const isAuthenticated = authUtils.isAuthenticated();
+  const isAdmin = isAuthenticated && authUtils.isAdmin();
+
+  useEffect(() => {
+    const refreshAuthState = () => setAuthVersion((value) => value + 1);
+    window.addEventListener('storage', refreshAuthState);
+    window.addEventListener('auth-state-changed', refreshAuthState);
+    return () => {
+      window.removeEventListener('storage', refreshAuthState);
+      window.removeEventListener('auth-state-changed', refreshAuthState);
+    };
+  }, []);
 
   // Determine which top-level menu key is active
   const getSelectedKey = () => {
@@ -74,6 +86,7 @@ export default function MainLayout() {
       children: [
         { key: '/cicd', label: '发布管理' },
         { key: '/cicd/quality', label: '自动质检' },
+        { key: '/cicd/devices', label: 'iOS设备注册' },
       ],
     },
     {
@@ -114,7 +127,6 @@ export default function MainLayout() {
 
   const handleLogout = () => {
     authUtils.clearToken();
-    sessionStorage.clear();
     window.location.reload();
   };
 

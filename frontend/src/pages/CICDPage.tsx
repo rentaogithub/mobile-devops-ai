@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import * as echarts from 'echarts';
-import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox, Collapse } from 'antd';
+import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox, Collapse, Upload } from 'antd';
 import {
   RocketOutlined,
   PlayCircleOutlined,
@@ -15,14 +15,24 @@ import {
   DeleteOutlined,
   BranchesOutlined,
   BulbOutlined,
+  MobileOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
-import { JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { AppleDeveloperDevice, AppleDeveloperDeviceListResult, AppleDeveloperDeviceLookupResult, AppleDeviceConfigStatus, AppleDeviceEnrollment, AppleDeviceEnrollmentCreateResult, AppleDeviceRegistrationRequest, AppleDeviceRegistrationRequestListResult, JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, appleDeviceApi, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
+import { authUtils } from '../utils/auth';
+import appleDeviceEnrollGuide from '../assets/apple-device-enroll-guide.svg';
 
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
+type CICDSection = 'release' | 'quality' | 'devices';
 type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'evidence' | 'summary';
 type QualityReportKind = 'monkey' | 'stutter' | 'generic';
+type AppleRegistrationInlineResult = {
+  type: 'success' | 'info' | 'warning' | 'error';
+  message: string;
+  description?: string;
+};
 
 const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '蒲公英', value: 'Pgyer' },
@@ -33,6 +43,14 @@ const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
 function publishChannelLabel(channel?: string) {
   const option = DEPLOY_TARGET_OPTIONS.find((item) => item.value === channel);
   return option?.label || channel || '';
+}
+
+function normalizeAppleUdid(value?: string) {
+  return String(value || '').trim().toUpperCase().replace(/-/g, '');
+}
+
+function isValidAppleUdid(value?: string) {
+  return /^[A-F0-9]{24,40}$/.test(normalizeAppleUdid(value));
 }
 
 const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
@@ -889,7 +907,7 @@ function PerformanceAnalysisSummary({
           )}
         />
       ) : (
-        analysis?.conclusion?.severity && <Alert showIcon type="success" message="未发现阈值类性能风险" />
+        analysis?.conclusion?.severity ? <Alert showIcon type="success" message="未发现阈值类性能风险" /> : null
       )}
       <Alert
         showIcon
@@ -2293,7 +2311,10 @@ function CrashAnalysisSummary({
 export default function CICDPage() {
   const location = useLocation();
   const [data, setData] = useState<JenkinsBuildListResult | null>(null);
-  const [activeSection, setActiveSection] = useState(location.pathname.startsWith('/cicd/quality') ? 'quality' : 'release');
+  const initialSection: CICDSection = location.pathname.startsWith('/cicd/quality')
+    ? 'quality'
+    : (location.pathname.startsWith('/cicd/devices') ? 'devices' : 'release');
+  const [activeSection, setActiveSection] = useState<CICDSection>(initialSection);
   const [loading, setLoading] = useState(false);
   const [qualityLoading, setQualityLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -2317,7 +2338,7 @@ export default function CICDPage() {
   const [releaseBranchName, setReleaseBranchName] = useState('');
   const [releaseBranchBase, setReleaseBranchBase] = useState('develop');
   const [releaseBranchLog, setReleaseBranchLog] = useState('');
-  const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string } | null>(null);
+  const [qrPreview, setQrPreview] = useState<{ url: string; channel?: string; buildNumber?: string; branchName?: string } | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logLoading, setLogLoading] = useState(false);
   const [buildFailureAnalysisLoading, setBuildFailureAnalysisLoading] = useState(false);
@@ -2353,6 +2374,7 @@ export default function CICDPage() {
 	  const [buildDsymSync, setBuildDsymSync] = useState<JenkinsBuildDsymSync | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
+  const [filterBranchName, setFilterBranchName] = useState('');
   const [publishBranch, setPublishBranch] = useState('develop');
   const [branches, setBranches] = useState<string[]>([]);
   const [branchLoading, setBranchLoading] = useState(false);
@@ -2362,6 +2384,33 @@ export default function CICDPage() {
   const [releaseGatePreview, setReleaseGatePreview] = useState<WorkflowReleaseGate>();
   const [releaseGateMissingSuites, setReleaseGateMissingSuites] = useState<JenkinsQualitySuite[]>([]);
   const [releaseGatePreviewLoading, setReleaseGatePreviewLoading] = useState(false);
+  const [appleDeviceStatus, setAppleDeviceStatus] = useState<AppleDeviceConfigStatus | null>(null);
+  const [appleDeviceStatusLoading, setAppleDeviceStatusLoading] = useState(false);
+  const [appleEnrollment, setAppleEnrollment] = useState<AppleDeviceEnrollmentCreateResult | null>(null);
+  const [appleEnrollmentState, setAppleEnrollmentState] = useState<AppleDeviceEnrollment | null>(null);
+  const [appleEnrollmentLoading, setAppleEnrollmentLoading] = useState(false);
+  const [appleDeviceRegistering, setAppleDeviceRegistering] = useState(false);
+  const [appleDeviceName, setAppleDeviceName] = useState('');
+  const [appleDeviceUdid, setAppleDeviceUdid] = useState('');
+  const [appleDeveloperDevices, setAppleDeveloperDevices] = useState<AppleDeveloperDeviceListResult | null>(null);
+  const [appleDeveloperDevicesLoading, setAppleDeveloperDevicesLoading] = useState(false);
+  const [appleDeveloperDevicesError, setAppleDeveloperDevicesError] = useState('');
+  const [appleDeveloperDeviceKeyword, setAppleDeveloperDeviceKeyword] = useState('');
+  const [appleDeviceLookup, setAppleDeviceLookup] = useState<AppleDeveloperDeviceLookupResult | null>(null);
+  const [appleDeviceLookupLoading, setAppleDeviceLookupLoading] = useState(false);
+  const [appleRegistrationInlineResult, setAppleRegistrationInlineResult] = useState<AppleRegistrationInlineResult | null>(null);
+  const [appleRegistrationRequests, setAppleRegistrationRequests] = useState<AppleDeviceRegistrationRequestListResult | null>(null);
+  const [appleRegistrationRequestsLoading, setAppleRegistrationRequestsLoading] = useState(false);
+  const [approvingAppleRegistrationRequest, setApprovingAppleRegistrationRequest] = useState('');
+  const [appleConfigSaving, setAppleConfigSaving] = useState(false);
+  const [appleConfigKeyId, setAppleConfigKeyId] = useState('');
+  const [appleConfigIssuerId, setAppleConfigIssuerId] = useState('');
+  const [appleConfigKeyPath, setAppleConfigKeyPath] = useState('');
+  const [appleConfigKeyFile, setAppleConfigKeyFile] = useState<File | null>(null);
+  const appleEnrollmentAutoCreatedRef = useRef(false);
+  const appleDeviceLookupSeqRef = useRef(0);
+  const appleAutoRegistrationUdidRef = useRef('');
+  const appleRegistrationNoticeRef = useRef('');
 
   useEffect(() => {
     if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
@@ -2389,13 +2438,13 @@ export default function CICDPage() {
     return () => { canceled = true; };
   }, [publishModalOpen, publishGateBuildNumber, publishBranch]);
 
-  const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }) => {
+  const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }, branch = filterBranchName) => {
     if (!options?.silent) {
       setLoading(true);
     }
     setError('');
     try {
-      const response = await jenkinsApi.listNNBuilds({ deployTarget: target });
+      const response = await jenkinsApi.listNNBuilds({ deployTarget: target, branch });
       setData(response.data || null);
       return response.data || null;
     } catch (err: any) {
@@ -2408,7 +2457,7 @@ export default function CICDPage() {
     }
   };
 
-  const refreshBuildsUntilUpdated = async (target: DeployTarget | '', previousLatest?: number | string) => {
+  const refreshBuildsUntilUpdated = async (target: DeployTarget | '', previousLatest?: number | string, branch = filterBranchName) => {
     const delays = [0, 1500, 1500, 2000, 3000, 4000, 4000, 4000];
     setLoading(true);
     try {
@@ -2416,7 +2465,7 @@ export default function CICDPage() {
         if (delay > 0) {
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
-        const nextData = await loadBuilds(target, { silent: true });
+        const nextData = await loadBuilds(target, { silent: true }, branch);
         const latest = nextData?.builds?.[0]?.number;
         if (latest && previousLatest && Number(latest) > Number(previousLatest)) {
           return;
@@ -2528,6 +2577,259 @@ export default function CICDPage() {
       } catch {
         message.warning(err?.error || err?.message || '加载质检设备池失败');
       }
+    }
+  };
+
+  const loadAppleDeviceStatus = async () => {
+    setAppleDeviceStatusLoading(true);
+    try {
+      const response = await appleDeviceApi.status();
+      const status = response.data || null;
+      setAppleDeviceStatus(status);
+      if (status) {
+        setAppleConfigKeyId(status.keyId || '');
+        setAppleConfigIssuerId(status.issuerId || '');
+        setAppleConfigKeyPath(status.keyPath || '');
+      }
+    } catch (err: any) {
+      message.warning(err?.error || err?.message || '加载 Apple Developer 配置状态失败');
+    } finally {
+      setAppleDeviceStatusLoading(false);
+    }
+  };
+
+  const saveAppleDeviceConfig = async () => {
+    setAppleConfigSaving(true);
+    try {
+      const response = await appleDeviceApi.updateConfig({
+        keyId: appleConfigKeyId.trim(),
+        issuerId: appleConfigIssuerId.trim(),
+        keyPath: appleConfigKeyPath.trim(),
+        keyFile: appleConfigKeyFile,
+      });
+      const status = response.data || null;
+      setAppleDeviceStatus(status);
+      setAppleConfigKeyFile(null);
+      if (status) {
+        setAppleConfigKeyId(status.keyId || appleConfigKeyId.trim());
+        setAppleConfigIssuerId(status.issuerId || appleConfigIssuerId.trim());
+        setAppleConfigKeyPath(status.keyPath || appleConfigKeyPath.trim());
+      }
+      message.success(status?.message || 'Apple Developer API 配置已更新');
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '更新 Apple Developer API 配置失败');
+    } finally {
+      setAppleConfigSaving(false);
+    }
+  };
+
+  const loadAppleDeveloperDevices = async () => {
+    if (!authUtils.isAdmin()) {
+      setAppleDeveloperDevices(null);
+      setAppleDeveloperDevicesError('');
+      return;
+    }
+    setAppleDeveloperDevicesLoading(true);
+    setAppleDeveloperDevicesError('');
+    try {
+      const response = await appleDeviceApi.listDevices({ platform: 'IOS', limit: 200 });
+      setAppleDeveloperDevices(response.data || null);
+    } catch (err: any) {
+      setAppleDeveloperDevicesError(err?.error || err?.message || '获取 Apple Developer 设备列表失败');
+    } finally {
+      setAppleDeveloperDevicesLoading(false);
+    }
+  };
+
+  const loadAppleRegistrationRequests = async () => {
+    if (!authUtils.isAdmin()) {
+      setAppleRegistrationRequests(null);
+      return;
+    }
+    setAppleRegistrationRequestsLoading(true);
+    try {
+      const response = await appleDeviceApi.listRegistrationRequests();
+      setAppleRegistrationRequests(response.data || null);
+    } catch (err: any) {
+      message.warning(err?.error || err?.message || '加载 Apple 设备注册申请失败');
+    } finally {
+      setAppleRegistrationRequestsLoading(false);
+    }
+  };
+
+  const refreshAppleDeviceSection = async () => {
+    await Promise.all([
+      loadAppleDeviceStatus(),
+      loadAppleDeveloperDevices(),
+      loadAppleRegistrationRequests(),
+    ]);
+  };
+
+  const resetAppleEnrollmentForm = () => {
+    setAppleEnrollment(null);
+    setAppleEnrollmentState(null);
+    setAppleDeviceName('');
+    setAppleDeviceUdid('');
+    setAppleDeviceLookup(null);
+    setAppleDeviceLookupLoading(false);
+    setAppleRegistrationInlineResult(null);
+    appleAutoRegistrationUdidRef.current = '';
+    appleRegistrationNoticeRef.current = '';
+    appleEnrollmentAutoCreatedRef.current = false;
+  };
+
+  const createAppleEnrollment = async () => {
+    setAppleEnrollmentLoading(true);
+    setAppleEnrollmentState(null);
+    setAppleDeviceName('');
+    setAppleDeviceUdid('');
+    setAppleDeviceLookup(null);
+    setAppleDeviceLookupLoading(false);
+    setAppleRegistrationInlineResult(null);
+    appleAutoRegistrationUdidRef.current = '';
+    appleRegistrationNoticeRef.current = '';
+    try {
+      const response = await appleDeviceApi.createEnrollment();
+      const enrollment = response.data || null;
+      setAppleEnrollment(enrollment);
+      if (enrollment?.sessionId) {
+        message.success('设备采集二维码已生成');
+      }
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '生成设备采集二维码失败');
+    } finally {
+      setAppleEnrollmentLoading(false);
+    }
+  };
+
+  const lookupAppleDeviceRegistration = async (udid: string) => {
+    const normalized = normalizeAppleUdid(udid);
+    const lookupSeq = appleDeviceLookupSeqRef.current + 1;
+    appleDeviceLookupSeqRef.current = lookupSeq;
+    if (!normalized) {
+      setAppleDeviceLookup(null);
+      return;
+    }
+    setAppleDeviceLookupLoading(true);
+    try {
+      const response = await appleDeviceApi.lookupDevice(normalized);
+      if (appleDeviceLookupSeqRef.current !== lookupSeq) return;
+      setAppleDeviceLookup(response.data || null);
+    } catch (err: any) {
+      if (appleDeviceLookupSeqRef.current !== lookupSeq) return;
+      setAppleDeviceLookup(null);
+      setAppleRegistrationInlineResult({
+        type: 'error',
+        message: '设备注册状态查询失败',
+        description: err?.error || err?.message || '请重新生成二维码后再扫码采集。',
+      });
+      message.warning(err?.error || err?.message || '查询 Apple 设备注册状态失败');
+    } finally {
+      if (appleDeviceLookupSeqRef.current !== lookupSeq) return;
+      setAppleDeviceLookupLoading(false);
+    }
+  };
+
+  const refreshAppleEnrollment = async (silent = false) => {
+    if (!appleEnrollment?.sessionId) return null;
+    try {
+      const response = await appleDeviceApi.getEnrollment(appleEnrollment.sessionId);
+      const enrollment = response.data || null;
+      setAppleEnrollmentState(enrollment);
+      if (enrollment?.device?.udid) {
+        setAppleDeviceUdid(enrollment.device.udid);
+        setAppleDeviceName((current) => current || enrollment.device?.name || '');
+      }
+      return enrollment;
+    } catch (err: any) {
+      if (!silent) {
+        message.error(err?.error || err?.message || '读取设备采集结果失败');
+      }
+      return null;
+    }
+  };
+
+  const showAppleRegistrationNotice = (udid: string, type: 'success' | 'info' | 'warning' | 'error', content: string) => {
+    const noticeKey = `${normalizeAppleUdid(udid)}:${type}:${content}`;
+    if (appleRegistrationNoticeRef.current === noticeKey) return;
+    appleRegistrationNoticeRef.current = noticeKey;
+    message.open({
+      type,
+      content,
+      duration: 3,
+      style: {
+        marginTop: '32vh',
+        textAlign: 'center',
+      },
+    });
+  };
+
+  const submitAppleDeviceRegistrationRequest = async (options?: { silent?: boolean; resetAfterSubmit?: boolean }) => {
+    const udid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
+    if (!udid) {
+      if (!options?.silent) message.warning('请先扫码采集设备 Identifier');
+      setAppleRegistrationInlineResult({ type: 'warning', message: '请先扫码采集设备 Identifier' });
+      return;
+    }
+    if (!isValidAppleUdid(udid)) {
+      if (!options?.silent) message.warning('设备 Identifier 不合法，请重新扫码采集');
+      setAppleRegistrationInlineResult({ type: 'error', message: '设备 Identifier 不合法', description: '请重新生成二维码后再扫码采集。' });
+      return;
+    }
+    if (registeredAppleDevice) {
+      if (!options?.silent) message.info('该设备已在 Apple Developer 设备列表中，无需重复提交注册申请');
+      setAppleRegistrationInlineResult({
+        type: 'info',
+        message: '该设备已在 Apple Developer 设备列表中',
+        description: '无需重复提交注册申请。',
+      });
+      return;
+    }
+    setAppleDeviceRegistering(true);
+    setAppleRegistrationInlineResult({ type: 'info', message: '正在自动提交注册申请...' });
+    try {
+      const response = await appleDeviceApi.createRegistrationRequest({
+        udid,
+        name: appleDeviceName.trim() || appleEnrollmentState?.device?.name || undefined,
+        platform: 'IOS',
+        product: appleEnrollmentState?.device?.product,
+        version: appleEnrollmentState?.device?.version,
+        serial: appleEnrollmentState?.device?.serial,
+      });
+      const result = response.data;
+      const successMessage = result?.message || (result?.alreadyExists ? '设备已存在' : '已提交注册申请，等待管理员审批');
+      setAppleRegistrationInlineResult({
+        type: result?.alreadyExists ? 'info' : 'success',
+        message: successMessage,
+      });
+      if (options?.silent) {
+        showAppleRegistrationNotice(udid, result?.alreadyExists ? 'info' : 'success', successMessage);
+      } else {
+        message.success(successMessage);
+      }
+      if (options?.resetAfterSubmit) {
+        resetAppleEnrollmentForm();
+      }
+      void refreshAppleDeviceSection();
+    } catch (err: any) {
+      const errorMessage = err?.error || err?.message || '提交 Apple 设备注册申请失败';
+      setAppleRegistrationInlineResult({ type: 'error', message: errorMessage });
+      if (!options?.silent) message.error(errorMessage);
+    } finally {
+      setAppleDeviceRegistering(false);
+    }
+  };
+
+  const approveAppleRegistrationRequest = async (id: string) => {
+    setApprovingAppleRegistrationRequest(id);
+    try {
+      const response = await appleDeviceApi.approveRegistrationRequest(id);
+      message.success(response.data?.message || response.data?.result?.message || '设备已注册到 Apple Developer');
+      void refreshAppleDeviceSection();
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '审批注册 Apple 设备失败');
+    } finally {
+      setApprovingAppleRegistrationRequest('');
     }
   };
 
@@ -3045,18 +3347,61 @@ export default function CICDPage() {
   };
 
   useEffect(() => {
-    loadBuilds();
+    const initialPath = location.pathname;
+    if (!initialPath.startsWith('/cicd/quality') && !initialPath.startsWith('/cicd/devices')) {
+      loadBuilds();
+      loadBranches();
+    }
   }, []);
 
   useEffect(() => {
-    const nextSection = location.pathname.startsWith('/cicd/quality') ? 'quality' : 'release';
+    const nextSection: CICDSection = location.pathname.startsWith('/cicd/quality')
+      ? 'quality'
+      : (location.pathname.startsWith('/cicd/devices') ? 'devices' : 'release');
     setActiveSection(nextSection);
     if (nextSection === 'quality') {
       refreshQualitySection();
+    } else if (nextSection === 'devices') {
+      refreshAppleDeviceSection();
     } else {
+      if (branches.length === 0) {
+        loadBranches();
+      }
+      appleEnrollmentAutoCreatedRef.current = false;
       setQualityError('');
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (activeSection !== 'devices') return;
+    if (appleEnrollment || appleEnrollmentLoading || appleEnrollmentAutoCreatedRef.current) return;
+    appleEnrollmentAutoCreatedRef.current = true;
+    void createAppleEnrollment();
+  }, [activeSection, appleEnrollment, appleEnrollmentLoading]);
+
+  useEffect(() => {
+    if (activeSection !== 'devices' || !appleEnrollment?.sessionId || appleEnrollmentState?.status === 'completed') {
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void refreshAppleEnrollment(true);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeSection, appleEnrollment?.sessionId, appleEnrollmentState?.status]);
+
+  useEffect(() => {
+    if (activeSection !== 'devices') return undefined;
+    const targetUdid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
+    if (!targetUdid || targetUdid.length < 24) {
+      setAppleDeviceLookup(null);
+      setAppleDeviceLookupLoading(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      void lookupAppleDeviceRegistration(targetUdid);
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, appleDeviceUdid, appleEnrollmentState?.device?.udid]);
 
   useEffect(() => {
     if (publishModalOpen && branches.length === 0) {
@@ -3203,6 +3548,20 @@ export default function CICDPage() {
     () => [...branches].sort(compareBranchOptions).map((branch) => ({ value: branch, label: branch })),
     [branches],
   );
+  const buildBranchFilterOptions = useMemo(() => {
+    const branchNames = Array.from(new Set([
+      ...branches,
+      ...(data?.builds || []).map((build) => String(build.branchName || '').trim()),
+    ].filter(Boolean)));
+    return [
+      { label: '全部', value: '' },
+      ...branchNames.sort(compareBranchOptions).map((branch) => ({ label: branch, value: branch })),
+    ];
+  }, [branches, data?.builds]);
+  const filteredBuilds = useMemo(() => {
+    const builds = data?.builds || [];
+    return builds;
+  }, [data?.builds]);
   const publishGateBuildOptions = useMemo(
     () => (data?.builds || [])
       .filter((build) => build.result === 'SUCCESS' && isSameBranch(build.branchName || '', publishBranch))
@@ -3216,21 +3575,176 @@ export default function CICDPage() {
     const items = ['develop', ...getLatestReleaseBranches(branches, 2)];
     return Array.from(new Set(items)).map((branch) => ({ value: branch, label: branch }));
   }, [branches]);
+  const isAdmin = authUtils.isAuthenticated() && authUtils.isAdmin();
+  const registeredAppleDevice = useMemo(() => {
+    const targetUdid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
+    if (!targetUdid) return null;
+    const listedDevice = (appleDeveloperDevices?.devices || []).find((device) => normalizeAppleUdid(device.udid) === targetUdid);
+    if (listedDevice) return listedDevice;
+    if (appleDeviceLookup?.registered && normalizeAppleUdid(appleDeviceLookup.device?.udid) === targetUdid) {
+      return appleDeviceLookup.device || null;
+    }
+    return null;
+  }, [appleDeveloperDevices?.devices, appleDeviceLookup, appleDeviceUdid, appleEnrollmentState?.device?.udid]);
+  const pendingAppleRegistrationRequest = useMemo(() => {
+    const targetUdid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
+    if (!targetUdid) return null;
+    return (appleRegistrationRequests?.requests || []).find((request) => (
+      request.status === 'pending' && normalizeAppleUdid(request.udid) === targetUdid
+    )) || null;
+  }, [appleRegistrationRequests?.requests, appleDeviceUdid, appleEnrollmentState?.device?.udid]);
+
+  useEffect(() => {
+    if (activeSection !== 'devices') return;
+    const targetUdid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
+    if (!targetUdid) return;
+    if (!isValidAppleUdid(targetUdid)) {
+      setAppleRegistrationInlineResult({ type: 'error', message: '设备 Identifier 不合法', description: '请重新生成二维码后再扫码采集。' });
+      showAppleRegistrationNotice(targetUdid, 'error', '设备 Identifier 不合法，请重新扫码采集');
+      return;
+    }
+    if (registeredAppleDevice) {
+      setAppleRegistrationInlineResult({
+        type: 'info',
+        message: '该设备已在 Apple Developer 设备列表中',
+        description: '无需重复提交注册申请。',
+      });
+      showAppleRegistrationNotice(targetUdid, 'info', '该设备已在 Apple Developer 设备列表中，无需重复申请');
+      return;
+    }
+    if (pendingAppleRegistrationRequest) {
+      setAppleRegistrationInlineResult({ type: 'info', message: '该设备已提交注册申请', description: '等待管理员审批。' });
+      showAppleRegistrationNotice(targetUdid, 'info', '该设备已提交注册申请，等待管理员审批');
+      return;
+    }
+    if (appleDeviceLookupLoading || !appleDeviceLookup || appleDeviceRegistering) return;
+    if (appleDeviceLookup.registered) return;
+    if (appleAutoRegistrationUdidRef.current === targetUdid) return;
+    appleAutoRegistrationUdidRef.current = targetUdid;
+    void submitAppleDeviceRegistrationRequest({ silent: true });
+  }, [
+    activeSection,
+    appleDeviceLookup,
+    appleDeviceLookupLoading,
+    appleDeviceRegistering,
+    appleDeviceUdid,
+    appleEnrollmentState?.device?.udid,
+    pendingAppleRegistrationRequest,
+    registeredAppleDevice,
+  ]);
+
+  const filteredAppleDeveloperDevices = useMemo(() => {
+    const devices = appleDeveloperDevices?.devices || [];
+    const keyword = appleDeveloperDeviceKeyword.trim();
+    if (!keyword) return devices;
+    const normalizedKeyword = normalizeAppleUdid(keyword);
+    const lowerKeyword = keyword.toLowerCase();
+    return devices.filter((device) => (
+      normalizeAppleUdid(device.udid).includes(normalizedKeyword)
+      || String(device.name || '').toLowerCase().includes(lowerKeyword)
+      || String(device.model || '').toLowerCase().includes(lowerKeyword)
+      || String(device.deviceClass || '').toLowerCase().includes(lowerKeyword)
+    ));
+  }, [appleDeveloperDevices?.devices, appleDeveloperDeviceKeyword]);
   useEffect(() => {
     if (!releaseBranchModalOpen) return;
     if (!releaseBaseBranchOptions.some((option) => option.value === releaseBranchBase)) {
       setReleaseBranchBase(releaseBaseBranchOptions[0]?.value || 'develop');
     }
   }, [releaseBranchModalOpen, releaseBaseBranchOptions, releaseBranchBase]);
-  const pageTitle = activeSection === 'quality' ? '自动质检' : '发布管理';
+  const pageTitle = activeSection === 'quality' ? '自动质检' : (activeSection === 'devices' ? 'iOS设备注册' : '发布管理');
   const pageDescription = activeSection === 'quality'
     ? '构建包由 Jenkins 产出，质检任务由独立 Jenkins Job 编排，基于打包机 USB 真机覆盖安装、启动、用例、截图和报告采集。'
-    : 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。';
+    : (activeSection === 'devices'
+      ? '通过扫码采集 iPhone Identifier，并注册到 Apple Developer 设备列表，用于开发包或 Ad Hoc 包安装。'
+      : 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。');
   const qualityReportKind = getQualityReportKind(qualityReportBuild);
   const isMonkeyQualityReport = qualityReportKind === 'monkey';
   const isStutterQualityReport = qualityReportKind === 'stutter';
   const qualityReportTitle = getQualityReportTitle(qualityReportBuild);
   const qualityPerformanceButtonLabel = isStutterQualityReport ? '卡顿报告' : '性能报告';
+  const renderAppleRegistrationInlineResult = () => {
+    const udid = appleEnrollmentState?.device?.udid || appleDeviceUdid;
+    const result = appleRegistrationInlineResult
+      || (appleDeviceLookupLoading ? { type: 'info' as const, message: '正在校验设备注册状态...' } : null)
+      || (appleDeviceRegistering ? { type: 'info' as const, message: '正在自动提交注册申请...' } : null);
+    if (!udid || !result) return null;
+    const deviceInfo = [
+      registeredAppleDevice?.name || appleEnrollmentState?.device?.name,
+      registeredAppleDevice?.model || appleEnrollmentState?.device?.product,
+      registeredAppleDevice?.status || appleEnrollmentState?.device?.version,
+    ].filter(Boolean).join(' / ');
+    return (
+      <Alert
+        type={result.type}
+        showIcon
+        message={result.message}
+        description={(
+          <Space direction="vertical" size={4}>
+            <Text code copyable>{udid}</Text>
+            {result.description && <Text type="secondary">{result.description}</Text>}
+            {deviceInfo && <Text type="secondary">{deviceInfo}</Text>}
+          </Space>
+        )}
+        style={{ width: '100%', textAlign: 'left' }}
+      />
+    );
+  };
+  const renderAppleScanCard = (emptyDescription: string) => (
+    <Card title="扫码采集 Identifier">
+      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+        {appleEnrollment?.enrollUrl ? (
+          <Row gutter={[20, 16]} align="top">
+            <Col xs={24} lg={7}>
+              <Space direction="vertical" size={12} style={{ width: '100%', alignItems: 'center' }}>
+                <div style={{ display: 'flex', justifyContent: 'center', padding: 12 }}>
+                  <QRCode value={appleEnrollment.enrollUrl} size={220} />
+                </div>
+                <Button size="small" type="primary" icon={<MobileOutlined />} onClick={createAppleEnrollment} loading={appleEnrollmentLoading}>
+                  重新生成
+                </Button>
+                <Text type="secondary" style={{ width: '100%', textAlign: 'center' }}>
+                  使用 iPhone Safari 扫码打开，设备 Identifier 会自动回传到平台。
+                </Text>
+                {renderAppleRegistrationInlineResult()}
+              </Space>
+            </Col>
+            <Col xs={24} lg={17}>
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                <Image
+                  src={appleDeviceEnrollGuide}
+                  alt="扫码安装 iOS 描述文件操作指引"
+                  preview={{ mask: '查看大图' }}
+                  style={{
+                    width: '100%',
+                    border: '1px solid #eef2f7',
+                    borderRadius: 8,
+                    background: '#f8fbff',
+                  }}
+                />
+                <Alert
+                  type="info"
+                  showIcon
+                  message="手机上这样操作"
+                  description={(
+                    <Space direction="vertical" size={4}>
+                      <Text>用 Safari 打开二维码页面，允许下载描述文件；随后进入 iPhone 设置首页，点击顶部“已下载描述文件”并安装。若没有看到入口，可进入“设置 &gt; 通用 &gt; VPN与设备管理”安装。</Text>
+                      <Text strong style={{ color: '#d93025' }}>若最后提示“描述文件安装失败”，只要平台已采集到 Identifier 就可以忽略。</Text>
+                    </Space>
+                  )}
+                />
+              </Space>
+            </Col>
+          </Row>
+        ) : (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={emptyDescription}
+          />
+        )}
+      </Space>
+    </Card>
+  );
   return (
     <div>
       <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start' }}>
@@ -3258,7 +3772,7 @@ export default function CICDPage() {
               发布
             </Button>
           </Space>
-        ) : (
+        ) : activeSection === 'quality' ? (
           <Space>
             <Button icon={<SettingOutlined />} loading={qualityJobSyncing} onClick={syncQualityJobConfig}>
               同步 Jenkins 配置
@@ -3273,7 +3787,7 @@ export default function CICDPage() {
               开始质检
             </Button>
           </Space>
-        )}
+        ) : null}
       </div>
 
       {activeSection === 'release' ? (
@@ -3312,7 +3826,25 @@ export default function CICDPage() {
               {data?.job.fullName && <Tag color="blue">{data.job.fullName}</Tag>}
               {data?.job.buildable === false && <Tag color="red">不可构建</Tag>}
             </Space>
-            <Space>
+            <Space wrap>
+              <Text type="secondary">分支名</Text>
+              <Select
+                size="small"
+                showSearch
+                allowClear
+                value={filterBranchName}
+                style={{ width: 260 }}
+                options={buildBranchFilterOptions}
+                optionFilterProp="label"
+                listHeight={360}
+                filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(input.trim().toLowerCase())}
+                loading={branchLoading}
+                onChange={(value) => {
+                  const nextBranch = value || '';
+                  setFilterBranchName(nextBranch);
+                  loadBuilds(filterDeployTarget, undefined, nextBranch);
+                }}
+              />
               <Text type="secondary">发布渠道</Text>
               <Select
                 size="small"
@@ -3324,7 +3856,7 @@ export default function CICDPage() {
                 ]}
                 onChange={(value) => {
                   setFilterDeployTarget(value);
-                  loadBuilds(value);
+                  loadBuilds(value, undefined, filterBranchName);
                 }}
               />
             </Space>
@@ -3334,7 +3866,7 @@ export default function CICDPage() {
         <Table<JenkinsBuild>
           rowKey="number"
           loading={loading}
-          dataSource={data?.builds || []}
+          dataSource={filteredBuilds}
           tableLayout="fixed"
           scroll={{ x: 1280 }}
           pagination={{ pageSize: 10, showSizeChanger: false }}
@@ -3386,7 +3918,7 @@ export default function CICDPage() {
               render: (value?: string) => value ? <Tag color="purple">{value}</Tag> : <Text type="secondary">-</Text>,
             },
             {
-              title: '渠道二维码',
+              title: '扫码安装',
               dataIndex: 'channelQrUrl',
               key: 'channelQrUrl',
               width: 110,
@@ -3397,6 +3929,7 @@ export default function CICDPage() {
                     url: value,
                     channel: record.publishChannel,
                     buildNumber: getChannelBuildNumber(record),
+                    branchName: record.branchName,
                   })}
                   style={{
                     width: 64,
@@ -3486,7 +4019,7 @@ export default function CICDPage() {
         />
       </Card>
         </>
-      ) : (
+      ) : activeSection === 'quality' ? (
         <>
                 {qualityError && (
                   <Alert
@@ -3770,7 +4303,315 @@ export default function CICDPage() {
                   />
                 </Card>
         </>
-      )}
+      ) : (
+        <Space direction="vertical" size={16} style={{ width: '100%' }}>
+          {isAdmin ? (
+            <Tabs
+              defaultActiveKey="scan"
+              onChange={(key) => {
+                if (key === 'requests') void loadAppleRegistrationRequests();
+                if (key === 'devices') void loadAppleDeveloperDevices();
+                if (key === 'config') void loadAppleDeviceStatus();
+              }}
+              items={[
+                {
+                  key: 'scan',
+                  label: '扫码采集',
+                  children: (
+          <Row gutter={[16, 16]}>
+            <Col xs={24}>
+              {renderAppleScanCard('点击生成扫码，创建一次设备 Identifier 采集会话')}
+            </Col>
+	          </Row>
+                  ),
+                },
+                {
+                  key: 'requests',
+                  label: (
+                    <Space size={6}>
+                      <span>设备注册申请</span>
+                      <Tag>{(appleRegistrationRequests?.requests || []).filter((request) => request.status === 'pending').length}</Tag>
+                    </Space>
+                  ),
+                  children: (
+          <Card
+            title={(
+              <Space>
+                <span>设备注册申请</span>
+                <Tag>{(appleRegistrationRequests?.requests || []).filter((request) => request.status === 'pending').length} 个待审批</Tag>
+              </Space>
+            )}
+            extra={(
+              <Button icon={<ReloadOutlined />} onClick={loadAppleRegistrationRequests} loading={appleRegistrationRequestsLoading}>
+                刷新申请
+              </Button>
+            )}
+          >
+            <Table<AppleDeviceRegistrationRequest>
+              rowKey="id"
+              loading={appleRegistrationRequestsLoading}
+              dataSource={appleRegistrationRequests?.requests || []}
+              tableLayout="fixed"
+              pagination={{ pageSize: 5, showSizeChanger: false }}
+              columns={[
+                {
+                  title: '设备名称',
+                  dataIndex: 'name',
+                  key: 'name',
+                  width: 180,
+                  ellipsis: true,
+                  render: (value?: string) => value || <Text type="secondary">-</Text>,
+                },
+                {
+                  title: 'Identifier',
+                  dataIndex: 'udid',
+                  key: 'udid',
+                  width: 270,
+                  ellipsis: true,
+                  render: (value?: string) => value ? <Text code copyable title={value}>{value}</Text> : <Text type="secondary">-</Text>,
+                },
+                {
+                  title: '设备信息',
+                  key: 'source',
+                  width: 180,
+                  render: (_, record) => [record.source?.product, record.source?.version].filter(Boolean).join(' / ') || <Text type="secondary">-</Text>,
+                },
+                {
+                  title: '状态',
+                  dataIndex: 'status',
+                  key: 'status',
+                  width: 120,
+                  render: (value: AppleDeviceRegistrationRequest['status']) => (
+                    value === 'pending' ? <Tag color="orange">待审批</Tag> : (value === 'registered' ? <Tag color="green">已注册</Tag> : <Tag>已驳回</Tag>)
+                  ),
+                },
+                {
+                  title: '操作',
+                  key: 'actions',
+                  width: 150,
+                  render: (_, record) => (
+                    record.status === 'pending' ? (
+                      <Button
+                        size="small"
+                        type="primary"
+                        disabled={!isAdmin}
+                        loading={approvingAppleRegistrationRequest === record.id}
+                        onClick={() => approveAppleRegistrationRequest(record.id)}
+                      >
+                        批准并注册
+                      </Button>
+                    ) : (
+                      <Text type="secondary">{record.message || '-'}</Text>
+                    )
+                  ),
+                },
+              ]}
+            />
+          </Card>
+                  ),
+                },
+                {
+                  key: 'devices',
+                  label: 'Apple Developer 设备列表',
+                  children: (
+	          <Card
+	            title={(
+	              <Space>
+	                <span>Apple Developer 设备列表</span>
+	                <Tag color="blue">iPhone</Tag>
+	                <Tag>{appleDeveloperDevices?.total || 0} 台</Tag>
+	                {appleDeveloperDeviceKeyword.trim() && <Tag color="green">匹配 {filteredAppleDeveloperDevices.length} 台</Tag>}
+	              </Space>
+	            )}
+	            extra={(
+	              <Button icon={<ReloadOutlined />} onClick={loadAppleDeveloperDevices} loading={appleDeveloperDevicesLoading}>
+	                刷新列表
+	              </Button>
+		            )}
+		          >
+		            {appleDeveloperDevicesError && (
+		              <Alert
+		                showIcon
+		                type="warning"
+		                message="暂未拉取到 Apple Developer 设备列表"
+		                description={(
+                      <Space direction="vertical" size={4}>
+                        <Text>{appleDeveloperDevicesError}</Text>
+                        <Text type="secondary">
+                          设备列表来自 Apple Developer 的 Certificates, Identifiers &amp; Profiles 设备接口；当前 key 鉴权通过前，列表会保持为空。
+                        </Text>
+                      </Space>
+                    )}
+		                style={{ marginBottom: 12 }}
+		              />
+		            )}
+                <Input.Search
+                  allowClear
+                  value={appleDeveloperDeviceKeyword}
+                  onChange={(event) => setAppleDeveloperDeviceKeyword(event.target.value)}
+                  placeholder="搜索 UDID、设备名称或型号"
+                  style={{ maxWidth: 420, marginBottom: 12 }}
+                />
+		            <Table<AppleDeveloperDevice>
+		              rowKey={(record) => record.id || record.udid}
+		              loading={appleDeveloperDevicesLoading && !appleDeveloperDevicesError}
+	              dataSource={filteredAppleDeveloperDevices}
+	              tableLayout="fixed"
+	              scroll={{ x: 980 }}
+	              pagination={{ pageSize: 10, showSizeChanger: false }}
+	              columns={[
+	                {
+	                  title: '设备名称',
+	                  dataIndex: 'name',
+	                  key: 'name',
+	                  width: 180,
+	                  ellipsis: true,
+	                  render: (value?: string) => value || <Text type="secondary">-</Text>,
+	                },
+	                {
+	                  title: 'Identifier',
+	                  dataIndex: 'udid',
+	                  key: 'udid',
+	                  width: 270,
+	                  ellipsis: true,
+	                  render: (value?: string) => value ? <Text code copyable title={value}>{value}</Text> : <Text type="secondary">-</Text>,
+	                },
+	                {
+	                  title: '类型',
+	                  dataIndex: 'deviceClass',
+	                  key: 'deviceClass',
+	                  width: 120,
+	                  render: (value: string | undefined, record) => value || record.platform || <Text type="secondary">-</Text>,
+	                },
+	                {
+	                  title: '型号',
+	                  dataIndex: 'model',
+	                  key: 'model',
+	                  width: 140,
+	                  ellipsis: true,
+	                  render: (value?: string) => value || <Text type="secondary">-</Text>,
+	                },
+	                {
+	                  title: '状态',
+	                  dataIndex: 'status',
+	                  key: 'status',
+	                  width: 110,
+	                  render: (value?: string) => value ? <Tag color={value === 'ENABLED' ? 'green' : 'default'}>{value}</Tag> : <Text type="secondary">-</Text>,
+	                },
+	                {
+	                  title: '注册时间',
+	                  dataIndex: 'addedDate',
+	                  key: 'addedDate',
+	                  width: 140,
+	                  render: (value?: string) => value || <Text type="secondary">-</Text>,
+	                },
+	              ]}
+	            />
+	          </Card>
+                  ),
+                },
+                {
+                  key: 'config',
+                  label: 'API 配置',
+                  children: (
+                    <Card
+                      title="Apple Developer API 配置"
+                      extra={(
+                        <Space>
+                          <Button onClick={loadAppleDeviceStatus} loading={appleDeviceStatusLoading}>
+                            检查配置
+                          </Button>
+                          <Button type="primary" onClick={saveAppleDeviceConfig} loading={appleConfigSaving}>
+                            保存配置
+                          </Button>
+                        </Space>
+                      )}
+                    >
+                      <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                        <Alert
+                          type={appleDeviceStatus?.configured && !(appleDeviceStatus?.warnings?.length) ? 'success' : 'warning'}
+                          showIcon
+                          message={appleDeviceStatus?.configured ? '配置可用' : '配置不完整'}
+                          description={appleDeviceStatus?.configured
+                            ? '当前 App Store Connect API Key 可用于设备注册、TestFlight 和版本管理相关接口。'
+                            : `缺少：${appleDeviceStatus?.missing?.join('、') || 'APP_STORE_CONNECT_API_KEY_ID、APP_STORE_CONNECT_API_ISSUER_ID、APP_STORE_CONNECT_API_KEY_PATH'}`}
+                        />
+                        <Descriptions bordered size="small" column={1}>
+                          <Descriptions.Item label="Key 文件">
+                            {appleDeviceStatus?.keyFileName ? <Text code>{appleDeviceStatus.keyFileName}</Text> : <Text type="secondary">未配置</Text>}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="文件状态">
+                            {appleDeviceStatus?.keyFileExists ? <Tag color="green">存在</Tag> : <Tag color="red">未找到</Tag>}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="Key 类型">
+                            {appleDeviceStatus?.keyLooksLikeAppStoreConnectKey ? <Tag color="green">AuthKey</Tag> : <Tag color="orange">需确认</Tag>}
+                          </Descriptions.Item>
+                        </Descriptions>
+                        {appleDeviceStatus?.warnings?.map((warning) => (
+                          <Alert key={warning} type="warning" showIcon message={warning} />
+                        ))}
+                        <div>
+                          <Text strong>Key ID</Text>
+                          <Input
+                            value={appleConfigKeyId}
+                            onChange={(event) => setAppleConfigKeyId(event.target.value.trim())}
+                            placeholder="例如 L69RVXCYFU"
+                            style={{ marginTop: 8 }}
+                          />
+                        </div>
+                        <div>
+                          <Text strong>Issuer ID</Text>
+                          <Input
+                            value={appleConfigIssuerId}
+                            onChange={(event) => setAppleConfigIssuerId(event.target.value.trim())}
+                            placeholder="App Store Connect API Issuer ID"
+                            style={{ marginTop: 8 }}
+                          />
+                        </div>
+                        <div>
+                          <Text strong>Key 文件路径</Text>
+                          <Input
+                            value={appleConfigKeyPath}
+                            onChange={(event) => setAppleConfigKeyPath(event.target.value)}
+                            placeholder="/Users/a1/工作/nn-ios-platform-data/secrets/AuthKey_xxx.p8"
+                            style={{ marginTop: 8 }}
+                          />
+                        </div>
+                        <Upload
+                          accept=".p8"
+                          maxCount={1}
+                          beforeUpload={(file) => {
+                            setAppleConfigKeyFile(file);
+                            return false;
+                          }}
+                          onRemove={() => {
+                            setAppleConfigKeyFile(null);
+                          }}
+                          fileList={appleConfigKeyFile ? [{ uid: '-1', name: appleConfigKeyFile.name, status: 'done' as const }] : []}
+                        >
+                          <Button icon={<UploadOutlined />}>选择新的 AuthKey_*.p8</Button>
+                        </Upload>
+                        <Alert
+                          type="info"
+                          showIcon
+                          message="上传后会保存到平台数据目录"
+                          description="选择新的 .p8 文件并保存配置后，后端会将文件保存到 nn-ios-platform-data/secrets，并更新 backend/.env。"
+                        />
+                      </Space>
+                    </Card>
+                  ),
+                },
+              ]}
+            />
+          ) : (
+            <Row gutter={[16, 16]}>
+              <Col xs={24}>
+                {renderAppleScanCard('正在生成设备 Identifier 采集二维码')}
+              </Col>
+            </Row>
+          )}
+	        </Space>
+	      )}
 
       <Modal
         title="拉取新分支"
@@ -4849,11 +5690,10 @@ export default function CICDPage() {
       </Modal>
 
       <Modal
-        title="渠道二维码"
+        title="扫码安装"
         open={!!qrPreview}
         footer={qrPreview ? (
           <Space>
-            <Button onClick={() => setQrPreview(null)}>关闭</Button>
             <Button type="primary" onClick={() => openExternalUrl(qrPreview.url)}>
               打开地址
             </Button>
@@ -4864,11 +5704,13 @@ export default function CICDPage() {
         <Space direction="vertical" align="center" size={16} style={{ width: '100%', padding: '12px 0 16px' }}>
           <Space>
             {qrPreview?.channel && <Tag color="blue">{qrPreview.channel}</Tag>}
+            {qrPreview?.branchName && <Tag color="default">分支 {qrPreview.branchName}</Tag>}
             {qrPreview?.buildNumber && <Tag color="green">渠道构建号 {qrPreview.buildNumber}</Tag>}
           </Space>
           {qrPreview?.url && <QRCode value={normalizeOpenUrl(qrPreview.url)} size={260} />}
         </Space>
       </Modal>
+
     </div>
   );
 }

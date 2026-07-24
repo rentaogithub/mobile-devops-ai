@@ -1578,7 +1578,13 @@ ${sourceLine}
   /**
    * 删除指定组件版本（同时删除 Nexus 文件）
    */
-  async deleteVersion(name: string, version: string, targetBranch?: string): Promise<{ fallbackVersion?: string; warning?: string }> {
+  async checkDeleteVersion(name: string, version: string, targetBranch?: string): Promise<{
+    canDelete: boolean;
+    branch: string;
+    currentVersion: string | null;
+    fallbackVersion?: string;
+    reason?: string;
+  }> {
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
@@ -1586,31 +1592,68 @@ ${sourceLine}
     const isTestPackage = component.package_type === 'test' || (name === 'NNRtc' && isNNRtcTestVersion(version));
     const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
     if (!branch) {
-      throw new Error('nnios 目标分支不能为空');
+      return {
+        canDelete: true,
+        branch: '',
+        currentVersion: null,
+      };
     }
 
     const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
     const currentRef = this.getNniosPodVersion(name, branch);
+    const fallbackVersion = currentRef.version === version ? remainingVersions[0]?.version : undefined;
+    if (currentRef.version === version && !fallbackVersion) {
+      return {
+        canDelete: false,
+        branch: currentRef.branch,
+        currentVersion: currentRef.version,
+        reason: `nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`,
+      };
+    }
+
+    return {
+      canDelete: true,
+      branch: currentRef.branch,
+      currentVersion: currentRef.version,
+      fallbackVersion,
+    };
+  }
+
+  async deleteVersion(name: string, version: string, targetBranch?: string): Promise<{ fallbackVersion?: string; warning?: string }> {
+    const component = await this.getOne(name, version);
+    if (!component) {
+      throw new Error(`组件 ${name}@${version} 不存在`);
+    }
     let fallbackVersion: string | undefined;
 
-    if (currentRef.version === version) {
-      fallbackVersion = remainingVersions[0]?.version;
-      if (!fallbackVersion) {
-        throw new Error(`nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`);
+    if (targetBranch) {
+      const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
+      const currentRef = this.getNniosPodVersion(name, targetBranch);
+
+      if (currentRef.version === version) {
+        fallbackVersion = remainingVersions[0]?.version;
+        if (!fallbackVersion) {
+          throw new Error(`nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`);
+        }
+        logger.info('删除版本前回退 nnios 组件版本', {
+          name,
+          version,
+          targetBranch: currentRef.branch,
+          fallbackVersion,
+        });
+        this.syncVersionToNnios(name, fallbackVersion, currentRef.branch);
+      } else {
+        logger.info('删除版本无需回退 nnios 组件版本', {
+          name,
+          version,
+          targetBranch: currentRef.branch,
+          currentVersion: currentRef.version,
+        });
       }
-      logger.info('删除版本前回退 nnios 组件版本', {
-        name,
-        version,
-        targetBranch: currentRef.branch,
-        fallbackVersion,
-      });
-      this.syncVersionToNnios(name, fallbackVersion, currentRef.branch);
     } else {
-      logger.info('删除版本无需回退 nnios 组件版本', {
+      logger.info('删除版本未指定 nnios 分支，跳过 nnios 引用检查和回退', {
         name,
         version,
-        targetBranch: currentRef.branch,
-        currentVersion: currentRef.version,
       });
     }
 

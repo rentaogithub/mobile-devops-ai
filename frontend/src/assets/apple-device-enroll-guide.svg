@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="540" viewBox="0 0 1200 540" role="img" aria-labelledby="title desc">
+  <title id="title">扫码安装 iOS 描述文件操作指引</title>
+  <desc id="desc">从扫码打开、下载描述文件、设置中安装到回到平台提交申请的四步说明。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#1f2a44" flood-opacity="0.12"/>
+    </filter>
+    <style>
+      .bg { fill: #f6f9ff; }
+      .panel { fill: #ffffff; stroke: #d7e3f8; stroke-width: 1; }
+      .phone { fill: #111827; }
+      .screen { fill: #f8fbff; }
+      .blue { fill: #1677ff; }
+      .green { fill: #35c759; }
+      .muted { fill: #6b7280; }
+      .text { fill: #111827; font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .title { font-size: 28px; font-weight: 700; }
+      .subtitle { font-size: 18px; font-weight: 600; }
+      .caption { font-size: 14px; }
+      .small { font-size: 12px; }
+      .danger { fill: #d93025; font-weight: 700; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1200" height="540" rx="28"/>
+  <text x="48" y="58" class="text title">扫码采集 Identifier 操作指引</text>
+  <text x="48" y="88" class="text caption muted">请使用 iPhone Safari 扫码，并按 iOS 提示完成描述文件安装。</text>
+
+  <g transform="translate(48 124)">
+    <rect class="panel" width="252" height="340" rx="18" filter="url(#shadow)"/>
+    <circle class="blue" cx="34" cy="34" r="18"/>
+    <text x="29" y="41" class="text subtitle" fill="#fff">1</text>
+    <text x="64" y="42" class="text subtitle">扫码打开</text>
+    <g transform="translate(78 82)">
+      <rect class="phone" width="96" height="184" rx="18"/>
+      <rect class="screen" x="8" y="16" width="80" height="144" rx="8"/>
+      <rect class="blue" x="22" y="30" width="52" height="12" rx="6"/>
+      <g transform="translate(24 58)" fill="#111827">
+        <rect x="0" y="0" width="12" height="12"/>
+        <rect x="20" y="0" width="8" height="8"/>
+        <rect x="38" y="0" width="14" height="14"/>
+        <rect x="0" y="22" width="8" height="8"/>
+        <rect x="18" y="20" width="14" height="14"/>
+        <rect x="40" y="24" width="8" height="8"/>
+        <rect x="0" y="42" width="14" height="14"/>
+        <rect x="24" y="42" width="8" height="8"/>
+        <rect x="40" y="42" width="12" height="12"/>
+      </g>
+      <circle cx="48" cy="172" r="5" fill="#374151"/>
+    </g>
+    <text x="42" y="300" class="text caption muted">打开相机或 Safari 扫码</text>
+  </g>
+
+  <g transform="translate(330 124)">
+    <rect class="panel" width="252" height="340" rx="18" filter="url(#shadow)"/>
+    <circle class="blue" cx="34" cy="34" r="18"/>
+    <text x="29" y="41" class="text subtitle" fill="#fff">2</text>
+    <text x="64" y="42" class="text subtitle">下载描述文件</text>
+    <g transform="translate(78 82)">
+      <rect class="phone" width="96" height="184" rx="18"/>
+      <rect class="screen" x="8" y="16" width="80" height="144" rx="8"/>
+      <rect x="20" y="34" width="56" height="20" rx="6" fill="#e7f0ff"/>
+      <path d="M48 66 v42 m0 0 l-17 -17 m17 17 l17 -17" stroke="#1677ff" stroke-width="7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect class="blue" x="22" y="128" width="52" height="18" rx="9"/>
+      <circle cx="48" cy="172" r="5" fill="#374151"/>
+    </g>
+    <text x="40" y="300" class="text caption muted">允许下载配置描述文件</text>
+  </g>
+
+  <g transform="translate(612 124)">
+    <rect class="panel" width="252" height="340" rx="18" filter="url(#shadow)"/>
+    <circle class="blue" cx="34" cy="34" r="18"/>
+    <text x="29" y="41" class="text subtitle" fill="#fff">3</text>
+    <text x="64" y="42" class="text subtitle">设置里点入口</text>
+    <g transform="translate(78 82)">
+      <rect class="phone" width="96" height="184" rx="18"/>
+      <rect class="screen" x="8" y="16" width="80" height="144" rx="8"/>
+      <rect x="18" y="28" width="60" height="18" rx="9" fill="#1677ff"/>
+      <text x="25" y="41" class="text small" fill="#fff">已下载</text>
+      <path d="M78 37 l12 0" stroke="#1677ff" stroke-width="4" stroke-linecap="round"/>
+      <path d="M88 37 l-7 -6 m7 6 l-7 6" stroke="#1677ff" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="18" y="58" width="60" height="10" rx="5" fill="#e5e7eb"/>
+      <rect x="18" y="78" width="60" height="10" rx="5" fill="#e5e7eb"/>
+      <rect x="18" y="104" width="60" height="22" rx="11" fill="#35c759"/>
+      <text x="36" y="120" class="text small" fill="#fff">安装</text>
+      <circle cx="48" cy="172" r="5" fill="#374151"/>
+    </g>
+    <text x="22" y="292" class="text caption muted">设置首页顶部点“已下载描述文件”</text>
+    <text x="38" y="316" class="text small muted">找不到时：通用 &gt; VPN与设备管理</text>
+  </g>
+
+  <g transform="translate(894 124)">
+    <rect class="panel" width="252" height="340" rx="18" filter="url(#shadow)"/>
+    <circle class="blue" cx="34" cy="34" r="18"/>
+    <text x="29" y="41" class="text subtitle" fill="#fff">4</text>
+    <text x="64" y="42" class="text subtitle">回到平台提交申请</text>
+    <g transform="translate(50 94)">
+      <rect x="0" y="0" width="152" height="128" rx="14" fill="#f8fbff" stroke="#d7e3f8"/>
+      <rect x="18" y="20" width="116" height="14" rx="7" fill="#dbeafe"/>
+      <rect x="18" y="48" width="92" height="10" rx="5" fill="#e5e7eb"/>
+      <rect x="18" y="70" width="116" height="10" rx="5" fill="#e5e7eb"/>
+      <rect class="green" x="18" y="96" width="116" height="22" rx="11"/>
+      <text x="36" y="112" class="text small" fill="#fff">提交注册申请</text>
+    </g>
+    <text x="44" y="300" class="text caption muted">等待管理员审批注册</text>
+  </g>
+
+  <g transform="translate(48 488)">
+    <rect x="0" y="-24" width="1104" height="36" rx="18" fill="#eaf4ff"/>
+    <text x="22" y="0" class="text caption muted">提示：</text>
+    <text x="64" y="0" class="text caption danger">若出现“描述文件安装失败”，平台已采集到 Identifier 后可忽略；</text>
+    <text x="562" y="0" class="text caption muted">注册仍需管理员审批。</text>
+  </g>
+</svg>

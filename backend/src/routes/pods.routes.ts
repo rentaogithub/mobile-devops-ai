@@ -935,6 +935,20 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
  * DELETE /api/pods/:name/:version
  * 删除指定组件版本（需要管理员权限）
  */
+router.get('/:name/:version/delete-check', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const targetBranch = req.query.target_branch ? requireTargetBranch(req.query.target_branch) : undefined;
+    const result = await podService.checkDeleteVersion(req.params.name, req.params.version, targetBranch);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    logger.error('检查组件版本删除风险失败', { error: error.message });
+    res.status(error.statusCode || (error.message.includes('不存在') ? 404 : 500)).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = req.query.target_branch ? requireTargetBranch(req.query.target_branch) : undefined;

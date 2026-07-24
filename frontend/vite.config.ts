@@ -63,6 +63,9 @@ export default defineConfig(async () => {
       host: '0.0.0.0', // 监听所有网络接口
       port: 5173,
       strictPort: true, // 强制使用 5173 端口，如果被占用则报错
+      watch: {
+        ignored: ['**/dist/**', '**/coverage/**', '**/.cache/**'],
+      },
       proxy: {
         '^/api(?=/|$)': {
           target: backendTarget,
