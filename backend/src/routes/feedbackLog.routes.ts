@@ -10,6 +10,7 @@ import { URL } from 'url';
 import { buildOpCookieHeader } from '../services/OpCookieJar';
 import logger from '../utils/logger';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
+import { apiRequestSampleService } from '../services/ApiRequestSampleService';
 
 const router = Router();
 const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
@@ -282,6 +283,10 @@ router.post('/read', async (req: Request, res: Response) => {
     const filePath = await assertSafePreviewPath(rawPath);
     const content = await fsPromises.readFile(filePath, 'utf8');
     const rows = parseFeedbackLogContent(content);
+    const apiRequestSampleCount = apiRequestSampleService.ingestLogLines(rows.map((row) => row.content), {
+      source: 'feedback_log',
+      sourceRef: filePath,
+    });
     const workflowSync = workflowIntegrationService.syncFeedbackLog(rows, {
       ...(req.body?.context || {}),
       path: filePath,
@@ -294,6 +299,7 @@ router.post('/read', async (req: Request, res: Response) => {
       data: {
         path: filePath,
         rows,
+        apiRequestSampleCount,
         workflowSync: workflowSync ? { artifactId: workflowSync.artifactId, issueCount: workflowSync.issueCount } : undefined,
       },
     });

@@ -3,15 +3,28 @@ import fs from 'fs';
 import path from 'path';
 import { adminMiddleware } from '../middleware/auth';
 import { getDatabase } from '../database';
+import { apiRequestSampleService } from '../services/ApiRequestSampleService';
+import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
 
 const router = Router();
 const sourceBase = 'https://test1-doc.nn.com';
 const sources: Record<string, string> = {
+  'open-api': '/openApi/v2/api-docs?group=' + encodeURIComponent('NN第三方API接口接入'),
+  'nn-assist-frontend': '/nn-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心前端接口'),
+  'nn-assist-client': '/nn-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心客户端接口'),
+  'u-nnpc': '/u-nnpc/v2/api-docs?group=' + encodeURIComponent('PC接入层'),
   'user-query': '/user-query/v2/api-docs?group=' + encodeURIComponent('用户查询服务'),
   'u-mobile': '/u-mobile/v2/api-docs?group=' + encodeURIComponent('移动端接入层'),
+  'u-miniapp': '/u-miniapp/v2/api-docs?group=' + encodeURIComponent('NN小程序接入层'),
   'nchannel': '/nchannel/v2/api-docs?group=' + encodeURIComponent('社区频道接口文档'),
+  'activity': '/activity/v2/api-docs?group=' + encodeURIComponent('活动中心-C端'),
+  'speed-platform': '/speed-platform/v2/api-docs?group=' + encodeURIComponent('武汉用户加速器接入'),
   'wan-app': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：app接口'),
+  'wan-client': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：客户端接口'),
+  'wan-short-link': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：短链接口'),
   'nn-risk-v1': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:V1'),
+  'nn-risk-admin': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:管理后台'),
+  'nn-risk-activity': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:活动风控'),
   'operation-server': '/ncoperation/v2/api-docs?group=' + encodeURIComponent('operationServer'),
   'im-friend': '/im-friend/v2/api-docs?group=' + encodeURIComponent('雷神IM好友服务客户端接口'),
   'im-user': '/im-user/v2/api-docs?group=' + encodeURIComponent('雷神IM用户客户端接口'),
@@ -19,9 +32,14 @@ const sources: Record<string, string> = {
   'wan-v1': '/wan/v2/api-docs?group=' + encodeURIComponent('v1-NN陪玩接口'),
   'wan-v2': '/wan/v2/api-docs?group=' + encodeURIComponent('v2-NN陪玩接口'),
   'wan-v3': '/wan/v2/api-docs?group=' + encodeURIComponent('v3-NN陪玩接口'),
+  'wan-taobao': '/wan/v2/api-docs?group=' + encodeURIComponent('淘宝相关接口'),
+  'short-link-api': '/short-link-business/v2/api-docs?group=' + encodeURIComponent('NN短链服务:API'),
   'leigod-rtc': '/leigod-rtc/v2/api-docs?group=' + encodeURIComponent('雷神rtc客户端接口'),
   'privilege': '/privilege/v2/api-docs?group=' + encodeURIComponent('雷神用户权益客户端接口'),
+  'leigod-market-nn': '/leigod-market-nn/v2/api-docs?group=' + encodeURIComponent('雷神营销渠道服务(NN)客户端接口'),
   'nn-game': '/nn-game/v2/api-docs?group=' + encodeURIComponent('雷神赛事客户端接口'),
+  'cmp-bff': '/cmp-bff/v2/api-docs?group=' + encodeURIComponent('渠道中台bff客户端接口'),
+  'gamehub': '/gamehub/v2/api-docs?group=' + encodeURIComponent('GameHub客户端接口'),
   'union-server': '/nn-union/v2/api-docs?group=' + encodeURIComponent('unionServer'),
   'nn-status': '/nn-status/v2/api-docs?group=' + encodeURIComponent('NN状态服务'),
   'nn-version': '/nn-version/v2/api-docs?group=' + encodeURIComponent('NN版本服务'),
@@ -29,6 +47,7 @@ const sources: Record<string, string> = {
 };
 const cache = new Map<string, { expiresAt: number; data: unknown }>();
 const cacheDirectory = path.resolve(__dirname, '../../../nn-ios-platform-data/api-docs-cache');
+const previousCacheDirectory = path.join(cacheDirectory, 'previous');
 const requestEnvironments: Record<string, string> = {
   release: 'https://opapi.nnraytheon.com',
   test: 'https://test-opapi.nn.com',
@@ -46,6 +65,7 @@ const publicHeaders = {
   reqChannel: '1',
   registerCanal: 'App Store',
 };
+const invalidTokenRetCodes = new Set(['300002', 'auth_10003', 'auth_40001', 'auth_40002']);
 
 function ensureApiDocRecordsTable(): void {
   getDatabase().prepare(`
@@ -95,6 +115,36 @@ router.post('/records/view', (req, res) => {
   res.json({ success: true });
 });
 
+router.get('/request-samples', (req, res) => {
+  const service = String(req.query.service || '');
+  const method = String(req.query.method || '').toUpperCase();
+  const apiPath = String(req.query.path || '');
+  if (!sources[service] || !method || !apiPath) {
+    res.status(400).json({ message: '请求样本查询参数无效' });
+    return;
+  }
+  browserLogWebSocketService.replayRecentLogsToApiSamples();
+  const data = apiRequestSampleService.listSamples({
+    service,
+    method,
+    path: apiPath,
+    environment: String(req.query.environment || ''),
+    limit: Number(req.query.limit || 20),
+  });
+  res.json({ data });
+});
+
+router.get('/request-token', (req, res) => {
+  const environment = String(req.query.environment || '');
+  if (!requestEnvironments[environment]) {
+    res.status(400).json({ message: '请求环境无效' });
+    return;
+  }
+  browserLogWebSocketService.replayRecentLogsToApiSamples();
+  const data = apiRequestSampleService.latestToken(environment);
+  res.json({ data: data || null });
+});
+
 function normalizeApiSearchText(value: string): string {
   return value
     .trim()
@@ -136,6 +186,10 @@ function cacheFile(service: string): string {
   return path.join(cacheDirectory, `${service}.json`);
 }
 
+function previousCacheFile(service: string): string {
+  return path.join(previousCacheDirectory, `${service}.json`);
+}
+
 function readCachedDocument(service: string): { expiresAt: number; data: unknown } | undefined {
   const memory = cache.get(service);
   if (memory) return memory;
@@ -152,8 +206,103 @@ function readCachedDocument(service: string): { expiresAt: number; data: unknown
 
 function writeCachedDocument(service: string, data: unknown): void {
   fs.mkdirSync(cacheDirectory, { recursive: true });
-  fs.writeFileSync(cacheFile(service), JSON.stringify(data));
+  fs.mkdirSync(previousCacheDirectory, { recursive: true });
+  const filePath = cacheFile(service);
+  if (fs.existsSync(filePath)) {
+    try {
+      const previousData = fs.readFileSync(filePath, 'utf8');
+      const nextData = JSON.stringify(data);
+      if (previousData && previousData !== nextData) {
+        fs.writeFileSync(previousCacheFile(service), previousData);
+      }
+    } catch {
+      // 历史快照失败不影响当前文档写入。
+    }
+  }
+  fs.writeFileSync(filePath, JSON.stringify(data));
   cache.set(service, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
+}
+
+type ApiDocOperation = { summary?: string; operationId?: string; tags?: string[]; parameters?: unknown[]; responses?: unknown };
+type ApiDocForCompare = { basePath?: string; paths?: Record<string, Record<string, ApiDocOperation>>; xFallbackDocument?: boolean };
+type ApiChangeItem = {
+  key: string;
+  method: string;
+  path: string;
+  fullPath: string;
+  summary: string;
+  tag: string;
+  changes?: string[];
+};
+
+function operationSignature(operation: ApiDocOperation): string {
+  return JSON.stringify({
+    summary: operation.summary || '',
+    operationId: operation.operationId || '',
+    tags: operation.tags || [],
+    parameters: operation.parameters || [],
+    responses: operation.responses || {},
+  });
+}
+
+function flattenOperations(document: ApiDocForCompare): Map<string, ApiChangeItem & { signature: string }> {
+  const operations = new Map<string, ApiChangeItem & { signature: string }>();
+  Object.entries(document.paths || {}).forEach(([apiPath, methods]) => {
+    Object.entries(methods || {}).forEach(([method, operation]) => {
+      const normalizedMethod = method.toUpperCase();
+      const fullPath = joinApiPath(document.basePath || '', apiPath);
+      operations.set(`${normalizedMethod} ${fullPath}`, {
+        key: `${normalizedMethod} ${fullPath}`,
+        method: normalizedMethod,
+        path: apiPath,
+        fullPath,
+        summary: operation.summary || '',
+        tag: operation.tags?.[0] || '其他',
+        signature: operationSignature(operation),
+      });
+    });
+  });
+  return operations;
+}
+
+function changedFields(before: ApiDocOperation | undefined, after: ApiDocOperation | undefined): string[] {
+  if (!before || !after) return [];
+  const checks: Array<[string, unknown, unknown]> = [
+    ['接口名称', before.summary || '', after.summary || ''],
+    ['Operation ID', before.operationId || '', after.operationId || ''],
+    ['接口分组', before.tags || [], after.tags || []],
+    ['请求参数', before.parameters || [], after.parameters || []],
+    ['响应结构', before.responses || {}, after.responses || {}],
+  ];
+  return checks.flatMap(([label, left, right]) => JSON.stringify(left) === JSON.stringify(right) ? [] : [label]);
+}
+
+function findOperation(document: ApiDocForCompare, item: ApiChangeItem): ApiDocOperation | undefined {
+  return document.paths?.[item.path]?.[item.method.toLowerCase()];
+}
+
+function compareDocuments(previous: ApiDocForCompare, current: ApiDocForCompare) {
+  const before = flattenOperations(previous);
+  const after = flattenOperations(current);
+  const added: ApiChangeItem[] = [];
+  const removed: ApiChangeItem[] = [];
+  const changed: ApiChangeItem[] = [];
+
+  after.forEach((item, key) => {
+    const oldItem = before.get(key);
+    if (!oldItem) {
+      added.push(item);
+      return;
+    }
+    if (oldItem.signature !== item.signature) {
+      changed.push({ ...item, changes: changedFields(findOperation(previous, item), findOperation(current, item)) });
+    }
+  });
+  before.forEach((item, key) => {
+    if (!after.has(key)) removed.push(item);
+  });
+
+  return { added, removed, changed };
 }
 
 function fallbackDocument(
@@ -251,12 +400,61 @@ function simpleOperation(summary: string, operationId: string, tag: string, resp
   };
 }
 
-function readSearchDocument(service: string): unknown | undefined {
+function sourceSearchHints(service: string): string[] {
+  const source = sources[service];
+  if (!source) return [service];
+  const url = new URL(source, sourceBase);
+  const group = url.searchParams.get('group') || '';
+  const basePath = `/${url.pathname.split('/').filter(Boolean)[0] || ''}`;
+  return [service, basePath, group].filter(Boolean);
+}
+
+function shouldFetchMissingSearchDocument(service: string, keyword: string): boolean {
+  const normalizedKeyword = normalizeApiSearchText(keyword);
+  return sourceSearchHints(service).some((hint) => {
+    const normalizedHint = normalizeApiSearchText(hint);
+    return normalizedHint.length >= 2 && (normalizedKeyword.includes(normalizedHint) || normalizedHint.includes(normalizedKeyword));
+  });
+}
+
+function responseRetCode(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const record = data as Record<string, unknown>;
+  const direct = record.retCode ?? record.code;
+  if (direct !== undefined && direct !== null) return String(direct);
+  const retData = record.retData;
+  if (retData && typeof retData === 'object') {
+    const nested = (retData as Record<string, unknown>).retCode ?? (retData as Record<string, unknown>).code;
+    if (nested !== undefined && nested !== null) return String(nested);
+  }
+  return '';
+}
+
+function responseRetMessage(data: unknown): string {
+  if (!data || typeof data !== 'object') return '';
+  const record = data as Record<string, unknown>;
+  const direct = record.retMsg ?? record.message ?? record.msg;
+  return direct !== undefined && direct !== null ? String(direct) : '';
+}
+
+function isInvalidTokenResponse(status: number, data: unknown): boolean {
+  if (status === 401 || status === 403) return true;
+  return invalidTokenRetCodes.has(responseRetCode(data));
+}
+
+async function readSearchDocument(service: string, keyword: string): Promise<unknown | undefined> {
   const cached = readCachedDocument(service);
   if (cached) return cached.data;
   try {
     return JSON.parse(fs.readFileSync(cacheFile(service), 'utf8'));
   } catch {
+    if (shouldFetchMissingSearchDocument(service, keyword)) {
+      try {
+        return await fetchDocument(service);
+      } catch {
+        // 单个服务拉取失败不影响全局搜索。
+      }
+    }
     if (service === 'nn-version' || service === 'im-user') {
       return withFallbackDocument(service, {});
     }
@@ -264,7 +462,9 @@ function readSearchDocument(service: string): unknown | undefined {
   }
 }
 
-async function fetchDocument(service: string): Promise<unknown> {
+async function fetchDocument(service: string, options: { fallbackOnError?: boolean; writeCache?: boolean } = {}): Promise<unknown> {
+  const fallbackOnError = options.fallbackOnError ?? true;
+  const shouldWriteCache = options.writeCache ?? true;
   const source = sources[service];
   if (!source) throw new Error('API 文档服务不存在');
   let lastError: Error | undefined;
@@ -277,16 +477,16 @@ async function fetchDocument(service: string): Promise<unknown> {
         throw new Error(`HTTP ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ''}`);
       }
       const data = withFallbackDocument(service, await response.json());
-      writeCachedDocument(service, data);
+      if (shouldWriteCache) writeCachedDocument(service, data);
       return data;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('未知错误');
-      if (service === 'nn-version' || service === 'im-user') {
-        const fallback = withFallbackDocument(service, {});
-        writeCachedDocument(service, fallback);
-        return fallback;
-      }
     }
+  }
+  if (fallbackOnError && (service === 'nn-version' || service === 'im-user')) {
+    const fallback = withFallbackDocument(service, {});
+    if (shouldWriteCache) writeCachedDocument(service, fallback);
+    return fallback;
   }
   throw lastError || new Error('获取上游文档失败');
 }
@@ -299,21 +499,22 @@ router.get('/search/all', async (req, res) => {
       return;
     }
 
-    const documents = Object.keys(sources).map((service) => {
-      const data = readSearchDocument(service);
+    const documents = await Promise.all(Object.keys(sources).map(async (service) => {
+      const data = await readSearchDocument(service, keyword);
       return data
         ? { status: 'fulfilled' as const, value: { service, data: data as { host?: string; basePath?: string; xFallbackDocument?: boolean; paths?: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[] }>> } } }
         : { status: 'rejected' as const };
-    });
+    }));
     const basePaths = documents.flatMap((result) => result.status === 'fulfilled' && result.value.data.basePath ? [result.value.data.basePath] : []);
     const tokens = makeSearchTokens(keyword, basePaths);
 
     const results = documents.flatMap((result) => {
       if (result.status !== 'fulfilled') return [];
       const { service, data } = result.value;
+      const serviceText = sourceSearchHints(service).join(' ');
       return Object.entries(data.paths || {}).flatMap(([path, methods]) => Object.entries(methods).flatMap(([method, operation]) => {
         const fullPath = joinApiPath(data.basePath || '', path);
-        const text = normalizeApiSearchText(`${fullPath} ${path} ${operation.summary || ''} ${operation.operationId || ''} ${(operation.tags || []).join(' ')}`);
+        const text = normalizeApiSearchText(`${serviceText} ${fullPath} ${path} ${operation.summary || ''} ${operation.operationId || ''} ${(operation.tags || []).join(' ')}`);
         if (!tokens.every((token) => matchSearchToken(text, token))) return [];
         return [{
           service,
@@ -368,7 +569,7 @@ router.post('/request/:service', async (req, res) => {
 
   try {
     const cached = readCachedDocument(req.params.service);
-    const document = (cached && cached.expiresAt > Date.now() ? cached.data : await fetchDocument(req.params.service)) as {
+    const document = (cached && cached.expiresAt > Date.now() ? cached.data : await fetchDocument(req.params.service, { fallbackOnError: !cached })) as {
       basePath?: string;
       paths?: Record<string, Record<string, unknown>>;
     };
@@ -387,7 +588,7 @@ router.post('/request/:service', async (req, res) => {
       return;
     }
 
-    const url = new URL(`${origin}${document.basePath || ''}${resolvedPath}`);
+    const url = new URL(`${origin}${joinApiPath(document.basePath || '', resolvedPath)}`);
     for (const [name, value] of Object.entries(query as Record<string, unknown>)) {
       if (value !== undefined && value !== null && value !== '') url.searchParams.set(name, String(value));
     }
@@ -408,6 +609,13 @@ router.post('/request/:service', async (req, res) => {
     const responseText = await response.text();
     let responseData: unknown = responseText;
     try { responseData = responseText ? JSON.parse(responseText) : null; } catch { /* 保留文本响应 */ }
+    const tokenInvalid = isInvalidTokenResponse(response.status, responseData);
+    const tokenInvalidReason = tokenInvalid
+      ? responseRetMessage(responseData) || responseRetCode(responseData) || `HTTP ${response.status}`
+      : '';
+    if (tokenInvalid) {
+      apiRequestSampleService.markTokenInvalid(String(environment), String(token), tokenInvalidReason);
+    }
     res.json({
       status: response.status,
       statusText: response.statusText,
@@ -415,6 +623,8 @@ router.post('/request/:service', async (req, res) => {
       url: url.toString(),
       requestHeaders,
       data: responseData,
+      tokenInvalid,
+      tokenInvalidReason,
     });
   } catch (error) {
     res.status(502).json({ message: `真实请求失败: ${error instanceof Error ? error.message : '未知错误'}` });
@@ -434,6 +644,72 @@ router.post('/:service/sync', adminMiddleware, async (req, res) => {
   }
 });
 
+router.get('/:service/diff', async (req, res) => {
+  if (!sources[req.params.service]) {
+    res.status(404).json({ message: 'API 文档服务不存在' });
+    return;
+  }
+
+  try {
+    const cached = readCachedDocument(req.params.service);
+    const current = (cached?.data || await fetchDocument(req.params.service)) as ApiDocForCompare;
+    if (cached) {
+      try {
+        const latest = await fetchDocument(req.params.service, { fallbackOnError: false, writeCache: false }) as ApiDocForCompare;
+        const diff = compareDocuments(current, latest);
+        res.json({
+          service: req.params.service,
+          hasBaseline: true,
+          mode: 'cached-vs-latest',
+          currentFallback: !!latest.xFallbackDocument,
+          previousFallback: !!current.xFallbackDocument,
+          summary: {
+            added: diff.added.length,
+            removed: diff.removed.length,
+            changed: diff.changed.length,
+          },
+          ...diff,
+        });
+        return;
+      } catch {
+        // 上游异常时回退到缓存快照对比。
+      }
+    }
+
+    const previousPath = previousCacheFile(req.params.service);
+    if (!fs.existsSync(previousPath)) {
+      res.json({
+        service: req.params.service,
+        hasBaseline: false,
+        message: '暂无上一版 API 文档快照，请先同步一次后再对比',
+        summary: { added: 0, removed: 0, changed: 0 },
+        added: [],
+        removed: [],
+        changed: [],
+      });
+      return;
+    }
+
+    const previous = JSON.parse(fs.readFileSync(previousPath, 'utf8')) as ApiDocForCompare;
+    const diff = compareDocuments(previous, current);
+    res.json({
+      service: req.params.service,
+      hasBaseline: true,
+      mode: 'previous-vs-current',
+      currentFallback: !!current.xFallbackDocument,
+      previousFallback: !!previous.xFallbackDocument,
+      summary: {
+        added: diff.added.length,
+        removed: diff.removed.length,
+        changed: diff.changed.length,
+      },
+      ...diff,
+    });
+  } catch (error) {
+    res.status(502).json({ message: `接口变更对比失败: ${error instanceof Error ? error.message : '未知错误'}` });
+  }
+});
+
 router.get('/:service', async (req, res) => {
   const source = sources[req.params.service];
   if (!source) {
@@ -448,7 +724,7 @@ router.get('/:service', async (req, res) => {
   }
 
   try {
-    const data = await fetchDocument(req.params.service);
+    const data = await fetchDocument(req.params.service, { fallbackOnError: !cached });
     res.json(data);
   } catch (error) {
     if (cached) {

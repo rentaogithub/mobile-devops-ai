@@ -1,4 +1,4 @@
-import { ApiOutlined, CodeOutlined, HistoryOutlined, LinkOutlined, PlayCircleOutlined, SearchOutlined, SettingOutlined, ShareAltOutlined, SyncOutlined } from '@ant-design/icons';
+import { ApiOutlined, CodeOutlined, DiffOutlined, HistoryOutlined, LinkOutlined, PlayCircleOutlined, SearchOutlined, ShareAltOutlined, SyncOutlined } from '@ant-design/icons';
 import { Alert, AutoComplete, Button, Card, Empty, Input, InputNumber, Menu, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import axios from 'axios';
 import { useEffect, useMemo, useState } from 'react';
@@ -12,6 +12,9 @@ type Schema = {
   format?: string;
   description?: string;
   title?: string;
+  example?: unknown;
+  default?: unknown;
+  enum?: unknown[];
   originalRef?: string;
   $ref?: string;
   items?: Schema;
@@ -24,18 +27,65 @@ type SwaggerDoc = { swagger: string; host?: string; basePath?: string; info?: { 
 type ApiItem = Operation & { path: string; method: string; tag: string };
 type GlobalSearchItem = { service: keyof typeof services; basePath: string; path: string; method: string; summary: string; operationId: string; tag: string; fallbackDocument?: boolean };
 type RequestConfig = { headers: Record<string, unknown>; query: Record<string, unknown>; pathParams: Record<string, unknown>; body?: unknown };
-type RequestResult = { status: number; statusText: string; duration: number; url: string; requestHeaders: Record<string, string>; data: unknown };
+type RequestResult = { status: number; statusText: string; duration: number; url: string; requestHeaders: Record<string, string>; data: unknown; tokenInvalid?: boolean; tokenInvalidReason?: string };
+type ApiRequestSample = {
+  id: string;
+  source: 'realtime_log' | 'feedback_log';
+  sourceRef: string;
+  service: keyof typeof services;
+  method: string;
+  path: string;
+  fullPath: string;
+  environment: RequestEnvironment | 'unknown';
+  headers: Record<string, unknown>;
+  query: Record<string, unknown>;
+  pathParams: Record<string, unknown>;
+  body?: unknown;
+  token?: string;
+  response?: unknown;
+  retCode: string;
+  retMsg: string;
+  costMs?: number;
+  nntid: string;
+  createdAt: string;
+  requestTime: string;
+};
+type ApiEnvironmentTokenSample = { token: string; environment: RequestEnvironment; createdAt: string; source: 'realtime_log' | 'feedback_log'; sourceRef: string };
 type RequestEnvironment = 'release' | 'test' | 'test1';
 type EnvironmentTokens = Record<RequestEnvironment, string>;
 type ResponseCodeSummary = { code: string; descriptions: string[]; interfaces: { method: string; path: string; summary: string }[] };
 type ApiViewRecord = { service: keyof typeof services; method: string; path: string; summary: string; tag: string; viewCount: number; lastViewedAt: string };
+type ApiChangeItem = { key: string; method: string; path: string; fullPath: string; summary: string; tag: string; changes?: string[] };
+type ApiDocDiff = {
+  service: keyof typeof services;
+  hasBaseline: boolean;
+  mode?: 'cached-vs-latest' | 'previous-vs-current';
+  message?: string;
+  currentFallback?: boolean;
+  previousFallback?: boolean;
+  summary: { added: number; removed: number; changed: number };
+  added: ApiChangeItem[];
+  removed: ApiChangeItem[];
+  changed: ApiChangeItem[];
+};
 
 const services = {
+  'open-api': { name: 'NN第三方API接口接入', source: 'https://test1-doc.nn.com/doc.html#/NN第三方API接口接入' },
+  'nn-assist-frontend': { name: '帮助中心前端接口', source: 'https://test1-doc.nn.com/doc.html#/帮助中心前端接口' },
+  'nn-assist-client': { name: '帮助中心客户端接口', source: 'https://test1-doc.nn.com/doc.html#/帮助中心客户端接口' },
+  'u-nnpc': { name: 'PC接入层', source: 'https://test1-doc.nn.com/doc.html#/PC接入层' },
   'user-query': { name: '用户查询服务', source: 'https://test1-doc.nn.com/doc.html#/用户查询服务' },
   'u-mobile': { name: '移动端接入层', source: 'https://test1-doc.nn.com/doc.html#/移动端接入层' },
+  'u-miniapp': { name: 'NN小程序接入层', source: 'https://test1-doc.nn.com/doc.html#/NN小程序接入层' },
   'nchannel': { name: '社区频道接口文档', source: 'https://test1-doc.nn.com/doc.html#/社区频道接口文档' },
+  'activity': { name: '活动中心-C端', source: 'https://test1-doc.nn.com/doc.html#/活动中心-C端' },
+  'speed-platform': { name: '武汉用户加速器接入', source: 'https://test1-doc.nn.com/doc.html#/武汉用户加速器接入' },
   'wan-app': { name: 'NN陪玩：app接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：app接口' },
+  'wan-client': { name: 'NN陪玩：客户端接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：客户端接口' },
+  'wan-short-link': { name: 'NN陪玩：短链接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：短链接口' },
   'nn-risk-v1': { name: 'NN风控审核服务:V1', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:V1' },
+  'nn-risk-admin': { name: 'NN风控审核服务:管理后台', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:管理后台' },
+  'nn-risk-activity': { name: 'NN风控审核服务:活动风控', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:活动风控' },
   'operation-server': { name: 'operationServer', source: 'https://test1-doc.nn.com/doc.html#/operationServer' },
   'im-friend': { name: '雷神IM好友服务客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM好友服务客户端接口' },
   'im-user': { name: '雷神IM用户客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM用户客户端接口' },
@@ -43,9 +93,14 @@ const services = {
   'wan-v1': { name: 'v1-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v1-NN陪玩接口' },
   'wan-v2': { name: 'v2-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v2-NN陪玩接口' },
   'wan-v3': { name: 'v3-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v3-NN陪玩接口' },
+  'wan-taobao': { name: '淘宝相关接口', source: 'https://test1-doc.nn.com/doc.html#/淘宝相关接口' },
+  'short-link-api': { name: 'NN短链服务:API', source: 'https://test1-doc.nn.com/doc.html#/NN短链服务:API' },
   'leigod-rtc': { name: '雷神rtc客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神rtc客户端接口' },
   'privilege': { name: '雷神用户权益客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神用户权益客户端接口' },
+  'leigod-market-nn': { name: '雷神营销渠道服务(NN)客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神营销渠道服务(NN)客户端接口' },
   'nn-game': { name: '雷神赛事客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神赛事客户端接口' },
+  'cmp-bff': { name: '渠道中台bff客户端接口', source: 'https://test1-doc.nn.com/doc.html#/渠道中台bff客户端接口' },
+  'gamehub': { name: 'GameHub客户端接口', source: 'https://test1-doc.nn.com/doc.html#/GameHub客户端接口' },
   'union-server': { name: 'unionServer', source: 'https://test1-doc.nn.com/doc.html#/unionServer' },
   'nn-status': { name: 'NN状态服务', source: 'https://test1-doc.nn.com/doc.html#/NN状态服务' },
   'nn-version': { name: 'NN版本服务', source: 'https://test1-doc.nn.com/doc.html#/NN版本服务' },
@@ -119,6 +174,14 @@ const responseFieldColumns = [
   { title: '必填', dataIndex: 'required', key: 'required', width: 80, render: (value: boolean) => <Text type={value ? 'danger' : 'secondary'}>{String(value)}</Text> },
   { title: '数据类型', dataIndex: 'dataType', key: 'dataType', width: 150 },
   { title: 'Schema', dataIndex: 'schema', key: 'schema', width: 180 },
+];
+
+const apiChangeColumns = [
+  { title: '方式', dataIndex: 'method', width: 90, render: (value: string) => <Tag color={value === 'GET' ? 'blue' : 'green'}>{value}</Tag> },
+  { title: '接口路径', dataIndex: 'fullPath', render: (value: string) => <Text code>{value}</Text> },
+  { title: '接口名称', dataIndex: 'summary', render: (value: string) => value || '-' },
+  { title: '分组', dataIndex: 'tag', width: 180, render: (value: string) => <Text type="secondary">{value}</Text> },
+  { title: '变化内容', dataIndex: 'changes', width: 220, render: (values?: string[]) => values?.length ? values.map((value) => <Tag key={value}>{value}</Tag>) : '-' },
 ];
 
 const schemaReferenceName = (schema?: Schema): string => {
@@ -222,6 +285,9 @@ const sampleValue = (
   propertyName = ''
 ): unknown => {
   if (!schema || depth > 4) return null;
+  if (schema.example !== undefined) return schema.example;
+  if (schema.default !== undefined) return schema.default;
+  if (schema.enum?.length) return schema.enum[0];
   const refName = schemaReferenceName(schema);
   const resolved = resolveSchema(schema, definitions) || schema;
   if (resolved.type === 'array') {
@@ -237,8 +303,19 @@ const sampleValue = (
       sampleValue(value, definitions, depth + 1, currentRefName, key),
     ]));
   }
-  if (resolved.type === 'integer' || resolved.type === 'number') return 0;
-  if (resolved.type === 'boolean') return false;
+  const key = propertyName.toLowerCase();
+  if (resolved.type === 'integer' || resolved.type === 'number') {
+    if (/count|total|num|size|page/.test(key)) return 1;
+    if (/time|timestamp/.test(key)) return Date.now();
+    return /id$|_id$|uid|userid|nnnumber/.test(key) ? 10001 : 0;
+  }
+  if (resolved.type === 'boolean') return /success|enable|valid|ok/.test(key);
+  if (resolved.format === 'date-time' || /time|date/.test(key)) return new Date().toISOString();
+  if (/retcode|code/.test(key)) return '100';
+  if (/retmsg|message|msg/.test(key)) return 'success';
+  if (/url|avatar|icon|image|img/.test(key)) return 'https://example.com/mock.png';
+  if (/name|nick/.test(key)) return 'mock_name';
+  if (/id$|_id$|uid|userid/.test(key)) return '10001';
   return '';
 };
 
@@ -275,11 +352,23 @@ const readApiSearchHistory = (): string[] => {
   }
 };
 
+const runtimePublicParamKeys = new Set(['authorization', 'token', 'cookie', 'set-cookie', 'x-auth-token', 'timestamp']);
+
+const sanitizeRuntimeParams = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sanitizeRuntimeParams);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !runtimePublicParamKeys.has(key.toLowerCase()))
+    .map(([key, item]) => [key, sanitizeRuntimeParams(item)]));
+};
+
 type EditableField = { path: string; value: string | number | boolean; type: string };
 
 const flattenEditableFields = (value: unknown, prefix = ''): EditableField[] => {
+  if ((value === undefined || value === null || value === '') && !prefix) return [];
   if (Array.isArray(value)) return value.flatMap((item, index) => flattenEditableFields(item, `${prefix}[${index}]`));
   if (value && typeof value === 'object') return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => flattenEditableFields(item, prefix ? `${prefix}.${key}` : key));
+  if (!prefix) return [];
   return [{ path: prefix, value: (value ?? '') as string | number | boolean, type: typeof value }];
 };
 
@@ -344,7 +433,6 @@ export default function ApiDocsPage() {
   const [requestDoc, setRequestDoc] = useState<SwaggerDoc>();
   const [requestEnvironment, setRequestEnvironment] = useState<RequestEnvironment>('test');
   const [environmentTokens, setEnvironmentTokens] = useState<EnvironmentTokens>(readEnvironmentTokens);
-  const [tokenSettingsOpen, setTokenSettingsOpen] = useState(false);
   const [responseCodesOpen, setResponseCodesOpen] = useState(false);
   const [responseCodeSearch, setResponseCodeSearch] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
@@ -359,6 +447,9 @@ export default function ApiDocsPage() {
   const [records, setRecords] = useState<ApiViewRecord[]>([]);
   const [recordSearch, setRecordSearch] = useState('');
   const [searchHistory, setSearchHistory] = useState<string[]>(readApiSearchHistory);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [apiDiff, setApiDiff] = useState<ApiDocDiff>();
   const isAdmin = authUtils.isAdmin();
   const pageSize = 20;
 
@@ -495,15 +586,69 @@ export default function ApiDocsPage() {
       setSyncing(false);
     }
   };
+  const applyRequestSampleToConfig = (sample: ApiRequestSample, environment: RequestEnvironment) => {
+    setRequestConfig({
+      headers: sanitizeRuntimeParams(sample.headers || {}) as Record<string, unknown>,
+      query: sanitizeRuntimeParams(sample.query || {}) as Record<string, unknown>,
+      pathParams: sanitizeRuntimeParams(sample.pathParams || {}) as Record<string, unknown>,
+      body: sanitizeRuntimeParams(sample.body),
+    });
+    if (sample.token && sample.environment === environment) {
+      const nextTokens = { ...readEnvironmentTokens(), [environment]: sample.token };
+      setEnvironmentTokens(nextTokens);
+      localStorage.setItem('api_environment_tokens', JSON.stringify(nextTokens));
+    }
+  };
+  const refreshEnvironmentToken = async (environment: RequestEnvironment): Promise<string> => {
+    try {
+      const { data } = await axios.get<{ data: ApiEnvironmentTokenSample | null }>('/api/api-docs/request-token', {
+        params: { environment },
+        timeout: 15_000,
+      });
+      const token = data.data?.token?.trim() || '';
+      if (!token) return readEnvironmentTokens()[environment].trim();
+      const nextTokens = { ...readEnvironmentTokens(), [environment]: token };
+      setEnvironmentTokens(nextTokens);
+      localStorage.setItem('api_environment_tokens', JSON.stringify(nextTokens));
+      return token;
+    } catch {
+      return readEnvironmentTokens()[environment].trim();
+    }
+  };
+  const loadAndApplyBestSample = async (
+    api: ApiItem,
+    targetService: keyof typeof services,
+    environment: RequestEnvironment,
+    targetDoc: SwaggerDoc | undefined,
+  ): Promise<ApiRequestSample | undefined> => {
+    const saved = localStorage.getItem(`api_request_config:${targetService}:${api.method}:${api.path}:${environment}`);
+    const fallbackConfig = saved ? JSON.parse(saved) : createRequestConfig(api, targetDoc?.definitions || {});
+    try {
+      const { data } = await axios.get<{ data: ApiRequestSample[] }>('/api/api-docs/request-samples', {
+        params: { service: targetService, method: api.method, path: api.path, environment, limit: 20 },
+        timeout: 15_000,
+      });
+      const sample = data.data[0];
+      if (sample) {
+        applyRequestSampleToConfig(sample, environment);
+        return sample;
+      }
+    } catch {
+      // 样本匹配失败不影响手动编辑请求参数。
+    }
+    setRequestConfig(fallbackConfig);
+    return undefined;
+  };
   const openRequest = (api: ApiItem, targetService: keyof typeof services = service, targetDoc: SwaggerDoc | undefined = doc) => {
     const environment: RequestEnvironment = 'test';
     setRequestApi(api);
     setRequestService(targetService);
     setRequestDoc(targetDoc);
     setRequestEnvironment(environment);
-    const saved = localStorage.getItem(`api_request_config:${targetService}:${api.method}:${api.path}:${environment}`);
-    setRequestConfig(saved ? JSON.parse(saved) : createRequestConfig(api, targetDoc?.definitions || {}));
+    setRequestConfig(createRequestConfig(api, targetDoc?.definitions || {}));
     setRequestResult(undefined);
+    void loadAndApplyBestSample(api, targetService, environment, targetDoc);
+    void refreshEnvironmentToken(environment);
   };
   const requestConfigKey = (environment: RequestEnvironment, api = requestApi) => api
     ? `api_request_config:${requestService}:${api.method}:${api.path}:${environment}`
@@ -512,15 +657,14 @@ export default function ApiDocsPage() {
     const currentKey = requestConfigKey(requestEnvironment);
     if (currentKey) localStorage.setItem(currentKey, JSON.stringify(requestConfig));
     setRequestEnvironment(environment);
-    const nextKey = requestConfigKey(environment);
-    const saved = nextKey && localStorage.getItem(nextKey);
-    setRequestConfig(saved ? JSON.parse(saved) : requestApi ? createRequestConfig(requestApi, requestDoc?.definitions || {}) : { headers: {}, query: {}, pathParams: {} });
     setRequestResult(undefined);
-  };
-  const saveTokenSettings = () => {
-    localStorage.setItem('api_environment_tokens', JSON.stringify(environmentTokens));
-    setTokenSettingsOpen(false);
-    message.success('环境 token 配置已保存');
+    if (requestApi) {
+      setRequestConfig(createRequestConfig(requestApi, requestDoc?.definitions || {}));
+      void loadAndApplyBestSample(requestApi, requestService, environment, requestDoc);
+      void refreshEnvironmentToken(environment);
+    } else {
+      setRequestConfig({ headers: {}, query: {}, pathParams: {} });
+    }
   };
   const changeKeyword = (value: string) => {
     setKeyword(value);
@@ -551,8 +695,12 @@ export default function ApiDocsPage() {
   }, [keyword]);
   const sendRequest = async () => {
     if (!requestApi) return;
-    const token = environmentTokens[requestEnvironment].trim();
-    if (!token) { message.warning(`请先在顶部配置 ${requestEnvironment} 环境 token`); return; }
+    let token = environmentTokens[requestEnvironment].trim();
+    if (!token) {
+      const sample = await loadAndApplyBestSample(requestApi, requestService, requestEnvironment, requestDoc);
+      token = sample?.token?.trim() || await refreshEnvironmentToken(requestEnvironment);
+    }
+    if (!token) { message.warning(`请先通过实时日志采集 ${requestEnvironment} 环境 token`); return; }
     try {
       setRequesting(true);
       const configKey = requestConfigKey(requestEnvironment);
@@ -565,6 +713,12 @@ export default function ApiDocsPage() {
         ...requestConfig,
       }, { timeout: 70_000 });
       setRequestResult(data);
+      if (data.tokenInvalid) {
+        const nextTokens = { ...environmentTokens, [requestEnvironment]: '' };
+        setEnvironmentTokens(nextTokens);
+        localStorage.setItem('api_environment_tokens', JSON.stringify(nextTokens));
+        message.warning(data.tokenInvalidReason ? `当前 token 已失效：${data.tokenInvalidReason}` : '当前 token 已失效，已从样本集合剔除');
+      }
     } catch (reason) {
       const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : reason instanceof Error ? reason.message : '请求失败';
       message.error(errorMessage);
@@ -616,6 +770,19 @@ export default function ApiDocsPage() {
       message.error('查询记录加载失败');
     } finally {
       setRecordsLoading(false);
+    }
+  };
+  const loadApiDiff = async () => {
+    setDiffOpen(true);
+    setDiffLoading(true);
+    try {
+      const { data } = await axios.get<ApiDocDiff>(`/api/api-docs/${service}/diff`, { timeout: 60_000 });
+      setApiDiff(data);
+    } catch (reason) {
+      const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : '接口变更对比失败';
+      message.error(errorMessage);
+    } finally {
+      setDiffLoading(false);
     }
   };
   const filteredRecords = records.filter((record) => {
@@ -674,14 +841,16 @@ export default function ApiDocsPage() {
     if (copied) message.success('分享内容已复制');
     else message.error('复制失败，请手动复制分享内容');
   };
-
+  const editableRequestSections = (['pathParams', 'query', 'body'] as const)
+    .map((section) => ({ section, fields: flattenEditableFields(requestConfig[section]) }))
+    .filter((item) => item.fields.length > 0);
   return <div className="api-docs-page">
     <div className="api-docs-title">
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
         <Space><ApiOutlined style={{ fontSize: 28, color: '#1677ff' }} /><Title level={2} style={{ margin: 0 }}>API 接口文档</Title></Space>
         <Space>
-          <Button size="large" icon={<SettingOutlined />} onClick={() => setTokenSettingsOpen(true)}>请求配置</Button>
           <Button size="large" icon={<CodeOutlined />} onClick={() => setResponseCodesOpen(true)}>响应码查询</Button>
+          <Button size="large" icon={<DiffOutlined />} onClick={loadApiDiff}>变更对比</Button>
           <Button size="large" icon={<HistoryOutlined />} onClick={loadRecords}>查询记录</Button>
           {isAdmin && <Button type="primary" size="large" icon={<SyncOutlined spin={syncing} />} loading={syncing} onClick={syncAllDocuments}>同步API</Button>}
         </Space>
@@ -780,15 +949,13 @@ export default function ApiDocsPage() {
           <Select value={requestEnvironment} onChange={changeRequestEnvironment} style={{ width: 220 }} options={[{ value: 'release', label: 'release 环境' }, { value: 'test', label: 'test 环境（默认）' }, { value: 'test1', label: 'test1 环境' }]} />
           <Button type="primary" icon={<PlayCircleOutlined />} loading={requesting} onClick={sendRequest}>发送请求</Button>
         </Space>
-        <Alert type="info" showIcon message={`当前使用 ${requestEnvironment} 环境 token。公共参数自动注入，timeStamp 在发送瞬间生成；业务参数按接口和环境分别保存。`} />
-        <div>
+        <Alert type="info" showIcon message={`当前使用 ${requestEnvironment} 环境 token。token 可从日志样本自动更新；公共参数自动注入，timeStamp 在发送瞬间生成。`} />
+        {editableRequestSections.length > 0 && <div>
           <Text strong>业务请求参数</Text>
           <Space direction="vertical" size={12} style={{ width: '100%', marginTop: 10 }}>
-            {(['pathParams', 'query', 'body'] as const).flatMap((section) => {
-              const fields = flattenEditableFields(requestConfig[section]);
-              if (!fields.length) return [];
+            {editableRequestSections.map(({ section, fields }) => {
               const sectionName = section === 'pathParams' ? 'Path' : section === 'query' ? 'Query' : 'Body';
-              return [<Card key={section} size="small" title={sectionName} styles={{ body: { padding: 12 } }}>
+              return <Card key={section} size="small" title={sectionName} styles={{ body: { padding: 12 } }}>
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
                   {fields.map((field) => <div key={field.path} style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 38%) minmax(0, 1fr)', gap: 12, alignItems: 'center' }}>
                     <Text code>{field.path}</Text>
@@ -799,24 +966,14 @@ export default function ApiDocsPage() {
                         : <Input value={String(field.value ?? '')} onChange={(event) => setRequestConfig((current) => updateValueAtPath(current, section, field.path, event.target.value))} />}
                   </div>)}
                 </Space>
-              </Card>];
+              </Card>;
             })}
-            {flattenEditableFields(requestConfig.pathParams).length + flattenEditableFields(requestConfig.query).length + flattenEditableFields(requestConfig.body).length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该接口没有业务请求参数" />}
           </Space>
-        </div>
+        </div>}
         {requestResult && <Card size="small" title={<Space><Tag color={requestResult.status >= 200 && requestResult.status < 300 ? 'green' : 'red'}>{requestResult.status}</Tag><Text>{requestResult.statusText}</Text><Text type="secondary">{requestResult.duration}ms</Text></Space>}>
           <Paragraph copyable style={{ wordBreak: 'break-all' }}>{requestResult.url}</Paragraph>
           <pre style={{ margin: 0, padding: 14, borderRadius: 8, background: '#f6f8fa', overflow: 'auto', maxHeight: 480 }}>{JSON.stringify(requestResult.data, null, 2)}</pre>
         </Card>}
-      </Space>
-    </Modal>
-    <Modal title="请求环境配置" open={tokenSettingsOpen} onCancel={() => setTokenSettingsOpen(false)} onOk={saveTokenSettings} okText="保存配置" cancelText="取消" width={640}>
-      <Space direction="vertical" size={16} style={{ width: '100%', paddingTop: 8 }}>
-        <Alert type="info" showIcon message="为三套环境分别配置公共参数 token。配置仅保存在当前浏览器，不会上传到平台数据库。" />
-        {(['release', 'test', 'test1'] as RequestEnvironment[]).map((environment) => <div key={environment}>
-          <Text strong>{environment} 环境 token</Text>
-          <Input.Password value={environmentTokens[environment]} onChange={(event) => setEnvironmentTokens((current) => ({ ...current, [environment]: event.target.value }))} placeholder={`请输入 ${environment} 环境 token`} style={{ marginTop: 6 }} />
-        </div>)}
       </Space>
     </Modal>
     <Modal title={`${services[service].name} · 响应码查询`} open={responseCodesOpen} onCancel={() => setResponseCodesOpen(false)} footer={null} width={1000}>
@@ -852,7 +1009,34 @@ export default function ApiDocsPage() {
       />
     </Modal>
     <Modal
-      title={detailApi && detailService ? (
+      title={`${services[service].name} · 接口变更对比`}
+      open={diffOpen}
+      onCancel={() => setDiffOpen(false)}
+      footer={null}
+      width={1180}
+    >
+      <Spin spinning={diffLoading}>
+        {apiDiff && (
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            {!apiDiff.hasBaseline && <Alert type="info" showIcon message={apiDiff.message || '暂无上一版 API 文档快照'} />}
+            {apiDiff.hasBaseline && <Alert type="info" showIcon message={apiDiff.mode === 'cached-vs-latest' ? '当前对比：本地已同步文档 vs 最新上游文档，不会更新本地缓存' : '当前对比：上一版同步快照 vs 当前本地文档'} />}
+            {(apiDiff.currentFallback || apiDiff.previousFallback) && <Alert type="warning" showIcon message="当前或上一版包含兜底文档，对比结果仅供参考" />}
+            <Space wrap>
+              <Tag color="green">新增 {apiDiff.summary.added}</Tag>
+              <Tag color="red">删除 {apiDiff.summary.removed}</Tag>
+              <Tag color="orange">变更 {apiDiff.summary.changed}</Tag>
+            </Space>
+            <Tabs items={[
+              { key: 'added', label: `新增（${apiDiff.added.length}）`, children: <Table rowKey="key" size="small" pagination={{ pageSize: 10 }} dataSource={apiDiff.added} columns={apiChangeColumns} scroll={{ x: 900 }} /> },
+              { key: 'removed', label: `删除（${apiDiff.removed.length}）`, children: <Table rowKey="key" size="small" pagination={{ pageSize: 10 }} dataSource={apiDiff.removed} columns={apiChangeColumns} scroll={{ x: 900 }} /> },
+              { key: 'changed', label: `变更（${apiDiff.changed.length}）`, children: <Table rowKey="key" size="small" pagination={{ pageSize: 10 }} dataSource={apiDiff.changed} columns={apiChangeColumns} scroll={{ x: 900 }} /> },
+            ]} />
+          </Space>
+        )}
+      </Spin>
+    </Modal>
+    <Modal
+      title={detailApi && detailService && detailDoc ? (
         <Space wrap style={{ width: '100%', justifyContent: 'space-between', paddingRight: 32 }}>
           <Space wrap>
             <Tag color={detailApi.method === 'GET' ? 'blue' : 'green'}>{detailApi.method}</Tag>
@@ -898,6 +1082,7 @@ export default function ApiDocsPage() {
               return fields.length ? <Card key={code} size="small" title="响应参数"><Tabs items={[
                 { key: 'table', label: '参数表格', children: <Table rowKey={(row) => `${row.name}-${row.level}`} size="small" pagination={false} columns={responseFieldColumns} dataSource={fields} scroll={{ x: 800 }} /> },
                 { key: 'json', label: 'JSON 格式', children: <pre style={{ margin: 0, padding: 16, borderRadius: 8, background: '#f6f8fa', overflow: 'auto', maxHeight: 520 }}>{JSON.stringify(jsonExample, null, 2)}</pre> },
+                { key: 'mock', label: 'Mock 数据', children: <pre style={{ margin: 0, padding: 16, borderRadius: 8, background: '#f6f8fa', overflow: 'auto', maxHeight: 520 }}>{JSON.stringify(jsonExample, null, 2)}</pre> },
               ]} /></Card> : null;
             })}
           </Space>;

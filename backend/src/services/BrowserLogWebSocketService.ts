@@ -3,6 +3,7 @@ import { IncomingMessage, Server } from 'http';
 import { Socket } from 'net';
 import { URL } from 'url';
 import pairingService, { PairingSession } from './PairingService';
+import { apiRequestSampleService } from './ApiRequestSampleService';
 import logger from '../utils/logger';
 
 type ClientRole = 'app' | 'browser';
@@ -235,6 +236,11 @@ class BrowserLogWebSocketService {
       logs.splice(0, logs.length - this.maxRecentLogCount);
     }
     this.recentLogs.set(pairingId, logs);
+    try {
+      apiRequestSampleService.ingestLogLine(line, { source: 'realtime_log', sourceRef: pairingId, timestamp });
+    } catch (error) {
+      logger.debug(`[BrowserLogWS] API 请求样本采集失败: ${error instanceof Error ? error.message : 'unknown'}`);
+    }
     this.broadcastToBrowsers(pairingId, {
       type: 'log',
       line,
@@ -334,6 +340,24 @@ class BrowserLogWebSocketService {
 
   getRecentLogCount(pairingId: string): number {
     return this.recentLogs.get(pairingId)?.length || 0;
+  }
+
+  replayRecentLogsToApiSamples(): number {
+    let count = 0;
+    for (const [pairingId, logs] of this.recentLogs.entries()) {
+      for (const entry of logs) {
+        try {
+          count += apiRequestSampleService.ingestLogLine(entry.line, {
+            source: 'realtime_log',
+            sourceRef: pairingId,
+            timestamp: entry.timestamp,
+          });
+        } catch (error) {
+          logger.debug(`[BrowserLogWS] 重扫实时日志样本失败: ${error instanceof Error ? error.message : 'unknown'}`);
+        }
+      }
+    }
+    return count;
   }
 
   private sendJSON(client: BrowserLogClient, payload: unknown): void {
