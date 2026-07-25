@@ -14,6 +14,7 @@ const sources: Record<string, string> = {
   'nn-risk-v1': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:V1'),
   'operation-server': '/ncoperation/v2/api-docs?group=' + encodeURIComponent('operationServer'),
   'im-friend': '/im-friend/v2/api-docs?group=' + encodeURIComponent('雷神IM好友服务客户端接口'),
+  'im-user': '/im-user/v2/api-docs?group=' + encodeURIComponent('雷神IM用户客户端接口'),
   'order-open-api': '/nnorder/v2/api-docs?group=' + encodeURIComponent('order-open-api'),
   'wan-v1': '/wan/v2/api-docs?group=' + encodeURIComponent('v1-NN陪玩接口'),
   'wan-v2': '/wan/v2/api-docs?group=' + encodeURIComponent('v2-NN陪玩接口'),
@@ -23,6 +24,7 @@ const sources: Record<string, string> = {
   'nn-game': '/nn-game/v2/api-docs?group=' + encodeURIComponent('雷神赛事客户端接口'),
   'union-server': '/nn-union/v2/api-docs?group=' + encodeURIComponent('unionServer'),
   'nn-status': '/nn-status/v2/api-docs?group=' + encodeURIComponent('NN状态服务'),
+  'nn-version': '/nn-version/v2/api-docs?group=' + encodeURIComponent('NN版本服务'),
   'fdfs': '/fdfs/v2/api-docs?group=' + encodeURIComponent('文件服务'),
 };
 const cache = new Map<string, { expiresAt: number; data: unknown }>();
@@ -101,6 +103,16 @@ function normalizeApiSearchText(value: string): string {
     .replace(/\/$/, '');
 }
 
+function joinApiPath(basePath = '', apiPath = ''): string {
+  const normalizedBase = basePath.replace(/\/+$/, '');
+  const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+  if (!normalizedBase) return normalizedPath;
+  if (normalizedPath === normalizedBase || normalizedPath.startsWith(`${normalizedBase}/`)) {
+    return normalizedPath;
+  }
+  return `${normalizedBase}${normalizedPath}`;
+}
+
 function makeSearchTokens(keyword: string, basePaths: string[]): string[] {
   const normalizedKeyword = normalizeApiSearchText(keyword);
   const tokens = normalizedKeyword.split(/\s+/).filter(Boolean);
@@ -144,12 +156,110 @@ function writeCachedDocument(service: string, data: unknown): void {
   cache.set(service, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
 }
 
+function fallbackDocument(
+  document: {
+    swagger?: string;
+    info?: { title?: string; version?: string };
+    tags?: { name: string }[];
+  },
+  options: {
+    basePath: string;
+    title: string;
+    tag: string;
+    paths: Record<string, Record<string, unknown>>;
+  },
+) {
+  return {
+    swagger: document.swagger || '2.0',
+    basePath: options.basePath,
+    info: document.info || { title: options.title, version: 'fallback' },
+    xFallbackDocument: true,
+    tags: document.tags || [{ name: options.tag }],
+    paths: options.paths,
+    definitions: {
+      BaseOutputObject: {
+        type: 'object',
+        title: 'BaseOutputObject',
+        properties: {
+          retTime: { type: 'string', description: '响应时间' },
+          success: { type: 'boolean', description: '是否成功' },
+          trackId: { type: 'string', description: '链路追踪ID' },
+          retData: { type: 'object', description: '响应内容' },
+          retCode: { type: 'string', description: '响应码' },
+          retMsg: { type: 'string', description: '响应信息' },
+        },
+      },
+    },
+  };
+}
+
+function withFallbackDocument(service: string, data: unknown): unknown {
+  const document = data as {
+    swagger?: string;
+    basePath?: string;
+    info?: { title?: string; version?: string };
+    paths?: Record<string, unknown>;
+    tags?: { name: string }[];
+  };
+  if (document.paths && Object.keys(document.paths).length > 0) return data;
+
+  if (service === 'nn-version') {
+    return fallbackDocument(document, {
+      basePath: '/nn-version',
+      title: 'NN版本服务',
+      tag: 'NN版本服务',
+      paths: {
+        '/version/upgrade': { post: versionOperation('普通检测版本更新', 'checkUpgradeUsingPOST') },
+        '/version/gray/release/update': { post: versionOperation('灰度版本更新', 'grayReleaseUpdateUsingPOST') },
+        '/version/gray/release/refuse': { post: versionOperation('拒绝/确认灰度版本更新', 'grayReleaseRefuseUsingPOST') },
+      },
+    });
+  }
+
+  if (service === 'im-user') {
+    return fallbackDocument(document, {
+      basePath: '/im-user',
+      title: '雷神IM用户客户端接口',
+      tag: '雷神IM用户客户端接口',
+      paths: {
+        '/app/v1/user/getUserList': { post: simpleOperation('批量查询用户列表', 'getUserListUsingPOST', '雷神IM用户客户端接口') },
+      },
+    });
+  }
+
+  return data;
+}
+
+function versionOperation(summary: string, operationId: string) {
+  return simpleOperation(summary, operationId, 'NN版本服务', 'OK。上游 Knife4j 当前未提供该服务的详细参数 schema，平台按客户端常量补充接口入口。');
+}
+
+function simpleOperation(summary: string, operationId: string, tag: string, responseDescription = 'OK。上游 Knife4j 当前异常，平台先补充接口入口。') {
+  return {
+    summary,
+    operationId,
+    tags: [tag],
+    consumes: ['application/json'],
+    produces: ['*/*'],
+    parameters: [],
+    responses: {
+      '200': {
+        description: responseDescription,
+        schema: { originalRef: 'BaseOutputObject', $ref: '#/definitions/BaseOutputObject' },
+      },
+    },
+  };
+}
+
 function readSearchDocument(service: string): unknown | undefined {
   const cached = readCachedDocument(service);
   if (cached) return cached.data;
   try {
     return JSON.parse(fs.readFileSync(cacheFile(service), 'utf8'));
   } catch {
+    if (service === 'nn-version' || service === 'im-user') {
+      return withFallbackDocument(service, {});
+    }
     return undefined;
   }
 }
@@ -166,11 +276,16 @@ async function fetchDocument(service: string): Promise<unknown> {
         const detail = await response.text();
         throw new Error(`HTTP ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ''}`);
       }
-      const data = await response.json();
+      const data = withFallbackDocument(service, await response.json());
       writeCachedDocument(service, data);
       return data;
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('未知错误');
+      if (service === 'nn-version' || service === 'im-user') {
+        const fallback = withFallbackDocument(service, {});
+        writeCachedDocument(service, fallback);
+        return fallback;
+      }
     }
   }
   throw lastError || new Error('获取上游文档失败');
@@ -187,7 +302,7 @@ router.get('/search/all', async (req, res) => {
     const documents = Object.keys(sources).map((service) => {
       const data = readSearchDocument(service);
       return data
-        ? { status: 'fulfilled' as const, value: { service, data: data as { host?: string; basePath?: string; paths?: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[] }>> } } }
+        ? { status: 'fulfilled' as const, value: { service, data: data as { host?: string; basePath?: string; xFallbackDocument?: boolean; paths?: Record<string, Record<string, { summary?: string; operationId?: string; tags?: string[] }>> } } }
         : { status: 'rejected' as const };
     });
     const basePaths = documents.flatMap((result) => result.status === 'fulfilled' && result.value.data.basePath ? [result.value.data.basePath] : []);
@@ -197,10 +312,19 @@ router.get('/search/all', async (req, res) => {
       if (result.status !== 'fulfilled') return [];
       const { service, data } = result.value;
       return Object.entries(data.paths || {}).flatMap(([path, methods]) => Object.entries(methods).flatMap(([method, operation]) => {
-        const fullPath = `${data.basePath || ''}${path}`;
+        const fullPath = joinApiPath(data.basePath || '', path);
         const text = normalizeApiSearchText(`${fullPath} ${path} ${operation.summary || ''} ${operation.operationId || ''} ${(operation.tags || []).join(' ')}`);
         if (!tokens.every((token) => matchSearchToken(text, token))) return [];
-        return [{ service, basePath: data.basePath || '', path, method: method.toUpperCase(), summary: operation.summary || '', operationId: operation.operationId || '', tag: operation.tags?.[0] || '其他' }];
+        return [{
+          service,
+          basePath: data.basePath || '',
+          path,
+          method: method.toUpperCase(),
+          summary: operation.summary || '',
+          operationId: operation.operationId || '',
+          tag: operation.tags?.[0] || '其他',
+          fallbackDocument: !!data.xFallbackDocument,
+        }];
       }));
     });
 

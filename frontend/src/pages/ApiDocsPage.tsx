@@ -1,5 +1,5 @@
 import { ApiOutlined, CodeOutlined, HistoryOutlined, LinkOutlined, PlayCircleOutlined, SearchOutlined, SettingOutlined, ShareAltOutlined, SyncOutlined } from '@ant-design/icons';
-import { Alert, Button, Card, Empty, Input, InputNumber, Menu, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, AutoComplete, Button, Card, Empty, Input, InputNumber, Menu, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import axios from 'axios';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -7,12 +7,22 @@ import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
 
-type Schema = { type?: string; format?: string; description?: string; $ref?: string; items?: Schema; properties?: Record<string, Schema>; required?: string[] };
+type Schema = {
+  type?: string;
+  format?: string;
+  description?: string;
+  title?: string;
+  originalRef?: string;
+  $ref?: string;
+  items?: Schema;
+  properties?: Record<string, Schema>;
+  required?: string[];
+};
 type Parameter = Schema & { name: string; in: string; required?: boolean; schema?: Schema; default?: unknown };
 type Operation = { summary?: string; operationId?: string; tags?: string[]; parameters?: Parameter[]; responses?: Record<string, { description?: string; schema?: Schema }> };
-type SwaggerDoc = { swagger: string; host?: string; basePath?: string; info?: { title?: string; version?: string }; paths: Record<string, Record<string, Operation>>; definitions?: Record<string, Schema>; tags?: { name: string }[] };
+type SwaggerDoc = { swagger: string; host?: string; basePath?: string; info?: { title?: string; version?: string }; paths: Record<string, Record<string, Operation>>; definitions?: Record<string, Schema>; tags?: { name: string }[]; xFallbackDocument?: boolean };
 type ApiItem = Operation & { path: string; method: string; tag: string };
-type GlobalSearchItem = { service: keyof typeof services; basePath: string; path: string; method: string; summary: string; operationId: string; tag: string };
+type GlobalSearchItem = { service: keyof typeof services; basePath: string; path: string; method: string; summary: string; operationId: string; tag: string; fallbackDocument?: boolean };
 type RequestConfig = { headers: Record<string, unknown>; query: Record<string, unknown>; pathParams: Record<string, unknown>; body?: unknown };
 type RequestResult = { status: number; statusText: string; duration: number; url: string; requestHeaders: Record<string, string>; data: unknown };
 type RequestEnvironment = 'release' | 'test' | 'test1';
@@ -28,6 +38,7 @@ const services = {
   'nn-risk-v1': { name: 'NN风控审核服务:V1', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:V1' },
   'operation-server': { name: 'operationServer', source: 'https://test1-doc.nn.com/doc.html#/operationServer' },
   'im-friend': { name: '雷神IM好友服务客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM好友服务客户端接口' },
+  'im-user': { name: '雷神IM用户客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM用户客户端接口' },
   'order-open-api': { name: 'order-open-api', source: 'https://test1-doc.nn.com/doc.html#/order-open-api' },
   'wan-v1': { name: 'v1-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v1-NN陪玩接口' },
   'wan-v2': { name: 'v2-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v2-NN陪玩接口' },
@@ -37,6 +48,7 @@ const services = {
   'nn-game': { name: '雷神赛事客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神赛事客户端接口' },
   'union-server': { name: 'unionServer', source: 'https://test1-doc.nn.com/doc.html#/unionServer' },
   'nn-status': { name: 'NN状态服务', source: 'https://test1-doc.nn.com/doc.html#/NN状态服务' },
+  'nn-version': { name: 'NN版本服务', source: 'https://test1-doc.nn.com/doc.html#/NN版本服务' },
   'fdfs': { name: '文件服务', source: 'https://test1-doc.nn.com/doc.html#/文件服务' },
 };
 
@@ -75,6 +87,16 @@ const schemaName = (schema?: Schema): string => {
   return [schema.type || 'object', schema.format].filter(Boolean).join('(') + (schema.format ? ')' : '');
 };
 
+const joinApiPath = (basePath = '', apiPath = ''): string => {
+  const normalizedBase = basePath.replace(/\/+$/, '');
+  const normalizedPath = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+  if (!normalizedBase) return normalizedPath;
+  if (normalizedPath === normalizedBase || normalizedPath.startsWith(`${normalizedBase}/`)) {
+    return normalizedPath;
+  }
+  return `${normalizedBase}${normalizedPath}`;
+};
+
 type RequestField = { name: string; in: string; dataType: string; schema: string; required: boolean; description: string; level: number };
 
 const parameterColumns = [
@@ -101,9 +123,51 @@ const responseFieldColumns = [
 
 const schemaReferenceName = (schema?: Schema): string => {
   if (!schema) return '';
+  if (schema.originalRef) return schema.originalRef;
   if (schema.$ref) return decodeURIComponent(schema.$ref.split('/').pop() || '');
   if (schema.type === 'array') return schemaReferenceName(schema.items) || schema.items?.type || '';
   return '';
+};
+
+const isBareObjectSchema = (schema?: Schema): boolean => {
+  return Boolean(schema && schema.type === 'object' && !schema.$ref && !schema.originalRef && !schema.properties);
+};
+
+const findDefinition = (definitions: Record<string, Schema>, candidates: string[]): Schema | undefined => {
+  for (const candidate of candidates) {
+    if (definitions[candidate]) return definitions[candidate];
+  }
+
+  const normalizedCandidates = candidates.map((candidate) => candidate.toLowerCase());
+  const entry = Object.entries(definitions).find(([name]) =>
+    normalizedCandidates.some((candidate) => name.toLowerCase() === candidate)
+  );
+  return entry?.[1];
+};
+
+const inferArrayItemSchema = (
+  propertyName: string,
+  parentRefName: string,
+  definitions: Record<string, Schema>
+): Schema | undefined => {
+  if (!parentRefName || !/records?|list|items?/i.test(propertyName)) {
+    return undefined;
+  }
+
+  const candidates = [
+    parentRefName.replace(/分页结果VO$/, 'VO'),
+    parentRefName.replace(/分页结果$/, ''),
+    parentRefName.replace(/分页VO$/, 'VO'),
+    parentRefName.replace(/列表VO$/, 'VO'),
+    parentRefName.replace(/结果VO$/, 'VO'),
+  ].filter((candidate) => candidate && candidate !== parentRefName);
+
+  const genericInnerMatch = parentRefName.match(/[«<]([^«»<>]+)[»>]$/);
+  if (genericInnerMatch?.[1]) {
+    candidates.unshift(genericInnerMatch[1]);
+  }
+
+  return findDefinition(definitions, candidates);
 };
 
 const nestedRequestFields = (schema: Schema, definitions: Record<string, Schema>, level = 0, visited = new Set<string>()): RequestField[] => {
@@ -115,16 +179,22 @@ const nestedRequestFields = (schema: Schema, definitions: Record<string, Schema>
   return Object.entries(resolved.properties || {}).flatMap(([name, property]) => {
     const propertyResolved = resolveSchema(property, definitions) || property;
     const isArray = property.type === 'array';
+    const inferredArrayItemSchema = isArray && isBareObjectSchema(property.items)
+      ? inferArrayItemSchema(name, refName || resolved.title || schema.title || '', definitions)
+      : undefined;
+    const resolvedArrayItemSchema = inferredArrayItemSchema || property.items;
     const row: RequestField = {
       name,
       in: level === 0 ? 'body' : '',
       dataType: isArray ? 'array' : propertyResolved.type || property.type || 'object',
-      schema: schemaReferenceName(property) || (isArray ? property.items?.type || '' : ''),
+      schema: isArray && inferredArrayItemSchema?.title
+        ? inferredArrayItemSchema.title
+        : schemaReferenceName(property) || (isArray ? property.items?.type || '' : ''),
       required: resolved.required?.includes(name) || false,
       description: property.description || propertyResolved.description || '-',
       level,
     };
-    const childSchema = isArray ? property.items : property;
+    const childSchema = isArray ? resolvedArrayItemSchema : property;
     const children = childSchema ? nestedRequestFields(childSchema, definitions, level + 1, nextVisited) : [];
     return [row, ...children];
   });
@@ -144,11 +214,29 @@ const requestFields = (parameters: Parameter[], definitions: Record<string, Sche
   return nestedRequestFields(parameter.schema, definitions);
 });
 
-const sampleValue = (schema: Schema | undefined, definitions: Record<string, Schema>, depth = 0): unknown => {
+const sampleValue = (
+  schema: Schema | undefined,
+  definitions: Record<string, Schema>,
+  depth = 0,
+  parentRefName = '',
+  propertyName = ''
+): unknown => {
   if (!schema || depth > 4) return null;
+  const refName = schemaReferenceName(schema);
   const resolved = resolveSchema(schema, definitions) || schema;
-  if (resolved.type === 'array') return [sampleValue(resolved.items, definitions, depth + 1)];
-  if (resolved.properties) return Object.fromEntries(Object.entries(resolved.properties).map(([key, value]) => [key, sampleValue(value, definitions, depth + 1)]));
+  if (resolved.type === 'array') {
+    const inferredArrayItemSchema = isBareObjectSchema(resolved.items)
+      ? inferArrayItemSchema(propertyName, parentRefName, definitions)
+      : undefined;
+    return [sampleValue(inferredArrayItemSchema || resolved.items, definitions, depth + 1, '', '')];
+  }
+  if (resolved.properties) {
+    const currentRefName = refName || resolved.title || parentRefName;
+    return Object.fromEntries(Object.entries(resolved.properties).map(([key, value]) => [
+      key,
+      sampleValue(value, definitions, depth + 1, currentRefName, key),
+    ]));
+  }
   if (resolved.type === 'integer' || resolved.type === 'number') return 0;
   if (resolved.type === 'boolean') return false;
   return '';
@@ -172,6 +260,18 @@ const readEnvironmentTokens = (): EnvironmentTokens => {
     return { release: '', test: '', test1: '', ...JSON.parse(localStorage.getItem('api_environment_tokens') || '{}') };
   } catch {
     return { release: '', test: '', test1: '' };
+  }
+};
+
+const apiSearchHistoryKey = 'api_docs_search_history';
+const maxApiSearchHistory = 12;
+
+const readApiSearchHistory = (): string[] => {
+  try {
+    const history = JSON.parse(localStorage.getItem(apiSearchHistoryKey) || '[]');
+    return Array.isArray(history) ? history.filter((item): item is string => typeof item === 'string' && item.trim().length > 0) : [];
+  } catch {
+    return [];
   }
 };
 
@@ -227,12 +327,12 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
 }
 
 export default function ApiDocsPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [service, setService] = useState<keyof typeof services>('user-query');
   const [doc, setDoc] = useState<SwaggerDoc>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [keyword, setKeyword] = useState('');
+  const [keyword, setKeyword] = useState(searchParams.get('q') || '');
   const [page, setPage] = useState(1);
   const [syncing, setSyncing] = useState(false);
   const [globalResults, setGlobalResults] = useState<GlobalSearchItem[]>([]);
@@ -258,6 +358,7 @@ export default function ApiDocsPage() {
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [records, setRecords] = useState<ApiViewRecord[]>([]);
   const [recordSearch, setRecordSearch] = useState('');
+  const [searchHistory, setSearchHistory] = useState<string[]>(readApiSearchHistory);
   const isAdmin = authUtils.isAdmin();
   const pageSize = 20;
 
@@ -320,7 +421,7 @@ export default function ApiDocsPage() {
   const apis = useMemo<ApiItem[]>(() => doc ? Object.entries(doc.paths).flatMap(([path, methods]) =>
     Object.entries(methods).map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase(), tag: operation.tags?.[0] || '其他' }))) : [], [doc]);
   const filteredApis = useMemo(() => apis.filter((api) => {
-    const text = `${doc?.basePath || ''}${api.path} ${api.path} ${api.summary} ${api.operationId} ${api.tag}`.toLowerCase();
+    const text = `${joinApiPath(doc?.basePath, api.path)} ${api.path} ${api.summary} ${api.operationId} ${api.tag}`.toLowerCase();
     return text.includes(keyword.trim().toLowerCase());
   }), [apis, doc?.basePath, keyword]);
   const pagedApis = useMemo(() => filteredApis.slice((page - 1) * pageSize, page * pageSize), [filteredApis, page]);
@@ -331,7 +432,7 @@ export default function ApiDocsPage() {
         const current = summaries.get(code) || { code, descriptions: [], interfaces: [] };
         const description = response.description || '-';
         if (!current.descriptions.includes(description)) current.descriptions.push(description);
-        current.interfaces.push({ method: api.method, path: `${doc?.basePath || ''}${api.path}`, summary: api.summary || '' });
+        current.interfaces.push({ method: api.method, path: joinApiPath(doc?.basePath, api.path), summary: api.summary || '' });
         summaries.set(code, current);
       }
     }
@@ -345,7 +446,34 @@ export default function ApiDocsPage() {
     const value = responseCodeSearch.trim().toLowerCase();
     return businessResponseCodes.filter((item) => !value || `${item.code} ${item.description}`.toLowerCase().includes(value));
   }, [responseCodeSearch]);
-  const originalDocumentUrl = (api: ApiItem, targetService: keyof typeof services = service) => `${services[targetService].source}/${encodeURIComponent(api.tag)}/${encodeURIComponent(api.operationId || api.path)}`;
+  const searchHistoryOptions = useMemo(() => {
+    const value = keyword.trim().toLowerCase();
+    return searchHistory
+      .filter((item) => !value || item.toLowerCase().includes(value))
+      .slice(0, maxApiSearchHistory)
+      .map((item) => ({ value: item, label: <Space><HistoryOutlined />{item}</Space> }));
+  }, [keyword, searchHistory]);
+  const originalDocumentUrl = (api: ApiItem, targetService: keyof typeof services = service) => {
+    const operationKey = api.operationId || api.path;
+    return `${services[targetService].source}/${api.tag}/${operationKey}`;
+  };
+  const renderOriginalDocumentButton = (
+    api: ApiItem,
+    targetService: keyof typeof services = service,
+    isFallbackDocument = false
+  ) => {
+    if (isFallbackDocument) {
+      return (
+        <Tooltip title="上游 Knife4j 文档当前异常，暂无原始文档">
+          <Button type="link" icon={<LinkOutlined />} disabled>原始文档</Button>
+        </Tooltip>
+      );
+    }
+
+    return (
+      <Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(api, targetService)} target="_blank">原始文档</Button>
+    );
+  };
   const syncAllDocuments = async () => {
     setSyncing(true);
     try {
@@ -394,6 +522,33 @@ export default function ApiDocsPage() {
     setTokenSettingsOpen(false);
     message.success('环境 token 配置已保存');
   };
+  const changeKeyword = (value: string) => {
+    setKeyword(value);
+    setSearchMode('global');
+    setPage(1);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      const query = value.trim();
+      if (query) next.set('q', query);
+      else next.delete('q');
+      return next;
+    }, { replace: true });
+  };
+  const saveSearchKeyword = (value = keyword) => {
+    const query = value.trim();
+    if (query.length < 2) return;
+    setSearchHistory((current) => {
+      const next = [query, ...current.filter((item) => item !== query)].slice(0, maxApiSearchHistory);
+      localStorage.setItem(apiSearchHistoryKey, JSON.stringify(next));
+      return next;
+    });
+  };
+  useEffect(() => {
+    const query = keyword.trim();
+    if (query.length < 2) return;
+    const timer = window.setTimeout(() => saveSearchKeyword(query), 1200);
+    return () => window.clearTimeout(timer);
+  }, [keyword]);
   const sendRequest = async () => {
     if (!requestApi) return;
     const token = environmentTokens[requestEnvironment].trim();
@@ -471,16 +626,21 @@ export default function ApiDocsPage() {
     setRecordsOpen(false);
     await openGlobalDetail({ ...record, basePath: '', operationId: '' });
   };
-  const shareCurrentApi = async (api: ApiItem) => {
+  const shareCurrentApi = async (
+    api: ApiItem,
+    targetService: keyof typeof services = service,
+    targetDoc: SwaggerDoc | undefined = doc
+  ) => {
     const url = new URL('/api-docs', window.location.origin);
-    url.searchParams.set('service', service);
+    url.searchParams.set('service', targetService);
     url.searchParams.set('method', api.method);
     url.searchParams.set('path', api.path);
+    if (keyword.trim()) url.searchParams.set('q', keyword.trim());
     const summary = api.summary || api.operationId || 'API 接口';
     const titleParts = [summary, api.tag].filter((item, index, array) => item && array.indexOf(item) === index);
     const copied = await copyTextToClipboard([
       titleParts.join('，'),
-      `API接口: ${doc?.basePath || ''}${api.path}`,
+      `API接口: ${joinApiPath(targetDoc?.basePath, api.path)}`,
       `API文档: ${url.toString()}`,
     ].join('\n'));
     if (copied) message.success('分享内容已复制');
@@ -508,8 +668,9 @@ export default function ApiDocsPage() {
     url.searchParams.set('service', item.service);
     url.searchParams.set('method', item.method);
     url.searchParams.set('path', item.path);
+    if (keyword.trim()) url.searchParams.set('q', keyword.trim());
     const titleParts = [item.summary || item.operationId || 'API 接口', item.tag].filter((value, index, array) => value && array.indexOf(value) === index);
-    const copied = await copyTextToClipboard([titleParts.join('，'), `API接口: ${item.basePath}${item.path}`, `API文档: ${url.toString()}`].join('\n'));
+    const copied = await copyTextToClipboard([titleParts.join('，'), `API接口: ${joinApiPath(item.basePath, item.path)}`, `API文档: ${url.toString()}`].join('\n'));
     if (copied) message.success('分享内容已复制');
     else message.error('复制失败，请手动复制分享内容');
   };
@@ -527,14 +688,25 @@ export default function ApiDocsPage() {
       </Space>
     </div>
     <Card className="api-docs-global-search" styles={{ body: { padding: 16 } }}>
-      <Input
-        size="large"
-        allowClear
-        prefix={<SearchOutlined style={{ color: '#1677ff' }} />}
-        placeholder="全局查询当前服务的接口名称、路径、Operation ID 或接口分组"
+      <AutoComplete
         value={keyword}
-        onChange={(e) => { setKeyword(e.target.value); setSearchMode('global'); setPage(1); }}
-      />
+        options={searchHistoryOptions}
+        onChange={changeKeyword}
+        onSelect={(value) => {
+          changeKeyword(value);
+          saveSearchKeyword(value);
+        }}
+        style={{ width: '100%' }}
+      >
+        <Input
+          size="large"
+          allowClear
+          prefix={<SearchOutlined style={{ color: '#1677ff' }} />}
+          placeholder="全局查询当前服务的接口名称、路径、Operation ID 或接口分组"
+          onBlur={() => saveSearchKeyword()}
+          onPressEnter={(event) => saveSearchKeyword(event.currentTarget.value)}
+        />
+      </AutoComplete>
     </Card>
 
     <div className="api-docs-workspace">
@@ -558,9 +730,9 @@ export default function ApiDocsPage() {
             {!globalSearching && globalResults.length === 0 && <Empty description="没有找到匹配的接口" />}
             {globalResults.map((item) => <Card key={`${item.service}-${item.method}-${item.path}`} size="small" hoverable onClick={() => openGlobalDetail(item)}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-                <Space wrap><Tag color={item.method === 'GET' ? 'blue' : 'green'}>{item.method}</Tag><Tag color="purple">{services[item.service]?.name || item.service}</Tag><Text code>{`${item.basePath}${item.path}`}</Text><Text strong>{item.summary}</Text><Text type="secondary">{item.tag}</Text></Space>
+                <Space wrap><Tag color={item.method === 'GET' ? 'blue' : 'green'}>{item.method}</Tag><Tag color="purple">{services[item.service]?.name || item.service}</Tag><Text code>{joinApiPath(item.basePath, item.path)}</Text><Text strong>{item.summary}</Text><Text type="secondary">{item.tag}</Text></Space>
                 <Space onClick={(event) => event.stopPropagation()}>
-                  <Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(globalItemToApi(item), item.service)} target="_blank">原始文档</Button>
+                  {renderOriginalDocumentButton(globalItemToApi(item), item.service, item.fallbackDocument)}
                   <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openGlobalRequest(item)}>在线请求</Button>
                   <Button type="text" icon={<ShareAltOutlined />} onClick={() => shareGlobalApi(item)}>分享</Button>
                 </Space>
@@ -586,12 +758,12 @@ export default function ApiDocsPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <Space wrap>
             <Tag color={api.method === 'GET' ? 'blue' : 'green'}>{api.method}</Tag>
-            <Text code>{`${doc?.basePath || ''}${api.path}`}</Text>
+            <Text code>{joinApiPath(doc?.basePath, api.path)}</Text>
             <Text strong>{api.summary}</Text>
             <Text type="secondary">{api.tag}</Text>
           </Space>
           <Space onClick={(event) => event.stopPropagation()}>
-            <Button type="link" icon={<LinkOutlined />} href={originalDocumentUrl(api)} target="_blank">原始文档</Button>
+            {renderOriginalDocumentButton(api, service, doc?.xFallbackDocument)}
             <Button type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openRequest(api)}>在线请求</Button>
             <Button type="text" icon={<ShareAltOutlined />} onClick={() => shareCurrentApi(api)}>分享</Button>
           </Space>
@@ -602,7 +774,7 @@ export default function ApiDocsPage() {
         </>}
       </main>
     </div>
-    <Modal title={requestApi ? `在线请求：${requestApi.method} ${requestDoc?.basePath || ''}${requestApi.path}` : '在线请求'} open={Boolean(requestApi)} onCancel={() => setRequestApi(undefined)} width={900} footer={null} destroyOnHidden>
+    <Modal title={requestApi ? `在线请求：${requestApi.method} ${joinApiPath(requestDoc?.basePath, requestApi.path)}` : '在线请求'} open={Boolean(requestApi)} onCancel={() => setRequestApi(undefined)} width={900} footer={null} destroyOnHidden>
       <Space direction="vertical" size={14} style={{ width: '100%' }}>
         <Space wrap style={{ width: '100%' }}>
           <Select value={requestEnvironment} onChange={changeRequestEnvironment} style={{ width: 220 }} options={[{ value: 'release', label: 'release 环境' }, { value: 'test', label: 'test 环境（默认）' }, { value: 'test1', label: 'test1 环境' }]} />
@@ -681,10 +853,23 @@ export default function ApiDocsPage() {
     </Modal>
     <Modal
       title={detailApi && detailService ? (
-        <Space wrap>
-          <Tag color={detailApi.method === 'GET' ? 'blue' : 'green'}>{detailApi.method}</Tag>
-          <Text code>{`${detailDoc?.basePath || ''}${detailApi.path}`}</Text>
-          <Text strong>{detailApi.summary}</Text>
+        <Space wrap style={{ width: '100%', justifyContent: 'space-between', paddingRight: 32 }}>
+          <Space wrap>
+            <Tag color={detailApi.method === 'GET' ? 'blue' : 'green'}>{detailApi.method}</Tag>
+            <Text code>{joinApiPath(detailDoc?.basePath, detailApi.path)}</Text>
+            <Text strong>{detailApi.summary}</Text>
+          </Space>
+          <Button
+            size="small"
+            type="text"
+            icon={<ShareAltOutlined />}
+            onClick={(event) => {
+              event.stopPropagation();
+              void shareCurrentApi(detailApi, detailService, detailDoc);
+            }}
+          >
+            分享
+          </Button>
         </Space>
       ) : '接口详情'}
       open={Boolean(detailService)}
@@ -699,7 +884,13 @@ export default function ApiDocsPage() {
           const customResponses = Object.entries(detailApi.responses || {}).filter(([code]) => !new Set(['200', '201', '401', '403', '404']).has(code));
           return <Space direction="vertical" size={14} style={{ width: '100%' }}>
             <Space><Tag color="purple">{detailService ? services[detailService].name : ''}</Tag><Text type="secondary">{detailApi.tag}</Text></Space>
-            {expandedParameters.length > 0 && <Card size="small" title="请求参数"><Table rowKey={(row) => `${row.in}-${row.name}-${row.level}`} size="small" pagination={false} columns={parameterColumns} dataSource={expandedParameters} scroll={{ x: 800 }} /></Card>}
+            <Card size="small" title="请求参数">
+              {expandedParameters.length > 0 ? (
+                <Table rowKey={(row) => `${row.in}-${row.name}-${row.level}`} size="small" pagination={false} columns={parameterColumns} dataSource={expandedParameters} scroll={{ x: 800 }} />
+              ) : (
+                <Text type="secondary">-</Text>
+              )}
+            </Card>
             {customResponses.length > 0 && <Card size="small" title="响应状态"><Table rowKey="code" size="small" pagination={false} dataSource={customResponses.map(([code, value]) => ({ code, description: value.description || '-' }))} columns={[{ title: 'HTTP 状态码', dataIndex: 'code', width: 160, render: (value: string) => <Tag color={value.startsWith('4') || value.startsWith('5') ? 'red' : 'blue'}>{value}</Tag> }, { title: '状态说明', dataIndex: 'description' }]} /></Card>}
             {Object.entries(detailApi.responses || {}).filter(([, value]) => Boolean(value.schema)).map(([code, value]) => {
               const fields = value.schema ? nestedRequestFields(value.schema, detailDoc.definitions || {}) : [];
