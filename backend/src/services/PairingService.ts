@@ -29,7 +29,7 @@ export interface PairingSession {
 class PairingService {
   private sessions: Map<string, PairingSession> = new Map();
   private readonly SESSION_TTL = 5 * 60 * 1000;
-  private readonly PAIRED_SESSION_TTL = 24 * 60 * 60 * 1000;
+  private readonly PAIRED_SESSION_TTL = Number(process.env.REALTIME_LOG_PAIRED_SESSION_TTL_DAYS || 30) * 24 * 60 * 60 * 1000;
   private cleanupTimer: NodeJS.Timeout | null = null;
   private db = getDatabase();
 
