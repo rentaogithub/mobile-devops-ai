@@ -2500,6 +2500,7 @@ export default function CICDPage() {
 
   async function refreshQualitySection(options?: { silent?: boolean }) {
     const [qualityResult] = await Promise.all([
+      loadBuilds('', { silent: true }, ''),
       loadQualityBuilds(options),
       loadSonicDevicePools(),
     ]);
@@ -3467,6 +3468,8 @@ export default function CICDPage() {
     () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
     [qualityData],
   );
+  const hasQualitySourceBuilds = (data?.builds || []).length > 0;
+  const canOpenQualityModal = hasQualitySourceBuilds && !loading;
   const availableQualityDevicePools = useMemo(
     () => sonicDevicePools.filter((pool) => (pool.stats?.idle ?? 0) > 0),
     [sonicDevicePools],
@@ -3783,7 +3786,7 @@ export default function CICDPage() {
             <Button icon={<ReloadOutlined />} onClick={() => refreshQualitySection()} loading={qualityLoading}>
               刷新
             </Button>
-            <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} disabled={!data?.builds?.length}>
+            <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
               开始质检
             </Button>
           </Space>
@@ -4124,7 +4127,7 @@ export default function CICDPage() {
                         {qualityData?.job.fullName && <Tag color="blue">{qualityData.job.fullName}</Tag>}
                         {qualityData?.job.buildable === false && <Tag color="red">不可构建</Tag>}
                       </Space>
-                      <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} disabled={!data?.builds?.length}>
+                      <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
                         新建质检
                       </Button>
                     </div>
