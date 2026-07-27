@@ -606,6 +606,15 @@ def read_text(path, limit_bytes=2 * 1024 * 1024):
     except Exception:
         return ""
 
+def read_text_head(path, limit_bytes=512 * 1024):
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit_bytes).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
 def parse_datetime(value):
     if not value:
         return None
@@ -627,6 +636,22 @@ def parse_datetime(value):
             except Exception:
                 pass
     return None
+
+def filename_timestamp(name):
+    match = re.search(r"(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})(\d{2})(\d{2})", name)
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            int(match.group(4)),
+            int(match.group(5)),
+            int(match.group(6)),
+        ).astimezone()
+    except Exception:
+        return None
 
 def report_timestamp(text):
     first_line = (text.splitlines() or [""])[0].strip()
@@ -677,7 +702,9 @@ def in_quality_window(timestamp):
     started = to_float(quality_started_at_epoch)
     if not timestamp or started is None:
         return True
-    return timestamp.timestamp() >= started - 60
+    now = time.time()
+    value = timestamp.timestamp()
+    return started - 60 <= value <= now + 600
 
 def analyze_exceptions(device_log_path, quality_log_path, bundle_id):
     patterns = [
@@ -742,7 +769,7 @@ def analyze_crash_reports(crash_dir, bundle_id):
             if not re.search(r"\.(ips|crash|log)$", name, re.I):
                 continue
             full_path = os.path.join(root, name)
-            text = read_text(full_path, limit_bytes=512 * 1024)
+            text = read_text_head(full_path, limit_bytes=512 * 1024)
             metadata = first_json_metadata(text)
             report_bundle = str(metadata.get("bundleID") or metadata.get("bundle_id") or "")
             report_app = str(metadata.get("app_name") or metadata.get("name") or "")
@@ -755,7 +782,7 @@ def analyze_crash_reports(crash_dir, bundle_id):
                 ignored_files.append(rel(full_path))
                 continue
             rel_path = rel(full_path)
-            timestamp = report_timestamp(text)
+            timestamp = report_timestamp(text) or filename_timestamp(name)
             if not in_quality_window(timestamp):
                 ignored_files.append(rel_path)
                 continue
@@ -3503,6 +3530,7 @@ collect_crash_reports() {
     sleep "${CRASH_REPORT_LOCAL_FALLBACK_DELAY_SECONDS:-5}"
   fi
   collect_local_crash_reports || true
+  prune_collected_crash_reports || true
   local count
   count="$(find "${CRASH_REPORT_DIR}" -type f \( -name '*.ips' -o -name '*.crash' -o -name '*.log' \) 2>/dev/null | wc -l | tr -d ' ')"
   if [ "${count:-0}" -gt 0 ]; then
@@ -3511,6 +3539,129 @@ collect_crash_reports() {
   fi
   log "崩溃报告: ${CRASH_REPORT_DIR} (0 个文件)"
   return 1
+}
+
+prune_collected_crash_reports() {
+  python3 - "${CRASH_REPORT_DIR}" "${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-}}" "${QUALITY_STARTED_AT_EPOCH:-}" <<'PY'
+import json
+import os
+import re
+import sys
+import time
+from datetime import datetime
+
+crash_dir, bundle_id, started_epoch = sys.argv[1:4]
+bundle_id = bundle_id or ""
+try:
+    started = float(started_epoch)
+except Exception:
+    started = 0
+now = time.time()
+window_start = started - 60 if started else now - 3600
+window_end = now + 600
+
+def parse_dt(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    candidates = [text, re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)]
+    formats = [
+        "%Y-%m-%d %H:%M:%S.%f %z",
+        "%Y-%m-%d %H:%M:%S %z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%dT%H:%M:%S%z",
+    ]
+    for candidate in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(candidate, fmt).timestamp()
+            except Exception:
+                pass
+    return None
+
+def filename_ts(name):
+    match = re.search(r"(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})(\d{2})(\d{2})", name)
+    if not match:
+        return None
+    try:
+        return datetime(
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+            int(match.group(4)),
+            int(match.group(5)),
+            int(match.group(6)),
+        ).timestamp()
+    except Exception:
+        return None
+
+def read_head(path, limit=512 * 1024):
+    try:
+        with open(path, "rb") as f:
+            return f.read(limit).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+def metadata_of(text):
+    first = (text.splitlines() or [""])[0].strip()
+    if first.startswith("{"):
+        try:
+            return json.loads(first)
+        except Exception:
+            return {}
+    return {}
+
+def report_ts(text, name):
+    metadata = metadata_of(text)
+    value = parse_dt(metadata.get("timestamp") or metadata.get("captureTime"))
+    if value is not None:
+        return value
+    for pattern in (
+        r"^(?:Date/Time|Date|End time):\s*(.+)$",
+        r'"timestamp"\s*:\s*"([^"]+)"',
+        r'"captureTime"\s*:\s*"([^"]+)"',
+    ):
+        match = re.search(pattern, text, re.M)
+        if match:
+            value = parse_dt(match.group(1))
+            if value is not None:
+                return value
+    return filename_ts(name)
+
+def is_target_report(text, name):
+    metadata = metadata_of(text)
+    report_bundle = str(metadata.get("bundleID") or metadata.get("bundle_id") or "")
+    report_app = str(metadata.get("app_name") or metadata.get("name") or "")
+    return (
+        (bundle_id and (report_bundle == bundle_id or bundle_id in text or bundle_id in name))
+        or report_app == "NNIM"
+        or name.startswith("NNIM")
+        or "NNIM" in name
+    )
+
+if not os.path.isdir(crash_dir):
+    raise SystemExit(0)
+
+kept = 0
+removed = 0
+for root, _dirs, names in os.walk(crash_dir):
+    for name in names:
+        if not re.search(r"\.(ips|crash|log)$", name, re.I):
+            continue
+        path = os.path.join(root, name)
+        text = read_head(path)
+        timestamp = report_ts(text, name)
+        keep = is_target_report(text, name) and (timestamp is None or window_start <= timestamp <= window_end)
+        if keep:
+            kept += 1
+            continue
+        try:
+            os.remove(path)
+            removed += 1
+        except Exception:
+            pass
+print(f"pruned={removed}, kept={kept}")
+PY
 }
 
 collect_local_crash_reports() {

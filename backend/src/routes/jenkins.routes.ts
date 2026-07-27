@@ -365,6 +365,7 @@ function reconcileQualityProgress(build: any, summary: any, progress?: any | nul
   const progressStatus = String(currentProgress?.status || '').toLowerCase();
   const shouldOverride = !currentProgress ||
     progressStatus === 'running' ||
+    (['passed', 'success'].includes(finalStatus) && ['failed', 'failure', 'unstable', 'aborted', 'canceled', 'cancelled'].includes(progressStatus)) ||
     (['failed', 'unstable', 'aborted'].includes(finalStatus) && !['failed', 'unstable', 'aborted', 'canceled', 'cancelled'].includes(progressStatus));
   if (!shouldOverride) return currentProgress;
 
@@ -1473,8 +1474,71 @@ function readLocalQualitySummary(jobName: string, build: any) {
   return readLocalQualitySummaryWithPath(jobName, build)?.summary || null;
 }
 
+function parseQualityTime(value?: string | number | null) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  const text = String(value).trim();
+  const parsed = Date.parse(text.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseQualityArtifactFilenameTime(value?: string) {
+  const match = String(value || '').match(/(20\d{2})[-_](\d{2})[-_](\d{2})[-_](\d{2})(\d{2})(\d{2})/);
+  if (!match) return 0;
+  const parsed = Date.parse(`${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}+08:00`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sanitizeQualityCrashReports(summary: any) {
+  if (!summary?.exceptionAnalysis?.crashReports) return summary;
+  const startedAtMs = parseQualityTime(summary.startedAt || summary.qualityStartedAt || summary.started_at);
+  if (!startedAtMs) return summary;
+  const minTimeMs = startedAtMs - 60 * 1000;
+  const maxTimeMs = Date.now() + 10 * 60 * 1000;
+  const inWindow = (item: any) => {
+    const timestampMs = parseQualityTime(item?.timestamp) || parseQualityArtifactFilenameTime(item?.file || item);
+    return !timestampMs || (timestampMs >= minTimeMs && timestampMs <= maxTimeMs);
+  };
+  const crashReports = summary.exceptionAnalysis.crashReports;
+  const samples = Array.isArray(crashReports.samples) ? crashReports.samples.filter(inWindow) : [];
+  const sampleFiles = new Set(samples.map((item: any) => String(item?.file || '')).filter(Boolean));
+  const files = Array.isArray(crashReports.files)
+    ? crashReports.files.filter((file: any) => sampleFiles.has(String(file)) || inWindow(file))
+    : [];
+  const nextSummary = {
+    ...summary,
+    exceptionAnalysis: {
+      ...summary.exceptionAnalysis,
+      crashReports: {
+        ...crashReports,
+        count: files.length,
+        files,
+        samples,
+      },
+    },
+  };
+  const crashCount = Number(nextSummary.exceptionAnalysis.crashCount || 0);
+  const removedAllCrashReports = Number(crashReports.count || crashReports.files?.length || crashReports.samples?.length || 0) > 0 && files.length === 0 && samples.length === 0;
+  if (removedAllCrashReports && crashCount <= Number(crashReports.count || 0)) {
+    nextSummary.exceptionAnalysis.crashCount = 0;
+  } else if (files.length > 0) {
+    nextSummary.exceptionAnalysis.crashCount = Math.max(crashCount, files.length);
+  }
+  if (
+    String(nextSummary.exceptionAnalysis.severity || '').toLowerCase() === 'failed' &&
+    Number(nextSummary.exceptionAnalysis.crashCount || 0) === 0 &&
+    Number(nextSummary.exceptionAnalysis.exceptionCount || 0) === 0 &&
+    Number(nextSummary.exceptionAnalysis.watchdogCount || 0) === 0 &&
+    Number(nextSummary.exceptionAnalysis.memoryIssueCount || 0) === 0
+  ) {
+    nextSummary.exceptionAnalysis.severity = Number(nextSummary.exceptionAnalysis.errorCount || 0) > 0 ? 'warning' : 'passed';
+  }
+  return nextSummary;
+}
+
 function normalizeQualitySummaryStatus(summary: any) {
   if (!summary || typeof summary !== 'object') return summary;
+  summary = sanitizeQualityCrashReports(summary);
   const testSuite = String(summary?.testSuite || summary?.suite || '').toLowerCase();
   const isMonkeySuite = testSuite === 'monkey';
   const includeStutterMetrics = testSuite === 'stutter';
@@ -1500,6 +1564,14 @@ function normalizeQualitySummaryStatus(summary: any) {
     rawPerformanceIssues.length > 0 &&
     performanceIssues.length === 0 &&
     (!originalMessage || /stutter|framestutter|fps|卡顿|帧|hitch/i.test(originalMessage));
+  const completedMonkeyButOriginalFailure = isMonkeySuite &&
+    ['failed', 'failure'].includes(originalStatus) &&
+    ['passed', 'success'].includes(monkeyStatus) &&
+    !['failed', 'failure'].includes(exceptionSeverity) &&
+    performanceSeverity !== 'failed' &&
+    severeActionCount === 0 &&
+    severeFrameHitchCount === 0 &&
+    /完成|通过|completed|passed/i.test(originalMessage);
   const nextSummary = { ...summary };
   if (summary?.performanceAnalysis?.conclusion) {
     nextSummary.performanceAnalysis = {
@@ -1528,6 +1600,11 @@ function normalizeQualitySummaryStatus(summary: any) {
     nextSummary.message = performanceSeverity === 'warning'
       ? (performanceIssues.find((item: any) => item?.message)?.message || '质检完成，存在基础性能风险')
       : '质检完成';
+  } else if (completedMonkeyButOriginalFailure) {
+    nextSummary.status = performanceSeverity === 'warning' ? 'unstable' : 'passed';
+    nextSummary.message = performanceSeverity === 'warning'
+      ? (performanceIssues.find((item: any) => item?.message)?.message || '质检完成，存在基础性能风险')
+      : (summary.message || '质检完成');
   } else if (['passed', 'success'].includes(String(nextSummary.status || '').toLowerCase()) && performanceSeverity === 'warning') {
     nextSummary.status = 'unstable';
     const issueMessage = performanceIssues.find((item: any) => item?.message)?.message;
@@ -2897,11 +2974,12 @@ router.get('/nn/quality/builds', async (req: Request, res: Response) => {
         },
       };
     }));
-    const running = builds.filter((build: any) => build.building).length;
-    const success = builds.filter((build: any) => build.result === 'SUCCESS').length;
-    const finished = builds.filter((build: any) => !build.building && build.result).length;
+	    const running = builds.filter((build: any) => build.building).length;
+	    const qualityStatusOf = (build: any) => String(build.qualitySummary?.status || build.qualitySummary?.progress?.status || '').toLowerCase();
+	    const success = builds.filter((build: any) => ['passed', 'success'].includes(qualityStatusOf(build)) || (!qualityStatusOf(build) && build.result === 'SUCCESS')).length;
+	    const finished = builds.filter((build: any) => !build.building && (build.result || qualityStatusOf(build))).length;
 
-    const responseData = {
+	    const responseData = {
         job: {
           name: job.displayName || DEFAULT_QA_JOB_NAME,
           fullName: job.fullName || DEFAULT_QA_JOB_NAME,
