@@ -1,7 +1,68 @@
 import { SymbolizerService } from './SymbolizerService';
 import { StackFrame } from './CrashLogParser';
+import { CrashLogParser } from './CrashLogParser';
 
 describe('SymbolizerService simplified crash load address inference', () => {
+  it('parses mixed JSON-header sampled hang reports as text logs', () => {
+    const parser = new CrashLogParser();
+    const parsed = parser.parseCrashLog([
+      '{"bug_type":"228","app_name":"NNIM"}',
+      'Incident Identifier: D6718F0D-3223-4EE2-AC47-1BFE70B7C96D',
+      'Reason:           UIKit-runloop-NNIM: timeout 9850ms',
+      '',
+      '  Thread 0xf1aeb    Thread name "SDKTaskManager-TaskWorker-0"',
+      '  60  ??? (<32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62> + 1053172) [0x10feb91f4]',
+    ].join('\n'));
+
+    expect(parsed.format).toBe('apple');
+    expect(parsed.stackFrames[0]).toMatchObject({
+      binaryName: '???',
+      address: '0x10feb91f4',
+      offset: '1053172',
+    });
+  });
+
+  it('symbolicates UUID offset sampled frames with the matching dSYM UUID', async () => {
+    const service = new SymbolizerService() as any;
+    service.symbolicateWithAtos = jest.fn(async () => new Map([
+      [
+        '0x10feb91f4',
+        'void* std::__1::__thread_proxy<...>(void*) (in leigod_im_cross_sdk) (thread.h:207)',
+      ],
+      [
+        '0x10feb79b4',
+        'im_sdk::common::TaskManager::worker(int, std::__1::shared_ptr<im_sdk::common::TaskData>) (in leigod_im_cross_sdk) (TaskManager.cpp:156)',
+      ],
+    ]));
+
+    const log = [
+      'Binary Images:',
+      '           0x10fdb8000 -                ???  ???                           <32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62>',
+      '',
+      '  Thread 0xf1aeb    Thread name "SDKTaskManager-TaskWorker-0"',
+      '  60  ??? (<32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62> + 1053172) [0x10feb91f4]',
+      '    60  ??? (<32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62> + 1046964) [0x10feb79b4] (blocked by turnstile waiting for this thread)',
+    ].join('\n');
+
+    const result = await service.symbolicateUUIDOffsetFrames(
+      log,
+      '/tmp/leigod_im_cross_sdk.dSYM',
+      '32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62',
+      'leigod_im_cross_sdk'
+    );
+
+    expect(service.symbolicateWithAtos).toHaveBeenCalledWith(
+      ['0x10feb91f4', '0x10feb79b4'],
+      '/tmp/leigod_im_cross_sdk.dSYM',
+      '0x10fdb8000',
+      { includeAddressOnly: true }
+    );
+    expect(result.symbolicatedCount).toBe(2);
+    expect(result.symbolicatedLog).toContain('leigod_im_cross_sdk  0x10feb91f4 void* std::__1::__thread_proxy');
+    expect(result.symbolicatedLog).toContain('TaskManager.cpp:156');
+    expect(result.symbolicatedLog).toContain('(blocked by turnstile waiting for this thread)');
+  });
+
   it('extracts load address from unslid VM address style unknown frames', () => {
     const service = new SymbolizerService() as any;
     const crashLog = [

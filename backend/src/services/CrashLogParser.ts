@@ -280,11 +280,22 @@ export class CrashLogParser {
     
     // .ips 格式通常包含 JSON 结构
     if (trimmed.startsWith('{')) {
+      const firstLineEnd = trimmed.indexOf('\n');
+      if (firstLineEnd > 0) {
+        const remainingContent = trimmed.substring(firstLineEnd + 1);
+        if (
+          remainingContent.includes('Incident Identifier:') ||
+          remainingContent.includes('Thread ') ||
+          remainingContent.includes('Binary Images:')
+        ) {
+          return 'apple';
+        }
+      }
+
       // 尝试解析为 JSON
       try {
         // 清理可能的多行 JSON
         let testContent = trimmed;
-        const firstLineEnd = trimmed.indexOf('\n');
         if (firstLineEnd > 0) {
           testContent = trimmed.substring(0, firstLineEnd);
         }
@@ -408,7 +419,22 @@ export class CrashLogParser {
     const stackRegex = /^(\d+)\s+(\S+)\s+(0x[0-9a-f]+)\s+(.+)$/i;
 
     for (const line of lines) {
-      const match = line.trim().match(stackRegex);
+      const trimmedLine = line.trim();
+      const uuidOffsetMatch = trimmedLine.match(/^(\*?\d+)\s+\?\?\?\s+\(<([0-9A-F-]{36})>\s+\+\s+(\d+)\)\s+\[(0x[0-9a-f]+)\]/i);
+      if (uuidOffsetMatch) {
+        const [, index, uuid, offset, address] = uuidOffsetMatch;
+        frames.push({
+          index: parseInt(index.replace('*', ''), 10),
+          binaryName: '???',
+          address,
+          symbol: `<${uuid}>`,
+          offset,
+          line: trimmedLine,
+        });
+        continue;
+      }
+
+      const match = trimmedLine.match(stackRegex);
       if (match) {
         const [, index, binary, address, rest] = match;
 
@@ -438,7 +464,7 @@ export class CrashLogParser {
           address,
           symbol,
           offset,
-          line: line.trim(),
+          line: trimmedLine,
         });
       }
     }

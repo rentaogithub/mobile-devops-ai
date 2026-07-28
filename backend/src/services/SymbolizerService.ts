@@ -135,6 +135,25 @@ export class SymbolizerService {
       const dsymUUID = await this.extractDSYMUUID(dsymPath);
       logger.info('dSYM UUID', { dsymUUID });
 
+      const uuidOffsetResult = await this.symbolicateUUIDOffsetFrames(
+        crashLog,
+        dsymPath,
+        dsymUUID,
+        dsymName
+      );
+      if (uuidOffsetResult.symbolicatedCount > 0) {
+        crashLog = uuidOffsetResult.symbolicatedLog;
+        warnings.push(
+          `已通过 UUID ${dsymUUID} 直接符号化 ${uuidOffsetResult.symbolicatedCount} 个采样帧。`
+        );
+        logger.info('UUID offset 采样帧符号化完成', {
+          dsymName,
+          dsymUUID,
+          symbolicatedCount: uuidOffsetResult.symbolicatedCount,
+          loadAddress: uuidOffsetResult.loadAddress,
+        });
+      }
+
       // 从 Binary Images 中找到匹配 UUID 的二进制名称
       let matchedBinaryName = this.findBinaryNameByUUID(crashLog, dsymUUID);
       
@@ -172,6 +191,17 @@ export class SymbolizerService {
           });
           errorMsg += `\n请上传与崩溃日志匹配的 dSYM 文件，或确保二进制名称一致。`;
           
+          if (uuidOffsetResult.symbolicatedCount > 0) {
+            logger.info('日志仅通过 UUID offset 采样帧完成符号化，跳过普通堆栈符号化', {
+              dsymName,
+              dsymUUID,
+            });
+            return {
+              symbolicatedLog: crashLog,
+              warning: warnings.length > 0 ? warnings.join('\n\n') : undefined,
+            };
+          }
+
           throw new AppError(
             ErrorCode.SYMBOLICATION_FAILED,
             errorMsg,
@@ -190,6 +220,13 @@ export class SymbolizerService {
           matchedBinaryName,
           availableBinaries: [...new Set(parsed.stackFrames.map((f) => f.binaryName))],
         });
+        if (uuidOffsetResult.symbolicatedCount > 0) {
+          return {
+            symbolicatedLog: crashLog,
+            warning: warnings.length > 0 ? warnings.join('\n\n') : undefined,
+          };
+        }
+
         throw new AppError(
           ErrorCode.SYMBOLICATION_FAILED,
           `崩溃日志中未找到应用 "${matchedBinaryName}" 的堆栈信息。`,
@@ -226,6 +263,13 @@ export class SymbolizerService {
       }
       if (!loadAddress) {
         logger.error('无法提取加载地址', { matchedBinaryName });
+        if (uuidOffsetResult.symbolicatedCount > 0) {
+          return {
+            symbolicatedLog: crashLog,
+            warning: warnings.length > 0 ? warnings.join('\n\n') : undefined,
+          };
+        }
+
         throw new AppError(
           ErrorCode.SYMBOLICATION_FAILED,
           `无法从崩溃日志中提取应用 "${matchedBinaryName}" 的加载地址`,
@@ -477,6 +521,124 @@ export class SymbolizerService {
       logger.error('atos 命令执行失败', { error: error.message, stack: error.stack });
       throw new AppError(ErrorCode.SYMBOLICATION_FAILED, 'atos 命令执行失败', 500);
     }
+  }
+
+  private async symbolicateUUIDOffsetFrames(
+    crashLog: string,
+    dsymPath: string,
+    dsymUUID: string,
+    dsymName: string
+  ): Promise<{ symbolicatedLog: string; symbolicatedCount: number; loadAddress?: string }> {
+    const frames = this.extractUUIDOffsetFrames(crashLog, dsymUUID);
+    if (frames.length === 0) {
+      return { symbolicatedLog: crashLog, symbolicatedCount: 0 };
+    }
+
+    const loadAddress = this.extractLoadAddressForUUID(crashLog, dsymUUID) ||
+      this.chooseMostCommonLoadAddress(frames);
+    if (!loadAddress) {
+      logger.warn('UUID offset 帧无法推断加载地址', { dsymUUID, dsymName });
+      return { symbolicatedLog: crashLog, symbolicatedCount: 0 };
+    }
+
+    const addresses = Array.from(new Set(frames.map((frame) => frame.address)));
+    const symbolMap = await this.symbolicateWithAtos(
+      addresses,
+      dsymPath,
+      loadAddress,
+      { includeAddressOnly: true }
+    );
+
+    let symbolicatedCount = 0;
+    const symbolicatedLog = crashLog.split(/\r?\n/).map((line) => {
+      const frame = frames.find((candidate) => candidate.line === line);
+      if (!frame) {
+        return line;
+      }
+
+      const symbol = symbolMap.get(frame.address);
+      if (!symbol) {
+        return `${frame.prefix}${dsymName}  ${frame.address} <unknown> + ${frame.offset}${frame.suffix}`;
+      }
+
+      symbolicatedCount += 1;
+      return `${frame.prefix}${dsymName}  ${frame.address} ${symbol}${frame.suffix}`;
+    }).join('\n');
+
+    return { symbolicatedLog, symbolicatedCount, loadAddress };
+  }
+
+  private extractUUIDOffsetFrames(
+    crashLog: string,
+    dsymUUID: string
+  ): Array<{ line: string; prefix: string; offset: string; address: string; suffix: string; loadAddress: string }> {
+    const normalizedUUID = dsymUUID.replace(/-/g, '').toLowerCase();
+    const frames: Array<{ line: string; prefix: string; offset: string; address: string; suffix: string; loadAddress: string }> = [];
+
+    for (const line of crashLog.split(/\r?\n/)) {
+      const match = line.match(/^(\s*\*?\d+\s+)\?\?\?\s+\(<([0-9A-F-]{36})>\s+\+\s+(\d+)\)\s+\[(0x[0-9a-f]+)\](.*)$/i);
+      if (!match) {
+        continue;
+      }
+
+      const frameUUID = match[2].replace(/-/g, '').toLowerCase();
+      if (frameUUID !== normalizedUUID) {
+        continue;
+      }
+
+      const address = match[4];
+      const offset = match[3];
+      const addressValue = Number.parseInt(address, 16);
+      const offsetValue = Number.parseInt(offset, 10);
+      if (!Number.isFinite(addressValue) || !Number.isFinite(offsetValue) || addressValue <= offsetValue) {
+        continue;
+      }
+
+      frames.push({
+        line,
+        prefix: match[1],
+        offset,
+        address,
+        suffix: match[5] || '',
+        loadAddress: `0x${(addressValue - offsetValue).toString(16)}`,
+      });
+    }
+
+    return frames;
+  }
+
+  private chooseMostCommonLoadAddress(frames: Array<{ loadAddress: string }>): string | undefined {
+    const counts = new Map<string, number>();
+    frames.forEach((frame) => counts.set(frame.loadAddress, (counts.get(frame.loadAddress) || 0) + 1));
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
+  }
+
+  private extractLoadAddressForUUID(crashLog: string, uuid: string): string | null {
+    const normalizedUUID = uuid.replace(/-/g, '').toLowerCase();
+    const lines = crashLog.split(/\r?\n/);
+    let foundBinaryImages = false;
+
+    for (const line of lines) {
+      if (line.includes('Binary Images:')) {
+        foundBinaryImages = true;
+        continue;
+      }
+
+      if (!foundBinaryImages) {
+        continue;
+      }
+
+      const match = line.match(/^\s*\*?(0x[0-9a-f]+)\s+-\s+(?:0x[0-9a-f]+|\?\?\?)\s+.*?<([0-9A-F-]{36})>/i);
+      if (!match) {
+        continue;
+      }
+
+      if (match[2].replace(/-/g, '').toLowerCase() === normalizedUUID) {
+        return match[1];
+      }
+    }
+
+    return null;
   }
 
   private isUsableAtosSymbol(

@@ -31,6 +31,8 @@ export interface SaveHistoryParams {
   lastStackCall?: string;
   crashModule?: string;
   crashLocation?: string;
+  crashModuleUuid?: string;
+  blockerThreadId?: string;
 }
 
 export class HistoryService {
@@ -127,12 +129,13 @@ export class HistoryService {
    */
   async saveHistory(params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
     const db = getDatabase();
+    const normalizedParams = this.resolveCrashModuleFromDSYM(params);
 
     try {
       // 检查是否存在重复记录
-      const duplicate = this.findDuplicateHistory(params.originalLog, params.usedUuids);
+      const duplicate = this.findDuplicateHistory(normalizedParams.originalLog, normalizedParams.usedUuids);
       if (duplicate) {
-        if (this.shouldRefreshDuplicateHistory(duplicate, params)) {
+        if (this.shouldRefreshDuplicateHistory(duplicate, normalizedParams)) {
           const updateStmt = db.prepare(`
             UPDATE symbolication_history
             SET app_version = ?,
@@ -149,22 +152,22 @@ export class HistoryService {
           `);
 
           updateStmt.run(
-            params.appVersion,
-            params.versionDetected !== false ? 1 : 0,
-            params.crashType || null,
-            params.crashReason || null,
-            params.lastStackCall || null,
-            params.crashModule || null,
-            params.crashLocation || null,
-            params.symbolicatedLog,
-            JSON.stringify(params.usedUuids),
-            params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null,
+            normalizedParams.appVersion,
+            normalizedParams.versionDetected !== false ? 1 : 0,
+            normalizedParams.crashType || null,
+            normalizedParams.crashReason || null,
+            normalizedParams.lastStackCall || null,
+            normalizedParams.crashModule || null,
+            normalizedParams.crashLocation || null,
+            normalizedParams.symbolicatedLog,
+            JSON.stringify(normalizedParams.usedUuids),
+            normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
             duplicate.id
           );
 
           logger.info('刷新重复历史记录的符号化结果', {
             existingId: duplicate.id,
-            appVersion: params.appVersion,
+            appVersion: normalizedParams.appVersion,
           });
           return this.getHistoryById(duplicate.id);
         }
@@ -184,22 +187,22 @@ export class HistoryService {
       `);
 
       const result = stmt.run(
-        params.appVersion,
-        params.versionDetected !== false ? 1 : 0,
-        params.crashType || null,
-        params.crashReason || null,
-        params.lastStackCall || null,
-        params.crashModule || null,
-        params.crashLocation || null,
-        params.originalLog,
-        params.symbolicatedLog,
-        JSON.stringify(params.usedUuids),
-        params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null
+        normalizedParams.appVersion,
+        normalizedParams.versionDetected !== false ? 1 : 0,
+        normalizedParams.crashType || null,
+        normalizedParams.crashReason || null,
+        normalizedParams.lastStackCall || null,
+        normalizedParams.crashModule || null,
+        normalizedParams.crashLocation || null,
+        normalizedParams.originalLog,
+        normalizedParams.symbolicatedLog,
+        JSON.stringify(normalizedParams.usedUuids),
+        normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null
       );
 
       logger.info('符号化历史记录已保存', {
         id: result.lastInsertRowid,
-        appVersion: params.appVersion,
+        appVersion: normalizedParams.appVersion,
       });
 
       // 返回保存的记录
@@ -214,6 +217,12 @@ export class HistoryService {
     duplicate: SymbolicationHistoryRecord,
     params: SaveHistoryParams
   ): boolean {
+    const duplicateModule = (duplicate.crashModule || '').trim();
+    const nextModule = (params.crashModule || '').trim();
+    if (nextModule && nextModule !== duplicateModule && this.shouldReplaceCrashModule(duplicateModule)) {
+      return true;
+    }
+
     if (!params.symbolicatedLog || params.symbolicatedLog === duplicate.symbolicatedLog) {
       return false;
     }
@@ -243,8 +252,68 @@ export class HistoryService {
     return (log.match(/^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
   }
 
+  private resolveCrashModuleFromDSYM(params: SaveHistoryParams): SaveHistoryParams {
+    const uuid = this.extractModuleUUID(params);
+    if (!uuid) {
+      return params;
+    }
+
+    try {
+      const dsym = getDatabase().prepare(`
+        SELECT app_name
+        FROM dsym_info
+        WHERE uuid = ?
+        ORDER BY upload_time DESC
+        LIMIT 1
+      `).get(uuid) as { app_name?: string } | undefined;
+
+      const appName = dsym?.app_name?.trim();
+      if (!appName) {
+        return params;
+      }
+
+      const location = params.crashLocation && !/^blocked by thread /i.test(params.crashLocation)
+        ? params.crashLocation
+        : undefined;
+
+      return {
+        ...params,
+        crashModule: location ? `${appName} - ${location}` : appName,
+      };
+    } catch (error: any) {
+      logger.warn('根据 dSYM UUID 修正崩溃模块失败', {
+        uuid,
+        error: error.message,
+      });
+      return params;
+    }
+  }
+
+  private extractModuleUUID(params: SaveHistoryParams): string | undefined {
+    const explicitUUID = params.crashModuleUuid?.trim();
+    if (explicitUUID) {
+      return explicitUUID.toUpperCase();
+    }
+
+    const moduleUUID = params.crashModule?.match(/^UUID:([0-9A-F-]{36})$/i)?.[1];
+    if (moduleUUID) {
+      return moduleUUID.toUpperCase();
+    }
+
+    return undefined;
+  }
+
+  private shouldReplaceCrashModule(currentModule: string): boolean {
+    if (!currentModule || /^UUID:[0-9A-F-]{36}$/i.test(currentModule)) {
+      return true;
+    }
+
+    return currentModule === '<unknown>' || currentModule.toLowerCase() === 'unknown';
+  }
+
   async updateSymbolicationResult(id: number, params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
     const db = getDatabase();
+    const normalizedParams = this.resolveCrashModuleFromDSYM(params);
 
     try {
       const stmt = db.prepare(`
@@ -263,23 +332,23 @@ export class HistoryService {
       `);
 
       stmt.run(
-        params.appVersion,
-        params.versionDetected !== false ? 1 : 0,
-        params.crashType || null,
-        params.crashReason || null,
-        params.lastStackCall || null,
-        params.crashModule || null,
-        params.crashLocation || null,
-        params.symbolicatedLog,
-        JSON.stringify(params.usedUuids),
-        params.aiAnalysis ? JSON.stringify(params.aiAnalysis) : null,
+        normalizedParams.appVersion,
+        normalizedParams.versionDetected !== false ? 1 : 0,
+        normalizedParams.crashType || null,
+        normalizedParams.crashReason || null,
+        normalizedParams.lastStackCall || null,
+        normalizedParams.crashModule || null,
+        normalizedParams.crashLocation || null,
+        normalizedParams.symbolicatedLog,
+        JSON.stringify(normalizedParams.usedUuids),
+        normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
         id
       );
 
       logger.info('历史记录符号化结果已刷新', {
         id,
-        appVersion: params.appVersion,
-        uuidCount: params.usedUuids.length,
+        appVersion: normalizedParams.appVersion,
+        uuidCount: normalizedParams.usedUuids.length,
       });
 
       return this.getHistoryById(id);
@@ -357,6 +426,7 @@ export class HistoryService {
     const db = getDatabase();
 
     try {
+      const current = db.prepare('SELECT crash_module FROM symbolication_history WHERE id = ?').get(id) as { crash_module?: string } | undefined;
       // 如果 AI 分析中包含崩溃模块，同时更新崩溃模块字段
       let updateQuery = `
         UPDATE symbolication_history 
@@ -364,7 +434,7 @@ export class HistoryService {
       
       const params: any[] = [JSON.stringify(aiAnalysis)];
       
-      if (aiAnalysis.crashModule) {
+      if (aiAnalysis.crashModule && this.shouldUpdateCrashModuleFromAI(current?.crash_module, aiAnalysis.crashModule)) {
         updateQuery += `, crash_module = ?`;
         params.push(aiAnalysis.crashModule);
       }
@@ -377,12 +447,21 @@ export class HistoryService {
 
       logger.info('历史记录的 AI 分析已更新', { 
         id,
-        updatedCrashModule: !!aiAnalysis.crashModule 
+        updatedCrashModule: !!aiAnalysis.crashModule && this.shouldUpdateCrashModuleFromAI(current?.crash_module, aiAnalysis.crashModule)
       });
     } catch (error: any) {
       logger.error('更新 AI 分析失败', { error: error.message, id });
       throw error;
     }
+  }
+
+  private shouldUpdateCrashModuleFromAI(currentCrashModule: string | undefined, aiCrashModule: string): boolean {
+    const current = String(currentCrashModule || '').trim();
+    const next = String(aiCrashModule || '').trim();
+    if (!next) return false;
+    if (!current) return true;
+    if (/^<unknown>|^unknown$|^未识别|^未知/i.test(current)) return true;
+    return current === next;
   }
 
   /**

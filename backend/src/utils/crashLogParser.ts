@@ -8,6 +8,8 @@ export interface CrashInfo {
   crashLocation?: string;
   crashType?: string;
   crashReason?: string;
+  crashModuleUuid?: string;
+  blockerThreadId?: string;
 }
 
 /**
@@ -28,6 +30,11 @@ export function extractLastStackCall(symbolicatedLog: string): string | undefine
  * 格式：NNIM - ClassName(methodName)
  */
 export function extractCrashModule(symbolicatedLog: string): string | undefined {
+  const hangInfo = extractRunloopHangInfo(symbolicatedLog);
+  if (hangInfo?.crashModule) {
+    return hangInfo.crashModule;
+  }
+
   const crashedThreadFrame = findFirstNonSystemFrame(extractCrashedThreadLines(symbolicatedLog));
   if (crashedThreadFrame) {
     return formatCrashModule(crashedThreadFrame.moduleName, crashedThreadFrame.symbolInfo);
@@ -41,6 +48,94 @@ export function extractCrashModule(symbolicatedLog: string): string | undefined 
   }
   
   return undefined;
+}
+
+function extractRunloopHangInfo(symbolicatedLog: string): Pick<CrashInfo, 'crashModule' | 'crashLocation' | 'crashModuleUuid' | 'blockerThreadId'> | undefined {
+  if (!isTimedOutRunloopHang(symbolicatedLog)) {
+    return undefined;
+  }
+
+  const blockerThreadId = symbolicatedLog.match(/blocked by turnstile waiting for[^\n]*\bthread\s+(0x[0-9a-f]+)/i)?.[1];
+  if (!blockerThreadId) {
+    return undefined;
+  }
+
+  const blockerThreadLines = extractThreadLinesById(symbolicatedLog, blockerThreadId);
+  if (blockerThreadLines.length === 0) {
+    return {
+      crashLocation: `blocked by thread ${blockerThreadId}`,
+      blockerThreadId,
+    };
+  }
+
+  const blockerFrame = findFirstHangBlockerFrame(blockerThreadLines);
+  if (!blockerFrame) {
+    return {
+      crashLocation: extractThreadName(blockerThreadLines) || `blocked by thread ${blockerThreadId}`,
+      blockerThreadId,
+    };
+  }
+
+  const threadName = extractThreadName(blockerThreadLines);
+  const location = threadName || `blocked by thread ${blockerThreadId}`;
+  const crashModule = blockerFrame.moduleName
+    ? formatCrashModule(blockerFrame.moduleName, blockerFrame.symbolInfo || location)
+    : `UUID:${blockerFrame.uuid}`;
+
+  return {
+    crashModule,
+    crashLocation: extractClassAndMethod(blockerFrame.symbolInfo || '') || location,
+    crashModuleUuid: blockerFrame.uuid,
+    blockerThreadId,
+  };
+}
+
+function isTimedOutRunloopHang(log: string): boolean {
+  return /"bug_type"\s*:\s*"228"/i.test(log) ||
+    /Event:\s*Timed Out Runloop Hang/i.test(log) ||
+    /Reason:\s*UIKit-runloop-[^\n]*timeout/i.test(log);
+}
+
+function extractThreadLinesById(log: string, threadId: string): string[] {
+  const escapedThreadId = threadId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = log.match(new RegExp(`(?:^|\\n)(\\s*Thread\\s+${escapedThreadId}[^\\n]*\\n[\\s\\S]*?)(?=\\n\\s*Thread\\s+0x[0-9a-f]+|\\n\\s*Binary Images:|\\s*$)`, 'i'));
+  return match?.[1]?.split('\n') || [];
+}
+
+function extractThreadName(threadLines: string[]): string | undefined {
+  return threadLines.join('\n').match(/Thread name "([^"]+)"/i)?.[1]?.trim();
+}
+
+function findFirstHangBlockerFrame(lines: string[]): { moduleName?: string; symbolInfo?: string; uuid?: string } | undefined {
+  let firstNonSystemFrame: { moduleName?: string; symbolInfo?: string; uuid?: string } | undefined;
+
+  for (const line of lines) {
+    const uuidFrameMatch = line.match(/^\s*(?:\*?\d+)\s+.*?\(<([0-9A-F-]{36})>\s+\+\s+\d+\)/i);
+    if (uuidFrameMatch) {
+      return { uuid: uuidFrameMatch[1].toUpperCase() };
+    }
+
+    const namedFrameMatch = line.match(/^\s*(?:\*?\d+)\s+([^\s]+)\s+(?:0x[0-9a-f]+\s+)?([^\n]+)/i);
+    if (!namedFrameMatch) {
+      continue;
+    }
+
+    const moduleName = normalizeFrameModule(namedFrameMatch[1], namedFrameMatch[2]);
+    if (moduleName && !isSystemModule(moduleName)) {
+      const frame = {
+        moduleName,
+        symbolInfo: namedFrameMatch[2],
+      };
+      if (!firstNonSystemFrame) {
+        firstNonSystemFrame = frame;
+      }
+      if (!isGenericThreadEntrySymbol(namedFrameMatch[2])) {
+        return frame;
+      }
+    }
+  }
+
+  return firstNonSystemFrame;
 }
 
 function extractCrashedThreadLines(symbolicatedLog: string): string[] {
@@ -66,6 +161,7 @@ function extractCrashedThreadLines(symbolicatedLog: string): string[] {
 }
 
 function findFirstNonSystemFrame(lines: string[]): { moduleName: string; symbolInfo: string } | undefined {
+  let firstDiagnosticSystemFrame: { moduleName: string; symbolInfo: string } | undefined;
   let firstPreferredFrame: { moduleName: string; symbolInfo: string } | undefined;
   let firstNonSystemFrame: { moduleName: string; symbolInfo: string } | undefined;
   let firstNonSystemFrameWithSymbol: { moduleName: string; symbolInfo: string } | undefined;
@@ -80,9 +176,17 @@ function findFirstNonSystemFrame(lines: string[]): { moduleName: string; symbolI
     const symbolInfo = stackMatch[2];
     const moduleName = normalizeFrameModule(rawModuleName, symbolInfo);
 
+    if (moduleName && isDiagnosticSystemModule(moduleName) && extractClassAndMethod(symbolInfo)) {
+      firstDiagnosticSystemFrame = firstDiagnosticSystemFrame || { moduleName, symbolInfo };
+      continue;
+    }
+
     if (moduleName && !isSystemModule(moduleName)) {
       const frame = { moduleName, symbolInfo };
       if (isPreferredAppModule(moduleName)) {
+        if (firstDiagnosticSystemFrame) {
+          return firstDiagnosticSystemFrame;
+        }
         if (extractClassAndMethod(symbolInfo)) {
           return frame;
         }
@@ -99,7 +203,7 @@ function findFirstNonSystemFrame(lines: string[]): { moduleName: string; symbolI
     }
   }
 
-  return firstPreferredFrame || firstNonSystemFrameWithSymbol || firstNonSystemFrame;
+  return firstDiagnosticSystemFrame || firstPreferredFrame || firstNonSystemFrameWithSymbol || firstNonSystemFrame;
 }
 
 function formatCrashModule(moduleName: string, symbolInfo: string): string {
@@ -111,7 +215,7 @@ function formatCrashModule(moduleName: string, symbolInfo: string): string {
 }
 
 function normalizeFrameModule(moduleName: string, symbolInfo: string): string | undefined {
-  if (moduleName && moduleName !== '<unknown>') {
+  if (moduleName && moduleName !== '<unknown>' && moduleName !== '???') {
     return moduleName;
   }
 
@@ -185,6 +289,15 @@ function extractClassAndMethod(symbolInfo: string): string | null {
  * 优先提取更有意义的信息，如 Watchdog 超时、内存不足等
  */
 export function extractCrashType(crashLog: string): string | undefined {
+  if (isTimedOutRunloopHang(crashLog)) {
+    return 'Runloop Hang';
+  }
+
+  const appHangMatch = crashLog.match(/Exception Type:\s+(App Hang[^\n]*)/i);
+  if (appHangMatch) {
+    return appHangMatch[1].trim();
+  }
+
   // 方法1: 检查是否是 Watchdog 超时
   if (crashLog.includes('watchdog') || crashLog.includes('0x8BADF00D')) {
     return 'Watchdog 超时';
@@ -232,6 +345,13 @@ export function extractCrashType(crashLog: string): string | undefined {
  * 提取崩溃原因
  */
 export function extractCrashReason(crashLog: string): string | undefined {
+  if (isTimedOutRunloopHang(crashLog)) {
+    const reasonMatch = crashLog.match(/Reason:\s+([^\n]+)/i);
+    if (reasonMatch) {
+      return reasonMatch[1].trim();
+    }
+  }
+
   // 方法1: Exception Subtype
   const subtypeMatch = crashLog.match(/Exception Subtype:\s+([^\n]+)/i);
   if (subtypeMatch) {
@@ -295,14 +415,28 @@ function isPreferredAppModule(module: string): boolean {
   return preferredModules.some(preferred => module.toLowerCase().includes(preferred.toLowerCase()));
 }
 
+function isDiagnosticSystemModule(module: string): boolean {
+  const diagnosticModules = ['ImageIO'];
+  return diagnosticModules.some(preferred => module.toLowerCase().includes(preferred.toLowerCase()));
+}
+
 function isGenericEntrySymbol(symbol: string): boolean {
   return ['main', 'start', '_main', '_start'].includes(symbol.toLowerCase());
+}
+
+function isGenericThreadEntrySymbol(symbol: string): boolean {
+  return /__thread_proxy|_pthread_start|pthread_start|std::__\d*::__thread_proxy/i.test(symbol);
 }
 
 /**
  * 提取崩溃位置（只提取函数名，不包含模块名）
  */
 export function extractCrashLocation(symbolicatedLog: string): string | undefined {
+  const hangInfo = extractRunloopHangInfo(symbolicatedLog);
+  if (hangInfo?.crashLocation) {
+    return hangInfo.crashLocation;
+  }
+
   const crashedThreadFrame = findFirstNonSystemFrame(extractCrashedThreadLines(symbolicatedLog));
   if (crashedThreadFrame) {
     return extractClassAndMethod(crashedThreadFrame.symbolInfo) || undefined;
@@ -322,11 +456,15 @@ export function extractCrashLocation(symbolicatedLog: string): string | undefine
  * 提取所有崩溃信息
  */
 export function extractCrashInfo(originalLog: string, symbolicatedLog: string): CrashInfo {
+  const hangInfo = extractRunloopHangInfo(symbolicatedLog) || extractRunloopHangInfo(originalLog);
+
   return {
     lastStackCall: extractLastStackCall(symbolicatedLog),
-    crashModule: extractCrashModule(symbolicatedLog),
-    crashLocation: extractCrashLocation(symbolicatedLog),
+    crashModule: hangInfo?.crashModule || extractCrashModule(symbolicatedLog),
+    crashLocation: hangInfo?.crashLocation || extractCrashLocation(symbolicatedLog),
     crashType: extractCrashType(originalLog),
     crashReason: extractCrashReason(originalLog),
+    crashModuleUuid: hangInfo?.crashModuleUuid,
+    blockerThreadId: hangInfo?.blockerThreadId,
   };
 }
