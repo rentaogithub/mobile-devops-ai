@@ -50,7 +50,7 @@
         <hudson.model.StringParameterDefinition>
           <name>TEST_SUITE</name>
           <defaultValue>smoke</defaultValue>
-          <description>质检套件：smoke、im、rtc、monkey、stutter、full。stutter 为独立卡顿检测，不执行 Monkey 随机操作。</description>
+          <description>质检套件：smoke、im、rtc、monkey、stutter、business_flow、full。stutter 为独立卡顿检测，不执行 Monkey 随机操作。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -69,6 +69,17 @@
           <name>STUTTER_SCENARIO</name>
           <defaultValue>community</defaultValue>
           <description>卡顿检测自动化场景：community、im、voice_room。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.TextParameterDefinition>
+          <name>BUSINESS_FLOW_PLAN_JSON</name>
+          <defaultValue></defaultValue>
+          <description>business_flow 自定义业务编排 JSON，由平台生成。</description>
+        </hudson.model.TextParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PLATFORM_TASK_ID</name>
+          <defaultValue></defaultValue>
+          <description>nn-ios-platform 工作流任务 ID，用于状态串联和业务编排兜底恢复。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>

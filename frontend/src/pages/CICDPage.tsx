@@ -26,8 +26,8 @@ import appleDeviceEnrollGuide from '../assets/apple-device-enroll-guide.svg';
 const { Title, Paragraph, Text } = Typography;
 type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
 type CICDSection = 'release' | 'quality' | 'devices';
-type QualitySummaryView = 'log' | 'monkey' | 'performance' | 'crash' | 'evidence' | 'summary';
-type QualityReportKind = 'monkey' | 'stutter' | 'generic';
+type QualitySummaryView = 'log' | 'monkey' | 'business_flow' | 'performance' | 'crash' | 'evidence' | 'summary';
+type QualityReportKind = 'monkey' | 'stutter' | 'business_flow' | 'generic';
 type AppleRegistrationInlineResult = {
   type: 'success' | 'info' | 'warning' | 'error';
   message: string;
@@ -56,6 +56,7 @@ function isValidAppleUdid(value?: string) {
 const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite }[] = [
   { label: 'Monkey 测试', value: 'monkey' },
   { label: '卡顿检测', value: 'stutter' },
+  { label: '自定义业务编排', value: 'business_flow' },
   { label: '冒烟测试', value: 'smoke' },
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
@@ -69,7 +70,59 @@ const QUALITY_SUITE_GROUPS: { title: string; options: { label: string; value: Je
   },
   {
     title: '业务核心链路压测：',
-    options: QUALITY_SUITE_OPTIONS.filter((option) => !['monkey', 'stutter'].includes(option.value)),
+    options: QUALITY_SUITE_OPTIONS.filter((option) => !['monkey', 'stutter', 'business_flow'].includes(option.value)),
+  },
+  {
+    title: '自定义业务编排：',
+    options: QUALITY_SUITE_OPTIONS.filter((option) => option.value === 'business_flow'),
+  },
+];
+
+const BUSINESS_FLOW_FEATURE_GROUPS = [
+  {
+    title: 'IM',
+    options: [
+      { label: '消息列表', value: 'im/home' },
+      { label: '聊天详情', value: 'im/chat_detail' },
+      { label: '好友搜索', value: 'im/search_friend' },
+      { label: '系统消息', value: 'im/system_message' },
+    ],
+  },
+  {
+    title: '社区',
+    options: [
+      { label: '社区首页', value: 'community/root' },
+      { label: '切换社区', value: 'community/home' },
+      { label: '社区搜索', value: 'community/search' },
+      { label: '成员列表', value: 'community/member_list' },
+      { label: '热门社区', value: 'community/hot' },
+    ],
+  },
+  {
+    title: '语音房',
+    options: [
+      { label: '语音房入口', value: 'voice_room/home' },
+      { label: '进房退房', value: 'voice_room/chat' },
+      { label: '麦位列表', value: 'voice_room/mic_list' },
+      { label: '邀请上麦', value: 'voice_room/invite_mic' },
+    ],
+  },
+  {
+    title: '我的',
+    options: [
+      { label: '个人主页', value: 'profile/home' },
+      { label: '主题设置', value: 'profile/theme' },
+      { label: '通知设置', value: 'profile/notice_settings' },
+      { label: '关于页', value: 'profile/about' },
+    ],
+  },
+  {
+    title: '订单/钱包只读',
+    options: [
+      { label: '服务中心只读', value: 'playwith/center' },
+      { label: '订单列表只读', value: 'playwith/order_list' },
+      { label: '钱包只读', value: 'playwith/wallet' },
+    ],
   },
 ];
 
@@ -114,6 +167,7 @@ function getQualityReportKind(build?: JenkinsQualityBuild | null): QualityReport
   const suite = String(build?.qualitySummary?.testSuite || '').trim().toLowerCase();
   if (suite === 'stutter') return 'stutter';
   if (suite === 'monkey') return 'monkey';
+  if (suite === 'business_flow') return 'business_flow';
   return 'generic';
 }
 
@@ -121,6 +175,7 @@ function getQualityReportTitle(build?: JenkinsQualityBuild | null) {
   const kind = getQualityReportKind(build);
   if (kind === 'stutter') return '卡顿检测报告';
   if (kind === 'monkey') return 'Monkey 质检报告';
+  if (kind === 'business_flow') return '业务编排质检报告';
   return '质检汇总';
 }
 
@@ -131,6 +186,7 @@ function qualitySuiteLabel(summary?: JenkinsQualityBuild['qualitySummary']) {
     return scenario ? `卡顿检测 / ${scenario}` : '卡顿检测';
   }
   if (suite === 'monkey') return 'Monkey';
+  if (suite === 'business_flow') return '业务编排';
   return summary?.testSuite || '-';
 }
 
@@ -2010,6 +2066,119 @@ function SymbolicatedCrashAnalysisDigest({
   );
 }
 
+function BusinessFlowReportSummary({
+  summary,
+  preview,
+  loading,
+}: {
+  summary?: NonNullable<JenkinsQualityBuild['qualitySummary']>['businessFlow'];
+  preview: (JenkinsQualityArtifactPreview & { title: string }) | null;
+  loading: boolean;
+}) {
+  type BusinessFlowReport = NonNullable<JenkinsQualityBuild['qualitySummary']>['businessFlow'];
+  if (loading) {
+    return <Alert showIcon type="info" message="正在加载业务编排报告..." />;
+  }
+  const report = parseJsonPreview<BusinessFlowReport>(preview) || summary;
+  if (!report) {
+    return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="本次任务没有业务编排报告" />;
+  }
+  const steps = report.steps || [];
+  const isPassed = String(report.status || '').toLowerCase() === 'passed';
+  const statusColor = isPassed ? 'green' : 'red';
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <Alert
+        showIcon
+        type={isPassed ? 'success' : 'warning'}
+        message={isPassed ? '业务编排执行完成' : '业务编排存在异常'}
+        description={report.message || '未提供执行说明'}
+      />
+      <Space wrap>
+        <Tag color={statusColor}>{report.status || 'unknown'}</Tag>
+        <Tag>通过 {report.passedSteps || 0}/{report.totalSteps || steps.length || 0} 步</Tag>
+        {report.durationMs !== undefined && <Tag>耗时 {formatMilliseconds(report.durationMs)}</Tag>}
+        {report.riskPolicy && <Tag color="blue">风险策略 {report.riskPolicy}</Tag>}
+        {report.stopOnFailure !== undefined && <Tag>{report.stopOnFailure ? '失败即停' : '失败后继续'}</Tag>}
+      </Space>
+      {report.issues?.length ? (
+        <Space direction="vertical" size={6} style={{ width: '100%' }}>
+          <Text strong>问题摘要</Text>
+          {report.issues.slice(0, 6).map((issue, index) => (
+            <Alert
+              key={`${issue.stepId || index}-${issue.message || ''}`}
+              type={issue.severity === 'failed' ? 'error' : 'warning'}
+              showIcon
+              message={issue.message || issue.path || '业务步骤异常'}
+            />
+          ))}
+        </Space>
+      ) : null}
+      <Table
+        size="small"
+        rowKey={(record: any) => record.id || record.index}
+        pagination={false}
+        dataSource={steps}
+        columns={[
+          {
+            title: '步骤',
+            key: 'label',
+            width: 180,
+            render: (_: unknown, record: any) => (
+              <Space direction="vertical" size={0}>
+                <Text>{record.label || record.id || '-'}</Text>
+                {record.path && <Text type="secondary" style={{ fontSize: 12 }}>{record.path}</Text>}
+              </Space>
+            ),
+          },
+          {
+            title: '业务域',
+            dataIndex: 'domain',
+            key: 'domain',
+            width: 110,
+            render: (value: string) => value ? <Tag>{value}</Tag> : <Text type="secondary">-</Text>,
+          },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 100,
+            render: (value: string) => <Tag color={value === 'passed' ? 'green' : (value === 'failed' ? 'red' : 'default')}>{value || '-'}</Tag>,
+          },
+          {
+            title: '风险',
+            key: 'risk',
+            width: 120,
+            render: (_: unknown, record: any) => (
+              <Space size={4} wrap>
+                {record.riskLevel && <Tag color={record.riskLevel === 'normal' ? 'default' : 'orange'}>{record.riskLevel}</Tag>}
+                {record.guarded && <Tag color="blue">已保护</Tag>}
+              </Space>
+            ),
+          },
+          {
+            title: '耗时',
+            dataIndex: 'durationMs',
+            key: 'durationMs',
+            width: 110,
+            render: (value: number) => value ? formatMilliseconds(value) : '-',
+          },
+          {
+            title: '结果',
+            key: 'message',
+            render: (_: unknown, record: any) => (
+              <Space direction="vertical" size={0}>
+                <Text>{record.message || '-'}</Text>
+                {record.lastAction && <Text type="secondary" style={{ fontSize: 12 }}>最后动作：{record.lastAction}</Text>}
+              </Space>
+            ),
+          },
+        ]}
+      />
+    </Space>
+  );
+}
+
 function CrashAnalysisSummary({
   analysis,
   crashReportsUrl,
@@ -2358,6 +2527,7 @@ export default function CICDPage() {
   const [qualitySuite, setQualitySuite] = useState<JenkinsQualitySuite>('monkey');
   const [qualityMonkeyDurationSeconds, setQualityMonkeyDurationSeconds] = useState(14400);
   const [qualityStutterScenario, setQualityStutterScenario] = useState('community');
+  const [qualityBusinessFlowFeatures, setQualityBusinessFlowFeatures] = useState<string[]>(['community/root', 'community/search', 'community/home']);
   const [qualityDevicePool, setQualityDevicePool] = useState('ios-default');
   const [qualityDeviceUdids, setQualityDeviceUdids] = useState<string[]>([]);
   const [qualitySkipInstall, setQualitySkipInstall] = useState(false);
@@ -2512,6 +2682,12 @@ export default function CICDPage() {
     setQualityArtifactPreview(null);
     setQualityLogDigest(null);
     setQualityPerformanceSamples(null);
+    if (record.qualitySummary?.testSuite === 'business_flow') {
+      setActiveQualitySummaryView('business_flow');
+      if (record.qualitySummary?.artifacts?.businessFlowReportUrl) {
+        previewQualityArtifact('业务编排报告', record.qualitySummary.artifacts.businessFlowReportUrl);
+      }
+    }
     const initialHasPerformanceReport = Boolean(
       record.qualitySummary?.performanceAnalysis ||
       record.qualitySummary?.artifacts?.performanceSamplesUrl ||
@@ -2526,6 +2702,13 @@ export default function CICDPage() {
     const latestBuild = nextData?.builds?.find((build) => build.number === record.number);
     const displayBuild = latestBuild || record;
     setQualityReportBuild(displayBuild);
+    if (displayBuild.qualitySummary?.testSuite === 'business_flow') {
+      setActiveQualitySummaryView('business_flow');
+      if (displayBuild.qualitySummary?.artifacts?.businessFlowReportUrl) {
+        await previewQualityArtifact('业务编排报告', displayBuild.qualitySummary.artifacts.businessFlowReportUrl);
+      }
+      return;
+    }
     const hasPerformanceReport = Boolean(
       displayBuild.qualitySummary?.performanceAnalysis ||
       displayBuild.qualitySummary?.artifacts?.performanceSamplesUrl ||
@@ -3210,6 +3393,7 @@ export default function CICDPage() {
     setQualitySuite('monkey');
     setQualityMonkeyDurationSeconds(14400);
     setQualityStutterScenario('community');
+    setQualityBusinessFlowFeatures(['community/root', 'community/search', 'community/home']);
     setQualityDevicePool(nextPool);
     setQualityDeviceUdids(defaultQualityDeviceUdids(nextPool));
     setQualitySkipInstall(shouldUseInstalledProductionApp(fallbackBuild));
@@ -3229,6 +3413,10 @@ export default function CICDPage() {
       message.warning('请至少选择一台空闲设备');
       return;
     }
+    if (qualitySuite === 'business_flow' && qualityBusinessFlowFeatures.length === 0) {
+      message.warning('请至少选择一个业务功能');
+      return;
+    }
     setQualitySubmitting(true);
     setQualitySubmitMessage('正在提交 Jenkins 质检任务...');
     const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
@@ -3245,8 +3433,17 @@ export default function CICDPage() {
         testSuite: qualitySuite,
         devicePool: qualityDevicePool,
         deviceUdid: qualityDeviceUdids[0],
-        monkeyDurationSeconds: qualitySuite === 'monkey' || qualitySuite === 'stutter' ? qualityMonkeyDurationSeconds : undefined,
+        monkeyDurationSeconds: qualitySuite === 'monkey' || qualitySuite === 'stutter' || qualitySuite === 'business_flow' ? qualityMonkeyDurationSeconds : undefined,
         stutterScenario: qualitySuite === 'stutter' ? qualityStutterScenario : undefined,
+        businessFlowPlan: qualitySuite === 'business_flow'
+          ? {
+              name: '自定义业务编排',
+              featureIds: qualityBusinessFlowFeatures,
+              maxDurationSeconds: qualityMonkeyDurationSeconds,
+              riskPolicy: 'read_only',
+              stopOnFailure: true,
+            }
+          : undefined,
         skipInstall: qualitySkipInstall,
         appBundleId: qualitySkipInstall ? PRODUCTION_BUNDLE_ID : undefined,
       });
@@ -3664,6 +3861,7 @@ export default function CICDPage() {
   const qualityReportKind = getQualityReportKind(qualityReportBuild);
   const isMonkeyQualityReport = qualityReportKind === 'monkey';
   const isStutterQualityReport = qualityReportKind === 'stutter';
+  const isBusinessFlowQualityReport = qualityReportKind === 'business_flow';
   const qualityReportTitle = getQualityReportTitle(qualityReportBuild);
   const qualityPerformanceButtonLabel = isStutterQualityReport ? '卡顿报告' : '性能报告';
   const renderAppleRegistrationInlineResult = () => {
@@ -4183,7 +4381,8 @@ export default function CICDPage() {
                         render: (_, record) => {
                           const label = qualitySuiteLabel(record.qualitySummary);
                           if (label === '-') return <Text type="secondary">-</Text>;
-                          return <Tag color={record.qualitySummary?.testSuite === 'stutter' ? 'orange' : 'default'}>{label}</Tag>;
+                          const suite = record.qualitySummary?.testSuite;
+                          return <Tag color={suite === 'stutter' ? 'orange' : (suite === 'business_flow' ? 'blue' : 'default')}>{label}</Tag>;
                         },
                       },
                       {
@@ -4232,9 +4431,12 @@ export default function CICDPage() {
                           const percent = progressPercent(record);
                           const perf = progress?.recentPerformance;
                           const remainingSeconds = progressRemainingSeconds(record);
+                          const requestedDurationSeconds = Number(progress?.requestedDurationSeconds || 0);
                           const summaryStatus = String(record.qualitySummary?.status || '').toLowerCase();
                           const isPassed = ['passed', 'success'].includes(summaryStatus);
                           const progressMessage = isPassed ? '质检完成' : progress?.message;
+                          const elapsedLabel = formatSeconds(progressElapsedSeconds(record));
+                          const planLabel = requestedDurationSeconds > 0 ? formatSeconds(requestedDurationSeconds) : '';
                           return (
                             <Space direction="vertical" size={2} style={{ width: '100%' }}>
                               <Progress percent={percent} size="small" status={progressStatus(record)} />
@@ -4244,7 +4446,8 @@ export default function CICDPage() {
                                 </Text>
                               )}
                               <Text type="secondary" style={{ fontSize: 12 }}>
-                                {progress?.executedEvents || 0} 次 / 已运行 {formatSeconds(progressElapsedSeconds(record))}
+                                {progress?.executedEvents || 0} 次 / 已运行 {elapsedLabel}
+                                {planLabel ? ` / 计划 ${planLabel}` : ''}
                                 {remainingSeconds !== null && remainingSeconds !== undefined ? ` / 剩余 ${formatSeconds(remainingSeconds)}` : ''}
                               </Text>
                               {(perf?.cpu !== null && perf?.cpu !== undefined) || (perf?.memoryMB !== null && perf?.memoryMB !== undefined) || (perf?.fps !== null && perf?.fps !== undefined) ? (
@@ -4951,9 +5154,11 @@ export default function CICDPage() {
               </Space>
             </Radio.Group>
           </div>
-          {(qualitySuite === 'monkey' || qualitySuite === 'stutter') && (
+          {(qualitySuite === 'monkey' || qualitySuite === 'stutter' || qualitySuite === 'business_flow') && (
             <div>
-              <Text strong>{qualitySuite === 'stutter' ? '卡顿检测时长' : 'Monkey 执行时长'}</Text>
+              <Text strong>
+                {qualitySuite === 'stutter' ? '卡顿检测时长' : (qualitySuite === 'business_flow' ? '业务编排时长' : 'Monkey 执行时长')}
+              </Text>
               <Radio.Group
                 optionType="button"
                 buttonStyle="solid"
@@ -4977,6 +5182,42 @@ export default function CICDPage() {
                 onChange={(event) => setQualityStutterScenario(event.target.value)}
                 style={{ display: 'block', marginTop: 8 }}
               />
+            </div>
+          )}
+          {qualitySuite === 'business_flow' && (
+            <div>
+              <Text strong>业务功能编排</Text>
+              <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+                {BUSINESS_FLOW_FEATURE_GROUPS.map((group) => (
+                  <div
+                    key={group.title}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '96px 1fr',
+                      columnGap: 8,
+                      alignItems: 'start',
+                    }}
+                  >
+                    <Text type="secondary">{group.title}</Text>
+                    <Space wrap size={[16, 8]}>
+                      {group.options.map((option) => (
+                        <Checkbox
+                          key={option.value}
+                          checked={qualityBusinessFlowFeatures.includes(option.value)}
+                          disabled={qualitySubmitting}
+                          onChange={(event) => {
+                            setQualityBusinessFlowFeatures((current) => event.target.checked
+                              ? Array.from(new Set([...current, option.value]))
+                              : current.filter((item) => item !== option.value));
+                          }}
+                        >
+                          {option.label}
+                        </Checkbox>
+                      ))}
+                    </Space>
+                  </div>
+                ))}
+              </Space>
             </div>
           )}
           <div>
@@ -5077,6 +5318,11 @@ export default function CICDPage() {
                       {qualityReportBuild.qualitySummary?.testSuite === 'stutter' && qualityReportBuild.qualitySummary?.stutterScenario && (
                         <Tag color="magenta">场景 {stutterScenarioLabel(qualityReportBuild.qualitySummary.stutterScenario)}</Tag>
                       )}
+                      {qualityReportBuild.qualitySummary?.testSuite === 'business_flow' && qualityReportBuild.qualitySummary?.businessFlow && (
+                        <Tag color="blue">
+                          步骤 {qualityReportBuild.qualitySummary.businessFlow.passedSteps || 0}/{qualityReportBuild.qualitySummary.businessFlow.totalSteps || 0}
+                        </Tag>
+                      )}
                       <Tag>耗时 {formatQualityDuration(qualityReportBuild)}</Tag>
                       {qualityReportBuild.qualitySummary?.monkeyStatus && (
                         <Tag color={qualityReportBuild.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>
@@ -5110,6 +5356,7 @@ export default function CICDPage() {
             >
                   <Space wrap>
                     <Button
+                      style={{ display: isBusinessFlowQualityReport ? 'none' : undefined }}
                       disabled={!qualityReportBuild.qualitySummary?.performanceAnalysis && !qualityReportBuild.qualitySummary?.artifacts?.performanceSamplesUrl && !qualityReportBuild.qualitySummary?.artifacts?.performanceTraceUrl}
                       loading={qualityPerformanceLoading}
                       type={activeQualitySummaryView === 'performance' ? 'primary' : 'default'}
@@ -5117,6 +5364,19 @@ export default function CICDPage() {
                     >
                       {qualityPerformanceButtonLabel}
                     </Button>
+                    {isBusinessFlowQualityReport && (
+                      <Button
+                        disabled={!qualityReportBuild.qualitySummary?.businessFlow && !qualityReportBuild.qualitySummary?.artifacts?.businessFlowReportUrl}
+                        loading={qualityArtifactPreviewLoading && qualityArtifactPreview?.title === '业务编排报告'}
+                        type={activeQualitySummaryView === 'business_flow' ? 'primary' : 'default'}
+                        onClick={() => {
+                          setActiveQualitySummaryView('business_flow');
+                          previewQualityArtifact('业务编排报告', qualityReportBuild.qualitySummary?.artifacts?.businessFlowReportUrl);
+                        }}
+                      >
+                        业务编排
+                      </Button>
+                    )}
                     {isMonkeyQualityReport && (
                       <Button
                         disabled={!qualityReportBuild.qualitySummary?.artifacts?.monkeyReportUrl}
@@ -5151,7 +5411,7 @@ export default function CICDPage() {
                     >
                       质检日志
                     </Button>
-                    {isMonkeyQualityReport && (
+                    {(isMonkeyQualityReport || isBusinessFlowQualityReport) && (
                       <Button
                         disabled={!qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl}
                         type={activeQualitySummaryView === 'evidence' ? 'primary' : 'default'}
@@ -5180,6 +5440,24 @@ export default function CICDPage() {
                       <CrashAnalysisSummary
                         analysis={qualityReportBuild.qualitySummary?.exceptionAnalysis}
                         crashReportsUrl={qualityReportBuild.qualitySummary?.artifacts?.crashReportsUrl}
+                      />
+                    </Card>
+                  )}
+                  {activeQualitySummaryView === 'business_flow' && isBusinessFlowQualityReport && (
+                    <Card
+                      size="small"
+                      title="业务编排"
+                      extra={qualityReportBuild.qualitySummary?.artifacts?.businessFlowReportUrl && (
+                        <Button size="small" type="link" onClick={() => openExternalUrl(qualityReportBuild.qualitySummary?.artifacts?.businessFlowReportUrl)}>
+                          原始 JSON
+                        </Button>
+                      )}
+                      style={{ marginTop: 16 }}
+                    >
+                      <BusinessFlowReportSummary
+                        summary={qualityReportBuild.qualitySummary?.businessFlow}
+                        preview={qualityArtifactPreview}
+                        loading={qualityArtifactPreviewLoading}
                       />
                     </Card>
                   )}
@@ -5241,7 +5519,7 @@ export default function CICDPage() {
                       </pre>
 	                    </Card>
 	                  )}
-                  {activeQualitySummaryView === 'evidence' && isMonkeyQualityReport && (
+                  {activeQualitySummaryView === 'evidence' && (isMonkeyQualityReport || isBusinessFlowQualityReport) && (
                     <Card size="small" title="现场证据" style={{ marginTop: 16 }}>
                       {qualityReportBuild.qualitySummary?.artifacts?.screenshotUrl ? (
                         <Space direction="vertical" size={8} style={{ width: '100%' }}>

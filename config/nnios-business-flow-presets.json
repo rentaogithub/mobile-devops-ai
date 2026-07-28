@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "features": [
+    {
+      "id": "im/home",
+      "label": "消息列表",
+      "domain": "im",
+      "path": "im/home",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["消息", "聊天", "好友"],
+      "fallbackXRatio": 0.3,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "im/chat_detail",
+      "label": "聊天详情",
+      "domain": "im",
+      "path": "im/chat_detail",
+      "type": "business_action",
+      "durationSeconds": 90,
+      "labels": ["消息", "聊天"],
+      "fallbackXRatio": 0.3,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "im/search_friend",
+      "label": "好友搜索",
+      "domain": "im",
+      "path": "im/search_friend",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["搜索", "好友", "联系人"],
+      "fallbackXRatio": 0.3,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "im/system_message",
+      "label": "系统消息",
+      "domain": "im",
+      "path": "im/system_message",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["系统消息", "通知", "消息"],
+      "fallbackXRatio": 0.3,
+      "fallbackYRatio": 0.94
+    },
+        {
+            "id": "community/root",
+            "label": "社区首页",
+            "domain": "community",
+            "path": "community/root",
+            "type": "business_action",
+            "durationSeconds": 60,
+            "goal": "进入左下第一个 Tab 的社区首页，只读验证社区首页核心模块可见",
+            "sourceEvidence": [
+                "NNIM/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
+                "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+                "当前 WDA source 可见社区首页核心文案：搜索社区、用户名称/ID、首页、战队、活动、公告、攻略、社区看板、全员大厅"
+            ],
+            "entryLanguage": [
+                "社区"
+            ],
+            "targetLanguage": [
+                "搜索社区、用户名称/ID",
+                "首页",
+                "战队",
+                "活动",
+                "公告",
+                "攻略",
+                "社区看板",
+                "全员大厅",
+                "我在社区的等级"
+            ],
+            "forbiddenLanguage": [
+                "活动详情",
+                "立即领取",
+                "抽奖",
+                "待加入",
+                "回归开黑",
+                "发送",
+                "按住说话",
+                "输入消息",
+                "搜索昵称或聊天记录",
+                "钱包",
+                "商店"
+            ],
+            "actions": [
+                {
+                    "intent": "wait",
+                    "seconds": 1
+                },
+                {
+                    "intent": "swipe"
+                }
+            ],
+            "passCondition": "targetLanguage 命中且 forbiddenLanguage 未命中",
+            "labels": [
+                "社区",
+                "首页",
+                "社区看板"
+            ],
+            "fallbackXRatio": 0.24,
+            "fallbackYRatio": 0.94
+        },
+        {
+            "id": "community/home",
+            "label": "切换社区",
+            "domain": "community",
+      "path": "community/home",
+      "type": "business_action",
+      "durationSeconds": 90,
+      "goal": "进入社区首页，打开社区切换入口并只读验证已加入社区列表",
+      "sourceEvidence": [
+        "NNIM/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
+        "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+        "NNIM/Src/Root/TabBarController+SideMenu.swift: 左边缘右滑打开社区侧边栏",
+        "NNIMUITests/NNIMUITests.swift: community.sidebar.button / community.sidebar.table / community.sidebar.followed.*"
+      ],
+      "entryLanguage": ["社区"],
+      "targetLanguage": ["社区看板", "我在社区的等级", "全员大厅", "搜索社区、用户名称/ID", "community.sidebar.table"],
+      "forbiddenLanguage": ["活动详情", "立即领取", "抽奖", "待加入", "回归开黑", "发送", "按住说话", "输入消息", "搜索昵称或聊天记录", "钱包", "商店"],
+      "actions": [
+        {"intent": "wait", "seconds": 1},
+        {"intent": "open_community_sidebar"},
+        {"intent": "swipe"}
+      ],
+      "passCondition": "targetLanguage 命中且 forbiddenLanguage 未命中",
+      "labels": ["社区", "切换", "广场"],
+      "fallbackXRatio": 0.5,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "community/search",
+      "label": "社区搜索",
+      "domain": "community",
+      "path": "community/search",
+      "type": "business_action",
+      "durationSeconds": 90,
+      "goal": "进入社区搜索页，使用安全关键词只读验证搜索能力",
+      "sourceEvidence": [
+        "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+        "社区首页 WDA source 可见入口：搜索社区、用户名称/ID"
+      ],
+      "entryLanguage": ["社区"],
+      "targetLanguage": ["搜索社区、用户名称/ID", "社区搜索", "搜索结果", "更多结果"],
+      "beforeLanguage": ["社区看板", "我在社区的等级", "全员大厅", "搜索社区、用户名称/ID"],
+      "afterLanguage": ["更多结果", "用户", "社区", "community.home.list.cell", "绝地求生", "PUBG自建社区", "官方社区", "在线", "空列表", "暂无结果", "没有搜索到"],
+      "forbiddenLanguage": ["活动详情", "立即领取", "抽奖", "待加入", "回归开黑", "发送", "按住说话", "输入消息", "搜索昵称或聊天记录", "钱包", "商店"],
+      "actions": [
+        {"intent": "tap_text", "text": "搜索社区、用户名称/ID"},
+        {"intent": "input", "randomTextPool": ["PUBG", "绝地求生", "王者荣耀", "超级玛利亚", "生化危机", "火炬之光", "test"], "rememberAs": "communitySearchKeyword"},
+        {"intent": "submit_search"},
+        {"intent": "wait", "seconds": 2}
+      ],
+      "passCondition": "targetLanguage 命中且 forbiddenLanguage 未命中",
+      "labels": ["搜索", "社区搜索", "社区"],
+      "fallbackXRatio": 0.5,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "community/member_list",
+      "label": "成员列表",
+      "domain": "community",
+      "path": "community/member_list",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["成员", "大厅", "社区"],
+      "fallbackXRatio": 0.5,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "community/hot",
+      "label": "热门社区",
+      "domain": "community",
+      "path": "community/hot",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["热门", "热榜", "社区"],
+      "fallbackXRatio": 0.5,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "voice_room/home",
+      "label": "语音房入口",
+      "domain": "voice_room",
+      "path": "voice_room/home",
+      "type": "business_action",
+      "durationSeconds": 90,
+      "labels": ["语音房", "语音", "房间", "大厅"],
+      "fallbackXRatio": 0.7,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "voice_room/chat",
+      "label": "进房退房",
+      "domain": "voice_room",
+      "path": "voice_room/chat",
+      "type": "business_action",
+      "durationSeconds": 120,
+      "labels": ["语音房", "房间", "进入"],
+      "fallbackXRatio": 0.7,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "voice_room/mic_list",
+      "label": "麦位列表",
+      "domain": "voice_room",
+      "path": "voice_room/mic_list",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["麦位", "上麦", "成员"],
+      "fallbackXRatio": 0.7,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "voice_room/invite_mic",
+      "label": "邀请上麦",
+      "domain": "voice_room",
+      "path": "voice_room/invite_mic",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["邀请", "上麦", "麦位"],
+      "fallbackXRatio": 0.7,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "profile/home",
+      "label": "个人主页",
+      "domain": "profile",
+      "path": "profile/home",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["我的", "个人中心"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "profile/theme",
+      "label": "主题设置",
+      "domain": "profile",
+      "path": "profile/theme",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["主题", "装扮", "我的"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "profile/notice_settings",
+      "label": "通知设置",
+      "domain": "profile",
+      "path": "profile/notice_settings",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["通知", "设置", "我的"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "profile/about",
+      "label": "关于页",
+      "domain": "profile",
+      "path": "profile/about",
+      "type": "business_action",
+      "durationSeconds": 45,
+      "labels": ["关于", "版本", "我的"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "playwith/center",
+      "label": "服务中心只读",
+      "domain": "playwith",
+      "path": "playwith/center",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["服务", "带玩", "订单"],
+      "fallbackXRatio": 0.5,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "playwith/order_list",
+      "label": "订单列表只读",
+      "domain": "playwith",
+      "path": "playwith/order_list",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["订单", "我的订单"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    },
+    {
+      "id": "playwith/wallet",
+      "label": "钱包只读",
+      "domain": "playwith",
+      "path": "playwith/wallet",
+      "type": "business_action",
+      "durationSeconds": 60,
+      "labels": ["钱包", "余额"],
+      "fallbackXRatio": 0.9,
+      "fallbackYRatio": 0.94
+    }
+  ]
+}

@@ -66,6 +66,7 @@ SCREENSHOT_FILE="${RESULT_DIR}/screenshot.png"
 DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
 PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
+BUSINESS_FLOW_REPORT_FILE="${RESULT_DIR}/business-flow-report.json"
 PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
 PERFORMANCE_STUTTER_FILE="${RESULT_DIR}/performance-stutters.json"
 PERFORMANCE_STACK_FILE="${RESULT_DIR}/performance-stack-analysis.json"
@@ -139,10 +140,16 @@ MONKEY_BUSINESS_WEIGHT_EXPAND="${MONKEY_BUSINESS_WEIGHT_EXPAND:-25}"
 MONKEY_BUSINESS_WEIGHT_RECOVERY="${MONKEY_BUSINESS_WEIGHT_RECOVERY:-20}"
 MONKEY_BUSINESS_WEIGHT_POPUP="${MONKEY_BUSINESS_WEIGHT_POPUP:-10}"
 MONKEY_BUSINESS_WEIGHT_RANDOM="${MONKEY_BUSINESS_WEIGHT_RANDOM:-5}"
+BUSINESS_FLOW_PLAN_JSON="${BUSINESS_FLOW_PLAN_JSON:-}"
 MONKEY_SEED="${MONKEY_SEED:-}"
 MONKEY_STATUS="skipped"
 MONKEY_MESSAGE=""
 MONKEY_EXECUTED_EVENTS="0"
+INSTALL_SKIPPED="0"
+BUSINESS_FLOW_STATUS=""
+BUSINESS_FLOW_MESSAGE=""
+BUSINESS_FLOW_PASSED_STEPS="0"
+BUSINESS_FLOW_TOTAL_STEPS="0"
 PERFORMANCE_SAMPLING="${PERFORMANCE_SAMPLING:-1}"
 PERFORMANCE_SAMPLER="${PERFORMANCE_SAMPLER:-auto}"
 PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory}"
@@ -493,7 +500,9 @@ install_with_devicectl() {
 }
 
 install_ipa() {
+  INSTALL_SKIPPED="0"
   if should_skip_install; then
+    INSTALL_SKIPPED="1"
     write_quality_progress "running" "install" "检测到相同 IPA 指纹，跳过重复安装" 12
     return 0
   fi
@@ -985,7 +994,13 @@ def analyze_frame_stutters(path):
 
 def build_performance_conclusions(performance, samples, thresholds, test_suite=""):
     issues = []
-    include_stutter_metrics = str(test_suite or "").lower() == "stutter"
+    suite = str(test_suite or "").lower()
+    if suite == "business_flow":
+        return {
+            "severity": "passed",
+            "issues": [],
+        }
+    include_stutter_metrics = suite == "stutter"
     cold_ms = performance.get("coldStartReadyMs")
     if cold_ms is not None:
         if cold_ms > thresholds["coldStartSlowMs"]:
@@ -1180,6 +1195,7 @@ data = {
         "deviceLog": rel(device_log_file) if os.path.exists(device_log_file) else "",
         "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
+        "businessFlowReport": rel(os.path.join(result_dir, "business-flow-report.json")) if os.path.exists(os.path.join(result_dir, "business-flow-report.json")) else "",
         "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
         "performanceStutters": rel(os.path.join(result_dir, "performance-stutters.json")) if os.path.exists(os.path.join(result_dir, "performance-stutters.json")) else "",
         "performanceStacks": rel(os.path.join(result_dir, "performance-stack-analysis.json")) if os.path.exists(os.path.join(result_dir, "performance-stack-analysis.json")) else "",
@@ -1189,6 +1205,27 @@ data = {
         "qualityLog": "quality.log",
     },
 }
+business_flow_report_path = os.path.join(result_dir, "business-flow-report.json")
+if os.path.exists(business_flow_report_path):
+    try:
+        business_flow_report = json.load(open(business_flow_report_path, encoding="utf-8"))
+    except Exception:
+        business_flow_report = {}
+    data["businessFlow"] = {
+        "name": business_flow_report.get("name") or "自定义业务编排",
+        "status": business_flow_report.get("status") or "",
+        "message": business_flow_report.get("message") or "",
+        "totalSteps": business_flow_report.get("totalSteps") or 0,
+        "passedSteps": business_flow_report.get("passedSteps") or 0,
+        "failedSteps": business_flow_report.get("failedSteps") or 0,
+        "skippedSteps": business_flow_report.get("skippedSteps") or 0,
+        "durationMs": business_flow_report.get("durationMs") or 0,
+        "riskPolicy": business_flow_report.get("riskPolicy") or "",
+        "stopOnFailure": business_flow_report.get("stopOnFailure") is not False,
+        "targetDomains": business_flow_report.get("targetDomains") or [],
+        "steps": business_flow_report.get("steps") or [],
+        "issues": business_flow_report.get("issues") or [],
+    }
 thresholds = {
     "coldStartWarnMs": to_float(cold_start_warn_ms, 8000),
     "coldStartSlowMs": to_float(cold_start_slow_ms, 15000),
@@ -1315,6 +1352,16 @@ for item in ((summary.get("performanceAnalysis") or {}).get("conclusion") or {})
         {"performance": summary.get("artifacts", {}).get("performanceSamples", "")},
     ))
 
+business_flow = summary.get("businessFlow") or {}
+for item in business_flow.get("issues") or []:
+    issues.append(issue(
+        "business_flow",
+        "blocker" if item.get("severity") == "failed" else "warning",
+        item.get("message") or item.get("path") or "业务编排步骤异常",
+        "|".join(str(x) for x in ["business_flow", item.get("stepId"), item.get("path"), item.get("message")] if x),
+        {"businessFlowReport": summary.get("artifacts", {}).get("businessFlowReport", "")},
+    ))
+
 blocker_count = sum(1 for item in issues if item.get("severity") == "blocker")
 warning_count = sum(1 for item in issues if item.get("severity") == "warning")
 status = "success"
@@ -1357,6 +1404,7 @@ result = {
         "events_per_minute": (summary.get("performanceAnalysis") or {}).get("monkeyEventsPerMinute"),
         "seed": summary.get("monkeySeed") or "",
     },
+    "business_flow": business_flow,
     "quality_gate": {
         "passed": status == "success",
         "blocker_count": blocker_count,
@@ -1394,7 +1442,7 @@ write_json(os.path.join(result_dir, "result.json"), result)
 write_json(os.path.join(result_dir, "issues.json"), {"task_id": result["task_id"], "issues": issues})
 
 summary_lines = [
-    f"# iOS Monkey 质检结果",
+    f"# iOS {summary.get('testSuite') or 'quality'} 质检结果",
     "",
     f"- 任务: {result['task_id'] or '-'}",
     f"- 结果: {status}",
@@ -1544,6 +1592,18 @@ download_ipa() {
   return 0
 }
 
+is_ephemeral_workspace_ipa_url() {
+  local source_url="$1"
+  case "${source_url}" in
+    */.jenkins/workspace/build/*.ipa|*/workspace/build/*.ipa|*/.jenkins/workspace/*/build/*.ipa|*/workspace/*/build/*.ipa|file://*/.jenkins/workspace/build/*.ipa|file://*/workspace/build/*.ipa|file://*/.jenkins/workspace/*/build/*.ipa|file://*/workspace/*/build/*.ipa)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 read_bundle_id_from_plist() {
   local plist_path="$1"
   if [ -z "${plist_path}" ] || [ ! -f "${plist_path}" ]; then
@@ -1586,6 +1646,33 @@ read_bundle_version_from_plist() {
     /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${plist_path}" 2>/dev/null && return
   fi
   python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb")).get("CFBundleVersion", ""))' "${plist_path}" 2>/dev/null
+}
+
+normalize_version_token() {
+  local value="$1"
+  value="${value%% (*}"
+  value="${value%%,*}"
+  value="${value%%;*}"
+  value="${value%% *}"
+  printf '%s\n' "${value}" | tr -d '[:space:]'
+}
+
+validate_detected_package_matches_build() {
+  if [ "${QA_STRICT_IPA_VERSION_MATCH:-1}" = "0" ]; then
+    return 0
+  fi
+  local expected_version detected_version
+  expected_version="$(normalize_version_token "${APP_VERSION:-}")"
+  detected_version="$(normalize_version_token "${DETECTED_SHORT_VERSION:-}")"
+  if [ -z "${expected_version}" ] || [ -z "${detected_version}" ]; then
+    return 0
+  fi
+  if [ "${expected_version}" = "N/A" ] || [ "${expected_version}" = "-" ]; then
+    return 0
+  fi
+  if [ "${expected_version}" != "${detected_version}" ]; then
+    fail "构建包版本不匹配：平台选择的构建 #${SOURCE_BUILD_NUMBER:-N/A} APP版本=${APP_VERSION:-N/A}，但实际获取到的 IPA 版本=${DETECTED_SHORT_VERSION:-N/A} (${DETECTED_BUNDLE_VERSION:-N/A})，包地址=${PACKAGE_URL:-N/A}。请刷新构建包地址或选择正确构建后重试，避免在旧包上执行业务编排。"
+  fi
 }
 
 read_bundle_id_from_app() {
@@ -5775,6 +5862,1099 @@ sys.exit(0 if report["status"] == "passed" else 1)
 PY
 }
 
+run_business_flow_test() {
+  rm -f "${BUSINESS_FLOW_REPORT_FILE}"
+  log "开始自定义业务编排测试: WDA=${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"
+  write_quality_progress "running" "businessFlow" "准备业务编排测试环境" 2.0
+  local resolved_business_flow_plan_json
+  resolved_business_flow_plan_json="$(resolve_business_flow_plan_json || true)"
+  if [ -z "${resolved_business_flow_plan_json}" ]; then
+    local message
+    message="业务编排为空：Jenkins 未传入 BUSINESS_FLOW_PLAN_JSON，且未能从平台任务配置恢复。请同步 Jenkins 质检任务配置后重试。"
+    python3 - "$BUSINESS_FLOW_REPORT_FILE" "$message" <<'PY'
+import json
+import os
+import sys
+
+report_file, message = sys.argv[1:3]
+os.makedirs(os.path.dirname(report_file), exist_ok=True)
+with open(report_file, "w", encoding="utf-8") as f:
+    json.dump({
+        "schemaVersion": "business-flow-report.v1",
+        "name": "自定义业务编排",
+        "status": "failed",
+        "message": message,
+        "riskPolicy": "read_only",
+        "stopOnFailure": True,
+        "targetDomains": [],
+        "startedAt": int(__import__("time").time() * 1000),
+        "durationMs": 0,
+        "totalSteps": 0,
+        "passedSteps": 0,
+        "failedSteps": 0,
+        "skippedSteps": 0,
+        "steps": [],
+        "issues": [{"severity": "failed", "message": message}],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    log "${message}"
+    return 1
+  fi
+  if [ -z "${BUSINESS_FLOW_PLAN_JSON:-}" ]; then
+    log "已从平台任务配置恢复业务编排计划。"
+  fi
+  if ! ensure_wda_ready; then
+    local message
+    message="${WDA_READY_ERROR:-WDA 准备失败：${WDA_URL} 不可访问。}"
+    python3 - "$BUSINESS_FLOW_REPORT_FILE" "$message" <<'PY'
+import json
+import os
+import sys
+import time
+os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)
+with open(sys.argv[1], "w", encoding="utf-8") as f:
+    json.dump({
+        "schemaVersion": "business-flow-report.v1",
+        "name": "自定义业务编排",
+        "status": "failed",
+        "message": sys.argv[2],
+        "riskPolicy": "read_only",
+        "stopOnFailure": True,
+        "targetDomains": [],
+        "startedAt": int(time.time() * 1000),
+        "durationMs": 0,
+        "totalSteps": 0,
+        "passedSteps": 0,
+        "failedSteps": 0,
+        "skippedSteps": 0,
+        "steps": [],
+        "issues": [{"severity": "failed", "message": sys.argv[2]}],
+    }, f, ensure_ascii=False, indent=2)
+PY
+    return 1
+  fi
+  python3 - "$MONKEY_RUNTIME_WDA_URL" "$resolved_business_flow_plan_json" "$BUSINESS_FLOW_REPORT_FILE" "$PROGRESS_FILE" "$MONKEY_BUSINESS_MAP_PATH" "$MONKEY_GUARDED_ACTION_POLICY" "$RESULT_DIR" <<'PY'
+import base64
+import html
+import json
+import os
+import random
+import re
+import sys
+import time
+import urllib.request
+
+wda_url, plan_json, report_file, progress_file, business_map_path, guarded_policy, result_dir = sys.argv[1:8]
+wda_url = (wda_url or "").rstrip("/")
+
+def now_ms():
+    return int(time.time() * 1000)
+
+def read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def write_json(path, value):
+    tmp = f"{path}.tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+def write_failure_report(message):
+    write_json(report_file, {
+        "schemaVersion": "business-flow-report.v1",
+        "name": "自定义业务编排",
+        "status": "failed",
+        "message": message,
+        "riskPolicy": guarded_policy or "read_only",
+        "stopOnFailure": True,
+        "targetDomains": [],
+        "startedAt": now_ms(),
+        "durationMs": 0,
+        "totalSteps": 0,
+        "passedSteps": 0,
+        "failedSteps": 0,
+        "skippedSteps": 0,
+        "steps": [],
+        "issues": [{"severity": "failed", "message": message}],
+    })
+
+class BusinessFlowActionError(RuntimeError):
+    def __init__(self, message, actions=None):
+        super().__init__(message)
+        self.actions = actions or []
+
+def request(method, path, payload=None, timeout=15):
+    body = None
+    headers = {}
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{wda_url}{path}", data=body, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", errors="replace")
+    return json.loads(text) if text else {}
+
+def find_session():
+    for endpoint in ("/status", "/sessions"):
+        try:
+            value = request("GET", endpoint, timeout=5).get("value")
+            if isinstance(value, dict) and value.get("sessionId"):
+                return value.get("sessionId")
+            if isinstance(value, list) and value:
+                return value[0].get("id") or value[0].get("sessionId")
+        except Exception:
+            pass
+    created = request("POST", "/session", {"capabilities": {"alwaysMatch": {}}}, timeout=20)
+    return (created.get("value") or {}).get("sessionId") or created.get("sessionId")
+
+def session_request(method, endpoint, payload=None, timeout=15):
+    return request(method, f"/session/{session_id}{endpoint}", payload, timeout=timeout)
+
+def source():
+    try:
+        value = session_request("GET", "/source", timeout=10).get("value")
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return ""
+
+def screenshot_base64():
+    try:
+        value = session_request("GET", "/screenshot", timeout=12).get("value")
+        return value if isinstance(value, str) else ""
+    except Exception:
+        return ""
+
+def save_screenshot(name, image_b64=None):
+    image_b64 = image_b64 or screenshot_base64()
+    if not image_b64:
+        return ""
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("_") or "screenshot"
+    path = os.path.join(result_dir, f"{safe_name}.png")
+    try:
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(image_b64))
+        return os.path.relpath(path, result_dir)
+    except Exception:
+        return ""
+
+def window_size():
+    try:
+        value = session_request("GET", "/window/size", timeout=5).get("value") or {}
+        return int(value.get("width") or 390), int(value.get("height") or 844)
+    except Exception:
+        return 390, 844
+
+def tap(x, y):
+    try:
+        session_request("POST", "/wda/tap/0", {"x": int(x), "y": int(y)}, timeout=8)
+        return True, f"tap({int(x)},{int(y)})"
+    except Exception:
+        try:
+            session_request("POST", "/actions", {
+                "actions": [{
+                    "type": "pointer",
+                    "id": "finger1",
+                    "parameters": {"pointerType": "touch"},
+                    "actions": [
+                        {"type": "pointerMove", "duration": 0, "x": int(x), "y": int(y)},
+                        {"type": "pointerDown", "button": 0},
+                        {"type": "pause", "duration": 80},
+                        {"type": "pointerUp", "button": 0},
+                    ],
+                }]
+            }, timeout=8)
+            return True, f"tap({int(x)},{int(y)})"
+        except Exception as exc:
+            return False, f"tap failed: {exc}"
+
+def element_id(value):
+    if not isinstance(value, dict):
+        return ""
+    return (
+        value.get("ELEMENT")
+        or value.get("element-6066-11e4-a52e-4f735466cecf")
+        or value.get("id")
+        or ""
+    )
+
+def tap_accessibility_label(labels):
+    for label in labels or []:
+        label = str(label or "").strip()
+        if not label:
+            continue
+        for using in ("accessibility id", "name"):
+            try:
+                found = session_request("POST", "/element", {"using": using, "value": label}, timeout=5)
+                eid = element_id(found.get("value"))
+                if not eid:
+                    continue
+                session_request("POST", f"/element/{eid}/click", {}, timeout=8)
+                return True, f"tap_label({label})"
+            except Exception:
+                pass
+    return False, "tap_label_not_found"
+
+def predicate_quote(value):
+    return "'" + str(value or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+def tap_predicate_text(label):
+    label = str(label or "").strip()
+    if not label:
+        return False, "tap_predicate(empty)"
+    quoted = predicate_quote(label)
+    exact_predicate = (
+        f"name == {quoted} OR label == {quoted} OR value == {quoted} "
+        f"OR identifier == {quoted}"
+    )
+    contains_predicate = (
+        f"name CONTAINS[c] {quoted} OR label CONTAINS[c] {quoted} "
+        f"OR value CONTAINS[c] {quoted} OR identifier CONTAINS[c] {quoted}"
+    )
+    for predicate, mode in ((exact_predicate, "exact"), (contains_predicate, "contains")):
+        try:
+            found = session_request("POST", "/element", {"using": "-ios predicate string", "value": predicate}, timeout=6)
+            eid = element_id(found.get("value"))
+            if not eid:
+                continue
+            session_request("POST", f"/element/{eid}/click", {}, timeout=8)
+            return True, f"tap_predicate({mode}:{label})"
+        except Exception:
+            pass
+    return False, f"predicate_text_not_found({label})"
+
+def tap_predicate_button(label):
+    label = str(label or "").strip()
+    if not label:
+        return False, "tap_button(empty)"
+    quoted = predicate_quote(label)
+    predicate = (
+        "type == 'XCUIElementTypeButton' AND "
+        f"(name == {quoted} OR label == {quoted} OR value == {quoted} OR identifier == {quoted})"
+    )
+    try:
+        found = session_request("POST", "/element", {"using": "-ios predicate string", "value": predicate}, timeout=5)
+        eid = element_id(found.get("value"))
+        if eid:
+            session_request("POST", f"/element/{eid}/click", {}, timeout=8)
+            return True, f"tap_button({label})"
+    except Exception:
+        pass
+    return False, f"button_not_found({label})"
+
+def tap_text(label, page=None):
+    ok, message = tap_accessibility_label([label])
+    if ok:
+        return ok, message
+    ok, message = tap_predicate_text(label)
+    if ok:
+        return ok, message
+    return False, f"text_not_found({label})"
+
+def input_text(text):
+    text = str(text or "")
+    if not text:
+        return True, "input(empty)"
+    errors = []
+    text_fields_predicate = (
+        "type == 'XCUIElementTypeTextField' OR type == 'XCUIElementTypeSearchField' "
+        "OR type == 'XCUIElementTypeTextView'"
+    )
+    for endpoint, payload, label in (
+        ("/element/active/value", {"value": list(text), "text": text}, "active_value"),
+        ("/keys", {"value": list(text), "text": text}, "keys"),
+        ("/wda/keys", {"value": list(text), "text": text}, "wda_keys"),
+    ):
+        try:
+            session_request("POST", endpoint, payload, timeout=8)
+            return True, f"input({label}:{text})"
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+    try:
+        found = session_request("POST", "/element", {"using": "-ios predicate string", "value": text_fields_predicate}, timeout=5)
+        eid = element_id(found.get("value"))
+        if eid:
+            session_request("POST", f"/element/{eid}/value", {"value": list(text), "text": text}, timeout=8)
+            return True, f"input(element_value:{text})"
+    except Exception as exc:
+        errors.append(f"element_value: {exc}")
+    try:
+        session_request("POST", "/actions", {"actions": []}, timeout=3)
+    except Exception:
+        pass
+    return False, "input failed: " + " | ".join(errors[-3:])
+
+def submit_search():
+    errors = []
+    for label in ("搜索", "Search", "search"):
+        ok, message = tap_predicate_button(label)
+        if ok:
+            return True, message
+        errors.append(message)
+    for endpoint, payload, label in (
+        ("/element/active/value", {"value": ["\n"], "text": "\n"}, "active_return"),
+        ("/keys", {"value": ["\n"], "text": "\n"}, "keys_return"),
+        ("/wda/keys", {"value": ["\n"], "text": "\n"}, "wda_keys_return"),
+    ):
+        try:
+            session_request("POST", endpoint, payload, timeout=8)
+            return True, f"submit_search({label})"
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+    return False, "submit_search failed: " + " | ".join(errors[-4:])
+
+def dismiss_blocking_dialog():
+    current = source()
+    if not current:
+        return []
+    texts = extract_wda_texts(current)
+    joined = "\n".join(texts)
+    has_dialog_context = (
+        "XCUIElementTypeAlert" in current
+        or "是否进入" in joined
+        or "进入房间" in joined
+        or "互动语音" in joined
+        or (("取消" in joined or "暂不" in joined or "稍后" in joined) and ("确认" in joined or "确定" in joined or "继续" in joined))
+    )
+    if not has_dialog_context:
+        return []
+    preferred_labels = ["取消", "暂不", "稍后", "知道了", "我知道了", "确定", "确认"]
+    for label in preferred_labels:
+        if label not in joined:
+            continue
+        ok, message = tap_predicate_button(label)
+        if not ok:
+            ok, message = tap_accessibility_label([label])
+        if not ok:
+            ok, message = tap_predicate_text(label)
+        if ok:
+            time.sleep(0.8)
+            return [{
+                "intent": "dismiss_dialog",
+                "text": label,
+                "status": "passed",
+                "message": message,
+                "dialogTexts": texts[:20],
+            }]
+    return []
+
+def swipe(width, height):
+    x = int(width * random.choice([0.45, 0.55]))
+    start_y = int(height * 0.72)
+    end_y = int(height * 0.34)
+    try:
+        session_request("POST", "/wda/dragfromtoforduration", {
+            "fromX": x,
+            "fromY": start_y,
+            "toX": x,
+            "toY": end_y,
+            "duration": 0.15,
+        }, timeout=8)
+        return True, "swipe"
+    except Exception as exc:
+        return False, f"swipe failed: {exc}"
+
+def drag_ratio(width, height, start_x_ratio, start_y_ratio, end_x_ratio, end_y_ratio, duration=0.15):
+    try:
+        session_request("POST", "/wda/dragfromtoforduration", {
+            "fromX": int(width * float(start_x_ratio)),
+            "fromY": int(height * float(start_y_ratio)),
+            "toX": int(width * float(end_x_ratio)),
+            "toY": int(height * float(end_y_ratio)),
+            "duration": float(duration),
+        }, timeout=8)
+        return True, f"drag({float(start_x_ratio):.2f},{float(start_y_ratio):.2f}->{float(end_x_ratio):.2f},{float(end_y_ratio):.2f})"
+    except Exception as exc:
+        return False, f"drag failed: {exc}"
+
+def open_community_sidebar(width, height):
+    dismiss_blocking_dialog()
+    root_ok, root_message = ensure_community_root_page(width, height)
+    if not root_ok:
+        return False, root_message
+    current = source()
+    if is_community_sidebar_source(current):
+        return True, " -> ".join([root_message, "community_sidebar_already_open"])
+    attempts = []
+    strategies = [
+        ("tap_sidebar_accessibility", lambda: tap_accessibility_label(["community.sidebar.button"])),
+        ("tap_sidebar_predicate", lambda: tap_predicate_text("community.sidebar.button")),
+        ("tap_left_handle", lambda: tap(width * 0.012, height * 0.52)),
+        ("tap_left_handle_lower", lambda: tap(width * 0.018, height * 0.60)),
+        ("drag_left_edge_mid", lambda: drag_ratio(width, height, 0.00, 0.52, 0.88, 0.52, 0.45)),
+        ("drag_left_edge_upper", lambda: drag_ratio(width, height, 0.00, 0.42, 0.88, 0.42, 0.45)),
+        ("drag_left_edge_lower", lambda: drag_ratio(width, height, 0.00, 0.68, 0.88, 0.68, 0.45)),
+        ("drag_inside_edge", lambda: drag_ratio(width, height, 0.04, 0.55, 0.88, 0.55, 0.35)),
+    ]
+    for name, run in strategies:
+        ok, message = run()
+        time.sleep(1.0)
+        current = source()
+        opened = is_community_sidebar_source(current)
+        attempts.append(f"{name}:{message}:opened={opened}")
+        if opened:
+            return True, " -> ".join([root_message] + attempts)
+        if not is_community_root_source(current):
+            ensure_community_root_page(width, height)
+    return False, f"打开关注社区列表失败：{root_message} -> " + " -> ".join(attempts[-5:])
+
+DOMAIN_KEYWORDS = {
+    "community": ["社区", "广场", "关注", "热门", "成员", "搜索", "发现", "搜索社区", "社区搜索", "社区看板", "我在社区的等级", "全员大厅", "战队", "公告", "攻略"],
+    "im": ["消息", "聊天", "好友", "联系人", "系统消息"],
+    "voice_room": ["语音房", "房间", "麦位", "上麦", "大厅", "开黑"],
+    "profile": ["我的", "个人中心", "主题", "通知", "设置", "关于"],
+    "playwith": ["服务", "带玩", "订单", "钱包", "余额"],
+}
+OFF_TARGET_KEYWORDS = {
+    "activity": ["活动详情", "立即领取", "抽奖", "待加入", "回归开黑"],
+    "im": ["发送", "按住说话", "表情", "输入消息", "聊天详情", "搜索昵称或聊天记录"],
+}
+SAFE_READ_ONLY_TAPS = {
+    "community/root": ["社区", "首页", "社区看板"],
+    "community/search": ["搜索", "社区搜索"],
+    "community/home": ["社区", "广场", "切换"],
+}
+PATH_REQUIRED_LANGUAGE = {
+    "community/root": [["搜索社区、用户名称/ID", "社区看板", "我在社区的等级", "全员大厅"]],
+    "community/search": [["搜索社区", "社区搜索", "搜索社区、用户名称/ID", "搜索结果", "更多结果", "用户", "社区", "community.home.list.cell", "绝地求生", "PUBG自建社区", "官方社区", "在线", "空列表"]],
+    "community/home": [["社区看板", "我在社区的等级", "全员大厅", "搜索社区、用户名称/ID", "切换社区"]],
+    "community/member_list": [["成员", "全员大厅", "成员列表"]],
+    "community/hot": [["热门社区", "热门", "热榜"]],
+}
+PATH_AFTER_REQUIRED_LANGUAGE = {
+    "community/search": [["更多结果", "用户", "社区", "community.home.list.cell", "绝地求生", "PUBG自建社区", "官方社区", "在线", "空列表", "暂无结果", "没有搜索到"]],
+}
+PATH_SEMANTIC_RULES = {
+    "community/root": {
+        "any": [
+            ["搜索社区、用户名称/ID"],
+            ["社区看板", "我在社区的等级", "全员大厅"],
+            ["首页", "战队", "活动", "公告", "攻略"],
+        ],
+    },
+    "community/home": {
+        "any": [
+            ["社区看板", "我在社区的等级", "全员大厅"],
+            ["搜索社区、用户名称/ID", "切换社区"],
+            ["community.sidebar.table", "community.sidebar.followed"],
+        ],
+    },
+    "community/search": {
+        "any": [
+            ["更多结果", "用户", "社区"],
+            ["community.home.list.cell"],
+            ["绝地求生", "PUBG自建社区", "官方社区", "在线"],
+            ["空列表", "暂无结果", "没有搜索到"],
+        ],
+    },
+}
+GENERIC_TARGET_LANGUAGE = set(["社区", "搜索", "成员", "发现", "广场", "消息", "好友", "房间", "大厅", "我的"])
+GLOBAL_FORBIDDEN_LANGUAGE = [
+    "活动详情", "立即领取", "抽奖", "待加入", "回归开黑",
+    "发送", "按住说话", "输入消息", "表情", "搜索昵称或聊天记录", "好友", "钱包", "商店",
+    "支付", "退款", "确认订单", "注销", "删除", "举报", "拉黑", "解散",
+    "Safari", "设置", "App Store",
+]
+
+def contains_any(text, keywords):
+    return any(item and item in text for item in keywords or [])
+
+def unique_keep_order(items, limit=120):
+    result = []
+    seen = set()
+    for item in items or []:
+        item = str(item or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+        if len(result) >= limit:
+            break
+    return result
+
+def extract_wda_texts(source_text):
+    texts = []
+    for attr in ("name", "label", "value"):
+        for match in re.finditer(rf'{attr}="([^"]+)"', source_text or ""):
+            value = html.unescape(match.group(1)).strip()
+            if value and value not in ("0", "1"):
+                texts.append(value)
+    for match in re.finditer(r">([^<]{1,80})<", source_text or ""):
+        value = html.unescape(match.group(1)).strip()
+        if value:
+            texts.append(value)
+    return unique_keep_order(texts)
+
+def classify_texts(texts, target_domain=""):
+    joined = "\n".join(texts or [])
+    negative = [item for item in GLOBAL_FORBIDDEN_LANGUAGE if item and item in joined]
+    source_domain = ""
+    class_items = (globals().get("mapping", {}).get("classes") or {}).items() if isinstance(globals().get("mapping"), dict) else []
+    for class_name, meta in class_items:
+        if class_name and class_name in joined and isinstance(meta, dict):
+            source_domain = str(meta.get("businessDomain") or "").strip()
+            break
+    scores = {}
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        scores[domain] = sum(2 if len(item) >= 4 else 1 for item in keywords if item and item in joined)
+    if source_domain:
+        scores[source_domain] = scores.get(source_domain, 0) + 6
+    if any(item in joined for item in ["搜索社区、用户名称/ID", "社区看板", "我在社区的等级", "全员大厅"]):
+        scores["community"] = scores.get("community", 0) + 5
+    if any(item in joined for item in ["搜索昵称或聊天记录", "系统通知", "互动消息"]):
+        scores["im"] = scores.get("im", 0) + 5
+    domain, score = max(scores.items(), key=lambda item: item[1]) if scores else ("unknown", 0)
+    if negative:
+        if any(item in joined for item in OFF_TARGET_KEYWORDS.get("activity", [])):
+            domain = "activity"
+        elif any(item in joined for item in OFF_TARGET_KEYWORDS.get("im", [])):
+            domain = "im"
+    confidence = min(0.95, 0.2 + score * 0.18)
+    if target_domain and domain == target_domain:
+        confidence = min(0.98, confidence + 0.15)
+    if negative and domain != target_domain:
+        confidence = max(confidence, 0.86)
+    return domain if score > 0 or negative else "unknown", round(confidence, 2), negative
+
+def understand_page(step=None, snapshot_name="page"):
+    step = step or {}
+    dismissed = dismiss_blocking_dialog()
+    source_text = source()
+    wda_texts = extract_wda_texts(source_text)
+    image_b64 = screenshot_base64()
+    screenshot_rel = save_screenshot(snapshot_name, image_b64) if image_b64 else ""
+    texts = unique_keep_order(wda_texts)
+    domain, confidence, negative = classify_texts(texts, str(step.get("domain") or ""))
+    return {
+        "domain": domain,
+        "path": step.get("path") or "",
+        "confidence": confidence,
+        "texts": texts[:80],
+        "clickableTexts": unique_keep_order(texts, 40),
+        "negativeSignals": negative,
+        "evidence": {
+            "wdaSource": bool(wda_texts),
+            "appiumPredicate": True,
+            "screenshot": screenshot_rel,
+        },
+        "dismissedDialogs": dismissed,
+    }
+
+def load_business_flow_presets():
+    candidates = []
+    platform_root = os.environ.get("PLATFORM_ROOT_DIR") or ""
+    if platform_root:
+        candidates.append(os.path.join(platform_root, "config", "nnios-business-flow-presets.json"))
+    if business_map_path:
+        candidates.append(os.path.join(os.path.dirname(business_map_path), "nnios-business-flow-presets.json"))
+    for path in candidates:
+        data = read_json(path, {})
+        features = data.get("features") if isinstance(data, dict) else None
+        if isinstance(features, list):
+            return features
+    return []
+
+def enrich_business_flow_plan(plan):
+    features = {}
+    for feature in load_business_flow_presets():
+        if not isinstance(feature, dict):
+            continue
+        for key in (feature.get("id"), feature.get("path")):
+            key = str(key or "").strip()
+            if key:
+                features[key] = feature
+    enriched_steps = []
+    for raw_step in plan.get("steps") or []:
+        step = dict(raw_step or {})
+        preset = features.get(str(step.get("id") or "").strip()) or features.get(str(step.get("path") or "").strip())
+        if isinstance(preset, dict):
+            merged = dict(preset)
+            merged.update({k: v for k, v in step.items() if v not in (None, "", [])})
+            step = merged
+        enriched_steps.append(step)
+    plan["steps"] = enriched_steps
+    return plan
+
+def classify_page(text):
+    for domain, keywords in OFF_TARGET_KEYWORDS.items():
+        if contains_any(text, keywords):
+            return domain
+    scores = {}
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        scores[domain] = sum(1 for item in keywords if item and item in text)
+    domain, score = max(scores.items(), key=lambda item: item[1]) if scores else ("unknown", 0)
+    return domain if score > 0 else "unknown"
+
+def tap_back(width, height):
+    ok, message = tap(width * 0.06, height * 0.085)
+    return ok, "back" if ok else message
+
+def is_community_root_source(source_text):
+    return contains_any(source_text, ["搜索社区、用户名称/ID", "社区看板", "我在社区的等级", "全员大厅"])
+
+def is_community_search_result_source(source_text):
+    return (
+        "back left search" in source_text
+        or ("更多结果" in source_text and "community.home.list.cell" in source_text)
+        or ("用户" in source_text and "社区" in source_text and "搜索" in source_text)
+    )
+
+def is_community_sidebar_source(source_text):
+    return (
+        "community.sidebar.table" in source_text
+        or "community.sidebar.followed." in source_text
+        or ("create server icon" in source_text and "创建战队社区" in source_text)
+        or ("创建战队社区" in source_text and "一起开黑" in source_text)
+    )
+
+def ensure_community_root_page(width, height):
+    actions = []
+    for _ in range(3):
+        current = source()
+        if is_community_root_source(current):
+            return True, " -> ".join(actions) or "community-root-ready"
+        if is_community_search_result_source(current) or "back left" in current:
+            ok, message = tap_accessibility_label(["back left search", "back left"])
+            if not ok:
+                ok, message = tap_predicate_text("back left search")
+            if not ok:
+                ok, message = tap_back(width, height)
+            actions.append(message)
+            time.sleep(1.2)
+            continue
+        ok, message = tap(width * 0.24, height * 0.94)
+        actions.append(message)
+        time.sleep(1.2)
+    current = source()
+    if is_community_root_source(current):
+        return True, " -> ".join(actions)
+    return False, "恢复社区首页失败：" + (" -> ".join(actions) or "no-action")
+
+def navigation_targets(mapping):
+    targets = []
+    nav = mapping.get("businessNavigation") if isinstance(mapping, dict) else {}
+    for item in nav.get("targets") or []:
+        if isinstance(item, dict):
+            targets.append(item)
+    return targets
+
+def target_for_domain(mapping, domain):
+    for item in navigation_targets(mapping):
+        if item.get("businessDomain") == domain:
+            return item
+    return None
+
+def navigate_to_domain(mapping, domain, width, height):
+    if not domain:
+        return True, "no-domain"
+    target = target_for_domain(mapping, domain)
+    dismissed = dismiss_blocking_dialog()
+    current = source()
+    current_domain = classify_page(current)
+    actions = []
+    if current_domain == "activity" and current_domain != domain:
+        for _ in range(4):
+            ok, message = tap_back(width, height)
+            actions.append(message)
+            time.sleep(1.2)
+            current = source()
+            current_domain = classify_page(current)
+            if current_domain not in ("activity", "im") or current_domain == domain:
+                break
+    if target:
+        labels = [str(item).strip() for item in target.get("labels") or [] if str(item).strip()]
+        use_fallback_first = target.get("useFallbackFirst") is True
+        ok = False
+        message = ""
+        if use_fallback_first:
+            fx = target.get("fallbackXRatio") if isinstance(target.get("fallbackXRatio"), (int, float)) else 0.5
+            fy = target.get("fallbackYRatio") if isinstance(target.get("fallbackYRatio"), (int, float)) else 0.94
+            ok, message = tap(width * float(fx), height * float(fy))
+        if not ok:
+            ok, message = tap_accessibility_label(labels[:3])
+        if not ok and not use_fallback_first:
+            fx = target.get("fallbackXRatio") if isinstance(target.get("fallbackXRatio"), (int, float)) else 0.5
+            fy = target.get("fallbackYRatio") if isinstance(target.get("fallbackYRatio"), (int, float)) else 0.94
+            ok, message = tap(width * float(fx), height * float(fy))
+        actions.append(message)
+        time.sleep(1.5)
+    current = source()
+    current_texts = extract_wda_texts(current)
+    current_domain, confidence, negative = classify_texts(current_texts, domain)
+    if current_domain == domain:
+        dismissed_messages = [item.get("message", "") for item in dismissed if isinstance(item, dict) and item.get("message")]
+        return True, " -> ".join(dismissed_messages + actions) or f"already-{domain}"
+    return False, f"未进入目标业务域 {domain}，当前识别为 {current_domain or 'unknown'}，置信度 {confidence}，命中风险文案 {', '.join(negative[:3]) if negative else '-'}"
+
+def recover_to_domain(mapping, step, width, height):
+    domain = str(step.get("domain") or "").strip()
+    path = str(step.get("path") or "").strip()
+    actions = []
+    if path == "community/home":
+        ok, message = ensure_community_root_page(width, height)
+        if ok:
+            return True, message
+        actions.append(message)
+    for _ in range(3):
+        page = understand_page(step, f"recover-{step.get('id','step')}-{len(actions)}")
+        ok, message, _, _ = assert_page_language(step, page, "recover")
+        if ok:
+            return True, " -> ".join(actions) or "already-target"
+        if page.get("negativeSignals") or page.get("domain") not in (domain, "unknown"):
+            ok_back, msg = tap_back(width, height)
+            actions.append(msg)
+            time.sleep(1.0)
+        else:
+            break
+    ok, message = navigate_to_domain(mapping, domain, width, height)
+    actions.append(message)
+    return ok, " -> ".join(actions)
+
+def execute_language_actions(step, width, height):
+    actions = step.get("actions") or []
+    if not actions:
+        actions = [{"intent": "swipe"}]
+    executed = []
+    for index, action in enumerate(actions, start=1):
+        executed.extend(dismiss_blocking_dialog())
+        intent = str(action.get("intent") or "").strip()
+        text_value = str(action.get("text") or "").strip()
+        random_pool = [str(item).strip() for item in action.get("randomTextPool") or [] if str(item).strip()]
+        selected_from_random_pool = False
+        if intent == "input" and random_pool:
+            text_value = random.choice(random_pool)
+            selected_from_random_pool = True
+            remember_key = str(action.get("rememberAs") or "").strip()
+            if remember_key:
+                runtime_values = step.setdefault("_runtimeValues", {})
+                runtime_values[remember_key] = text_value
+            if step.get("path") == "community/search":
+                step["_communitySearchKeyword"] = text_value
+        page = understand_page(step, f"step-{step.get('id','step')}-action-{index}-before")
+        forbidden_language = language_list(step, "forbiddenLanguage", GLOBAL_FORBIDDEN_LANGUAGE)
+        text_blob = "\n".join(page.get("texts") or [])
+        forbidden_hits = [item for item in forbidden_language if item and item in text_blob]
+        if forbidden_hits:
+            raise RuntimeError(f"命中非目标/风险页面文案：{', '.join(forbidden_hits[:5])}")
+        if intent == "tap_text":
+            ok, msg = tap_text(text_value, page)
+        elif intent == "input":
+            ok, msg = input_text(text_value)
+        elif intent == "submit_search":
+            ok, msg = submit_search()
+        elif intent == "wait":
+            seconds = max(0.5, min(float(action.get("seconds") or 1), 10.0))
+            time.sleep(seconds)
+            ok, msg = True, f"wait({seconds:g}s)"
+        elif intent == "open_community_sidebar":
+            ok, msg = open_community_sidebar(width, height)
+        elif intent == "swipe":
+            ok, msg = swipe(width, height)
+        else:
+            ok, msg = False, f"unsupported_action({intent})"
+        action_result = {"intent": intent, "text": text_value, "status": "passed" if ok else "failed", "message": msg}
+        if selected_from_random_pool:
+            action_result["selectedFromRandomPool"] = True
+            action_result["randomTextPool"] = random_pool
+        executed.append(action_result)
+        if not ok:
+            raise BusinessFlowActionError(msg, executed)
+        time.sleep(1.0)
+        executed.extend(dismiss_blocking_dialog())
+    return executed
+
+def ensure_step_target(step, text):
+    domain = str(step.get("domain") or "").strip()
+    path = str(step.get("path") or "").strip()
+    labels = [str(item).strip() for item in step.get("labels") or [] if str(item).strip()]
+    if classify_page(text) in ("activity", "im") and domain != classify_page(text):
+        return False, f"跑偏到非目标页面：{classify_page(text)}"
+    expected = list(labels)
+    expected.extend(SAFE_READ_ONLY_TAPS.get(path) or [])
+    expected.extend(DOMAIN_KEYWORDS.get(domain) or [])
+    if domain and not contains_any(text, expected):
+        return False, f"未识别到目标业务功能：{path or domain}"
+    return True, "目标业务功能已命中"
+
+def language_list(step, key, fallback=None):
+    values = [str(item).strip() for item in step.get(key) or [] if str(item).strip()]
+    if values:
+        return values
+    return list(fallback or [])
+
+def match_semantic_rule(path, text_blob):
+    rule = PATH_SEMANTIC_RULES.get(path) or {}
+    if not rule:
+        return False, []
+    hits = []
+    for group in rule.get("all") or []:
+        group_hits = [item for item in group if item and item in text_blob]
+        if not group_hits:
+            return False, hits
+        hits.extend(group_hits)
+    any_groups = rule.get("any") or []
+    if any_groups:
+        any_hits = []
+        for group in any_groups:
+            group_hits = [item for item in group if item and item in text_blob]
+            if group_hits:
+                any_hits.extend(group_hits)
+        if not any_hits:
+            return False, hits
+        hits.extend(any_hits)
+    return bool(hits), sorted(set(hits))
+
+def assert_page_language(step, page, stage=""):
+    domain = str(step.get("domain") or "").strip()
+    path = str(step.get("path") or "").strip()
+    text_blob = "\n".join(page.get("texts") or [])
+    target_key = "afterLanguage" if stage == "after" and step.get("afterLanguage") else (
+        "beforeLanguage" if stage == "before" and step.get("beforeLanguage") else "targetLanguage"
+    )
+    target_language = language_list(step, target_key, (step.get("labels") or []) + SAFE_READ_ONLY_TAPS.get(path, []) + DOMAIN_KEYWORDS.get(domain, []))
+    forbidden_language = language_list(step, "forbiddenLanguage", GLOBAL_FORBIDDEN_LANGUAGE)
+    forbidden_hits = [item for item in forbidden_language if item and item in text_blob]
+    target_hits = [item for item in target_language if item and item in text_blob]
+    specific_target_hits = [item for item in target_hits if item not in GENERIC_TARGET_LANGUAGE and len(item) >= 3]
+    required_groups = (PATH_AFTER_REQUIRED_LANGUAGE.get(path) if stage == "after" else None) or PATH_REQUIRED_LANGUAGE.get(path) or []
+    required_hits = []
+    missing_groups = []
+    for group in required_groups:
+        hits = [item for item in group if item and item in text_blob]
+        if hits:
+            required_hits.extend(hits)
+        else:
+            missing_groups.append(group)
+    if forbidden_hits:
+        return False, f"命中非目标/风险页面文案：{', '.join(forbidden_hits[:5])}", target_hits, forbidden_hits
+    if domain and page.get("domain") != domain:
+        return False, f"页面业务域不匹配：期望 {domain}，实际 {page.get('domain') or 'unknown'}，不能按泛化文案放行", target_hits, forbidden_hits
+    search_keyword = str((step.get("_runtimeValues") or {}).get("communitySearchKeyword") or step.get("_communitySearchKeyword") or "").strip()
+    if stage == "after" and path == "community/search" and search_keyword:
+        semantic_ok, semantic_hits = match_semantic_rule(path, text_blob)
+        keyword_hits = [search_keyword] if search_keyword in text_blob else []
+        if semantic_ok and keyword_hits:
+            return True, f"社区搜索结果断言通过：关键词 {search_keyword}，结果信号 {', '.join(semantic_hits[:6])}", sorted(set(target_hits + semantic_hits + keyword_hits)), forbidden_hits
+        if not keyword_hits:
+            return False, f"未命中本次搜索关键词：{search_keyword}", target_hits, forbidden_hits
+        return False, f"未命中社区搜索结果信号：{search_keyword}", target_hits, forbidden_hits
+    semantic_ok, semantic_hits = match_semantic_rule(path, text_blob)
+    if semantic_ok:
+        return True, f"业务语义断言通过：{', '.join(semantic_hits[:8])}", sorted(set(target_hits + semantic_hits)), forbidden_hits
+    if not target_hits:
+        return False, f"未命中目标页面语言：{', '.join(target_language[:6])}", target_hits, forbidden_hits
+    if required_groups and not required_hits:
+        expected = [" / ".join(group[:4]) for group in missing_groups[:3]]
+        return False, f"未命中业务功能的关键页面语言：{'; '.join(expected)}", target_hits, forbidden_hits
+    if not required_groups and not specific_target_hits:
+        return False, f"只命中泛化文案，缺少可证明业务功能的页面语言：{', '.join(target_hits[:5])}", target_hits, forbidden_hits
+    if page.get("confidence", 0) < 0.45:
+        return False, f"页面识别置信度过低：{page.get('confidence')}", target_hits, forbidden_hits
+    return True, "目标页面语言断言通过", target_hits, forbidden_hits
+
+def infer_risk(step, text, mapping):
+    risk = str(step.get("riskLevel") or "").strip()
+    step_path = step.get("path")
+    if not risk and isinstance(mapping.get("classes"), dict):
+        for meta in mapping["classes"].values():
+            if isinstance(meta, dict) and meta.get("businessPath") == step_path:
+                risk = str(meta.get("riskLevel") or "").strip()
+                break
+    lowered = text.lower()
+    guarded_terms = [str(item).lower() for item in mapping.get("guardedKeywords") or []]
+    blocked_terms = [str(item).lower() for item in mapping.get("blockedKeywords") or []]
+    blocked_terms.extend([item.lower() for values in OFF_TARGET_KEYWORDS.values() for item in values])
+    if any(term and term in lowered for term in blocked_terms):
+        return "blocked"
+    if any(term and term in lowered for term in guarded_terms):
+        return risk or "guarded"
+    return risk or "normal"
+
+def update_progress(report, step_index, step, message):
+    total = max(1, int(report.get("totalSteps") or len(report.get("steps") or []) or 1))
+    percent = min(99.0, round(2 + (step_index / total) * 92, 2))
+    data = read_json(progress_file, {})
+    data.update({
+        "status": "running",
+        "phase": "businessFlow",
+        "message": message,
+        "updatedAt": now_ms(),
+        "progressPercent": max(float(data.get("progressPercent") or 0), percent),
+        "executedEvents": step_index,
+        "requestedEvents": total,
+        "lastAction": {
+            "type": step.get("type"),
+            "businessDomain": step.get("domain"),
+            "businessPath": step.get("path"),
+            "label": step.get("label"),
+        },
+    })
+    write_json(progress_file, data)
+
+try:
+    plan = json.loads(plan_json) if plan_json else {}
+except Exception as exc:
+    write_failure_report(f"业务编排 JSON 解析失败: {exc}")
+    sys.exit(1)
+if not isinstance(plan, dict) or not plan.get("steps"):
+    write_failure_report("业务编排为空，请至少选择一个业务功能")
+    sys.exit(1)
+plan = enrich_business_flow_plan(plan)
+
+try:
+    session_id = find_session()
+except Exception as exc:
+    write_failure_report(f"创建 WDA session 失败: {exc}")
+    sys.exit(1)
+if not session_id:
+    write_failure_report("未获取到 WDA session")
+    sys.exit(1)
+
+mapping = read_json(business_map_path, {})
+report = {
+    "schemaVersion": "business-flow-report.v1",
+    "name": plan.get("name") or "自定义业务编排",
+    "status": "running",
+    "message": "业务编排执行中",
+    "riskPolicy": plan.get("riskPolicy") or guarded_policy or "read_only",
+    "stopOnFailure": plan.get("stopOnFailure") is not False,
+    "targetDomains": plan.get("targetDomains") or [],
+    "startedAt": now_ms(),
+    "durationMs": 0,
+    "totalSteps": len(plan.get("steps") or []),
+    "passedSteps": 0,
+    "failedSteps": 0,
+    "skippedSteps": 0,
+    "steps": [],
+    "issues": [],
+}
+write_json(report_file, report)
+
+width, height = window_size()
+failed = False
+for index, raw_step in enumerate(plan.get("steps") or [], start=1):
+    step = dict(raw_step or {})
+    step_id = step.get("id") or f"step_{index}"
+    started = now_ms()
+    entry = {
+        "index": index,
+        "id": step_id,
+        "type": step.get("type") or "business_action",
+        "label": step.get("label") or step.get("path") or step_id,
+        "domain": step.get("domain") or "",
+        "path": step.get("path") or "",
+        "status": "running",
+        "message": "",
+        "durationMs": 0,
+        "riskLevel": "normal",
+        "guarded": False,
+        "lastAction": "",
+        "goal": step.get("goal") or "",
+        "entryLanguage": step.get("entryLanguage") or [],
+        "targetLanguage": step.get("targetLanguage") or [],
+        "beforeLanguage": step.get("beforeLanguage") or [],
+        "afterLanguage": step.get("afterLanguage") or [],
+        "forbiddenLanguage": step.get("forbiddenLanguage") or [],
+        "sourceEvidence": step.get("sourceEvidence") or [],
+        "actions": [],
+        "pageUnderstanding": {},
+        "assertions": [],
+        "recoveryCount": 0,
+    }
+    report["steps"].append(entry)
+    update_progress(report, index, step, f"执行业务功能：{entry['label']}")
+    write_json(report_file, report)
+    try:
+        if entry["type"] == "launch":
+            time.sleep(min(float(step.get("durationSeconds") or 15), 20))
+            entry["status"] = "passed"
+            entry["message"] = "App 启动稳定"
+            entry["lastAction"] = "wait"
+        else:
+            target_domain = str(step.get("domain") or "").strip()
+            before_page = understand_page(step, f"business-flow-step-{index}-before")
+            entry["pageUnderstanding"]["before"] = before_page
+            ok, assert_message, target_hits, forbidden_hits = assert_page_language(step, before_page, "before")
+            entry["assertions"].append({
+                "stage": "before",
+                "passed": ok,
+                "message": assert_message,
+                "targetHits": target_hits,
+                "forbiddenHits": forbidden_hits,
+                "confidence": before_page.get("confidence"),
+                "domain": before_page.get("domain"),
+            })
+            if forbidden_hits or not ok:
+                recovered, recovery_message = recover_to_domain(mapping, step, width, height)
+                entry["recoveryCount"] += 1
+                entry["lastAction"] = recovery_message
+                if not recovered:
+                    raise RuntimeError(f"进入目标业务域失败：{assert_message}；恢复失败：{recovery_message}")
+            ok, action_message = navigate_to_domain(mapping, target_domain, width, height)
+            entry["lastAction"] = action_message
+            if not ok:
+                raise RuntimeError(action_message)
+            entry["actions"] = execute_language_actions(step, width, height)
+            if step.get("_runtimeValues"):
+                entry["runtimeValues"] = step.get("_runtimeValues")
+            after_page = understand_page(step, f"business-flow-step-{index}-after")
+            entry["pageUnderstanding"]["after"] = after_page
+            ok, target_message, target_hits, forbidden_hits = assert_page_language(step, after_page, "after")
+            entry["assertions"].append({
+                "stage": "after",
+                "passed": ok,
+                "message": target_message,
+                "targetHits": target_hits,
+                "forbiddenHits": forbidden_hits,
+                "confidence": after_page.get("confidence"),
+                "domain": after_page.get("domain"),
+            })
+            if not ok:
+                raise RuntimeError(target_message)
+            risk = infer_risk(step, "\n".join(after_page.get("texts") or []), mapping)
+            entry["riskLevel"] = risk
+            entry["guarded"] = risk in ("guarded", "blocked") or report["riskPolicy"] == "read_only"
+            if risk == "blocked":
+                entry["status"] = "failed"
+                entry["message"] = "命中 blocked/跑偏页面，已按保护策略停止当前步骤"
+                entry["lastAction"] = "guarded-skip"
+                raise RuntimeError(entry["message"])
+            entry["status"] = "passed"
+            entry["message"] = "业务功能执行完成，页面语言断言通过"
+    except Exception as exc:
+        if isinstance(exc, BusinessFlowActionError) and exc.actions:
+            entry["actions"] = exc.actions
+        entry["status"] = "failed"
+        entry["message"] = str(exc)
+        report["issues"].append({
+            "severity": "failed",
+            "stepId": step_id,
+            "path": entry.get("path"),
+            "message": f"{entry['label']} 执行失败：{exc}",
+        })
+        failed = True
+    finally:
+        entry["durationMs"] = max(0, now_ms() - started)
+        report["passedSteps"] = sum(1 for item in report["steps"] if item.get("status") == "passed")
+        report["failedSteps"] = sum(1 for item in report["steps"] if item.get("status") == "failed")
+        report["skippedSteps"] = sum(1 for item in report["steps"] if item.get("status") == "skipped")
+        report["durationMs"] = now_ms() - report["startedAt"]
+        write_json(report_file, report)
+    if failed and report.get("stopOnFailure", True):
+        break
+
+report["status"] = "failed" if report.get("failedSteps") else "passed"
+report["message"] = "业务编排存在失败步骤" if report["status"] == "failed" else "业务编排执行完成"
+report["durationMs"] = now_ms() - report["startedAt"]
+write_json(report_file, report)
+sys.exit(1 if report["status"] == "failed" else 0)
+PY
+}
+
 run_stutter_scenario_test() {
   local scenario="$1"
   local duration_seconds="$2"
@@ -6328,6 +7508,95 @@ PY
   IFS=$'\t' read -r MONKEY_STATUS MONKEY_MESSAGE MONKEY_EXECUTED_EVENTS <<< "${parsed}"
 }
 
+load_business_flow_result() {
+  if [ ! -f "${BUSINESS_FLOW_REPORT_FILE}" ]; then
+    return
+  fi
+  local parsed
+  parsed="$(python3 - "$BUSINESS_FLOW_REPORT_FILE" <<'PY'
+import json
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    data = {}
+
+print("\t".join([
+    str(data.get("status") or ""),
+    str(data.get("message") or "").replace("\t", " ").replace("\n", " "),
+    str(data.get("passedSteps") or "0"),
+    str(data.get("totalSteps") or "0"),
+]))
+PY
+)"
+  IFS=$'\t' read -r BUSINESS_FLOW_STATUS BUSINESS_FLOW_MESSAGE BUSINESS_FLOW_PASSED_STEPS BUSINESS_FLOW_TOTAL_STEPS <<< "${parsed}"
+}
+
+resolve_business_flow_plan_json() {
+  if [ -n "${BUSINESS_FLOW_PLAN_JSON:-}" ]; then
+    printf '%s\n' "${BUSINESS_FLOW_PLAN_JSON}"
+    return
+  fi
+
+  python3 - "${DB_PATH:-}" "${PLATFORM_ROOT_DIR:-}" "${PLATFORM_TASK_ID:-}" "${SOURCE_BUILD_NUMBER:-}" <<'PY'
+import json
+import os
+import sqlite3
+import sys
+
+db_path_arg, platform_root, task_id, build_number = sys.argv[1:5]
+candidates = []
+if db_path_arg:
+    candidates.append(db_path_arg)
+if platform_root:
+    candidates.append(f"{platform_root}-data/database.sqlite")
+    candidates.append(os.path.join(os.path.dirname(platform_root), "nn-ios-platform-data", "database.sqlite"))
+
+seen = set()
+for db_path in candidates:
+    db_path = os.path.abspath(db_path)
+    if not db_path or db_path in seen or not os.path.exists(db_path):
+        continue
+    seen.add(db_path)
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = []
+        if task_id:
+            rows.extend(conn.execute(
+                "SELECT config_json FROM workflow_tasks WHERE id = ? LIMIT 1",
+                (task_id,),
+            ).fetchall())
+        if not rows and build_number:
+            rows.extend(conn.execute(
+                """
+                SELECT config_json
+                FROM workflow_tasks
+                WHERE build_number = ? AND suite = 'business_flow'
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (build_number,),
+            ).fetchall())
+        conn.close()
+    except Exception:
+        continue
+    for row in rows:
+        try:
+            config = json.loads(row["config_json"] or "{}")
+            plan = config.get("businessFlowPlan")
+            if isinstance(plan, dict) and plan.get("steps"):
+                print(json.dumps(plan, ensure_ascii=False, separators=(",", ":")))
+                raise SystemExit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
+raise SystemExit(0)
+PY
+}
+
 url_decode() {
   local value="$1"
   python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$value" 2>/dev/null || printf '%s\n' "$value"
@@ -6431,7 +7700,12 @@ if [ "${SKIP_APP_INSTALL}" = "1" ]; then
 else
   write_quality_progress "running" "package" "获取 IPA 包" 0.4
   download_status=0
-  download_ipa "${PACKAGE_URL}" || download_status=$?
+  if [ -n "${RESOLVED_XCARCHIVE_PATH}" ] && is_ephemeral_workspace_ipa_url "${PACKAGE_URL}"; then
+    log "检测到 Jenkins 工作区固定 IPA 路径，优先从本次构建 xcarchive 生成临时 IPA，避免使用被后续构建覆盖的旧包: ${RESOLVED_XCARCHIVE_PATH}"
+    package_ipa_from_xcarchive "${RESOLVED_XCARCHIVE_PATH}" || download_status=$?
+  else
+    download_ipa "${PACKAGE_URL}" || download_status=$?
+  fi
   if [ "${download_status}" != "0" ] && [ -n "${RESOLVED_XCARCHIVE_PATH}" ]; then
     log "PACKAGE_URL 不可用，尝试从 xcarchive Products 生成临时 IPA: ${RESOLVED_XCARCHIVE_PATH}"
     download_status=0
@@ -6460,13 +7734,18 @@ else
   if [ -n "${DETECTED_SHORT_VERSION}" ] || [ -n "${DETECTED_BUNDLE_VERSION}" ]; then
     log "检测到安装包版本: ${DETECTED_SHORT_VERSION:-N/A} (${DETECTED_BUNDLE_VERSION:-N/A})"
   fi
+  validate_detected_package_matches_build
   log "检测到安装包指纹: sha256=${IPA_SHA256}, md5=${IPA_MD5}"
   write_quality_progress "running" "package" "IPA 包已就绪" 0.8
 
   if ! install_ipa; then
     fail "安装 IPA 失败：tidevice 未能完成安装，devicectl 兜底安装也失败。请确认 iPhone 已解锁、已信任此电脑、USB 连接稳定，并查看 ${LOG_FILE}。"
   fi
-  write_quality_progress "running" "install" "IPA 安装完成" 1.0
+  if [ "${INSTALL_SKIPPED:-0}" = "1" ]; then
+    write_quality_progress "running" "install" "IPA 已确认一致，未重复安装" 1.0
+  else
+    write_quality_progress "running" "install" "IPA 安装完成" 1.0
+  fi
   LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID:-${DETECTED_BUNDLE_ID}}"
 fi
 if [ -n "${APP_BUNDLE_ID}" ] && [ -n "${DETECTED_BUNDLE_ID}" ] && [ "${APP_BUNDLE_ID}" != "${DETECTED_BUNDLE_ID}" ]; then
@@ -6506,6 +7785,15 @@ if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
   load_monkey_result
   write_quality_progress "passed" "performance" "卡顿检测采集完成" 100 "${MONKEY_EXECUTED_EVENTS:-0}" "${stutter_duration}" 0
 fi
+if [ "${REQUESTED_TEST_SUITE}" = "business_flow" ]; then
+  business_flow_status=0
+  run_business_flow_test || business_flow_status=$?
+  load_business_flow_result
+  log "业务编排结果: ${BUSINESS_FLOW_STATUS:-unknown}，通过 ${BUSINESS_FLOW_PASSED_STEPS:-0}/${BUSINESS_FLOW_TOTAL_STEPS:-0} 步，${BUSINESS_FLOW_MESSAGE:-}"
+  if [ "${business_flow_status}" != "0" ]; then
+    fail "业务编排测试失败：${BUSINESS_FLOW_MESSAGE:-请查看 ${BUSINESS_FLOW_REPORT_FILE}}"
+  fi
+fi
 if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
   monkey_status=0
   touch "${PERFORMANCE_MONKEY_RUNNING_FILE}"
@@ -6537,6 +7825,8 @@ fi
 
 if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
   write_summary "passed" "自动场景卡顿检测完成，场景 ${STUTTER_SCENARIO}，已采集 ${MONKEY_DURATION_SECONDS:-300} 秒性能 Trace"
+elif [ "${REQUESTED_TEST_SUITE}" = "business_flow" ]; then
+  write_summary "passed" "自定义业务编排完成，通过 ${BUSINESS_FLOW_PASSED_STEPS:-0}/${BUSINESS_FLOW_TOTAL_STEPS:-0} 个业务步骤"
 elif [ "${MONKEY_STATUS}" = "passed" ]; then
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
     write_summary "passed" "安装、启动、Monkey 测试完成，冷启动首屏耗时 ${COLD_START_READY_MS:-N/A}ms，Monkey 持续 ${MONKEY_DURATION_SECONDS} 秒，执行 ${MONKEY_EXECUTED_EVENTS} 次通过"

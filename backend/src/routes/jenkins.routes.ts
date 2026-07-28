@@ -26,7 +26,7 @@ const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
 const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
 const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
-const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'full']);
+const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'business_flow', 'full']);
 const QA_STUTTER_SCENARIOS = new Set(['community', 'im', 'voice_room']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
 const RELEASE_BUILD_LIST_LIMIT = Math.min(
@@ -88,11 +88,105 @@ function normalizeQualitySuite(value?: string) {
   const lower = text.toLowerCase();
   if (/monkey|随机|猴子/i.test(text)) return 'monkey';
   if (/卡顿|stutter|hitch|jank/i.test(text)) return 'stutter';
+  if (/business[_-]?flow|业务.*编排|自定义.*质检|自定义.*测试/i.test(text)) return 'business_flow';
   if (/冒烟|smoke/i.test(text)) return 'smoke';
   if (/^im$|im\s*基础/i.test(text)) return 'im';
   if (/^rtc$|rtc\s*基础/i.test(text)) return 'rtc';
   if (/全量|full/i.test(text)) return 'full';
   return lower;
+}
+
+function readBusinessFlowPresetFeatures() {
+  try {
+    const presetPath = path.join(getPlatformRootDir(), 'config', 'nnios-business-flow-presets.json');
+    const parsed = JSON.parse(fs.readFileSync(presetPath, 'utf-8'));
+    return Array.isArray(parsed?.features) ? parsed.features : [];
+  } catch {
+    return [];
+  }
+}
+
+function normalizeBusinessFlowPlan(input: any) {
+  const plan = input && typeof input === 'object' ? input : {};
+  const presetFeatures = readBusinessFlowPresetFeatures();
+  const featureMap = new Map<string, any>();
+  for (const feature of presetFeatures) {
+    const id = String(feature?.id || feature?.path || '').trim();
+    if (id) featureMap.set(id, feature);
+  }
+  const requestedFeatureIds = Array.isArray(plan.featureIds)
+    ? plan.featureIds.map((item: any) => String(item || '').trim()).filter(Boolean)
+    : [];
+  let steps: any[] = [];
+  if (requestedFeatureIds.length > 0) {
+    const missing = requestedFeatureIds.filter((id: string) => !featureMap.has(id));
+    if (missing.length > 0) {
+      throw new Error(`业务功能不存在：${missing.join(', ')}`);
+    }
+    steps = requestedFeatureIds.map((id: string) => featureMap.get(id));
+  } else if (Array.isArray(plan.steps)) {
+    steps = plan.steps;
+  }
+  steps = steps
+    .map((step: any, index: number) => {
+      const type = String(step?.type || 'business_action').trim();
+      const domain = String(step?.domain || '').trim();
+      const businessPath = String(step?.path || step?.businessPath || '').trim();
+      const id = String(step?.id || businessPath || `${type}_${index + 1}`).trim();
+      if (type !== 'launch' && type !== 'business_action' && type !== 'monkey_explore') {
+        throw new Error(`业务编排步骤类型无效：${type}`);
+      }
+      if (type !== 'launch' && (!domain || !businessPath)) {
+        throw new Error(`业务编排步骤缺少业务域或路径：${id}`);
+      }
+      return {
+        id,
+        type,
+        label: String(step?.label || step?.pageName || businessPath || '启动 App').trim(),
+        domain,
+        path: businessPath,
+        durationSeconds: Math.max(5, Math.min(1800, Number(step?.durationSeconds || (type === 'launch' ? 15 : 60)) || 60)),
+        labels: Array.isArray(step?.labels) ? step.labels.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 8) : [],
+        goal: String(step?.goal || '').trim(),
+        entryLanguage: Array.isArray(step?.entryLanguage) ? step.entryLanguage.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 12) : [],
+        targetLanguage: Array.isArray(step?.targetLanguage) ? step.targetLanguage.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 16) : [],
+        beforeLanguage: Array.isArray(step?.beforeLanguage) ? step.beforeLanguage.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 16) : [],
+        afterLanguage: Array.isArray(step?.afterLanguage) ? step.afterLanguage.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 16) : [],
+        forbiddenLanguage: Array.isArray(step?.forbiddenLanguage) ? step.forbiddenLanguage.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 24) : [],
+        actions: Array.isArray(step?.actions) ? step.actions.map((action: any) => ({
+          intent: String(action?.intent || action?.type || '').trim(),
+          text: String(action?.text || action?.value || '').trim(),
+          seconds: Number.isFinite(Number(action?.seconds)) ? Number(action.seconds) : undefined,
+          randomTextPool: Array.isArray(action?.randomTextPool)
+            ? action.randomTextPool.map((item: any) => String(item || '').trim()).filter(Boolean).map((item: string) => item.slice(0, 32)).slice(0, 20)
+            : undefined,
+          rememberAs: String(action?.rememberAs || '').trim().slice(0, 64) || undefined,
+        })).filter((action: any) => action.intent).slice(0, 12) : [],
+        sourceEvidence: Array.isArray(step?.sourceEvidence) ? step.sourceEvidence.map((item: any) => String(item || '').trim()).filter(Boolean).slice(0, 12) : [],
+        passCondition: String(step?.passCondition || '').trim(),
+        fallbackXRatio: Number.isFinite(Number(step?.fallbackXRatio)) ? Number(step.fallbackXRatio) : undefined,
+        fallbackYRatio: Number.isFinite(Number(step?.fallbackYRatio)) ? Number(step.fallbackYRatio) : undefined,
+      };
+    });
+  if (steps.length === 0) {
+    throw new Error('请选择至少一个业务功能');
+  }
+  if (steps[0]?.type !== 'launch') {
+    steps.unshift({ id: 'launch', type: 'launch', label: '启动 App', durationSeconds: 15, domain: '', path: '', labels: [] });
+  }
+  const domains = Array.from(new Set(steps.map((step) => step.domain).filter(Boolean)));
+  return {
+    version: 1,
+    name: String(plan.name || '自定义业务编排').trim() || '自定义业务编排',
+    maxDurationSeconds: QA_MONKEY_DURATION_SECONDS.has(String(plan.maxDurationSeconds || ''))
+      ? Number(plan.maxDurationSeconds)
+      : undefined,
+    riskPolicy: String(plan.riskPolicy || 'read_only').trim() || 'read_only',
+    stopOnFailure: plan.stopOnFailure !== false,
+    featureIds: requestedFeatureIds,
+    targetDomains: domains,
+    steps,
+  };
 }
 
 function getSonicConfig() {
@@ -556,6 +650,38 @@ async function syncQualityJenkinsJobConfig() {
     concurrentBuild: /<concurrentBuild>true<\/concurrentBuild>/.test(configXml),
     hasWdaDerivedDataPath: /<name>WDA_DERIVED_DATA_PATH<\/name>/.test(configXml),
   };
+}
+
+const REQUIRED_QUALITY_JOB_CONFIG_MARKERS = [
+  '<name>BUSINESS_FLOW_PLAN_JSON</name>',
+  '<name>PLATFORM_TASK_ID</name>',
+  'business_flow',
+];
+
+async function ensureQualityJenkinsJobConfigFresh() {
+  const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+  const configUrl = `${JENKINS_BASE_URL}/${jobPath}/config.xml`;
+  let configXml = '';
+  try {
+    const response = await axios.get(configUrl, {
+      timeout: 10000,
+      responseType: 'text',
+      transformResponse: [(data) => data],
+      validateStatus: () => true,
+      ...buildAuthConfig(),
+    });
+    if (response.status === 200 && typeof response.data === 'string') {
+      configXml = response.data;
+    }
+  } catch {
+    configXml = '';
+  }
+  const missingMarkers = REQUIRED_QUALITY_JOB_CONFIG_MARKERS.filter((marker) => !configXml.includes(marker));
+  if (missingMarkers.length === 0) {
+    return { synced: false, missingMarkers: [] };
+  }
+  const syncResult = await syncQualityJenkinsJobConfig();
+  return { synced: true, missingMarkers, syncResult };
 }
 
 function saveQualityDevicePools(pools: QualityDevicePool[]) {
@@ -1298,6 +1424,7 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     deviceLogUrl: artifactUrl(summary?.artifacts?.deviceLog || 'device.log'),
     processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
     monkeyReportUrl: artifactUrl(summary?.artifacts?.monkeyReport),
+    businessFlowReportUrl: artifactUrl(summary?.artifacts?.businessFlowReport),
     performanceSamplesUrl: firstArtifactUrl(summary?.artifacts?.performanceSamples, 'performance-samples.jsonl'),
     performanceStuttersUrl: firstArtifactUrl(summary?.artifacts?.performanceStutters, 'performance-stutters.json'),
     performanceStacksUrl: firstArtifactUrl(summary?.artifacts?.performanceStacks, 'performance-stack-analysis.json'),
@@ -1886,6 +2013,16 @@ function getGitCredentials() {
   };
 }
 
+function resolveSourceBuildArtifactPath(value?: string) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (/^https?:\/\//i.test(text) || text.startsWith('file://') || path.isAbsolute(text)) return text;
+  if (/\.ipa(?:$|[?#])/i.test(text)) {
+    return path.join(localJenkinsWorkspaceDir(DEFAULT_JOB_NAME), text);
+  }
+  return text;
+}
+
 function parseConsoleMetadata(consoleText: string) {
   const plainConsoleText = consoleText.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
   const appVersion =
@@ -1903,13 +2040,13 @@ function parseConsoleMetadata(consoleText: string) {
     plainConsoleText.match(/蒲公英版本[:：].*?\((https?:\/\/[^)\s]+)/)?.[1] ||
     plainConsoleText.match(/build\s*\[[0-9]+\]\((https?:\/\/[^)\s]+)\)/i)?.[1] ||
     '';
-  const installPackageUrl = (
+  const installPackageUrl = resolveSourceBuildArtifactPath(
     plainConsoleText.match(/IPA\s*构建成功[:：]\s*(\/[^\r\n]+?\.ipa)\b/i)?.[1] ||
     plainConsoleText.match(/Successfully exported and signed the ipa file:\s*\r?\n\s*(\/[^\r\n]+?\.ipa)\b/i)?.[1] ||
     plainConsoleText.match(/发现IPA文件[:：]\s*([^\r\n]+?\.ipa)\b/i)?.[1] ||
     plainConsoleText.match(/IPA文件[:：]\s*([^\r\n]+?\.ipa)\b/i)?.[1] ||
     ''
-  ).trim();
+  );
   const pgyerBuildNumber =
     plainConsoleText.match(/蒲公英版本[:：][^\n\r]*?build\s*\[([0-9]+)\]/i)?.[1] ||
     plainConsoleText.match(/BUILD_DESCRIPTION\s*=\s*(?:[^,\n\r]+[,，]\s*)?Pgyer[,，]\s*([0-9]+)/i)?.[1] ||
@@ -1992,6 +2129,15 @@ async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
     });
     return parseConsoleMetadata(String(response.data || ''));
   } catch {
+    try {
+      const decodedJobName = decodeURIComponent(jobPath).replace(/\/job\//g, '/').replace(/^job\//, '');
+      const localLogPath = path.join(localJenkinsJobDir(decodedJobName), 'builds', String(buildNumber), 'log');
+      if (fs.existsSync(localLogPath)) {
+        return parseConsoleMetadata(fs.readFileSync(localLogPath, 'utf-8'));
+      }
+    } catch {
+      // ignore local fallback errors
+    }
     return {
       appVersion: '',
       publishChannel: '',
@@ -2114,6 +2260,7 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           deviceLogUrl: artifactUrl(summary.artifacts?.deviceLog || 'device.log'),
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
           monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
+          businessFlowReportUrl: artifactUrl(summary.artifacts?.businessFlowReport),
                     performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples || 'performance-samples.jsonl'),
                     performanceStuttersUrl: artifactUrl(summary.artifacts?.performanceStutters || 'performance-stutters.json'),
                     performanceStacksUrl: artifactUrl(summary.artifacts?.performanceStacks || 'performance-stack-analysis.json'),
@@ -3558,18 +3705,13 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
     const sonicConfig = getSonicConfig();
     const buildNumber = String(req.body?.buildNumber || '').trim();
-    const branch = normalizeBranchName(String(req.body?.branch || ''));
-    const commitHash = String(req.body?.commitHash || '').trim();
-    const appVersion = String(req.body?.appVersion || '').trim();
-    const rawPackageUrl = String(req.body?.packageUrl || '').trim();
-    const xcarchivePath = String(req.body?.xcarchivePath || '').trim();
-    const archiveUrl = String(req.body?.archiveUrl || '').trim();
-    const publishChannel = normalizeDeployTarget(String(req.body?.publishChannel || req.body?.deployTarget || ''));
-    const forceInstalledProductionApp = publishChannel === 'TestFlight' || publishChannel === 'AppStore';
-    const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
-    const defaultAppBundleId = skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im';
-    const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
-    const packageUrl = skipInstall ? `skip-install:${appBundleId}` : rawPackageUrl;
+    let branch = normalizeBranchName(String(req.body?.branch || ''));
+    let commitHash = String(req.body?.commitHash || '').trim();
+    let appVersion = String(req.body?.appVersion || '').trim();
+    let rawPackageUrl = resolveSourceBuildArtifactPath(String(req.body?.packageUrl || '').trim());
+    let xcarchivePath = String(req.body?.xcarchivePath || '').trim();
+    let archiveUrl = String(req.body?.archiveUrl || '').trim();
+    let publishChannel = normalizeDeployTarget(String(req.body?.publishChannel || req.body?.deployTarget || ''));
     const rawTestSuite = String(req.body?.testSuite || 'smoke').trim();
     const testSuite = normalizeQualitySuite(rawTestSuite);
     const devicePool = String(req.body?.devicePool || 'ios-default').trim();
@@ -3580,7 +3722,19 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       ? 'voice_room'
       : rawStutterScenario;
     const stutterScenario = QA_STUTTER_SCENARIOS.has(normalizedStutterScenario) ? normalizedStutterScenario : 'community';
-    const timedQualitySuite = testSuite === 'monkey' || testSuite === 'stutter';
+    let businessFlowPlan: any = null;
+    if (testSuite === 'business_flow') {
+      try {
+        businessFlowPlan = normalizeBusinessFlowPlan(req.body?.businessFlowPlan || req.body?.businessFlow || {});
+      } catch (error: any) {
+        res.status(400).json({
+          success: false,
+          error: error?.message || '业务编排配置无效',
+        });
+        return;
+      }
+    }
+    const timedQualitySuite = testSuite === 'monkey' || testSuite === 'stutter' || testSuite === 'business_flow';
     const monkeyDurationSeconds = timedQualitySuite
       ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400')
       : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400');
@@ -3592,6 +3746,20 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       });
       return;
     }
+    if (!appVersion || !rawPackageUrl || !xcarchivePath || !archiveUrl || !publishChannel || !commitHash) {
+      const sourceMetadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), Number(buildNumber));
+      appVersion = appVersion || sourceMetadata.appVersion || '';
+      publishChannel = publishChannel || sourceMetadata.publishChannel || '';
+      commitHash = commitHash || sourceMetadata.commitHash || '';
+      rawPackageUrl = rawPackageUrl || sourceMetadata.installPackageUrl || sourceMetadata.packageUrl || '';
+      xcarchivePath = xcarchivePath || sourceMetadata.xcarchivePath || '';
+      archiveUrl = archiveUrl || sourceMetadata.archiveUrl || '';
+    }
+    const forceInstalledProductionApp = publishChannel === 'TestFlight' || publishChannel === 'AppStore';
+    const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
+    const defaultAppBundleId = skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im';
+    const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
+    const packageUrl = skipInstall ? `skip-install:${appBundleId}` : rawPackageUrl;
     if (!QA_TEST_SUITES.has(testSuite)) {
       res.status(400).json({
         success: false,
@@ -3605,6 +3773,17 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
         error: `执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
       });
       return;
+    }
+    if (testSuite === 'business_flow') {
+      try {
+        await ensureQualityJenkinsJobConfigFresh();
+      } catch (error: any) {
+        res.status(502).json({
+          success: false,
+          error: `同步 Jenkins 质检 Job 配置失败：${extractErrorMessage(error, error?.message || 'unknown')}`,
+        });
+        return;
+      }
     }
     const selectedDevicePool = findQualityDevicePool(devicePool);
     if (!selectedDevicePool) {
@@ -3649,7 +3828,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       branch,
       deviceUdid: deviceKey,
       progress: 0,
-      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall },
+      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, businessFlowPlan },
     });
     const crumb = await getCrumb();
     const monkeyBusinessMapPath = getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH')
@@ -3671,8 +3850,8 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       DEVICE_UDID: deviceKey,
       DEVICE_SELECTOR: deviceKey,
       DEVICE_CLOUD: 'LocalMac',
-      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : (testSuite === 'stutter' ? 'local-ios-device-stutter' : 'local-ios-device'),
-      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : (testSuite === 'stutter' ? 'local-usb-stutter' : 'local-usb'),
+      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : (testSuite === 'stutter' ? 'local-ios-device-stutter' : (testSuite === 'business_flow' ? 'local-ios-device-business-flow' : 'local-ios-device')),
+      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : (testSuite === 'stutter' ? 'local-usb-stutter' : (testSuite === 'business_flow' ? 'local-usb-business-flow' : 'local-usb')),
       APP_BUNDLE_ID: appBundleId,
       SKIP_APP_INSTALL: skipInstall ? '1' : '0',
       COLD_START_DETECT_SCREEN: testSuite === 'stutter' ? '0' : (getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1'),
@@ -3703,10 +3882,11 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       MONKEY_FORBIDDEN_PAGE_TEXTS: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PAGE_TEXTS') || 'DoKit,Dokit,www.dokit.cn,DoraemonEntryWindow',
       MONKEY_FORBIDDEN_REGION_RATIO: getRuntimeEnv('QA_MONKEY_FORBIDDEN_REGION_RATIO') || '0.78,0.18,1.0,0.72',
       MONKEY_FORBIDDEN_PADDING: getRuntimeEnv('QA_MONKEY_FORBIDDEN_PADDING') || '16',
-      MONKEY_BUSINESS_AWARE: testSuite === 'monkey' ? (getRuntimeEnv('QA_MONKEY_BUSINESS_AWARE') || '1') : '0',
+      MONKEY_BUSINESS_AWARE: testSuite === 'monkey' || testSuite === 'business_flow' ? (getRuntimeEnv('QA_MONKEY_BUSINESS_AWARE') || '1') : '0',
       MONKEY_BUSINESS_MAP_PATH: monkeyBusinessMapPath,
-      MONKEY_BUSINESS_DOMAINS: getRuntimeEnv('QA_MONKEY_BUSINESS_DOMAINS') || 'login,im,community,voice_room,profile,playwith',
-      MONKEY_GUARDED_ACTION_POLICY: getRuntimeEnv('QA_MONKEY_GUARDED_ACTION_POLICY') || 'read_only',
+      MONKEY_BUSINESS_DOMAINS: businessFlowPlan?.targetDomains?.join(',') || getRuntimeEnv('QA_MONKEY_BUSINESS_DOMAINS') || 'login,im,community,voice_room,profile,playwith',
+      MONKEY_GUARDED_ACTION_POLICY: businessFlowPlan?.riskPolicy || getRuntimeEnv('QA_MONKEY_GUARDED_ACTION_POLICY') || 'read_only',
+      BUSINESS_FLOW_PLAN_JSON: businessFlowPlan ? JSON.stringify(businessFlowPlan) : '',
       MONKEY_BUSINESS_WEIGHT_CORE: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_CORE') || '40',
       MONKEY_BUSINESS_WEIGHT_EXPAND: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_EXPAND') || '25',
       MONKEY_BUSINESS_WEIGHT_RECOVERY: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_RECOVERY') || '20',
@@ -3765,7 +3945,7 @@ router.post('/nn/quality', async (req: Request, res: Response) => {
       branch,
       deviceUdid: deviceKey,
       progress: 0,
-      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall },
+      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, businessFlowPlan },
     });
 
     res.json({

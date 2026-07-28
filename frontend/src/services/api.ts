@@ -1932,7 +1932,7 @@ export interface JenkinsBuildFailureAnalysis {
   needsManualAction?: boolean;
 }
 
-export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'full';
+export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'business_flow' | 'full';
 
 export interface JenkinsQualityBuild {
   number: number;
@@ -1952,6 +1952,32 @@ export interface JenkinsQualityBuild {
     appVersion?: string;
     testSuite?: string;
     stutterScenario?: string;
+    businessFlow?: {
+      name?: string;
+      status?: string;
+      message?: string;
+      totalSteps?: number;
+      passedSteps?: number;
+      failedSteps?: number;
+      skippedSteps?: number;
+      durationMs?: number;
+      riskPolicy?: string;
+      stopOnFailure?: boolean;
+      steps?: Array<{
+        id?: string;
+        type?: string;
+        label?: string;
+        domain?: string;
+        path?: string;
+        status?: string;
+        durationMs?: number;
+        message?: string;
+        riskLevel?: string;
+        guarded?: boolean;
+        lastAction?: string;
+      }>;
+      issues?: Array<{ severity?: string; message?: string; stepId?: string; path?: string }>;
+    };
     devicePool?: string;
     devicePoolLabel?: string;
     deviceUdid?: string;
@@ -2200,6 +2226,7 @@ export interface JenkinsQualityBuild {
       deviceLogUrl?: string;
       processesUrl?: string;
       monkeyReportUrl?: string;
+      businessFlowReportUrl?: string;
       performanceSamplesUrl?: string;
       performanceStuttersUrl?: string;
       performanceStacksUrl?: string;
@@ -2257,7 +2284,7 @@ export interface JenkinsQualityPerformanceSamples {
   };
 }
 
-export type QualityTaskType = 'ios_monkey' | 'ios_stutter' | 'ios_smoke' | 'ios_login' | 'ios_im' | 'ios_rtc' | 'ios_full';
+export type QualityTaskType = 'ios_monkey' | 'ios_stutter' | 'ios_business_flow' | 'ios_smoke' | 'ios_login' | 'ios_im' | 'ios_rtc' | 'ios_full';
 export type QualityTaskStatus = 'created' | 'queued' | 'preparing' | 'installing' | 'running' | 'collecting' | 'analyzing' | 'reporting' | 'notifying' | 'success' | 'failed' | 'unstable' | 'canceled' | string;
 
 export interface QualityIssue {
@@ -2555,6 +2582,14 @@ export const jenkinsApi = {
     deviceUdid?: string;
     monkeyDurationSeconds?: number;
     stutterScenario?: string;
+    businessFlowPlan?: {
+      name?: string;
+      featureIds?: string[];
+      maxDurationSeconds?: number;
+      riskPolicy?: string;
+      stopOnFailure?: boolean;
+      steps?: Array<Record<string, unknown>>;
+    };
     skipInstall?: boolean;
     appBundleId?: string;
   }): Promise<ApiResponse<{

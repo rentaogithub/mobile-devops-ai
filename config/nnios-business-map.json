@@ -9,8 +9,9 @@
         "businessPath": "im/tab",
         "pageName": "消息入口",
         "labels": ["消息", "聊天", "好友", "联系人"],
-        "fallbackXRatio": 0.3,
-        "fallbackYRatio": 0.94
+        "fallbackXRatio": 0.76,
+        "fallbackYRatio": 0.94,
+        "useFallbackFirst": true
       },
       {
         "businessDomain": "profile",
@@ -23,10 +24,11 @@
       {
         "businessDomain": "community",
         "businessPath": "community/home",
-        "pageName": "社区入口",
-        "labels": ["社区", "广场", "关注"],
-        "fallbackXRatio": 0.5,
-        "fallbackYRatio": 0.94
+        "pageName": "一起开黑入口",
+        "labels": ["一起开黑", "一起开黑...", "社区", "广场"],
+        "fallbackXRatio": 0.24,
+        "fallbackYRatio": 0.94,
+        "useFallbackFirst": true
       },
       {
         "businessDomain": "voice_room",

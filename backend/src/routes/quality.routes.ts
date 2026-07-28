@@ -470,7 +470,7 @@ function selectAvailableDeviceFromPool(pool: any, fallback: string) {
   return { deviceKey: firstDeviceKey, activeTask: findActiveTaskOnDevice(firstDeviceKey), deviceKeys };
 }
 
-const SUPPORTED_QUALITY_SUITES = new Set(['monkey', 'stutter', 'smoke', 'login', 'im', 'rtc', 'full']);
+const SUPPORTED_QUALITY_SUITES = new Set(['monkey', 'stutter', 'business_flow', 'smoke', 'login', 'im', 'rtc', 'full']);
 
 function suiteFromTaskType(taskType: string, payload: any) {
   const explicitSuite = String(payload.suite || payload.testSuite || '').trim().toLowerCase();
@@ -617,10 +617,11 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     MONKEY_INTERVAL_SECONDS: String(monkey.interval_seconds || process.env.QA_MONKEY_INTERVAL_SECONDS || '0.35'),
     MONKEY_FORBIDDEN_TEXTS: String(monkey.text_blacklist || process.env.QA_MONKEY_FORBIDDEN_TEXTS || ''),
     MONKEY_FORBIDDEN_PAGE_TEXTS: String(monkey.page_blacklist || process.env.QA_MONKEY_FORBIDDEN_PAGE_TEXTS || ''),
-    MONKEY_BUSINESS_AWARE: suite === 'monkey' ? '1' : '0',
+    MONKEY_BUSINESS_AWARE: suite === 'monkey' || suite === 'business_flow' ? '1' : '0',
     MONKEY_BUSINESS_MAP_PATH: path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json'),
     MONKEY_BUSINESS_DOMAINS: String(monkey.business_domains || 'login,im,community,voice_room,profile,playwith'),
     MONKEY_GUARDED_ACTION_POLICY: 'read_only',
+    BUSINESS_FLOW_PLAN_JSON: suite === 'business_flow' ? JSON.stringify(payload.businessFlowPlan || payload.business_flow_plan || {}) : '',
     STUTTER_SCENARIO: String(payload.stutter?.scenario || payload.stutterScenario || 'community'),
     NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
   });
