@@ -2581,6 +2581,7 @@ export default function CICDPage() {
   const appleDeviceLookupSeqRef = useRef(0);
   const appleAutoRegistrationUdidRef = useRef('');
   const appleRegistrationNoticeRef = useRef('');
+  const assistantBuildDetailRef = useRef('');
 
   useEffect(() => {
     if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
@@ -3551,6 +3552,21 @@ export default function CICDPage() {
       loadBranches();
     }
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== 'release' || !data?.builds?.length) return;
+    const buildParam = new URLSearchParams(location.search).get('build') || '';
+    const buildNumber = Number(buildParam);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      assistantBuildDetailRef.current = '';
+      return;
+    }
+    if (assistantBuildDetailRef.current === buildParam) return;
+    const build = data.builds.find((item) => item.number === buildNumber);
+    if (!build) return;
+    assistantBuildDetailRef.current = buildParam;
+    void showBuildLog(build);
+  }, [activeSection, data?.builds, location.search]);
 
   useEffect(() => {
     const nextSection: CICDSection = location.pathname.startsWith('/cicd/quality')

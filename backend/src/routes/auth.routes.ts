@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { verifyPassword } from '../middleware/auth';
+import { requireRole, sessionAuthMiddleware, verifyPassword } from '../middleware/auth';
+import { authService } from '../services/AuthService';
 
 const router = Router();
 
@@ -9,16 +10,70 @@ const router = Router();
  */
 router.post('/verify', verifyPassword);
 
+router.post('/login', (req, res) => {
+  const username = String(req.body?.username || process.env.ADMIN_USERNAME || 'admin').trim();
+  const password = String(req.body?.password || '');
+  const user = authService.authenticate(username, password);
+  if (!user) {
+    res.status(401).json({ success: false, error: '用户名或密码错误' });
+    return;
+  }
+  authService.createSession(user, req, res);
+  res.json({ success: true, data: { user } });
+});
+
+router.post('/logout', (req, res) => {
+  authService.clearSession(req, res);
+  res.json({ success: true });
+});
+
+router.get('/me', (req, res) => {
+  const user = authService.getSessionUser(req);
+  if (!user) {
+    res.status(401).json({ success: false, error: '未登录' });
+    return;
+  }
+  res.json({ success: true, data: { user } });
+});
+
+router.get('/users', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
+  res.json({ success: true, data: authService.listUsers() });
+});
+
+router.post('/users', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    res.json({ success: true, data: authService.createUser(req.body || {}) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '创建用户失败' });
+  }
+});
+
+router.patch('/users/:id', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const updated = authService.updateUser(req.params.id, req.body || {});
+    if (!updated) {
+      res.status(404).json({ success: false, error: '用户不存在' });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '更新用户失败' });
+  }
+});
+
 /**
  * GET /api/auth/status
  * 检查认证状态
  */
 router.get('/status', (req, res) => {
   const authEnabled = process.env.AUTH_ENABLED === 'true';
+  const user = authService.getSessionUser(req);
   res.json({
     success: true,
     data: {
       authEnabled,
+      localAccountsEnabled: true,
+      user,
     },
   });
 });

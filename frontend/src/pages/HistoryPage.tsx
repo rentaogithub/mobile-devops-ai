@@ -105,12 +105,9 @@ export default function HistoryPage() {
 
   const handleDelete = async (id: number) => {
     try {
-      const token = authUtils.getToken();
       const response = await fetch(`/api/history/${id}`, {
         method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        credentials: 'include',
       });
 
       const data = await response.json();

@@ -30,6 +30,7 @@ import accessStatsRoutes from './routes/accessStats.routes';
 import apiDocsRoutes from './routes/apiDocs.routes';
 import workflowRoutes from './routes/workflow.routes';
 import appleDeviceRoutes from './routes/appleDevice.routes';
+import assistantRoutes from './routes/assistant.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -37,6 +38,7 @@ import { browserLogWebSocketService } from './services/BrowserLogWebSocketServic
 import { platformOperationsService } from './services/PlatformOperationsService';
 import { clearOpAccessToken, getOpAccessToken, isOpAccessTokenUsable, updateOpAccessToken } from './services/OpCookieJar';
 import logger from './utils/logger';
+import { authService } from './services/AuthService';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -45,6 +47,7 @@ app.set('trust proxy', true);
 
 // 初始化数据库
 initializeDatabase();
+authService.initializeBootstrapUser();
 podService.initTable();
 
 // Middleware
@@ -225,6 +228,7 @@ app.use('/api/feedback-log', feedbackLogRoutes);
 app.use('/api/access-stats', accessStatsRoutes);
 app.use('/api/api-docs', apiDocsRoutes);
 app.use('/api/workflow', workflowRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

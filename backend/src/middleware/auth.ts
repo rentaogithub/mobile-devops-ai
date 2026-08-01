@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
+import { authService, PlatformRole, PlatformUser } from '../services/AuthService';
 
 // 简单的密码认证中间件
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
@@ -7,6 +8,13 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || AUTH_PASSWORD; // 管理员
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
 
 export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const sessionUser = authService.getSessionUser(req);
+  if (sessionUser) {
+    (req as any).authUser = sessionUser;
+    (req as any).isAdmin = sessionUser.role === 'admin';
+    return next();
+  }
+
   // 如果未启用认证，直接通过（所有人都是管理员）
   if (!AUTH_ENABLED || !AUTH_PASSWORD) {
     (req as any).isAdmin = true;
@@ -44,6 +52,13 @@ export const authMiddleware = (req: Request, res: Response, next: NextFunction) 
 
 // 管理员权限中间件
 export const adminMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const sessionUser = authService.getSessionUser(req);
+  if (sessionUser?.role === 'admin') {
+    (req as any).authUser = sessionUser;
+    (req as any).isAdmin = true;
+    return next();
+  }
+
   // 如果未启用认证，直接通过（所有人都是管理员）
   if (!AUTH_ENABLED || !ADMIN_PASSWORD) {
     return next();
@@ -77,6 +92,31 @@ export const adminMiddleware = (req: Request, res: Response, next: NextFunction)
   (req as any).isAdmin = true;
   next();
 };
+
+export const sessionAuthMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const user = authService.getSessionUser(req);
+  if (!user) {
+    res.status(401).json({ success: false, error: '请使用实名账号登录', code: 'SESSION_REQUIRED' });
+    return;
+  }
+  (req as any).authUser = user;
+  (req as any).isAdmin = user.role === 'admin';
+  next();
+};
+
+const ROLE_RANK: Record<PlatformRole, number> = { viewer: 1, operator: 2, admin: 3 };
+
+export function requireRole(role: PlatformRole) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = ((req as any).authUser || authService.getSessionUser(req)) as PlatformUser | null;
+    if (!user || ROLE_RANK[user.role] < ROLE_RANK[role]) {
+      res.status(403).json({ success: false, error: `需要 ${role} 或更高权限`, code: 'FORBIDDEN' });
+      return;
+    }
+    (req as any).authUser = user;
+    next();
+  };
+}
 
 // 验证密码的路由处理器
 export const verifyPassword = (req: Request, res: Response) => {

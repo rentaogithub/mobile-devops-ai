@@ -20,6 +20,7 @@ import ApiDocsPage from './pages/ApiDocsPage';
 import CrossPlatformPage from './pages/CrossPlatformPage';
 import WorkflowPage from './pages/WorkflowPage';
 import { authUtils } from './utils/auth';
+import type { AuthUser } from './utils/auth';
 import { accessStatsApi } from './services/api';
 
 message.config({
@@ -39,9 +40,8 @@ function AccessTracker() {
 }
 
 function App() {
-  const handleLogin = (password: string, isAdmin: boolean) => {
-    authUtils.setToken(password);
-    authUtils.setAdmin(isAdmin);
+  const handleLogin = (user: AuthUser) => {
+    authUtils.setUser(user);
   };
 
   return (

@@ -47,6 +47,18 @@ PORT=3001
 # OPENAI_API_STYLE=responses
 # OPENAI_API_STYLE=chat_completions
 
+# 实名账号与 AI 执行中心
+# 首次启动会使用以下账号创建本地管理员；已有用户时不会重复创建
+# ADMIN_USERNAME=admin
+# ADMIN_DISPLAY_NAME=平台管理员
+# ADMIN_PASSWORD=change_me
+# AUTH_SESSION_TTL_HOURS=12
+# AUTH_COOKIE_SECURE=true
+# ASSISTANT_AI_TIMEOUT=120000
+# ASSISTANT_MAX_OUTPUT_TOKENS=1600
+# 仅在前后端确实分离部署时配置，多个来源用逗号分隔
+# ASSISTANT_ALLOWED_ORIGINS=https://platform.example.com
+
 # 企业微信配置（可选）
 # WECHAT_WORK_WEBHOOK=your_webhook_url
 ```
@@ -164,6 +176,7 @@ pm2 save
 
 - **符号化处理** - 支持 .crash 和 .ips 文件的自动符号化
 - **AI 崩溃分析** - 自动分析崩溃原因并提供解决建议
+- **AI 会话执行中心** - 在首页通过受控工具查询 Crash、CI/CD、自动质检与质量中心；写操作支持分级确认和实名审计
 - **版本自动检测** - 自动识别崩溃日志中的版本信息
 - **历史记录** - 保存符号化历史，支持查询和重新分析
 - **企业微信集成** - 支持分享符号化结果到企业微信
@@ -206,6 +219,17 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 - **符号化**：Apple symbolicatecrash
 - **AI**：OpenAI Responses API
 
+### AI 会话执行中心安全边界
+
+- 普通聊天仅保存在当前浏览器页面，刷新后清空。
+- 查询工具直接执行；普通写操作需确认；发布和停止任务需管理员二次确认。
+- AI 发布必须指定质量门禁源构建；源构建状态、分支、必需测试套件和阻塞级 Issue 校验与原 CI/CD 发布接口共用同一套服务。
+- TestFlight / App Store 验证密码仅在最终审批时直传执行服务，不发送给模型，也不写入操作审计。
+- 所有工具参数均经过 allowlist Schema 校验，模型不能访问任意 URL、Shell 或 SQL。
+- 实际工具调用、审批和结果会写入 `assistant_action_audits`，敏感字段自动脱敏。
+- 仅支持上传 `.crash`、`.ips`、`.txt`，附件 15 分钟后自动清理。
+- 管理员可通过 `POST /api/auth/users` 创建 `viewer`、`operator`、`admin` 账号。
+
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request
@@ -213,9 +237,6 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
-
-
 
 
 

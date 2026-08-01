@@ -104,6 +104,47 @@ function migrateDatabase(): void {
       db.exec('ALTER TABLE symbolication_history ADD COLUMN version_detected INTEGER DEFAULT 1');
       console.log('Migration completed: added version_detected column');
     }
+
+    const assistantAuditForeignKeys = db.prepare('PRAGMA foreign_key_list(assistant_action_audits)').all() as any[];
+    if (assistantAuditForeignKeys.some((foreignKey) => foreignKey.table === 'platform_users')) {
+      console.log('Removing account dependency from assistant action audits...');
+      db.exec(`
+        DROP INDEX IF EXISTS idx_assistant_audits_user;
+        DROP INDEX IF EXISTS idx_assistant_audits_status;
+        DROP INDEX IF EXISTS idx_assistant_audits_idempotency;
+        ALTER TABLE assistant_action_audits RENAME TO assistant_action_audits_with_user_fk;
+        CREATE TABLE assistant_action_audits (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          username TEXT NOT NULL,
+          tool_name TEXT NOT NULL,
+          domain TEXT NOT NULL,
+          risk_level TEXT NOT NULL,
+          status TEXT NOT NULL,
+          arguments_json TEXT NOT NULL DEFAULT '{}',
+          preview_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT,
+          error TEXT,
+          approval_count INTEGER NOT NULL DEFAULT 0,
+          approvals_required INTEGER NOT NULL DEFAULT 0,
+          idempotency_key TEXT,
+          related_entity_type TEXT,
+          related_entity_id TEXT,
+          duration_ms INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          completed_at TEXT
+        );
+        INSERT INTO assistant_action_audits SELECT * FROM assistant_action_audits_with_user_fk;
+        DROP TABLE assistant_action_audits_with_user_fk;
+        CREATE INDEX idx_assistant_audits_user ON assistant_action_audits(user_id, created_at DESC);
+        CREATE INDEX idx_assistant_audits_status ON assistant_action_audits(status, created_at DESC);
+        CREATE INDEX idx_assistant_audits_idempotency ON assistant_action_audits(idempotency_key, status);
+      `);
+      console.log('Migration completed: assistant audits now support anonymous clients');
+    }
+
+    db.prepare("DELETE FROM platform_users WHERE id = 'assistant-guest' AND username = '__assistant_guest__'").run();
   } catch (error) {
     console.error('Migration error:', error);
   }

@@ -568,11 +568,10 @@ export default function ApiDocsPage() {
   const syncAllDocuments = async () => {
     setSyncing(true);
     try {
-      const token = authUtils.getToken();
       const { data } = await axios.post<{ total: number; succeeded: string[]; failed: { service: string; message: string }[] }>(
         '/api/api-docs/sync/all',
         undefined,
-        { timeout: 180_000, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+        { timeout: 180_000, withCredentials: true },
       );
       const refreshed = await axios.get<SwaggerDoc>(`/api/api-docs/${service}`, { timeout: 45_000 });
       setDoc(refreshed.data);

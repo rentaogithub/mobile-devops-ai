@@ -15,6 +15,7 @@ import {
   ApiOutlined,
   MobileOutlined,
   ApartmentOutlined,
+  UserOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 
@@ -35,6 +36,10 @@ export default function MainLayout() {
       window.removeEventListener('storage', refreshAuthState);
       window.removeEventListener('auth-state-changed', refreshAuthState);
     };
+  }, []);
+
+  useEffect(() => {
+    void authUtils.refreshUser();
   }, []);
 
   // Determine which top-level menu key is active
@@ -125,9 +130,13 @@ export default function MainLayout() {
     navigate('/login');
   };
 
-  const handleLogout = () => {
-    authUtils.clearToken();
-    window.location.reload();
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } finally {
+      authUtils.clearUser();
+      navigate('/');
+    }
   };
 
   const userMenuItems = [
@@ -174,14 +183,14 @@ export default function MainLayout() {
           />
         </div>
 
-        {isAuthenticated && isAdmin ? (
+        {location.pathname === '/' ? null : isAuthenticated ? (
           <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
             <Space style={{ cursor: 'pointer', padding: '0 16px' }}>
               <Avatar
-                icon={<CrownOutlined />}
-                style={{ backgroundColor: '#faad14' }}
+                icon={isAdmin ? <CrownOutlined /> : <UserOutlined />}
+                style={{ backgroundColor: isAdmin ? '#faad14' : '#1677ff' }}
               />
-              <span style={{ color: 'white' }}>管理员</span>
+              <span style={{ color: 'white' }}>{authUtils.getUser()?.displayName || authUtils.getUser()?.username}</span>
             </Space>
           </Dropdown>
         ) : (
@@ -194,13 +203,13 @@ export default function MainLayout() {
           </Button>
         )}
       </Header>
-      <Content style={{ padding: '24px', background: '#f0f2f5', minWidth: 0 }}>
+      <Content style={{ padding: location.pathname === '/' ? 0 : '24px', background: '#f0f2f5', minWidth: 0 }}>
         <div
           style={{
             background: '#fff',
-            padding: '24px',
-            minHeight: '500px',
-            borderRadius: 8,
+            padding: location.pathname === '/' ? 0 : '24px',
+            minHeight: location.pathname === '/' ? 'calc(100vh - 64px)' : '500px',
+            borderRadius: location.pathname === '/' ? 0 : 8,
             minWidth: 0,
           }}
         >

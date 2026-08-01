@@ -284,3 +284,58 @@ CREATE TABLE IF NOT EXISTS workflow_release_observations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_workflow_release_observations_release ON workflow_release_observations(project_id, release_version, observed_at DESC);
+
+-- 本地实名账号与服务端会话
+CREATE TABLE IF NOT EXISTS platform_users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'viewer',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  ip TEXT,
+  user_agent TEXT,
+  FOREIGN KEY (user_id) REFERENCES platform_users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_sessions_user ON platform_sessions(user_id, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_platform_sessions_token ON platform_sessions(token_hash);
+
+-- AI 会话只持久化实际工具调用与审批，不保存普通聊天正文
+CREATE TABLE IF NOT EXISTS assistant_action_audits (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  username TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  domain TEXT NOT NULL,
+  risk_level TEXT NOT NULL,
+  status TEXT NOT NULL,
+  arguments_json TEXT NOT NULL DEFAULT '{}',
+  preview_json TEXT NOT NULL DEFAULT '{}',
+  result_json TEXT,
+  error TEXT,
+  approval_count INTEGER NOT NULL DEFAULT 0,
+  approvals_required INTEGER NOT NULL DEFAULT 0,
+  idempotency_key TEXT,
+  related_entity_type TEXT,
+  related_entity_id TEXT,
+  duration_ms INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_assistant_audits_user ON assistant_action_audits(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_assistant_audits_status ON assistant_action_audits(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_assistant_audits_idempotency ON assistant_action_audits(idempotency_key, status);

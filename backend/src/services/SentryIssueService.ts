@@ -118,6 +118,25 @@ export class SentryIssueService {
     return enrichedIssues.filter((issue) => !issue.excludedAppVersionOnly);
   }
 
+  async listIssuesByIdentifier(options: {
+    identifier: string;
+    identifierType?: 'uid' | 'deviceId';
+    period?: '24h' | '7d' | '14d';
+    limit?: number;
+  }): Promise<SentryIssueSummary[]> {
+    const identifier = String(options.identifier || '').trim();
+    if (!identifier) throw new Error('请输入 UID 或 DeviceID');
+    if (identifier.length > 200) throw new Error('UID 或 DeviceID 长度无效');
+    const identifierType = options.identifierType === 'deviceId' ? 'deviceId' : 'uid';
+    const escaped = identifier.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return this.listNewIssues({
+      period: options.period || '7d',
+      limit: options.limit || 20,
+      query: `${this.buildDefaultIssueQuery()} ${identifierType}:"${escaped}"`,
+      enrichVersions: true,
+    });
+  }
+
   async enrichIssueSummaries(issues: SentryIssueSummary[]): Promise<SentryIssueSummary[]> {
     const enriched: SentryIssueSummary[] = [];
     const concurrency = 5;
@@ -137,6 +156,40 @@ export class SentryIssueService {
       })));
     }
     return enriched;
+  }
+
+  async getIssue(
+    issueId: string,
+    options: { enrichVersions?: boolean } = {}
+  ): Promise<SentryIssueSummary | undefined> {
+    await this.ensureLogin();
+
+    const resolvedIssueId = await this.resolveIssueId(issueId);
+    const response = await this.request(`/api/0/issues/${resolvedIssueId}/`);
+    if (response.statusCode === 404) {
+      return undefined;
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(
+        `Sentry issue API failed: ${response.statusCode} ${response.body.toString('utf8').slice(0, 200)}`
+      );
+    }
+
+    const issue = this.normalizeIssueSummary(JSON.parse(response.body.toString('utf8')));
+    if (!options.enrichVersions) {
+      return issue;
+    }
+
+    try {
+      return await this.enrichIssueVersionRange(issue);
+    } catch (error) {
+      logger.warn('补充 Sentry issue 版本信息失败，保留基础问题数据', {
+        issueId: issue.id,
+        shortId: issue.shortId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return issue;
+    }
   }
 
   async getLatestEvent(issueId: string): Promise<SentryEventDetail | undefined> {

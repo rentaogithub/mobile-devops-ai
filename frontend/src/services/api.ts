@@ -18,6 +18,7 @@ import { authUtils } from '../utils/auth';
 
 const api = axios.create({
   baseURL: '/api',
+  withCredentials: true,
   timeout: 60000, // 60 秒超时
   headers: {
     'Content-Type': 'application/json',
@@ -25,21 +26,6 @@ const api = axios.create({
 });
 
 const EXCLUDED_SENTRY_APP_VERSIONS = new Set(['10.0.0']);
-
-// 请求拦截器
-api.interceptors.request.use(
-  (config) => {
-    // 添加认证令牌
-    const token = authUtils.getToken();
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
 
 // 响应拦截器
 api.interceptors.response.use(
@@ -50,8 +36,7 @@ api.interceptors.response.use(
     if (error.response) {
       // 处理 401 未授权错误
       if (error.response.status === 401) {
-        authUtils.clearToken();
-        window.location.reload(); // 重新加载页面，触发登录
+        authUtils.clearUser();
       }
       // 服务器返回错误
       return Promise.reject(error.response.data);
@@ -121,7 +106,6 @@ export const dsymApi = {
    * 下载 dSYM 文件
    */
   download: (uuid: string, appName: string, version: string): void => {
-    const token = authUtils.getToken();
     const url = `/api/dsym/${uuid}/download`;
     
     // 创建一个隐藏的 a 标签来触发下载
@@ -129,12 +113,10 @@ export const dsymApi = {
     link.href = url;
     link.download = `${appName}_${version}_${uuid.substring(0, 8)}.dSYM.zip`;
     
-    // 如果有认证令牌，需要通过 fetch 下载
-    if (token) {
+    // 登录态使用 HttpOnly Cookie，通过 fetch 下载。
+    if (authUtils.isAuthenticated()) {
       fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        credentials: 'include',
       })
         .then(response => response.blob())
         .then(blob => {
@@ -712,14 +694,12 @@ export const symbolicateApi = {
     appVersion: string,
     originalLog?: string
   ): Promise<void> => {
-    const token = authUtils.getToken();
-    
     try {
       const response = await fetch('/api/symbolicate/download', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
           symbolicatedLog,
@@ -1119,7 +1099,6 @@ export const historyApi = {
    * 下载历史记录报告
    */
   downloadReport: (id: number, appVersion: string): void => {
-    const token = authUtils.getToken();
     const url = `/api/history/${id}/download`;
     
     // 创建一个隐藏的 a 标签来触发下载
@@ -1127,12 +1106,9 @@ export const historyApi = {
     link.href = url;
     link.download = `crash_report_${appVersion}_${Date.now()}.zip`;
     
-    // 如果有认证令牌，需要通过 fetch 下载
-    if (token) {
+    if (authUtils.isAuthenticated()) {
       fetch(url, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
+        credentials: 'include',
       })
         .then(response => response.blob())
         .then(blob => {
@@ -1713,12 +1689,11 @@ export const gitApi = {
     onEvent: (evt: GitStreamEvent) => void,
     signal?: AbortSignal
   ): Promise<void> => {
-    const token = authUtils.getToken();
     const response = await fetch('/api/git/branch-jobs/stream', {
       method: 'POST',
+      credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(options),
       signal,

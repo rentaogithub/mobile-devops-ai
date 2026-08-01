@@ -16,7 +16,7 @@ import { AppError, ErrorCode } from '../types';
 import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { workflowService } from '../services/WorkflowService';
-import { qualityGateService } from '../services/QualityGateService';
+import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -3303,215 +3303,48 @@ router.post('/nn/quality/job/sync', async (_req: Request, res: Response) => {
   }
 });
 
-function requiredReleaseGateSuites() {
-  return String(process.env.RELEASE_GATE_REQUIRED_SUITES || 'smoke')
-    .split(',')
-    .map((item) => normalizeQualitySuite(item))
-    .filter(Boolean);
-}
-
-async function loadReleaseGateBuild(buildNumber: number) {
-  const gateJobPath = encodeJobPath(DEFAULT_JOB_NAME);
-  const [gateBuildResponse, gateMetadata, gateParameters] = await Promise.all([
-    fetchJenkinsJobJson(`${gateJobPath}/${buildNumber}`, 'number,result,building,timestamp,duration,description,url'),
-    fetchBuildConsoleMetadata(gateJobPath, buildNumber),
-    fetchBuildParameters(gateJobPath, buildNumber),
-  ]);
-  return {
-    ...(gateBuildResponse.data || {}),
-    branchName: gateParameters.branchName,
-    publishChannel: gateMetadata.publishChannel,
-    appVersion: gateMetadata.appVersion,
-    commitHash: gateMetadata.commitHash,
-    buildNumber: gateMetadata.buildNumber,
-    packageUrl: gateMetadata.packageUrl,
-    xcarchivePath: gateMetadata.xcarchivePath,
-    archiveUrl: gateMetadata.archiveUrl,
-    url: normalizeJenkinsUrl(gateBuildResponse.data?.url),
-  };
-}
-
 router.post('/nn/release-gate/preview', async (req: Request, res: Response) => {
   try {
     const gateBuildNumber = Number(req.body?.gateBuildNumber);
     const branch = normalizeBranchName(String(req.body?.branch || ''));
-    if (!Number.isFinite(gateBuildNumber) || gateBuildNumber <= 0) {
-      res.status(400).json({ success: false, error: '请选择质量门禁源构建' });
-      return;
-    }
-    const gateBuild = await loadReleaseGateBuild(gateBuildNumber);
-    workflowIntegrationService.syncJenkinsBuild(gateBuild);
-    const releaseGate = qualityGateService.preview({
-      projectId: 'nn-ios',
-      buildNumber: String(gateBuildNumber),
-      buildStatus: gateBuild.result,
-      branch: branch || gateBuild.branchName,
-      commitHash: gateBuild.commitHash,
-      appVersion: gateBuild.appVersion,
-      policy: { requiredSuites: requiredReleaseGateSuites() },
-    });
-    const blockers = Array.isArray((releaseGate?.result as any)?.blockers) ? (releaseGate?.result as any).blockers : [];
+    const data = await jenkinsAssistantService.previewReleaseGate({ gateBuildNumber, branch });
     res.json({
       success: true,
-      data: {
-        build: gateBuild,
-        releaseGate,
-        missingSuites: blockers.filter((item: any) => item.code === 'required_suite_missing').map((item: any) => item.suite),
-      },
+      data: publicJenkinsUrlsInValue(req, data),
     });
   } catch (error: any) {
-    res.status(502).json({ success: false, error: extractErrorMessage(error, '发布质量门禁预检失败') });
+    const status = error instanceof JenkinsReleaseError ? error.statusCode : 502;
+    res.status(status).json({
+      success: false,
+      error: extractErrorMessage(error, '发布质量门禁预检失败'),
+      ...(error instanceof JenkinsReleaseError && error.data ? { data: error.data } : {}),
+    });
   }
 });
 
 router.post('/nn/build', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
-    const deployTarget = String(req.body?.deployTarget || 'Pgyer');
-    const verificationPassword = String(req.body?.verificationPassword || '');
-    const branch = normalizeBranchName(String(req.body?.branch || 'develop'));
-    const jenkinsBranch = toJenkinsBranch(branch);
     const gateBuildNumberValue = req.body?.gateBuildNumber;
     const hasReleaseGate = gateBuildNumberValue !== undefined && gateBuildNumberValue !== null && String(gateBuildNumberValue).trim() !== '';
-    const gateBuildNumber = hasReleaseGate ? Number(gateBuildNumberValue) : undefined;
-    const releaseGateOverrideReason = String(req.body?.releaseGateOverrideReason || '').trim();
-
-    if (!DEPLOY_TARGETS.has(deployTarget)) {
-      res.status(400).json({
-        success: false,
-        error: '发布渠道无效',
-      });
-      return;
-    }
-    if (deployTarget !== 'Pgyer' && !isReleaseBranch(branch)) {
-      res.status(400).json({
-        success: false,
-        error: 'TestFlight / 苹果商店只能选择 release/x.x.x 格式分支',
-      });
-      return;
-    }
-    if (deployTarget !== 'Pgyer' && !verificationPassword.trim()) {
-      res.status(400).json({
-        success: false,
-        error: 'TestFlight / 苹果商店发布需要填写验证密码',
-      });
-      return;
-    }
-    if (hasReleaseGate && (!Number.isFinite(gateBuildNumber) || Number(gateBuildNumber) <= 0)) {
-      res.status(400).json({
-        success: false,
-        error: '质量门禁源构建无效',
-      });
-      return;
-    }
-
-    let releaseGate: any;
-    if (gateBuildNumber) {
-      const gateBuild = await loadReleaseGateBuild(gateBuildNumber);
-      workflowIntegrationService.syncJenkinsBuild(gateBuild);
-      if (gateBuild.building || String(gateBuild.result || '').toUpperCase() !== 'SUCCESS') {
-        res.status(409).json({
-          success: false,
-          error: `源构建 #${gateBuildNumber} 尚未成功完成，不允许发布`,
-        });
-        return;
-      }
-      if (gateBuild.branchName && normalizeBranchName(gateBuild.branchName) !== branch) {
-        res.status(409).json({
-          success: false,
-          error: `门禁源构建分支 ${gateBuild.branchName} 与待发布分支 ${branch} 不一致`,
-        });
-        return;
-      }
-      const releaseBranchVersion = isReleaseBranch(branch) ? normalizeBranchName(branch).replace(/^release\//, '') : '';
-      if (deployTarget !== 'Pgyer' && releaseBranchVersion && gateBuild.appVersion && String(gateBuild.appVersion) !== releaseBranchVersion) {
-        res.status(409).json({
-          success: false,
-          error: `门禁源构建版本 ${gateBuild.appVersion} 与发布分支版本 ${releaseBranchVersion} 不一致`,
-        });
-        return;
-      }
-      const requiredSuites = requiredReleaseGateSuites();
-      releaseGate = qualityGateService.evaluate({
-        projectId: 'nn-ios',
-        buildNumber: String(gateBuildNumber),
-        buildStatus: gateBuild.result,
-        branch,
-        commitHash: gateBuild.commitHash,
-        appVersion: gateBuild.appVersion,
-        policy: { requiredSuites },
-      });
-      if (releaseGate?.status === 'blocked') {
-        res.status(409).json({
-          success: false,
-          error: (releaseGate.result as any)?.summary || '发布被质量门禁阻断',
-          data: { releaseGate },
-        });
-        return;
-      }
-      if (deployTarget !== 'Pgyer' && releaseGate?.status === 'warning' && !releaseGateOverrideReason) {
-        res.status(409).json({
-          success: false,
-          error: '质量门禁存在警告，TestFlight / 苹果商店发布需要填写人工放行原因',
-          data: { releaseGate, requiresOverride: true },
-        });
-        return;
-      }
-      if (releaseGate?.status === 'warning' && releaseGateOverrideReason) {
-        workflowService.recordEvent({
-          eventType: 'release_gate.overridden',
-          entityType: 'release_gate',
-          entityId: String(releaseGate.id),
-          payload: {
-            buildNumber: String(gateBuildNumber),
-            branch,
-            deployTarget,
-            reason: releaseGateOverrideReason,
-          },
-        });
-      }
-    }
-
-    const crumb = await getCrumb();
-    const params = new URLSearchParams({
-      branch,
-      DEPLOY_TARGET: deployTarget,
-      VERIFICATION_PASSWORD: verificationPassword,
-      NOTIFY_WECHAT_ON_SUCCESS: 'true',
-      FORCE_PRIVATE_POD_UPDATE: 'false',
-      RELEASE_GATE_ID: String(releaseGate?.id || ''),
-      RELEASE_GATE_STATUS: String(releaseGate?.status || ''),
-      SOURCE_BUILD_NUMBER: gateBuildNumber ? String(gateBuildNumber) : '',
-      RELEASE_GATE_OVERRIDE_REASON: gateBuildNumber ? releaseGateOverrideReason : '',
-    });
-    params.set('branch', jenkinsBranch);
-
-    await axios.post(`${JENKINS_BASE_URL}/${jobPath}/buildWithParameters`, params.toString(), {
-      timeout: 30000,
-      headers: {
-        ...crumb.headers,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      ...buildAuthConfig(),
+    const data = await jenkinsAssistantService.triggerRelease({
+      branch: String(req.body?.branch || 'develop'),
+      deployTarget: String(req.body?.deployTarget || 'Pgyer') as 'Pgyer' | 'TestFlight' | 'AppStore',
+      verificationPassword: String(req.body?.verificationPassword || ''),
+      gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
+      releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
     });
 
     res.json({
       success: true,
-      data: publicJenkinsUrlsInValue(req, {
-        jobName: DEFAULT_JOB_NAME,
-        deployTarget,
-        branch,
-        jenkinsBranch,
-        sourceBuildNumber: gateBuildNumber || undefined,
-        releaseGate,
-        url: `${JENKINS_BASE_URL}/${jobPath}/`,
-      }),
+      data: publicJenkinsUrlsInValue(req, data),
     });
   } catch (error: any) {
-    res.status(502).json({
+    const status = error instanceof JenkinsReleaseError ? error.statusCode : 502;
+    res.status(status).json({
       success: false,
       error: extractErrorMessage(error, '触发 Jenkins 发布失败'),
-      status: error.response?.status,
+      status: error.response?.status || status,
+      ...(error instanceof JenkinsReleaseError && error.data ? { data: error.data } : {}),
     });
   }
 });

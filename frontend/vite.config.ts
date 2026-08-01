@@ -69,7 +69,8 @@ export default defineConfig(async () => {
       proxy: {
         '^/api(?=/|$)': {
           target: backendTarget,
-          changeOrigin: true,
+          // 保留浏览器访问前端时的 Host，使后端同源/CSRF 校验看到公开来源而不是代理目标端口。
+          changeOrigin: false,
           secure: false,
           ws: true,
           xfwd: true,
