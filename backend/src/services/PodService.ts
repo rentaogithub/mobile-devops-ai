@@ -3478,9 +3478,8 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
     // 生成 pod 引用行：
     // - 如果用户指定了 subspecs，只引入指定的
-    // - 如果有 subspecs 且有 default_subspecs 且全选了，直接用主 pod
-    // - 如果有 subspecs 且有 default_subspecs 且不全选，引入 default 的
-    // - 如果有 subspecs 但没有 default_subspecs，直接用主 pod（CocoaPods 会引入全部）
+    // - 未指定 subspecs 时引入全部，与前端“不选则引入全部”的语义一致
+    // - 如果存在 default_subspecs，主 pod 只会引入默认子规格，因此必须显式列出所有要编译的 subspec
     // - 如果没有 subspecs，直接引入主 pod
     let podLines = '';
     const subspecs = spec?.subspecs;
@@ -3490,12 +3489,13 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
     if (selectedSubspecs && selectedSubspecs.length > 0) {
       // 用户指定了要编译的 subspecs
-      // 如果选的等于全部，直接用主 pod（避免 CocoaPods 解析问题）
+      const hasDefaultSubspecs = Boolean(spec.default_subspecs);
+      // 没有 default_subspecs 时，主 pod 才等价于引入全部 subspecs。
       const isAllSelected = allSubNames.length > 0 &&
         selectedSubspecs.length >= allSubNames.length &&
         allSubNames.every((n: string) => selectedSubspecs.includes(n));
 
-      if (isAllSelected) {
+      if (isAllSelected && !hasDefaultSubspecs) {
         podLines = `  pod '${podName}', '${version}'\n`;
         logger.info('用户选择了全部 subspecs，使用主 pod', { podName });
       } else {
@@ -3506,28 +3506,14 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       }
     } else if (subspecs && Array.isArray(subspecs) && subspecs.length > 0) {
       const defaultSubs = spec.default_subspecs;
-      let subsToInclude: string[];
-
-      if (defaultSubs) {
-        subsToInclude = Array.isArray(defaultSubs) ? defaultSubs : [defaultSubs];
-      } else {
-        subsToInclude = subspecs.map((s: any) => s.name || s);
-      }
-
-      // 如果引入的是全部 subspecs 或 default 等于全部，直接用主 pod
-      const allSubNames = subspecs.map((s: any) => s.name || s);
-      const isAllIncluded =
-        subsToInclude.length === allSubNames.length &&
-        subsToInclude.every((s: string) => allSubNames.includes(s));
-
-      if (isAllIncluded || !defaultSubs) {
+      if (!defaultSubs) {
         podLines = `  pod '${podName}', '${version}'\n`;
         logger.info('直接引入主 pod（全部 subspecs）', { podName });
       } else {
-        for (const subName of subsToInclude) {
+        for (const subName of allSubNames) {
           podLines += `  pod '${podName}/${subName}', '${version}'\n`;
         }
-        logger.info('引入 default subspecs', { podName, subspecs: subsToInclude });
+        logger.info('未指定 subspecs，显式引入全部 subspecs', { podName, subspecs: allSubNames });
       }
     } else {
       podLines = `  pod '${podName}', '${version}'\n`;
@@ -3604,12 +3590,10 @@ end
     // 例如 GRDB.swift 的 default_subspecs 是 "standard"，需要把 standard 的 frameworks/libraries/xcconfig/dependencies 合并
     let mergedSpec = { ...spec };
     if (spec.subspecs && Array.isArray(spec.subspecs) && spec.subspecs.length > 0) {
-      // 优先用用户选择的 subspecs，其次 default_subspecs，最后全部
+      // 优先用用户选择的 subspecs；未选择时合并全部，与编译阶段的语义一致。
       const defaultSubNames = selectedSubspecs && selectedSubspecs.length > 0
         ? selectedSubspecs
-        : spec.default_subspecs
-          ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
-          : spec.subspecs.map((s: any) => s.name);
+        : spec.subspecs.map((s: any) => s.name);
 
       for (const subName of defaultSubNames) {
         const sub = spec.subspecs.find((s: any) => s.name === subName);
@@ -3792,9 +3776,7 @@ end
     if (spec.subspecs && Array.isArray(spec.subspecs) && spec.subspecs.length > 0) {
       const subsToAlias = selectedSubspecs && selectedSubspecs.length > 0
         ? selectedSubspecs
-        : spec.default_subspecs
-          ? (Array.isArray(spec.default_subspecs) ? spec.default_subspecs : [spec.default_subspecs])
-          : spec.subspecs.map((s: any) => s.name);
+        : spec.subspecs.map((s: any) => s.name);
 
       // 设置 default_subspecs 避免引入所有 subspec
       if (spec.default_subspecs) {
