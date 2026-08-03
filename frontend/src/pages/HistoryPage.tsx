@@ -42,6 +42,7 @@ export default function HistoryPage() {
   const [detailSearchText, setDetailSearchText] = useState('');
   const [activeDetailMatchIndex, setActiveDetailMatchIndex] = useState(0);
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
+  const [versionFilter, setVersionFilter] = useState('all');
   const [moduleFilters, setModuleFilters] = useState<ModuleFilter[]>([]);
   const openedUrlHistoryIdRef = useRef<number | null>(null);
   const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -449,9 +450,26 @@ export default function HistoryPage() {
   };
 
   const normalizedQuery = normalizeSearchValue(queryText);
+  const versionOptions = useMemo(() => {
+    const counts = new Map<string, number>();
+    historyData.forEach((record) => {
+      const version = String(record.appVersion || '').trim();
+      if (!version) return;
+      counts.set(version, (counts.get(version) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .sort(([left], [right]) => right.localeCompare(left, undefined, { numeric: true, sensitivity: 'base' }))
+      .map(([version, count]) => ({
+        value: version,
+        label: `${/^v/i.test(version) ? version : `v${version}`} (${count})`,
+      }));
+  }, [historyData]);
+
   const records = historyData.filter((record) => {
     if (fixedFilter === 'fixed' && !record.isFixed) return false;
     if (fixedFilter === 'unfixed' && record.isFixed) return false;
+    if (versionFilter !== 'all' && record.appVersion !== versionFilter) return false;
     if (moduleFilters.length > 0) {
       const recordGroups = getRecordModuleGroups(record);
       if (!moduleFilters.some((filter) => recordGroups.includes(filter))) {
@@ -527,6 +545,17 @@ export default function HistoryPage() {
               { value: 'all', label: '全部状态' },
               { value: 'unfixed', label: '未修复' },
               { value: 'fixed', label: '已修复' },
+            ]}
+          />
+          <Select
+            value={versionFilter}
+            onChange={setVersionFilter}
+            style={{ width: 160 }}
+            showSearch
+            optionFilterProp="label"
+            options={[
+              { value: 'all', label: '全部版本' },
+              ...versionOptions,
             ]}
           />
           <Select
