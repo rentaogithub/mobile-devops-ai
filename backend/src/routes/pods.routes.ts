@@ -910,7 +910,7 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
     if (!name || !version) {
       return res.status(400).json({ success: false, error: '组件名称和版本号为必填项' });
     }
-    const targetBranch = requireTargetBranch(target_branch);
+    const targetBranch = target_branch ? requireTargetBranch(target_branch) : undefined;
 
     // internalVersion: 用户自定义发布版本号（如 1.4.0.1），若不传则与 version 相同
     const publishVersion = (internalVersion || '').trim() || version;

@@ -173,7 +173,7 @@ export default function PodsPage() {
   const [selectedSubspecs, setSelectedSubspecs] = useState<string[]>([]);
   const [internalVersion, setInternalVersion] = useState<string>('');
   const [prepareCommand, setPrepareCommand] = useState<string>('');
-  const [officialTargetBranch, setOfficialTargetBranch] = useState<string>('develop');
+  const [officialTargetBranch, setOfficialTargetBranch] = useState<string>();
   const [officialTriggerNniosBuild, setOfficialTriggerNniosBuild] = useState(false);
   const [publishTabKey, setPublishTabKey] = useState<string>('local');
   const [nniosBranches, setNniosBranches] = useState<string[]>([]);
@@ -231,9 +231,6 @@ export default function PodsPage() {
       if (!form.getFieldValue('target_branch')) {
         form.setFieldValue('target_branch', branches.includes('develop') ? 'develop' : branches[0]);
       }
-      if (!officialTargetBranch || !branches.includes(officialTargetBranch)) {
-        setOfficialTargetBranch(branches.includes('develop') ? 'develop' : branches[0]);
-      }
       return branches;
     } catch (error: any) {
       message.warning(error?.error || error?.message || '加载 nnios 分支失败，请稍后重试');
@@ -241,7 +238,7 @@ export default function PodsPage() {
     } finally {
       setNniosBranchLoading(false);
     }
-  }, [form, isAdmin, officialTargetBranch]);
+  }, [form, isAdmin]);
 
   const loadNNRtcBuilds = useCallback(async () => {
     if (!isAdmin) return;
@@ -1176,7 +1173,7 @@ export default function PodsPage() {
     }
     setImporting(true);
     try {
-      const targetBranch = officialTargetBranch || 'develop';
+      const targetBranch = officialTargetBranch;
       const shouldTriggerNniosBuild = officialTriggerNniosBuild;
       const res = await podsApi.importOfficial(
         officialName.trim(),
@@ -1193,7 +1190,9 @@ export default function PodsPage() {
         const status = res.data?.status;
         const publishedVer = internalVersion.trim() || officialVersion;
         if (status === 'published') {
-          message.success(`${officialName}@${publishedVer} 导入成功，已同步到 nnios/${targetBranch}`);
+          message.success(targetBranch
+            ? `${officialName}@${publishedVer} 导入成功，已同步到 nnios/${targetBranch}`
+            : `${officialName}@${publishedVer} 导入成功`);
         } else {
           message.warning(res.data?.error_message || 'Nexus 上传成功，但后续同步失败');
         }
@@ -1207,11 +1206,11 @@ export default function PodsPage() {
         setSelectedSubspecs([]);
         setInternalVersion('');
         setPrepareCommand('');
-        setOfficialTargetBranch('develop');
+        setOfficialTargetBranch(undefined);
         setOfficialTriggerNniosBuild(false);
         setSelectedName(officialName.trim());
         fetchComponents();
-        if (status === 'published' && shouldTriggerNniosBuild) {
+        if (status === 'published' && shouldTriggerNniosBuild && targetBranch) {
           try {
             await triggerNniosBuildTask(targetBranch);
           } catch (error: any) {
@@ -1565,7 +1564,7 @@ export default function PodsPage() {
           setAvailableSubspecs([]);
           setSelectedSubspecs([]);
           setCheckingDeps(false);
-          setOfficialTargetBranch('develop');
+          setOfficialTargetBranch(undefined);
           setOfficialTriggerNniosBuild(false);
           setNniosBranches([]);
           setNnrtcBuilds([]);
@@ -1920,7 +1919,7 @@ export default function PodsPage() {
                                       if (!depVersion) return;
                                       setDepPublishing(prev => ({ ...prev, [dep.name]: true }));
                                       try {
-                                        const res = await podsApi.importOfficial(dep.name, depVersion, true, 'framework', undefined, undefined, undefined, undefined, officialTargetBranch || 'develop');
+                                        const res = await podsApi.importOfficial(dep.name, depVersion, true, 'framework', undefined, undefined, undefined, undefined, officialTargetBranch);
                                         if (res.success) {
                                           message.success(`${dep.name}@${depVersion} 发布成功`);
                                           setDependencies(prev => prev.map(d =>
@@ -2000,6 +1999,7 @@ export default function PodsPage() {
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ marginBottom: 4 }}>
                         <Text strong>同步到 nnios 分支</Text>
+                        <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>可选</Text>
                       </div>
                       <Select
                         showSearch
@@ -2007,8 +2007,12 @@ export default function PodsPage() {
                         value={officialTargetBranch}
                         style={{ width: '100%' }}
                         placeholder="选择 nnios 分支"
+                        allowClear
                         options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
-                        onChange={setOfficialTargetBranch}
+                        onChange={(branch) => {
+                          setOfficialTargetBranch(branch);
+                          if (!branch) setOfficialTriggerNniosBuild(false);
+                        }}
                         onDropdownVisibleChange={(open) => {
                           if (open && nniosBranches.length === 0) loadNniosBranches();
                         }}
@@ -2019,6 +2023,7 @@ export default function PodsPage() {
                     <div style={{ marginBottom: 16 }}>
                       <Checkbox
                         checked={officialTriggerNniosBuild}
+                        disabled={!officialTargetBranch}
                         onChange={(e) => setOfficialTriggerNniosBuild(e.target.checked)}
                       >
                         是否发布 nnios 构建任务
