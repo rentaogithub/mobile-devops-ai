@@ -71,33 +71,45 @@ else
     echo "ℹ️  Sonic 默认不随平台启动。需要诊断时执行: npm run sonic -- check"
 fi
 
-# 3. 启动后端
+# 3. 重启后端，确保源码变更生效
 echo "🔄 启动后端服务..."
 cd "$BACKEND_DIR"
 if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
-    echo "✅ 后端服务已在运行 (端口 $BACKEND_PORT)"
-else
-    # 在后台启动后端
-    run_npm run dev > "$PROJECT_ROOT/backend-dev.log" 2>&1 &
-    BACKEND_PID=$!
-    echo "📝 后端进程 PID: $BACKEND_PID"
-    
-    # 等待后端启动
-    echo "⏳ 等待后端服务启动..."
-    for i in {1..30}; do
-        if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
-            echo "✅ 后端服务启动成功"
+    echo "⚠️  端口 $BACKEND_PORT 已被占用，重启后端服务..."
+    lsof -ti:$BACKEND_PORT | xargs kill 2>/dev/null || true
+    for i in {1..10}; do
+        if ! lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
             break
-        fi
-        if [ $i -eq 30 ]; then
-            echo "❌ 后端服务启动超时"
-            echo "查看日志: tail -f $PROJECT_ROOT/backend-dev.log"
-            kill $BACKEND_PID 2>/dev/null || true
-            exit 1
         fi
         sleep 1
     done
+    if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
+        echo "⚠️  后端进程未正常退出，强制释放端口 $BACKEND_PORT..."
+        lsof -ti:$BACKEND_PORT | xargs kill -9 2>/dev/null || true
+        sleep 1
+    fi
 fi
+
+# 在后台启动后端
+run_npm run dev > "$PROJECT_ROOT/backend-dev.log" 2>&1 &
+BACKEND_PID=$!
+echo "📝 后端进程 PID: $BACKEND_PID"
+
+# 等待后端启动
+echo "⏳ 等待后端服务启动..."
+for i in {1..30}; do
+    if lsof -ti:$BACKEND_PORT > /dev/null 2>&1; then
+        echo "✅ 后端服务启动成功"
+        break
+    fi
+    if [ $i -eq 30 ]; then
+        echo "❌ 后端服务启动超时"
+        echo "查看日志: tail -f $PROJECT_ROOT/backend-dev.log"
+        kill $BACKEND_PID 2>/dev/null || true
+        exit 1
+    fi
+    sleep 1
+done
 
 # 4. 启动前端
 echo "🔄 启动前端服务..."
