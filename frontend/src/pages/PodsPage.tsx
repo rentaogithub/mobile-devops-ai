@@ -157,7 +157,7 @@ export default function PodsPage() {
   const [officialVersion, setOfficialVersion] = useState<string>('');
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [buildBinary, setBuildBinary] = useState(false);
+  const [buildBinary, setBuildBinary] = useState(true);
   const [buildOutputType, setBuildOutputType] = useState<string>('framework');
   const [dependencies, setDependencies] = useState<Array<{
     name: string;
@@ -1206,6 +1206,8 @@ export default function PodsPage() {
         setSelectedSubspecs([]);
         setInternalVersion('');
         setPrepareCommand('');
+        setBuildBinary(true);
+        setBuildOutputType('framework');
         setOfficialTargetBranch(undefined);
         setOfficialTriggerNniosBuild(false);
         setSelectedName(officialName.trim());
@@ -1564,6 +1566,8 @@ export default function PodsPage() {
           setAvailableSubspecs([]);
           setSelectedSubspecs([]);
           setCheckingDeps(false);
+          setBuildBinary(true);
+          setBuildOutputType('framework');
           setOfficialTargetBranch(undefined);
           setOfficialTriggerNniosBuild(false);
           setNniosBranches([]);
