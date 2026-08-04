@@ -130,19 +130,25 @@ function getHighestIssueVersion(issue: any): string {
 }
 
 function getIssueVersionCandidates(issue: any, extractedVersion?: string, requestedAppVersion?: string): string[] {
-  const rawVersions = [
-    requestedAppVersion,
-    extractedVersion,
+  const issueVersions = [
     issue?.maxAppVersion,
     issue?.minAppVersion,
     ...(Array.isArray(issue?.appVersions) ? issue.appVersions : []),
     ...(typeof issue?.appVersionRange === 'string' ? issue.appVersionRange.split(' - ') : []),
+  ]
+    .map(normalizeAppVersion)
+    .filter((version) => version && !excludedSentryAppVersions.has(version))
+    .sort((a, b) => compareVersions(b, a));
+
+  const rawVersions = [
+    extractedVersion,
+    requestedAppVersion,
+    ...issueVersions,
   ];
 
   return Array.from(new Set(rawVersions
     .map(normalizeAppVersion)
-    .filter((version) => version && !excludedSentryAppVersions.has(version))))
-    .sort((a, b) => compareVersions(b, a));
+    .filter((version) => version && !excludedSentryAppVersions.has(version))));
 }
 
 async function findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
@@ -222,6 +228,7 @@ function extractCrashBinaryNames(crashLog: string): Set<string> {
 
 function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[] {
   const crashBinaryNames = extractCrashBinaryNames(crashLog);
+  const crashAppVersion = extractVersionFromCrashLog(crashLog);
   const normalizedCrashLog = normalizeUUID(crashLog);
   const filtered = dsymInfos.filter((dsym) => {
     const resolvedFilePath = resolveDSYMFilePath(dsym);
@@ -241,7 +248,7 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
       return false;
     }
 
-    if (isMainApp || uuidMatches || nameMatches) {
+    if (uuidMatches || (nameMatches && (!isMainApp || !crashAppVersion || dsym.version === crashAppVersion))) {
       return true;
     }
 
@@ -261,6 +268,14 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
     : dsymInfos
       .map((dsym) => ({ ...dsym, filePath: resolveDSYMFilePath(dsym) }))
       .filter((dsym) => hasDWARFFile(dsym.filePath));
+}
+
+function getHistoryAppVersion(extractedVersion: string | null, fallbackVersion: string): string {
+  return normalizeAppVersion(extractedVersion || '') || fallbackVersion;
+}
+
+function isVersionDetected(extractedVersion: string | null, appVersion: string): boolean {
+  return !!extractedVersion && extractedVersion === appVersion;
 }
 
 function isHistoryMissingTargetUUIDs(existingUUIDs: string[] = [], targetUUIDs: string[] = []): boolean {
@@ -327,26 +342,30 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
 
       const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
       const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
+      const recordAppVersion = getHistoryAppVersion(extractedVersion, appVersion);
       let existingHistory =
         historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
-        historyService.findDuplicateByOriginalLog(crashLog, appVersion) ||
+        historyService.findDuplicateByOriginalLog(crashLog, recordAppVersion) ||
         historyService.findDuplicateByOriginalLog(crashLog);
 
       if (existingHistory) {
-        if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs)) {
+        const shouldRefreshVersion = extractedVersion && existingHistory.appVersion !== recordAppVersion;
+        if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs) || shouldRefreshVersion) {
           logger.info('Sentry 自动符号化命中旧历史，刷新缺失 dSYM 的符号化结果', {
             issueId: normalizedIssue.id,
             historyId: existingHistory.id,
             existingUUIDs: existingHistory.usedUuids,
             targetUUIDs,
+            existingAppVersion: existingHistory.appVersion,
+            recordAppVersion,
           });
 
           const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
           const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
-          const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+          const versionDetected = isVersionDetected(extractedVersion, recordAppVersion);
 
           existingHistory = await historyService.updateSymbolicationResult(existingHistory.id, {
-            appVersion,
+            appVersion: recordAppVersion,
             versionDetected,
             crashType: crashInfo.crashType,
             crashReason: crashInfo.crashReason,
@@ -365,7 +384,7 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
           issue: normalizedIssue,
           eventId: event?.id,
           incidentIdentifier: originalCrashFile.incidentIdentifier,
-          appVersion: existingHistory.appVersion || appVersion,
+          appVersion: existingHistory.appVersion || recordAppVersion,
           originalLog: existingHistory.originalLog,
           symbolicatedLog: existingHistory.symbolicatedLog,
           matchedUUIDs: existingHistory.usedUuids,
@@ -377,9 +396,9 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
 
       const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
       const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
-      const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+      const versionDetected = isVersionDetected(extractedVersion, recordAppVersion);
       const savedRecord = await historyService.saveHistory({
-        appVersion,
+        appVersion: recordAppVersion,
         versionDetected,
         crashType: crashInfo.crashType,
         crashReason: crashInfo.crashReason,
@@ -396,7 +415,7 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
         issue: normalizedIssue,
         eventId: event?.id,
         incidentIdentifier: originalCrashFile.incidentIdentifier,
-        appVersion,
+        appVersion: recordAppVersion,
         originalLog: crashLog,
         symbolicatedLog: symbolicated.symbolicatedLog,
         matchedUUIDs: targetUUIDs,
@@ -811,7 +830,13 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     }
 
     const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
-    const appVersion = normalizeAppVersion(requestedAppVersion) || getHighestIssueVersion(normalizedIssue);
+    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+    const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
+    const crashLog = originalCrashFile.crashLog;
+    const extractedVersion = extractVersionFromCrashLog(crashLog);
+    const appVersion = normalizeAppVersion(extractedVersion || '') ||
+      normalizeAppVersion(requestedAppVersion) ||
+      getHighestIssueVersion(normalizedIssue);
     if (!appVersion) {
       throw new AppError(
         ErrorCode.INVALID_CRASH_LOG,
@@ -836,9 +861,6 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       dsymCount: dsymInfos.length,
     });
 
-    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
-    const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
-    const crashLog = originalCrashFile.crashLog;
     const crashDSYMInfos = filterDSYMsForCrash(dsymInfos, crashLog);
     if (crashDSYMInfos.length === 0) {
       throw new AppError(
@@ -850,26 +872,30 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
     const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
     const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
+    const recordAppVersion = getHistoryAppVersion(extractedVersion, appVersion);
     let existingHistory =
       historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
-      historyService.findDuplicateByOriginalLog(crashLog, appVersion);
+      historyService.findDuplicateByOriginalLog(crashLog, recordAppVersion) ||
+      historyService.findDuplicateByOriginalLog(crashLog);
 
     if (existingHistory) {
-      if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs)) {
+      const shouldRefreshVersion = extractedVersion && existingHistory.appVersion !== recordAppVersion;
+      if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs) || shouldRefreshVersion) {
         logger.info('Sentry 历史记录缺少当前可用 dSYM，刷新符号化结果', {
           issueId: normalizedIssue.id,
           historyId: existingHistory.id,
           existingUUIDs: existingHistory.usedUuids,
           targetUUIDs,
+          existingAppVersion: existingHistory.appVersion,
+          recordAppVersion,
         });
 
         const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
         const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
-        const extractedVersion = extractVersionFromCrashLog(crashLog);
-        const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+        const versionDetected = isVersionDetected(extractedVersion, recordAppVersion);
 
         existingHistory = await historyService.updateSymbolicationResult(existingHistory.id, {
-          appVersion,
+          appVersion: recordAppVersion,
           versionDetected,
           crashType: crashInfo.crashType,
           crashReason: crashInfo.crashReason,
@@ -885,7 +911,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
       logger.info('Sentry 问题已解析过，直接返回历史记录', {
         issueId: normalizedIssue.id,
-        appVersion,
+        appVersion: recordAppVersion,
         historyId: existingHistory.id,
         hasAIAnalysis: !!existingHistory.aiAnalysis,
       });
@@ -899,7 +925,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
             aiAnalysis = await aiAnalysisService.analyzeCrashLog(
               existingHistory.symbolicatedLog,
               apiKey,
-              existingHistory.appVersion || appVersion
+              existingHistory.appVersion || recordAppVersion
             );
             await historyService.updateAIAnalysis(existingHistory.id, aiAnalysis);
             logger.info('Sentry 历史记录已补充 AI 分析', {
@@ -920,7 +946,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       }
 
       workflowIntegrationService.syncSentryIssue(
-        { ...normalizedIssue, eventId: event?.id, appVersion: existingHistory.appVersion || appVersion },
+        { ...normalizedIssue, eventId: event?.id, appVersion: existingHistory.appVersion || recordAppVersion },
         aiAnalysis,
       );
 
@@ -930,7 +956,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
           issue: normalizedIssue,
           eventId: event?.id,
           incidentIdentifier: originalCrashFile.incidentIdentifier,
-          appVersion: existingHistory.appVersion || appVersion,
+          appVersion: existingHistory.appVersion || recordAppVersion,
           originalLog: existingHistory.originalLog,
           symbolicatedLog: existingHistory.symbolicatedLog,
           matchedUUIDs: existingHistory.usedUuids,
@@ -946,8 +972,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     const symbolicated = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymPaths);
 
     const crashInfo = extractCrashInfo(crashLog, symbolicated.symbolicatedLog);
-    const extractedVersion = extractVersionFromCrashLog(crashLog);
-    const versionDetected = extractedVersion === appVersion || normalizedIssue.appVersions?.includes(appVersion);
+    const versionDetected = isVersionDetected(extractedVersion, recordAppVersion);
 
     let aiAnalysis: any = undefined;
     let aiError: string | undefined = undefined;
@@ -956,7 +981,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         aiAnalysis = await aiAnalysisService.analyzeCrashLog(
           symbolicated.symbolicatedLog,
           apiKey,
-          appVersion
+          recordAppVersion
         );
       } catch (error: any) {
         aiError = error.message || 'AI 分析失败';
@@ -970,7 +995,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     }
 
     const savedRecord = await historyService.saveHistory({
-      appVersion,
+      appVersion: recordAppVersion,
       versionDetected,
       crashType: crashInfo.crashType,
       crashReason: crashInfo.crashReason,
@@ -985,12 +1010,12 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
     logger.info('Sentry 问题解析完成', {
       issueId: normalizedIssue.id,
-      appVersion,
+      appVersion: recordAppVersion,
       historyId: savedRecord.id,
       hasAIAnalysis: !!aiAnalysis,
     });
     workflowIntegrationService.syncSentryIssue(
-      { ...normalizedIssue, eventId: event?.id, appVersion },
+      { ...normalizedIssue, eventId: event?.id, appVersion: recordAppVersion },
       aiAnalysis,
     );
 
@@ -1000,7 +1025,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         issue: normalizedIssue,
         eventId: event?.id,
         incidentIdentifier: originalCrashFile.incidentIdentifier,
-        appVersion,
+        appVersion: recordAppVersion,
         originalLog: crashLog,
         symbolicatedLog: symbolicated.symbolicatedLog,
         matchedUUIDs: targetUUIDs,
