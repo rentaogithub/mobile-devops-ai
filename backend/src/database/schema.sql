@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS symbolication_history (
   ai_analysis TEXT,  -- AI 分析结果（JSON）
   is_fixed INTEGER DEFAULT 0,  -- 是否已修复（0: 未修复, 1: 已修复）
   fixed_version TEXT,  -- 修复版本号
+  fixed_remark TEXT,  -- 修复备注
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

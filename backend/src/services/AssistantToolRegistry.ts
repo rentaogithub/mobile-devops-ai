@@ -59,6 +59,7 @@ function compactHistory(record: any, includeLogs = false) {
     crashLocation: record.crashLocation,
     isFixed: record.isFixed,
     fixedVersion: record.fixedVersion,
+    fixedRemark: record.fixedRemark,
     createdAt: record.createdAt,
     hasAIAnalysis: Boolean(record.aiAnalysis),
     aiAnalysis: record.aiAnalysis,

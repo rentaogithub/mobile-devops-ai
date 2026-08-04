@@ -1133,10 +1133,11 @@ export const historyApi = {
   /**
    * 更新历史记录的修复状态
    */
-  updateFixedStatus: async (id: number, isFixed: boolean, fixedVersion?: string): Promise<ApiResponse> => {
+  updateFixedStatus: async (id: number, isFixed: boolean, fixedVersion?: string, fixedRemark?: string): Promise<ApiResponse> => {
     const response = await api.patch<ApiResponse>(`/history/${id}/fixed`, {
       isFixed,
       fixedVersion,
+      fixedRemark,
     });
     return response.data;
   },

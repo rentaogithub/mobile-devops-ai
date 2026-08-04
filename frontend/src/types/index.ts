@@ -168,6 +168,7 @@ export interface HistoryRecord {
   aiAnalysis?: CrashAnalysis;
   isFixed: boolean;
   fixedVersion?: string;
+  fixedRemark?: string;
   createdAt: string;
 }
 

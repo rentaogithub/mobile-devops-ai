@@ -217,7 +217,7 @@ router.get('/:id/download', async (req: Request, res: Response) => {
 router.patch('/:id/fixed', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { isFixed, fixedVersion } = req.body;
+    const { isFixed, fixedVersion, fixedRemark } = req.body;
 
     if (typeof isFixed !== 'boolean') {
       return res.status(400).json({
@@ -233,7 +233,21 @@ router.patch('/:id/fixed', async (req: Request, res: Response) => {
       });
     }
 
-    historyService.updateFixedStatus(parseInt(id, 10), isFixed, fixedVersion);
+    if (fixedRemark !== undefined && typeof fixedRemark !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: '修复备注必须是字符串',
+      });
+    }
+
+    if (String(fixedRemark || '').trim().length > 500) {
+      return res.status(400).json({
+        success: false,
+        error: '修复备注不能超过 500 个字符',
+      });
+    }
+
+    historyService.updateFixedStatus(parseInt(id, 10), isFixed, fixedVersion, fixedRemark);
 
     res.json({
       success: true,

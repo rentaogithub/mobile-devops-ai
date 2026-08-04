@@ -16,6 +16,7 @@ export interface SymbolicationHistoryRecord {
   aiAnalysis?: any;
   isFixed: boolean;
   fixedVersion?: string;
+  fixedRemark?: string;
   createdAt: string;
 }
 
@@ -546,19 +547,20 @@ export class HistoryService {
   /**
    * 更新历史记录的修复状态
    */
-  updateFixedStatus(id: number, isFixed: boolean, fixedVersion?: string): void {
+  updateFixedStatus(id: number, isFixed: boolean, fixedVersion?: string, fixedRemark?: string): void {
     const db = getDatabase();
+    const normalizedRemark = String(fixedRemark || '').trim().slice(0, 500);
 
     try {
       const stmt = db.prepare(`
         UPDATE symbolication_history 
-        SET is_fixed = ?, fixed_version = ? 
+        SET is_fixed = ?, fixed_version = ?, fixed_remark = ?
         WHERE id = ?
       `);
 
-      stmt.run(isFixed ? 1 : 0, fixedVersion || null, id);
+      stmt.run(isFixed ? 1 : 0, isFixed ? fixedVersion || null : null, isFixed ? normalizedRemark || null : null, id);
 
-      logger.info('历史记录修复状态已更新', { id, isFixed, fixedVersion });
+      logger.info('历史记录修复状态已更新', { id, isFixed, fixedVersion, hasFixedRemark: Boolean(normalizedRemark) });
     } catch (error: any) {
       logger.error('更新历史记录修复状态失败', { error: error.message });
       throw error;
@@ -584,6 +586,7 @@ export class HistoryService {
       aiAnalysis: row.ai_analysis ? JSON.parse(row.ai_analysis) : undefined,
       isFixed: row.is_fixed === 1,
       fixedVersion: row.fixed_version,
+      fixedRemark: row.fixed_remark,
       createdAt: row.created_at,
     };
   }

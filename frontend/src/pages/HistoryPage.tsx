@@ -25,6 +25,7 @@ interface HistoryRecord {
   aiAnalysis?: any;
   isFixed: boolean;
   fixedVersion?: string;
+  fixedRemark?: string;
   createdAt: string;
 }
 
@@ -159,13 +160,14 @@ export default function HistoryPage() {
     }
   };
 
-  const updateRecordFixedState = (recordId: number, isFixed: boolean, fixedVersion?: string) => {
+  const updateRecordFixedState = (recordId: number, isFixed: boolean, fixedVersion?: string, fixedRemark?: string) => {
     const updater = (record: HistoryRecord): HistoryRecord =>
       record.id === recordId
         ? {
           ...record,
           isFixed,
           fixedVersion: isFixed ? fixedVersion : undefined,
+          fixedRemark: isFixed ? fixedRemark : undefined,
         }
         : record;
     setHistoryData((prev) => prev.map(updater));
@@ -180,27 +182,40 @@ export default function HistoryPage() {
         // 标记为已修复，需要输入修复版本
         Modal.confirm({
           title: '标记为已修复',
+          width: 520,
+          okText: '确定',
+          cancelText: '取消',
           content: (
             <div>
-              <p>请输入修复版本号：</p>
+              <p style={{ marginBottom: 8 }}>请输入修复版本号：</p>
               <Input
                 id="fixed-version-input"
                 placeholder="例如：1.0.1"
                 defaultValue=""
               />
+              <p style={{ marginTop: 16, marginBottom: 8 }}>修复备注（可选）：</p>
+              <Input.TextArea
+                id="fixed-remark-input"
+                placeholder="例如：修复原因、关联 PR 或验证结果"
+                autoSize={{ minRows: 3, maxRows: 5 }}
+                maxLength={500}
+                showCount
+              />
             </div>
           ),
           onOk: async () => {
             const input = document.getElementById('fixed-version-input') as HTMLInputElement;
+            const remarkInput = document.getElementById('fixed-remark-input') as HTMLTextAreaElement;
             const fixedVersion = input?.value?.trim();
+            const fixedRemark = remarkInput?.value?.trim();
             
             if (!fixedVersion) {
               message.error('请输入修复版本号');
               return Promise.reject();
             }
             
-            await historyApi.updateFixedStatus(record.id, true, fixedVersion);
-            updateRecordFixedState(record.id, true, fixedVersion);
+            await historyApi.updateFixedStatus(record.id, true, fixedVersion, fixedRemark);
+            updateRecordFixedState(record.id, true, fixedVersion, fixedRemark);
             message.success('已标记为已修复');
             loadHistory();
           },
@@ -492,6 +507,7 @@ export default function HistoryPage() {
       record.crashModule,
       record.crashLocation,
       record.fixedVersion,
+      record.fixedRemark,
       record.createdAt,
       formatDateTime(record.createdAt),
       record.aiAnalysis?.summary,
@@ -672,6 +688,12 @@ export default function HistoryPage() {
                           <Text>{record.crashReason}</Text>
                         </div>
                       )}
+                      {record.fixedRemark && (
+                        <div>
+                          <Text type="secondary">修复备注：</Text>
+                          <Text>{record.fixedRemark}</Text>
+                        </div>
+                      )}
                     </Space>
                   </Card>
                 ))}
@@ -749,6 +771,12 @@ export default function HistoryPage() {
                   <Tag color="geekblue" style={{ marginLeft: 8 }}>
                     {selectedRecord.crashModule}
                   </Tag>
+                </div>
+              )}
+              {selectedRecord.fixedRemark && (
+                <div>
+                  <Text strong>修复备注：</Text>
+                  <Text>{selectedRecord.fixedRemark}</Text>
                 </div>
               )}
               {selectedRecord.lastStackCall && (

@@ -67,6 +67,7 @@ function migrateDatabase(): void {
     const hasCrashLocation = historyTableInfo.some((col: any) => col.name === 'crash_location');
     const hasIsFixed = historyTableInfo.some((col: any) => col.name === 'is_fixed');
     const hasFixedVersion = historyTableInfo.some((col: any) => col.name === 'fixed_version');
+    const hasFixedRemark = historyTableInfo.some((col: any) => col.name === 'fixed_remark');
     const hasVersionDetected = historyTableInfo.some((col: any) => col.name === 'version_detected');
 
     if (!hasLastStackCall) {
@@ -97,6 +98,12 @@ function migrateDatabase(): void {
       console.log('Adding fixed_version column to symbolication_history...');
       db.exec('ALTER TABLE symbolication_history ADD COLUMN fixed_version TEXT');
       console.log('Migration completed: added fixed_version column');
+    }
+
+    if (!hasFixedRemark) {
+      console.log('Adding fixed_remark column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN fixed_remark TEXT');
+      console.log('Migration completed: added fixed_remark column');
     }
 
     if (!hasVersionDetected) {
