@@ -2582,6 +2582,7 @@ export default function CICDPage() {
   const appleAutoRegistrationUdidRef = useRef('');
   const appleRegistrationNoticeRef = useRef('');
   const assistantBuildDetailRef = useRef('');
+  const buildPollingRef = useRef(false);
 
   useEffect(() => {
     if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
@@ -3238,13 +3239,14 @@ export default function CICDPage() {
     setReleaseBranchLog('');
     try {
       await jenkinsApi.createReleaseBranch({ targetBranch, baseBranch });
-      message.success(`已拉取新分支 ${targetBranch}`);
-      setPublishBranch(targetBranch);
       await loadBranches();
+      setPublishBranch(targetBranch);
+      setReleaseBranchModalOpen(false);
+      message.success('分支拉取成功');
     } catch (err: any) {
       const errorText = err?.error || err?.message || '拉取新分支失败';
       setReleaseBranchLog((current) => `${current || ''}\n\n${errorText}`.trim());
-      message.error(errorText);
+      message.error('分支拉取失败');
     } finally {
       setReleaseBranchCreating(false);
     }
@@ -3676,6 +3678,14 @@ export default function CICDPage() {
     () => (data?.builds || []).some((build) => build.building),
     [data],
   );
+  const runningBuildNumbersKey = useMemo(
+    () => (data?.builds || [])
+      .filter((build) => build.building)
+      .map((build) => String(build.number))
+      .sort()
+      .join(','),
+    [data],
+  );
   const previousHasRunningQualityBuildRef = useRef(false);
   const hasRunningQualityBuild = useMemo(
     () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
@@ -3709,18 +3719,27 @@ export default function CICDPage() {
       return undefined;
     }
     const timer = window.setInterval(() => {
-      loadBuilds(filterDeployTarget, { silent: true });
+      if (buildPollingRef.current) {
+        return;
+      }
+      buildPollingRef.current = true;
+      loadBuilds(filterDeployTarget, { silent: true }, filterBranchName)
+        .finally(() => {
+          buildPollingRef.current = false;
+        });
     }, 5000);
-    return () => window.clearInterval(timer);
-  }, [activeSection, hasRunningBuild, filterDeployTarget]);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [activeSection, hasRunningBuild, runningBuildNumbersKey, filterDeployTarget, filterBranchName]);
 
   useEffect(() => {
     const previous = previousHasRunningBuildRef.current;
     previousHasRunningBuildRef.current = hasRunningBuild;
     if (activeSection === 'release' && previous && !hasRunningBuild) {
-      loadBuilds(filterDeployTarget, { silent: true });
+      loadBuilds(filterDeployTarget, { silent: true }, filterBranchName);
     }
-  }, [activeSection, hasRunningBuild, filterDeployTarget]);
+  }, [activeSection, hasRunningBuild, filterDeployTarget, filterBranchName]);
 
   useEffect(() => {
     if (activeSection !== 'quality' || !hasRunningQualityBuild) {
