@@ -488,6 +488,7 @@ export class JenkinsAssistantService {
     gateBuildNumber?: number;
     releaseGateOverrideReason?: string;
     verificationPassword?: string;
+    testFlightWhatsNew?: string;
     requireReleaseGate?: boolean;
   }): Promise<any> {
     const branch = normalizeBranchName(input.branch);
@@ -560,6 +561,7 @@ export class JenkinsAssistantService {
       RELEASE_GATE_STATUS: String(releaseGate?.status || ''),
       SOURCE_BUILD_NUMBER: gateBuildNumber ? String(gateBuildNumber) : '',
       RELEASE_GATE_OVERRIDE_REASON: gateBuildNumber ? String(input.releaseGateOverrideReason || '').trim() : '',
+      TESTFLIGHT_WHATS_NEW: input.deployTarget === 'TestFlight' ? String(input.testFlightWhatsNew || '').trim() : '',
     });
     const response = await axios.post(`${this.baseUrl}/${encodeJobPath(this.jobName)}/buildWithParameters`, params.toString(), {
       timeout: 30_000,

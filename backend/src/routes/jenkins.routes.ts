@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import podDepsResolver from '../services/PodDependencyResolver';
 import aiAnalysisService from '../services/AIAnalysisService';
 import { FileHandlerService, StorageService } from '../services';
@@ -49,12 +50,24 @@ const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-poo
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
 const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
 const BUILD_DSYM_SYNC_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-dsym-sync.json');
+const TESTFLIGHT_DISTRIBUTION_CACHE_PATH = path.join(DATA_DIR, 'jenkins-testflight-distribution.json');
+const JENKINS_BRANCH_CACHE_PATH = path.join(DATA_DIR, 'jenkins-branches.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
 const fileHandler = new FileHandlerService();
 const storage = new StorageService();
 const podService = new PodService();
 const BUILD_DSYM_SYNC_RUNNING = new Set<string>();
+const TESTFLIGHT_DISTRIBUTION_RUNNING = new Set<string>();
+const ASC_API_BASE = 'https://api.appstoreconnect.apple.com/v1';
+const TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS = Math.max(
+  5000,
+  Number(process.env.TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS || 30000) || 30000,
+);
+const TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS || 80) || 80,
+);
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -926,6 +939,431 @@ function saveBuildDsymSync(buildNumber: number, sync: any) {
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
   fs.renameSync(tmpPath, BUILD_DSYM_SYNC_CACHE_PATH);
   return nextCache.builds[String(buildNumber)];
+}
+
+function readTestFlightDistributionCache() {
+  const cache = readJsonFile(TESTFLIGHT_DISTRIBUTION_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { builds: {} };
+}
+
+function getSavedTestFlightDistribution(buildNumber: number) {
+  const cache = readTestFlightDistributionCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function saveTestFlightDistribution(buildNumber: number, distribution: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const cache = readTestFlightDistributionCache();
+  const previous = cache?.builds?.[String(buildNumber)] || {};
+  const nextCache = {
+    ...cache,
+    builds: {
+      ...(cache.builds || {}),
+      [String(buildNumber)]: {
+        ...previous,
+        ...distribution,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  };
+  const tmpPath = `${TESTFLIGHT_DISTRIBUTION_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
+  fs.renameSync(tmpPath, TESTFLIGHT_DISTRIBUTION_CACHE_PATH);
+  return nextCache.builds[String(buildNumber)];
+}
+
+function readBranchCache() {
+  const cache = readJsonFile(JENKINS_BRANCH_CACHE_PATH);
+  const branches = Array.isArray(cache?.branches) ? cache.branches : [];
+  return branches.map((item: any) => normalizeBranchName(String(item || ''))).filter(Boolean);
+}
+
+function saveBranchCache(branches: string[]) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const uniqueBranches = Array.from(new Set(branches.map(normalizeBranchName).filter(Boolean))).sort(compareBranchOptions);
+  const tmpPath = `${JENKINS_BRANCH_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify({
+    branches: uniqueBranches,
+    updatedAt: new Date().toISOString(),
+  }, null, 2));
+  fs.renameSync(tmpPath, JENKINS_BRANCH_CACHE_PATH);
+  return uniqueBranches;
+}
+
+function readApplePrivateKey() {
+  const inlineKey = getRuntimeEnv('APP_STORE_CONNECT_API_PRIVATE_KEY').trim();
+  if (inlineKey) return inlineKey.replace(/\\n/g, '\n');
+
+  const keyPath = getRuntimeEnv('APP_STORE_CONNECT_API_KEY_PATH').trim();
+  if (!keyPath) return '';
+  const resolved = path.isAbsolute(keyPath) ? keyPath : path.resolve(process.cwd(), keyPath);
+  return fs.existsSync(resolved) ? fs.readFileSync(resolved, 'utf-8') : '';
+}
+
+function base64Url(input: Buffer | string) {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function createAppleJwt() {
+  const keyId = getRuntimeEnv('APP_STORE_CONNECT_API_KEY_ID').trim();
+  const issuerId = getRuntimeEnv('APP_STORE_CONNECT_API_ISSUER_ID').trim();
+  const privateKey = readApplePrivateKey();
+  const missing = [
+    !keyId ? 'APP_STORE_CONNECT_API_KEY_ID' : '',
+    !issuerId ? 'APP_STORE_CONNECT_API_ISSUER_ID' : '',
+    !privateKey ? 'APP_STORE_CONNECT_API_KEY_PATH 或 APP_STORE_CONNECT_API_PRIVATE_KEY' : '',
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(`App Store Connect API Key 未配置完整：${missing.join('、')}`);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'ES256', kid: keyId, typ: 'JWT' };
+  const payload = {
+    iss: issuerId,
+    iat: now,
+    exp: now + 20 * 60,
+    aud: 'appstoreconnect-v1',
+  };
+  const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
+  const signature = crypto.sign('sha256', Buffer.from(signingInput), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  });
+  return `${signingInput}.${base64Url(signature)}`;
+}
+
+async function requestAppStoreConnect<T>(
+  method: 'GET' | 'POST' | 'PATCH',
+  url: string,
+  data?: any,
+): Promise<T> {
+  const response = await axios.request<T>({
+    method,
+    url,
+    data,
+    timeout: 30000,
+    headers: {
+      Authorization: `Bearer ${createAppleJwt()}`,
+      'Content-Type': 'application/json',
+    },
+  });
+  return response.data;
+}
+
+function testFlightGroupTokens() {
+  return String(getRuntimeEnv('APP_STORE_CONNECT_TESTFLIGHT_GROUPS') || getRuntimeEnv('TESTFLIGHT_BETA_GROUPS') || '')
+    .split(/[,，\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function testFlightDefaultWhatsNew() {
+  return String(getRuntimeEnv('TESTFLIGHT_WHATS_NEW') || getRuntimeEnv('APP_STORE_CONNECT_TESTFLIGHT_WHATS_NEW') || '修复已知问题，优化体验。').trim();
+}
+
+function testFlightAppId() {
+  return String(getRuntimeEnv('APP_STORE_CONNECT_APP_ID') || getRuntimeEnv('ASC_APP_ID') || '').trim();
+}
+
+function normalizeTestFlightWhatsNew(value?: string) {
+  return String(value || '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
+}
+
+async function findAppStoreBuild(appId: string, appVersion: string, buildNumber: string) {
+  const params = new URLSearchParams({
+    'filter[app]': appId,
+    'filter[version]': buildNumber,
+    'filter[preReleaseVersion.version]': appVersion,
+    limit: '10',
+    include: 'preReleaseVersion',
+  });
+  const response = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/builds?${params.toString()}`);
+  const builds = Array.isArray(response?.data) ? response.data : [];
+  return builds.find((item: any) => String(item?.attributes?.version || '') === buildNumber) || builds[0] || null;
+}
+
+async function fetchBuildBetaDetail(buildId: string) {
+  const response = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/builds/${encodeURIComponent(buildId)}/buildBetaDetail`);
+  return response?.data?.attributes || null;
+}
+
+async function submitBetaAppReview(buildId: string) {
+  try {
+    const response = await requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/betaAppReviewSubmissions`, {
+      data: {
+        type: 'betaAppReviewSubmissions',
+        relationships: {
+          build: {
+            data: {
+              type: 'builds',
+              id: buildId,
+            },
+          },
+        },
+      },
+    });
+    return response?.data || null;
+  } catch (error: any) {
+    const status = error?.response?.status;
+    const code = String(error?.response?.data?.errors?.[0]?.code || '');
+    const detail = String(error?.response?.data?.errors?.[0]?.detail || '');
+    if (status === 409 || /already|exists|invalid state/i.test(`${code} ${detail}`)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function testFlightExternalStateStatus(externalBuildState: string) {
+  switch (externalBuildState) {
+    case 'IN_BETA_TESTING':
+      return { status: 'distributed', message: '已自动分发到 TestFlight 测试组' };
+    case 'READY_FOR_BETA_SUBMISSION':
+      return { status: 'ready_for_submission', message: '已加入外部测试组，等待提交 Beta App Review' };
+    case 'IN_BETA_REVIEW':
+      return { status: 'in_beta_review', message: 'Beta App Review 审核中' };
+    case 'BETA_REJECTED':
+      return { status: 'failed', message: 'Beta App Review 被拒绝' };
+    case 'EXPIRED':
+      return { status: 'failed', message: 'TestFlight 构建已过期' };
+    case 'PROCESSING':
+      return { status: 'waiting_processing', message: 'App Store Connect 正在处理 TestFlight 构建' };
+    case 'PROCESSING_EXCEPTION':
+      return { status: 'failed', message: 'App Store Connect 构建处理异常' };
+    case 'MISSING_EXPORT_COMPLIANCE':
+      return { status: 'unconfirmed', message: '缺少出口合规信息，无法分发外部测试' };
+    default:
+      return { status: 'unconfirmed', message: externalBuildState ? `外部测试状态为 ${externalBuildState}` : '无法确认外部测试状态' };
+  }
+}
+
+async function resolveTestFlightGroups(appId: string, groupTokens: string[]) {
+  const groups: any[] = [];
+  const cachedGroupsResponse = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/betaGroups?${new URLSearchParams({
+    'filter[app]': appId,
+    limit: '200',
+  }).toString()}`);
+  const allGroups = Array.isArray(cachedGroupsResponse?.data) ? cachedGroupsResponse.data : [];
+  for (const token of groupTokens) {
+    if (/^id:/i.test(token)) {
+      groups.push({ id: token.replace(/^id:/i, '').trim(), attributes: { name: token } });
+      continue;
+    }
+    const matched = allGroups.find((group: any) => String(group?.id || '') === token || String(group?.attributes?.name || '') === token);
+    if (!matched) {
+      throw new Error(`未找到 TestFlight 测试组：${token}`);
+    }
+    groups.push(matched);
+  }
+  return groups;
+}
+
+async function upsertBetaBuildLocalization(buildId: string, whatsNew: string) {
+  const normalizedWhatsNew = normalizeTestFlightWhatsNew(whatsNew);
+  if (!normalizedWhatsNew) return null;
+  const locale = String(getRuntimeEnv('TESTFLIGHT_WHATS_NEW_LOCALE') || 'zh-Hans').trim() || 'zh-Hans';
+  const listResponse = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/builds/${encodeURIComponent(buildId)}/betaBuildLocalizations?${new URLSearchParams({
+    limit: '200',
+  }).toString()}`);
+  const localizations = Array.isArray(listResponse?.data) ? listResponse.data : [];
+  const existing = localizations.find((item: any) => String(item?.attributes?.locale || '') === locale) || null;
+  if (existing?.id) {
+    return requestAppStoreConnect<any>('PATCH', `${ASC_API_BASE}/betaBuildLocalizations/${encodeURIComponent(existing.id)}`, {
+      data: {
+        type: 'betaBuildLocalizations',
+        id: existing.id,
+        attributes: {
+          whatsNew: normalizedWhatsNew,
+        },
+      },
+    });
+  }
+  return requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/betaBuildLocalizations`, {
+    data: {
+      type: 'betaBuildLocalizations',
+      attributes: {
+        locale,
+        whatsNew: normalizedWhatsNew,
+      },
+      relationships: {
+        build: {
+          data: {
+            type: 'builds',
+            id: buildId,
+          },
+        },
+      },
+    },
+  });
+}
+
+async function addBuildToBetaGroup(buildId: string, groupId: string) {
+  try {
+    await requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`, {
+      data: [{
+        type: 'builds',
+        id: buildId,
+      }],
+    });
+  } catch (error: any) {
+    const status = error?.response?.status;
+    const code = error?.response?.data?.errors?.[0]?.code;
+    if (status === 409 || code === 'ENTITY_ERROR.RELATIONSHIP.INVALID') {
+      return;
+    }
+    throw error;
+  }
+}
+
+function appStoreConnectErrorMessage(error: any, fallback: string) {
+  const appleError = error?.response?.data?.errors?.[0];
+  return appleError?.detail || appleError?.title || error?.message || fallback;
+}
+
+function scheduleTestFlightDistribution(build: any, options: { attempt?: number } = {}) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return;
+  if (normalizeDeployTarget(build?.publishChannel) !== 'TestFlight') return;
+  if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') return;
+
+  const cacheKey = String(buildNumber);
+  const saved = getSavedTestFlightDistribution(buildNumber);
+  if (saved?.status === 'distributed' && saved?.externalBuildState === 'IN_BETA_TESTING') return;
+  if (TESTFLIGHT_DISTRIBUTION_RUNNING.has(cacheKey)) return;
+
+  const appId = testFlightAppId();
+  const groupTokens = testFlightGroupTokens();
+  const appVersion = String(build?.appVersion || '').trim();
+  const channelBuildNumber = String(build?.buildNumber || '').trim();
+  const whatsNew = normalizeTestFlightWhatsNew(build?.testFlightWhatsNew) || testFlightDefaultWhatsNew();
+  if (!appId || groupTokens.length === 0) {
+    saveTestFlightDistribution(buildNumber, {
+      status: 'skipped',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      message: !appId ? '未配置 APP_STORE_CONNECT_APP_ID' : '未配置 APP_STORE_CONNECT_TESTFLIGHT_GROUPS',
+    });
+    return;
+  }
+  if (!appVersion || !channelBuildNumber) {
+    saveTestFlightDistribution(buildNumber, {
+      status: 'skipped',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      message: '缺少 App 版本或渠道构建号，无法匹配 App Store Connect 构建',
+    });
+    return;
+  }
+
+  TESTFLIGHT_DISTRIBUTION_RUNNING.add(cacheKey);
+  if (saved?.status !== 'waiting_processing') {
+    saveTestFlightDistribution(buildNumber, {
+      status: 'waiting_processing',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      message: '等待 App Store Connect 构建处理完成',
+    });
+  }
+
+  void (async () => {
+    const attempt = options.attempt || 0;
+    try {
+      const appStoreBuild = await findAppStoreBuild(appId, appVersion, channelBuildNumber);
+      if (!appStoreBuild?.id) {
+        saveTestFlightDistribution(buildNumber, {
+          status: 'uploaded',
+          appVersion,
+          buildNumber: channelBuildNumber,
+          message: `Jenkins 已成功上传到 App Store Connect。平台暂时无法通过 App Store Connect API 确认处理/测试状态，请确认 APP_STORE_CONNECT_APP_ID 与 API Key 属于正式包所在团队`,
+        });
+        return;
+      }
+      const processingState = String(appStoreBuild?.attributes?.processingState || '');
+      if (processingState && processingState !== 'VALID') {
+        if (attempt + 1 >= TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS || /FAILED|INVALID/i.test(processingState)) {
+          saveTestFlightDistribution(buildNumber, {
+            status: 'failed',
+            appVersion,
+            buildNumber: channelBuildNumber,
+            appStoreBuildId: appStoreBuild.id,
+            processingState,
+            message: `App Store Connect 构建状态为 ${processingState}`,
+          });
+          return;
+        }
+        saveTestFlightDistribution(buildNumber, {
+          status: 'waiting_processing',
+          appVersion,
+          buildNumber: channelBuildNumber,
+          appStoreBuildId: appStoreBuild.id,
+          processingState,
+          message: `App Store Connect 构建状态为 ${processingState}，等待处理完成`,
+        });
+        setTimeout(() => scheduleTestFlightDistribution(build, { attempt: attempt + 1 }), TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS);
+        return;
+      }
+
+      await upsertBetaBuildLocalization(appStoreBuild.id, whatsNew);
+      const groups = await resolveTestFlightGroups(appId, groupTokens);
+      const distributableGroups = groups.filter((group) => !group.attributes?.isInternalGroup);
+      for (const group of distributableGroups) {
+        await addBuildToBetaGroup(appStoreBuild.id, group.id);
+      }
+      let betaDetail = await fetchBuildBetaDetail(appStoreBuild.id);
+      let internalBuildState = String(betaDetail?.internalBuildState || '');
+      let externalBuildState = String(betaDetail?.externalBuildState || '');
+      let betaAppReviewSubmissionId = '';
+      if (distributableGroups.length > 0 && externalBuildState === 'READY_FOR_BETA_SUBMISSION') {
+        const submission = await submitBetaAppReview(appStoreBuild.id);
+        betaAppReviewSubmissionId = String(submission?.id || '');
+        betaDetail = await fetchBuildBetaDetail(appStoreBuild.id);
+        internalBuildState = String(betaDetail?.internalBuildState || internalBuildState);
+        externalBuildState = String(betaDetail?.externalBuildState || externalBuildState);
+      }
+      const externalStatus = distributableGroups.length > 0
+        ? testFlightExternalStateStatus(externalBuildState)
+        : { status: 'distributed', message: 'App Store Connect 构建已处理完成，内部测试组无需手动分发' };
+      saveTestFlightDistribution(buildNumber, {
+        status: externalStatus.status,
+        appVersion,
+        buildNumber: channelBuildNumber,
+        appStoreBuildId: appStoreBuild.id,
+        processingState,
+        internalBuildState,
+        externalBuildState,
+        betaAppReviewSubmissionId,
+        groups: distributableGroups.map((group) => ({
+          id: group.id,
+          name: group.attributes?.name || group.id,
+        })),
+        whatsNew,
+        message: externalStatus.message,
+      });
+    } catch (error: any) {
+      if (attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS && !error?.response) {
+        setTimeout(() => scheduleTestFlightDistribution(build, { attempt: attempt + 1 }), TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS);
+        return;
+      }
+      saveTestFlightDistribution(buildNumber, {
+        status: 'failed',
+        appVersion,
+        buildNumber: channelBuildNumber,
+        message: appStoreConnectErrorMessage(error, 'TestFlight 自动分发失败'),
+      });
+      logger.warn('TestFlight 自动分发失败', { buildNumber, error: error?.message });
+    } finally {
+      TESTFLIGHT_DISTRIBUTION_RUNNING.delete(cacheKey);
+    }
+  })();
 }
 
 function normalizeDSYMVersion(value?: string) {
@@ -2550,10 +2988,12 @@ async function fetchBuildParameters(jobPath: string, buildNumber: number) {
     const getParam = (name: string) => parameters.find((item: any) => item.name === name)?.value;
     return {
       branchName: String(getParam('branch') || '').replace(/^origin\//, ''),
+      testFlightWhatsNew: String(getParam('TESTFLIGHT_WHATS_NEW') || ''),
     };
   } catch {
     return {
       branchName: '',
+      testFlightWhatsNew: '',
     };
   }
 }
@@ -2614,37 +3054,51 @@ async function fetchRecentJenkinsBuildBranches(jobPath: string) {
 }
 
 router.get('/nn/branches', async (_req: Request, res: Response) => {
+  const warnings: string[] = [];
+  let remoteBranches: string[] = [];
+  let buildBranches: string[] = [];
+
   try {
     const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', DEFAULT_REPO_URL], {
-      timeout: 30000,
+      timeout: 15000,
       maxBuffer: 1024 * 1024,
     });
-    const remoteBranches = stdout
+    remoteBranches = stdout
       .split('\n')
       .map((line) => line.match(/refs\/heads\/(.+)$/)?.[1])
       .filter((branch): branch is string => Boolean(branch))
       .filter((branch) => !branch.includes('HEAD'))
       .map(normalizeBranchName);
-    let buildBranches: string[] = [];
-    try {
-      buildBranches = await fetchRecentJenkinsBuildBranches(encodeJobPath(DEFAULT_JOB_NAME));
-    } catch (error: any) {
-      logger.warn(`查询 Jenkins 历史构建分支失败: ${error.message || error}`);
-    }
-    const branches = Array.from(new Set([...remoteBranches, ...buildBranches]))
-      .filter(Boolean)
-      .sort(compareBranchOptions);
-
-    res.json({
-      success: true,
-      data: branches,
-    });
   } catch (error: any) {
-    res.status(502).json({
-      success: false,
-      error: error.message || '查询 Jenkins 分支列表失败',
-    });
+    const message = error.message || 'Git 远端分支查询失败';
+    warnings.push(message);
+    logger.warn(`查询 Git 远端分支失败: ${message}`);
   }
+
+  try {
+    buildBranches = await fetchRecentJenkinsBuildBranches(encodeJobPath(DEFAULT_JOB_NAME));
+  } catch (error: any) {
+    const message = error.message || 'Jenkins 历史构建分支查询失败';
+    warnings.push(message);
+    logger.warn(`查询 Jenkins 历史构建分支失败: ${message}`);
+  }
+
+  let branches = Array.from(new Set([...remoteBranches, ...buildBranches]))
+    .filter(Boolean)
+    .sort(compareBranchOptions);
+
+  if (branches.length > 0) {
+    branches = saveBranchCache(branches);
+  } else {
+    branches = readBranchCache();
+  }
+
+  res.json({
+    success: true,
+    data: branches,
+    warnings,
+    stale: remoteBranches.length === 0 && buildBranches.length === 0 && branches.length > 0,
+  });
 });
 
 router.get('/nn/builds', async (req: Request, res: Response) => {
@@ -2684,18 +3138,21 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 	        url: normalizeJenkinsUrl(build.url),
 	        branchName: buildParameters.branchName,
 	        publishChannel,
-        commitHash: consoleMetadata.commitHash,
+	        commitHash: consoleMetadata.commitHash,
         buildNumber,
         appVersion,
+        testFlightWhatsNew: buildParameters.testFlightWhatsNew,
         packageUrl: consoleMetadata.packageUrl,
 	        installPackageUrl: consoleMetadata.installPackageUrl,
 	        channelQrUrl: consoleMetadata.channelQrUrl,
 	        xcarchivePath: consoleMetadata.xcarchivePath,
 	        archiveUrl: consoleMetadata.archiveUrl,
 	        dsymSync: getSavedBuildDsymSync(build.number),
+	        testFlightDistribution: getSavedTestFlightDistribution(build.number),
 	      };
 	    }));
 	    buildsWithMetadata.forEach(scheduleAppStoreBuildDsymSync);
+	    buildsWithMetadata.forEach((build: any) => scheduleTestFlightDistribution(build));
 	    workflowIntegrationService.syncJenkinsBuilds(buildsWithMetadata);
 	    const builds = buildsWithMetadata.filter((build: any) => (
 	      (!deployTargetFilter || normalizeDeployTarget(build.publishChannel) === deployTargetFilter) &&
@@ -2768,9 +3225,17 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	    const buildResponse = await fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url');
 	    const buildInfo = buildResponse.data || {};
 	    const dsymSync = getSavedBuildDsymSync(buildNumber);
+	    const testFlightDistribution = getSavedTestFlightDistribution(buildNumber);
 	    scheduleAppStoreBuildDsymSync({
 	      ...buildInfo,
 	      publishChannel: buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel),
+	    });
+	    scheduleTestFlightDistribution({
+	      ...buildInfo,
+	      publishChannel: buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel),
+	      appVersion: buildMetadata.appVersion,
+	      buildNumber: buildMetadata.buildNumber,
+	      testFlightWhatsNew: buildParameters.testFlightWhatsNew,
 	    });
 
 	    res.json({
@@ -2782,6 +3247,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	        failureAnalysis: savedFailureAnalysis?.analysis,
 	        failureAnalysisUpdatedAt: savedFailureAnalysis?.updatedAt,
 	        dsymSync,
+	        testFlightDistribution,
 	        thirdSdkBranch: thirdSdk.branch,
         thirdSdkRevision: thirdSdk.revision,
         thirdSdkDependencies: thirdSdk.dependencies,
@@ -3332,6 +3798,7 @@ router.post('/nn/build', async (req: Request, res: Response) => {
       verificationPassword: String(req.body?.verificationPassword || ''),
       gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
       releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
+      testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),
     });
 
     res.json({

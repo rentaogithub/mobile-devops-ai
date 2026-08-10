@@ -1833,6 +1833,23 @@ export interface JenkinsBuild {
   xcarchivePath?: string;
   archiveUrl?: string;
   dsymSync?: JenkinsBuildDsymSync;
+  testFlightWhatsNew?: string;
+  testFlightDistribution?: JenkinsTestFlightDistribution;
+}
+
+export interface JenkinsTestFlightDistribution {
+  status?: 'waiting_processing' | 'distributed' | 'failed' | 'skipped' | 'unconfirmed' | 'uploaded' | 'ready_for_submission' | 'in_beta_review';
+  appVersion?: string;
+  buildNumber?: string;
+  appStoreBuildId?: string;
+  betaAppReviewSubmissionId?: string;
+  processingState?: string;
+  internalBuildState?: string;
+  externalBuildState?: string;
+  groups?: Array<{ id: string; name: string }>;
+  whatsNew?: string;
+  message?: string;
+  updatedAt?: string;
 }
 
 export interface JenkinsJobInfo {
@@ -1862,6 +1879,7 @@ export interface JenkinsBuildLogResult {
   failureAnalysis?: JenkinsBuildFailureAnalysis;
   failureAnalysisUpdatedAt?: string;
   dsymSync?: JenkinsBuildDsymSync;
+  testFlightDistribution?: JenkinsTestFlightDistribution;
   thirdSdkBranch: string;
   thirdSdkRevision?: string;
   thirdSdkDependencies: Array<{
@@ -2403,6 +2421,7 @@ export const jenkinsApi = {
     branch?: string;
     gateBuildNumber?: number;
     releaseGateOverrideReason?: string;
+    testFlightWhatsNew?: string;
   }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>> => {
     const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>>('/jenkins/nn/build', payload);
     return response.data;

@@ -443,6 +443,57 @@ function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
   }
 }
 
+function testFlightDistributionTag(build: JenkinsBuild) {
+  if (build.publishChannel !== 'TestFlight') {
+    return <Text type="secondary">-</Text>;
+  }
+  if (build.building) {
+    return <Tag color="processing">等待打包完成</Tag>;
+  }
+  if (build.result && build.result !== 'SUCCESS') {
+    return <Text type="secondary">-</Text>;
+  }
+  const distribution = build.testFlightDistribution;
+  if (!distribution) {
+    return <Tag color="default">待监听</Tag>;
+  }
+  const title = distribution.message || distribution.groups?.map((group) => group.name).join('、') || undefined;
+  if (distribution.status === 'distributed') {
+    return <Tag color="success" title={title}>已分发</Tag>;
+  }
+  if (distribution.status === 'uploaded') {
+    return <Tag color="blue" title={title}>已上传</Tag>;
+  }
+  if (distribution.status === 'waiting_processing') {
+    return <Tag color="processing" title={title}>处理中</Tag>;
+  }
+  if (distribution.status === 'ready_for_submission') {
+    return <Tag color="warning" title={title}>准备提交</Tag>;
+  }
+  if (distribution.status === 'in_beta_review') {
+    return <Tag color="processing" title={title}>审核中</Tag>;
+  }
+  if (distribution.status === 'skipped') {
+    return <Tag color="warning" title={title}>未配置</Tag>;
+  }
+  if (distribution.status === 'unconfirmed') {
+    return <Tag color="warning" title={title}>无法确认</Tag>;
+  }
+  if (distribution.status === 'failed') {
+    return <Tag color="error" title={title}>分发失败</Tag>;
+  }
+  return <Tag title={title}>待监听</Tag>;
+}
+
+function buildStatusTags(build: JenkinsBuild) {
+  return (
+    <Space size={4} wrap>
+      {resultTag(build)}
+      {build.publishChannel === 'TestFlight' && testFlightDistributionTag(build)}
+    </Space>
+  );
+}
+
 function qualityResultTag(build: JenkinsQualityBuild) {
   if (isQualityBuildEffectivelyRunning(build)) {
     return <Tag color="processing">运行中</Tag>;
@@ -2551,6 +2602,7 @@ export default function CICDPage() {
   const [verificationPassword, setVerificationPassword] = useState('');
   const [publishGateBuildNumber, setPublishGateBuildNumber] = useState<number>();
   const [releaseGateOverrideReason, setReleaseGateOverrideReason] = useState('');
+  const [testFlightWhatsNew, setTestFlightWhatsNew] = useState('');
   const [releaseGatePreview, setReleaseGatePreview] = useState<WorkflowReleaseGate>();
   const [releaseGateMissingSuites, setReleaseGateMissingSuites] = useState<JenkinsQualitySuite[]>([]);
   const [releaseGatePreviewLoading, setReleaseGatePreviewLoading] = useState(false);
@@ -3198,12 +3250,14 @@ export default function CICDPage() {
         verificationPassword: verificationPassword.trim(),
         gateBuildNumber: publishGateBuildNumber,
         releaseGateOverrideReason: releaseGateOverrideReason.trim() || undefined,
+        testFlightWhatsNew: publishTarget === 'TestFlight' ? testFlightWhatsNew.trim() : undefined,
       });
       const gateMessage = response.data?.releaseGate ? `质量门禁 ${response.data.releaseGate.status}，` : '';
       message.success(`${gateMessage}已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === publishTarget)?.label} 发布构建`);
       setPublishModalOpen(false);
       setVerificationPassword('');
       setReleaseGateOverrideReason('');
+      setTestFlightWhatsNew('');
       const nextFilter = filterDeployTarget && filterDeployTarget !== publishTarget ? publishTarget : filterDeployTarget;
       if (nextFilter !== filterDeployTarget) {
         setFilterDeployTarget(nextFilter);
@@ -3375,6 +3429,7 @@ export default function CICDPage() {
     setPublishBranch(build.branchName || 'develop');
     setPublishGateBuildNumber(undefined);
     setReleaseGateOverrideReason('');
+    setTestFlightWhatsNew('');
     setPublishModalOpen(true);
   };
 
@@ -3385,6 +3440,9 @@ export default function CICDPage() {
     }
     setPublishGateBuildNumber(undefined);
     setReleaseGateOverrideReason('');
+    if (deployTarget !== 'TestFlight') {
+      setTestFlightWhatsNew('');
+    }
     setPublishModalOpen(true);
   };
 
@@ -3686,6 +3744,26 @@ export default function CICDPage() {
       .join(','),
     [data],
   );
+  const hasPendingTestFlightDistribution = useMemo(
+    () => (data?.builds || []).some((build) => (
+      build.publishChannel === 'TestFlight' &&
+      build.result === 'SUCCESS' &&
+      (!build.testFlightDistribution || build.testFlightDistribution.status === 'waiting_processing')
+    )),
+    [data],
+  );
+  const pendingTestFlightDistributionKey = useMemo(
+    () => (data?.builds || [])
+      .filter((build) => (
+        build.publishChannel === 'TestFlight' &&
+        build.result === 'SUCCESS' &&
+        (!build.testFlightDistribution || build.testFlightDistribution.status === 'waiting_processing')
+      ))
+      .map((build) => `${build.number}:${build.testFlightDistribution?.status || 'pending'}`)
+      .sort()
+      .join(','),
+    [data],
+  );
   const previousHasRunningQualityBuildRef = useRef(false);
   const hasRunningQualityBuild = useMemo(
     () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
@@ -3715,7 +3793,7 @@ export default function CICDPage() {
   };
 
   useEffect(() => {
-    if (activeSection !== 'release' || !hasRunningBuild) {
+    if (activeSection !== 'release' || (!hasRunningBuild && !hasPendingTestFlightDistribution)) {
       return undefined;
     }
     const timer = window.setInterval(() => {
@@ -3731,7 +3809,15 @@ export default function CICDPage() {
     return () => {
       window.clearInterval(timer);
     };
-  }, [activeSection, hasRunningBuild, runningBuildNumbersKey, filterDeployTarget, filterBranchName]);
+  }, [
+    activeSection,
+    hasRunningBuild,
+    hasPendingTestFlightDistribution,
+    runningBuildNumbersKey,
+    pendingTestFlightDistributionKey,
+    filterDeployTarget,
+    filterBranchName,
+  ]);
 
   useEffect(() => {
     const previous = previousHasRunningBuildRef.current;
@@ -4104,7 +4190,7 @@ export default function CICDPage() {
           loading={loading}
           dataSource={filteredBuilds}
           tableLayout="fixed"
-          scroll={{ x: 1280 }}
+          scroll={{ x: 1410 }}
           pagination={{ pageSize: 10, showSizeChanger: false }}
           columns={[
             {
@@ -4188,8 +4274,8 @@ export default function CICDPage() {
             {
               title: '状态',
               key: 'result',
-              width: 100,
-              render: (_, record) => resultTag(record),
+              width: 150,
+              render: (_, record) => buildStatusTags(record),
             },
             {
               title: '开始时间',
@@ -4986,6 +5072,10 @@ export default function CICDPage() {
               }
               if (nextTarget === 'Pgyer') {
                 setVerificationPassword('');
+                setTestFlightWhatsNew('');
+              }
+              if (nextTarget === 'AppStore') {
+                setTestFlightWhatsNew('');
               }
             }}
           />
@@ -4995,6 +5085,20 @@ export default function CICDPage() {
               value={verificationPassword}
               onChange={(event) => setVerificationPassword(event.target.value)}
             />
+          )}
+          {deployTarget === 'TestFlight' && (
+            <div>
+              <Text strong>发布文案</Text>
+              <Input.TextArea
+                value={testFlightWhatsNew}
+                onChange={(event) => setTestFlightWhatsNew(event.target.value)}
+                placeholder="请输入 TestFlight 测试内容，会自动填写到 App Store Connect"
+                autoSize={{ minRows: 3, maxRows: 6 }}
+                maxLength={4000}
+                showCount
+                style={{ marginTop: 8 }}
+              />
+            </div>
           )}
           <Alert
             type={deployTarget === 'Pgyer' ? 'info' : 'warning'}
