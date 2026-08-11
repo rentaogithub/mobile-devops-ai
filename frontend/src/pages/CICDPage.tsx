@@ -18,7 +18,7 @@ import {
   MobileOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { AppleDeveloperDevice, AppleDeveloperDeviceListResult, AppleDeveloperDeviceLookupResult, AppleDeviceConfigStatus, AppleDeviceEnrollment, AppleDeviceEnrollmentCreateResult, AppleDeviceRegistrationRequest, AppleDeviceRegistrationRequestListResult, JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, appleDeviceApi, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { AppleDeveloperDevice, AppleDeveloperDeviceListResult, AppleDeveloperDeviceLookupResult, AppleDeviceConfigStatus, AppleDeviceEnrollment, AppleDeviceEnrollmentCreateResult, AppleDeviceRegistrationRequest, AppleDeviceRegistrationRequestListResult, JenkinsAppStoreReleaseGuard, JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, appleDeviceApi, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
 import { authUtils } from '../utils/auth';
 import appleDeviceEnrollGuide from '../assets/apple-device-enroll-guide.svg';
@@ -214,6 +214,10 @@ function releaseGateItemLabel(code?: string) {
 
 function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(branch.trim());
+}
+
+function releaseNotesLength(value: string) {
+  return value.trim().length;
 }
 
 function getReleaseVersion(branch: string) {
@@ -485,11 +489,72 @@ function testFlightDistributionTag(build: JenkinsBuild) {
   return <Tag title={title}>待监听</Tag>;
 }
 
+function appStoreReleaseTag(build: JenkinsBuild) {
+  if (build.publishChannel !== 'AppStore') {
+    return <Text type="secondary">-</Text>;
+  }
+  if (build.building) {
+    return <Tag color="processing">等待打包完成</Tag>;
+  }
+  if (build.result && build.result !== 'SUCCESS') {
+    return <Text type="secondary">-</Text>;
+  }
+  const release = build.appStoreRelease;
+  if (!release) {
+    return <Tag color="default">待监听</Tag>;
+  }
+  const title = release.message || release.appStoreState || undefined;
+  if (release.status === 'ready_for_review') {
+    return <Tag color="warning" title={title}>准备提交审核</Tag>;
+  }
+  if (release.status === 'waiting_for_review') {
+    return <Tag color="processing" title={title}>等待审核</Tag>;
+  }
+  if (release.status === 'in_review') {
+    return <Tag color="processing" title={title}>审核中</Tag>;
+  }
+  if (release.status === 'pending_release') {
+    return <Tag color="success" title={title}>可供分发</Tag>;
+  }
+  if (release.status === 'ready_for_distribution') {
+    return <Tag color="success" title={title}>可供分发</Tag>;
+  }
+  if (release.status === 'ready_for_sale') {
+    return <Tag color="success" title={title}>已上架</Tag>;
+  }
+  if (release.status === 'rejected') {
+    return <Tag color="error" title={title}>审核被拒</Tag>;
+  }
+  if (release.status === 'developer_rejected') {
+    return <Tag color="default" title={title}>已取消审核</Tag>;
+  }
+  if (release.status === 'developer_action_needed') {
+    return <Tag color="error" title={title}>需处理</Tag>;
+  }
+  if (release.status === 'pending_agreement') {
+    return <Tag color="warning" title={title}>协议待处理</Tag>;
+  }
+  if (release.status === 'uploaded') {
+    return <Tag color="blue" title={title}>已上传</Tag>;
+  }
+  if (release.status === 'waiting_processing') {
+    return <Tag color="processing" title={title}>处理中</Tag>;
+  }
+  if (release.status === 'failed') {
+    return <Tag color="error" title={title}>审核异常</Tag>;
+  }
+  if (release.status === 'skipped') {
+    return <Tag color="warning" title={title}>未配置</Tag>;
+  }
+  return <Tag color="warning" title={title}>无法确认</Tag>;
+}
+
 function buildStatusTags(build: JenkinsBuild) {
   return (
     <Space size={4} wrap>
       {resultTag(build)}
       {build.publishChannel === 'TestFlight' && testFlightDistributionTag(build)}
+      {build.publishChannel === 'AppStore' && appStoreReleaseTag(build)}
     </Space>
   );
 }
@@ -2539,6 +2604,8 @@ export default function CICDPage() {
   const [qualityLoading, setQualityLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [stoppingBuild, setStoppingBuild] = useState<number | null>(null);
+  const [submittingAppStoreReview, setSubmittingAppStoreReview] = useState<number | null>(null);
+  const [cancelingAppStoreReview, setCancelingAppStoreReview] = useState<number | null>(null);
   const [stoppingQualityBuild, setStoppingQualityBuild] = useState<number | null>(null);
   const [cleaningQualityWda, setCleaningQualityWda] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -2606,6 +2673,9 @@ export default function CICDPage() {
   const [releaseGatePreview, setReleaseGatePreview] = useState<WorkflowReleaseGate>();
   const [releaseGateMissingSuites, setReleaseGateMissingSuites] = useState<JenkinsQualitySuite[]>([]);
   const [releaseGatePreviewLoading, setReleaseGatePreviewLoading] = useState(false);
+  const [appStoreReleaseGuard, setAppStoreReleaseGuard] = useState<JenkinsAppStoreReleaseGuard | null>(null);
+  const [appStoreReleaseGuardLoading, setAppStoreReleaseGuardLoading] = useState(false);
+  const [appStoreReleaseGuardError, setAppStoreReleaseGuardError] = useState('');
   const [appleDeviceStatus, setAppleDeviceStatus] = useState<AppleDeviceConfigStatus | null>(null);
   const [appleDeviceStatusLoading, setAppleDeviceStatusLoading] = useState(false);
   const [appleEnrollment, setAppleEnrollment] = useState<AppleDeviceEnrollmentCreateResult | null>(null);
@@ -2635,6 +2705,8 @@ export default function CICDPage() {
   const appleRegistrationNoticeRef = useRef('');
   const assistantBuildDetailRef = useRef('');
   const buildPollingRef = useRef(false);
+  const appStoreReleaseGuardSeqRef = useRef(0);
+  const isAdmin = authUtils.isAuthenticated() && authUtils.isAdmin();
 
   useEffect(() => {
     if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
@@ -2661,6 +2733,40 @@ export default function CICDPage() {
       });
     return () => { canceled = true; };
   }, [publishModalOpen, publishGateBuildNumber, publishBranch]);
+
+  useEffect(() => {
+    if (!publishModalOpen || deployTarget !== 'AppStore' || !publishBranch || !isAdmin) {
+      setAppStoreReleaseGuard(null);
+      setAppStoreReleaseGuardError('');
+      setAppStoreReleaseGuardLoading(false);
+      return undefined;
+    }
+
+    let canceled = false;
+    const seq = appStoreReleaseGuardSeqRef.current + 1;
+    appStoreReleaseGuardSeqRef.current = seq;
+    setAppStoreReleaseGuard(null);
+    setAppStoreReleaseGuardError('');
+    setAppStoreReleaseGuardLoading(true);
+
+    void jenkinsApi.checkAppStoreReleaseGuard({ branch: publishBranch.trim() })
+      .then((response) => {
+        if (canceled || appStoreReleaseGuardSeqRef.current !== seq) return;
+        setAppStoreReleaseGuard(response.data || null);
+      })
+      .catch((error: any) => {
+        if (canceled || appStoreReleaseGuardSeqRef.current !== seq) return;
+        setAppStoreReleaseGuard(null);
+        setAppStoreReleaseGuardError(error?.error || error?.message || '检查苹果商店版本状态失败');
+      })
+      .finally(() => {
+        if (!canceled && appStoreReleaseGuardSeqRef.current === seq) {
+          setAppStoreReleaseGuardLoading(false);
+        }
+      });
+
+    return () => { canceled = true; };
+  }, [publishModalOpen, deployTarget, publishBranch, isAdmin]);
 
   const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }, branch = filterBranchName) => {
     if (!options?.silent) {
@@ -3236,21 +3342,36 @@ export default function CICDPage() {
       message.warning('TestFlight / 苹果商店只能选择 release/x.x.x 格式分支');
       return;
     }
+    if (deployTarget !== 'Pgyer' && !authUtils.isAdmin()) {
+      message.warning('TestFlight / 苹果商店发布仅管理员可操作');
+      return;
+    }
     if (deployTarget !== 'Pgyer' && !verificationPassword.trim()) {
       message.warning('TestFlight / 苹果商店发布需要填写验证密码');
+      return;
+    }
+    if (deployTarget !== 'Pgyer' && releaseNotesLength(testFlightWhatsNew) <= 4) {
+      message.warning('TestFlight / 苹果商店发布文案必填，且必须超过 4 个字');
       return;
     }
     setPublishing(true);
     const publishTarget = deployTarget;
     const previousLatestBuild = data?.job.lastBuild?.number;
     try {
+      if (publishTarget === 'AppStore') {
+        const guardResponse = await jenkinsApi.checkAppStoreReleaseGuard({ branch: publishBranch.trim() });
+        if (guardResponse.data?.blocked) {
+          message.error(guardResponse.data.message || '当前 App Store 版本状态不允许重复发布');
+          return;
+        }
+      }
       const response = await jenkinsApi.publishNN({
         deployTarget: publishTarget,
         branch: publishBranch.trim(),
         verificationPassword: verificationPassword.trim(),
         gateBuildNumber: publishGateBuildNumber,
         releaseGateOverrideReason: releaseGateOverrideReason.trim() || undefined,
-        testFlightWhatsNew: publishTarget === 'TestFlight' ? testFlightWhatsNew.trim() : undefined,
+        testFlightWhatsNew: publishTarget !== 'Pgyer' ? testFlightWhatsNew.trim() : undefined,
       });
       const gateMessage = response.data?.releaseGate ? `质量门禁 ${response.data.releaseGate.status}，` : '';
       message.success(`${gateMessage}已触发 ${DEPLOY_TARGET_OPTIONS.find((item) => item.value === publishTarget)?.label} 发布构建`);
@@ -3334,6 +3455,41 @@ export default function CICDPage() {
       message.error(err?.error || err?.message || '取消构建失败');
     } finally {
       setStoppingBuild(null);
+    }
+  };
+
+  const submitAppStoreReview = async (buildNumber: number) => {
+    setSubmittingAppStoreReview(buildNumber);
+    try {
+      const response = await jenkinsApi.submitAppStoreReview(buildNumber);
+      message.success(response.data?.message || '已提交 App Store 审核');
+      await loadBuilds(filterDeployTarget, { silent: true }, filterBranchName);
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '提交 App Store 审核失败');
+    } finally {
+      setSubmittingAppStoreReview(null);
+    }
+  };
+
+  const cancelAppStoreReview = async (buildNumber: number) => {
+    setCancelingAppStoreReview(buildNumber);
+    try {
+      const response = await jenkinsApi.cancelAppStoreReview(buildNumber);
+      message.success(response.data?.message || '已停止 App Store 审核');
+      if (response.data) {
+        setSelectedBuildLog((current) => current && current.build.number === buildNumber ? {
+          ...current,
+          build: {
+            ...current.build,
+            appStoreRelease: response.data,
+          },
+        } : current);
+      }
+      await loadBuilds(filterDeployTarget, { silent: true }, filterBranchName);
+    } catch (err: any) {
+      message.error(err?.error || err?.message || '停止 App Store 审核失败');
+    } finally {
+      setCancelingAppStoreReview(null);
     }
   };
 
@@ -3531,7 +3687,13 @@ export default function CICDPage() {
     try {
       const response = await jenkinsApi.getBuildLog(build.number);
       setSelectedBuildLog({
-        build,
+        build: {
+          ...build,
+          dsymSync: response.data?.dsymSync || build.dsymSync,
+          testFlightWhatsNew: response.data?.testFlightWhatsNew || build.testFlightWhatsNew,
+          testFlightDistribution: response.data?.testFlightDistribution || build.testFlightDistribution,
+          appStoreRelease: response.data?.appStoreRelease || build.appStoreRelease,
+        },
         log: response.data?.log || '',
         thirdSdkBranch: response.data?.thirdSdkBranch || build.branchName || 'develop',
         thirdSdkRevision: response.data?.thirdSdkRevision,
@@ -3748,7 +3910,7 @@ export default function CICDPage() {
     () => (data?.builds || []).some((build) => (
       build.publishChannel === 'TestFlight' &&
       build.result === 'SUCCESS' &&
-      (!build.testFlightDistribution || build.testFlightDistribution.status === 'waiting_processing')
+      (!build.testFlightDistribution || ['waiting_processing', 'uploaded', 'ready_for_submission', 'in_beta_review'].includes(String(build.testFlightDistribution.status || '')))
     )),
     [data],
   );
@@ -3757,9 +3919,29 @@ export default function CICDPage() {
       .filter((build) => (
         build.publishChannel === 'TestFlight' &&
         build.result === 'SUCCESS' &&
-        (!build.testFlightDistribution || build.testFlightDistribution.status === 'waiting_processing')
+        (!build.testFlightDistribution || ['waiting_processing', 'uploaded', 'ready_for_submission', 'in_beta_review'].includes(String(build.testFlightDistribution.status || '')))
       ))
       .map((build) => `${build.number}:${build.testFlightDistribution?.status || 'pending'}`)
+      .sort()
+      .join(','),
+    [data],
+  );
+  const hasPendingAppStoreRelease = useMemo(
+    () => (data?.builds || []).some((build) => (
+      build.publishChannel === 'AppStore' &&
+      build.result === 'SUCCESS' &&
+      (!build.appStoreRelease || ['waiting_processing', 'uploaded', 'ready_for_review', 'waiting_for_review', 'in_review', 'pending_release', 'ready_for_distribution'].includes(String(build.appStoreRelease.status || '')))
+    )),
+    [data],
+  );
+  const pendingAppStoreReleaseKey = useMemo(
+    () => (data?.builds || [])
+      .filter((build) => (
+        build.publishChannel === 'AppStore' &&
+        build.result === 'SUCCESS' &&
+        (!build.appStoreRelease || ['waiting_processing', 'uploaded', 'ready_for_review', 'waiting_for_review', 'in_review', 'pending_release', 'ready_for_distribution'].includes(String(build.appStoreRelease.status || '')))
+      ))
+      .map((build) => `${build.number}:${build.appStoreRelease?.status || 'pending'}`)
       .sort()
       .join(','),
     [data],
@@ -3793,7 +3975,7 @@ export default function CICDPage() {
   };
 
   useEffect(() => {
-    if (activeSection !== 'release' || (!hasRunningBuild && !hasPendingTestFlightDistribution)) {
+    if (activeSection !== 'release' || (!hasRunningBuild && !hasPendingTestFlightDistribution && !hasPendingAppStoreRelease)) {
       return undefined;
     }
     const timer = window.setInterval(() => {
@@ -3813,8 +3995,10 @@ export default function CICDPage() {
     activeSection,
     hasRunningBuild,
     hasPendingTestFlightDistribution,
+    hasPendingAppStoreRelease,
     runningBuildNumbersKey,
     pendingTestFlightDistributionKey,
+    pendingAppStoreReleaseKey,
     filterDeployTarget,
     filterBranchName,
   ]);
@@ -3896,7 +4080,6 @@ export default function CICDPage() {
     const items = ['develop', ...getLatestReleaseBranches(branches, 2)];
     return Array.from(new Set(items)).map((branch) => ({ value: branch, label: branch }));
   }, [branches]);
-  const isAdmin = authUtils.isAuthenticated() && authUtils.isAdmin();
   const registeredAppleDevice = useMemo(() => {
     const targetUdid = normalizeAppleUdid(appleDeviceUdid || appleEnrollmentState?.device?.udid);
     if (!targetUdid) return null;
@@ -4314,6 +4497,43 @@ export default function CICDPage() {
                     <Button size="small" type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openPgyerPublish(record)}>
                       发布
                     </Button>
+                  )}
+                  {isAdmin && record.publishChannel === 'AppStore' && ['ready_for_review', 'rejected', 'developer_rejected', 'developer_action_needed'].includes(String(record.appStoreRelease?.status || '')) && (
+                    <Popconfirm
+                      title="提交 App Store 审核？"
+                      description={`确定提交 #${record.number} / ${getChannelBuildNumber(record) || '-'} 到 App Store 审核吗？`}
+                      okText="提交审核"
+                      cancelText="取消"
+                      onConfirm={() => submitAppStoreReview(record.number)}
+                    >
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<RocketOutlined />}
+                        loading={submittingAppStoreReview === record.number}
+                      >
+                        提交审核
+                      </Button>
+                    </Popconfirm>
+                  )}
+                  {isAdmin && record.publishChannel === 'AppStore' && ['waiting_for_review', 'in_review'].includes(String(record.appStoreRelease?.status || '')) && (
+                    <Popconfirm
+                      title="停止 App Store 审核？"
+                      description={`确定停止 #${record.number} / ${getChannelBuildNumber(record) || '-'} 的 App Store 审核吗？停止后需要重新提交审核。`}
+                      okText="停止审核"
+                      cancelText="取消"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => cancelAppStoreReview(record.number)}
+                    >
+                      <Button
+                        size="small"
+                        danger
+                        loading={cancelingAppStoreReview === record.number}
+                      >
+                        停止审核
+                      </Button>
+                    </Popconfirm>
                   )}
                   {record.building && (
                     <Popconfirm
@@ -5013,6 +5233,12 @@ export default function CICDPage() {
         okText="发布"
         cancelText="取消"
         confirmLoading={publishing}
+        okButtonProps={{
+          disabled: (
+            (deployTarget === 'AppStore' && (appStoreReleaseGuardLoading || Boolean(appStoreReleaseGuard?.blocked))) ||
+            (deployTarget !== 'Pgyer' && releaseNotesLength(testFlightWhatsNew) <= 4)
+          ),
+        }}
         onOk={publish}
         onCancel={() => setPublishModalOpen(false)}
       >
@@ -5053,6 +5279,30 @@ export default function CICDPage() {
                 刷新分支
               </Button>
             </Space>
+            {deployTarget === 'AppStore' && appStoreReleaseGuardLoading && (
+              <Alert
+                type="info"
+                showIcon
+                message="正在检查苹果商店版本状态..."
+                style={{ marginTop: 8 }}
+              />
+            )}
+            {deployTarget === 'AppStore' && !appStoreReleaseGuardLoading && appStoreReleaseGuard?.blocked && (
+              <Alert
+                type="error"
+                showIcon
+                message={appStoreReleaseGuard.message || `当前发布版本 ${appStoreReleaseGuard.appVersion || '-'} 状态不允许重复发布`}
+                style={{ marginTop: 8 }}
+              />
+            )}
+            {deployTarget === 'AppStore' && !appStoreReleaseGuardLoading && appStoreReleaseGuardError && (
+              <Alert
+                type="warning"
+                showIcon
+                message={appStoreReleaseGuardError}
+                style={{ marginTop: 8 }}
+              />
+            )}
           </div>
           <div>
             <Text strong>发布渠道</Text>
@@ -5060,7 +5310,10 @@ export default function CICDPage() {
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
-            options={DEPLOY_TARGET_OPTIONS}
+            options={DEPLOY_TARGET_OPTIONS.map((option) => ({
+              ...option,
+              disabled: option.value !== 'Pgyer' && !isAdmin,
+            }))}
             value={deployTarget}
             onChange={(event) => {
               const nextTarget = event.target.value as DeployTarget;
@@ -5086,24 +5339,46 @@ export default function CICDPage() {
               onChange={(event) => setVerificationPassword(event.target.value)}
             />
           )}
-          {deployTarget === 'TestFlight' && (
+          {deployTarget !== 'Pgyer' && (
             <div>
               <Text strong>发布文案</Text>
               <Input.TextArea
                 value={testFlightWhatsNew}
                 onChange={(event) => setTestFlightWhatsNew(event.target.value)}
-                placeholder="请输入 TestFlight 测试内容，会自动填写到 App Store Connect"
+                placeholder={deployTarget === 'TestFlight'
+                  ? '请输入 TestFlight 测试内容，会自动填写到 App Store Connect'
+                  : '请输入苹果商店发布文案，会随正式包发布链路提交'}
                 autoSize={{ minRows: 3, maxRows: 6 }}
                 maxLength={4000}
                 showCount
+                status={releaseNotesLength(testFlightWhatsNew) <= 4 ? 'error' : undefined}
                 style={{ marginTop: 8 }}
               />
+              {releaseNotesLength(testFlightWhatsNew) <= 4 && (
+                <Text type="danger" style={{ fontSize: 12 }}>
+                  发布文案必填，且必须超过 4 个字
+                </Text>
+              )}
             </div>
+          )}
+          {deployTarget === 'AppStore' && (
+            <Alert
+              type="info"
+              showIcon
+              message="商店截图、预览视频等素材请在 App Store Connect 修改，平台只负责发布文案和自动提审。"
+              action={(
+                <Button size="small" type="link" icon={<ExportOutlined />} onClick={() => openExternalUrl('https://appstoreconnect.apple.com/apps')}>
+                  打开 App Store Connect
+                </Button>
+              )}
+            />
           )}
           <Alert
             type={deployTarget === 'Pgyer' ? 'info' : 'warning'}
             showIcon
-            message={deployTarget === 'Pgyer' ? '蒲公英发布无需验证密码' : 'TestFlight / 苹果商店发布需要验证密码'}
+            message={deployTarget === 'Pgyer'
+              ? '蒲公英发布无需验证密码'
+              : (isAdmin ? 'TestFlight / 苹果商店发布需要验证密码' : 'TestFlight / 苹果商店发布仅管理员可操作')}
           />
           <Collapse
             className="publish-advanced-options"
@@ -5900,9 +6175,93 @@ export default function CICDPage() {
               {selectedBuildLog.build.appVersion && <Tag color="purple">APP {selectedBuildLog.build.appVersion}</Tag>}
             </Space>
           )}
+          {selectedBuildLog?.build.testFlightWhatsNew && shouldUseInstalledProductionApp(selectedBuildLog.build) && (
+            <Card size="small">
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Text strong>发布文案</Text>
+                <Paragraph
+                  style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
+                  copyable={{ text: selectedBuildLog.build.testFlightWhatsNew }}
+                >
+                  {selectedBuildLog.build.testFlightWhatsNew}
+                </Paragraph>
+              </Space>
+            </Card>
+          )}
 	          {selectedBuildLog?.build.publishChannel === 'AppStore' && (
 	            <Card size="small">
 	              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  {selectedBuildLog.build.appStoreRelease && (
+                    <Descriptions
+                      bordered
+                      size="small"
+                      column={{ xs: 1, sm: 2, md: 3 }}
+                    >
+                      <Descriptions.Item label="审核状态">
+                        <Space size={4} wrap>
+                          {appStoreReleaseTag(selectedBuildLog.build)}
+                          {selectedBuildLog.build.appStoreRelease.appStoreState && (
+                            <Text code>{selectedBuildLog.build.appStoreRelease.appStoreState}</Text>
+                          )}
+                        </Space>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="APP版本">
+                        {selectedBuildLog.build.appStoreRelease.appVersion || selectedBuildLog.build.appVersion || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="构建号">
+                        {selectedBuildLog.build.appStoreRelease.buildNumber || getChannelBuildNumber(selectedBuildLog.build) || '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="App Store Version ID">
+                        {selectedBuildLog.build.appStoreRelease.appStoreVersionId ? (
+                          <Text code copyable>{selectedBuildLog.build.appStoreRelease.appStoreVersionId}</Text>
+                        ) : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="审核提交 ID">
+                        {selectedBuildLog.build.appStoreRelease.reviewSubmissionId ? (
+                          <Text code copyable>{selectedBuildLog.build.appStoreRelease.reviewSubmissionId}</Text>
+                        ) : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="更新时间">
+                        {selectedBuildLog.build.appStoreRelease.updatedAt
+                          ? new Date(selectedBuildLog.build.appStoreRelease.updatedAt).toLocaleString('zh-CN')
+                          : '-'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="状态说明" span={3}>
+                        {selectedBuildLog.build.appStoreRelease.message || '-'}
+                      </Descriptions.Item>
+                      {selectedBuildLog.build.appStoreRelease.failureReason && (
+                        <Descriptions.Item label="失败原因" span={3}>
+                          <Text type="danger">{selectedBuildLog.build.appStoreRelease.failureReason}</Text>
+                        </Descriptions.Item>
+                      )}
+                    </Descriptions>
+                  )}
+                  {isAdmin && selectedBuildLog.build.appStoreRelease && ['waiting_for_review', 'in_review'].includes(String(selectedBuildLog.build.appStoreRelease.status || '')) && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="当前正式包正在审核"
+                      description="停止审核会从 App Store Connect 撤回当前版本，后续需要重新提交审核。"
+                      action={(
+                        <Popconfirm
+                          title="停止 App Store 审核？"
+                          description={`确定停止 #${selectedBuildLog.build.number} / ${getChannelBuildNumber(selectedBuildLog.build) || '-'} 的 App Store 审核吗？`}
+                          okText="停止审核"
+                          cancelText="取消"
+                          okButtonProps={{ danger: true }}
+                          onConfirm={() => cancelAppStoreReview(selectedBuildLog.build.number)}
+                        >
+                          <Button
+                            danger
+                            size="small"
+                            loading={cancelingAppStoreReview === selectedBuildLog.build.number}
+                          >
+                            停止审核
+                          </Button>
+                        </Popconfirm>
+                      )}
+                    />
+                  )}
 	                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
 	                  <Space direction="vertical" size={4}>
 	                    <Space wrap>

@@ -1835,6 +1835,7 @@ export interface JenkinsBuild {
   dsymSync?: JenkinsBuildDsymSync;
   testFlightWhatsNew?: string;
   testFlightDistribution?: JenkinsTestFlightDistribution;
+  appStoreRelease?: JenkinsAppStoreRelease;
 }
 
 export interface JenkinsTestFlightDistribution {
@@ -1850,6 +1851,31 @@ export interface JenkinsTestFlightDistribution {
   whatsNew?: string;
   message?: string;
   updatedAt?: string;
+}
+
+export interface JenkinsAppStoreRelease {
+  status?: 'waiting_processing' | 'ready_for_review' | 'waiting_for_review' | 'in_review' | 'pending_release' | 'ready_for_distribution' | 'ready_for_sale' | 'rejected' | 'developer_rejected' | 'developer_action_needed' | 'pending_agreement' | 'failed' | 'skipped' | 'unconfirmed' | 'uploaded';
+  appVersion?: string;
+  buildNumber?: string;
+  appStoreBuildId?: string;
+  appStoreVersionId?: string;
+  reviewSubmissionId?: string;
+  processingState?: string;
+  appStoreState?: string;
+  failureReason?: string;
+  message?: string;
+  updatedAt?: string;
+}
+
+export interface JenkinsAppStoreReleaseGuard {
+  blocked: boolean;
+  branch: string;
+  appVersion: string;
+  appStoreVersionId?: string;
+  appStoreState?: string;
+  status?: JenkinsAppStoreRelease['status'];
+  latestAppStoreVersion?: string;
+  message?: string;
 }
 
 export interface JenkinsJobInfo {
@@ -1879,7 +1905,9 @@ export interface JenkinsBuildLogResult {
   failureAnalysis?: JenkinsBuildFailureAnalysis;
   failureAnalysisUpdatedAt?: string;
   dsymSync?: JenkinsBuildDsymSync;
+  testFlightWhatsNew?: string;
   testFlightDistribution?: JenkinsTestFlightDistribution;
+  appStoreRelease?: JenkinsAppStoreRelease;
   thirdSdkBranch: string;
   thirdSdkRevision?: string;
   thirdSdkDependencies: Array<{
@@ -2440,6 +2468,23 @@ export const jenkinsApi = {
       releaseGate: WorkflowReleaseGate;
       missingSuites: JenkinsQualitySuite[];
     }>>('/jenkins/nn/release-gate/preview', payload);
+    return response.data;
+  },
+
+  checkAppStoreReleaseGuard: async (payload: {
+    branch: string;
+  }): Promise<ApiResponse<JenkinsAppStoreReleaseGuard>> => {
+    const response = await api.post<ApiResponse<JenkinsAppStoreReleaseGuard>>('/jenkins/nn/app-store/release-guard', payload);
+    return response.data;
+  },
+
+  submitAppStoreReview: async (buildNumber: number): Promise<ApiResponse<JenkinsAppStoreRelease>> => {
+    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/nn/builds/${buildNumber}/submit-app-store-review`);
+    return response.data;
+  },
+
+  cancelAppStoreReview: async (buildNumber: number): Promise<ApiResponse<JenkinsAppStoreRelease>> => {
+    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/nn/builds/${buildNumber}/cancel-app-store-review`);
     return response.data;
   },
 

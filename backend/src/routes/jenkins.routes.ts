@@ -18,9 +18,18 @@ import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
+import { adminMiddleware } from '../middleware/auth';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
+
+const adminOnlyAppleReleaseMiddleware = (req: Request, res: Response, next: () => void) => {
+  const deployTarget = normalizeDeployTarget(String(req.body?.deployTarget || ''));
+  if (deployTarget === 'TestFlight' || deployTarget === 'AppStore') {
+    return adminMiddleware(req, res, next);
+  }
+  return next();
+};
 
 const JENKINS_BASE_URL = getJenkinsBaseUrl();
 const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
@@ -51,6 +60,8 @@ const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-
 const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
 const BUILD_DSYM_SYNC_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-dsym-sync.json');
 const TESTFLIGHT_DISTRIBUTION_CACHE_PATH = path.join(DATA_DIR, 'jenkins-testflight-distribution.json');
+const APPSTORE_RELEASE_CACHE_PATH = path.join(DATA_DIR, 'jenkins-appstore-release.json');
+const RELEASE_REQUEST_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-requests.json');
 const JENKINS_BRANCH_CACHE_PATH = path.join(DATA_DIR, 'jenkins-branches.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
@@ -59,6 +70,7 @@ const storage = new StorageService();
 const podService = new PodService();
 const BUILD_DSYM_SYNC_RUNNING = new Set<string>();
 const TESTFLIGHT_DISTRIBUTION_RUNNING = new Set<string>();
+const APPSTORE_RELEASE_RUNNING = new Set<string>();
 const ASC_API_BASE = 'https://api.appstoreconnect.apple.com/v1';
 const TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS = Math.max(
   5000,
@@ -68,6 +80,7 @@ const TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS = Math.max(
   1,
   Number(process.env.TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS || 80) || 80,
 );
+const APPSTORE_RELEASE_APPROVED_STATUSES = new Set(['pending_release', 'ready_for_distribution', 'ready_for_sale']);
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -94,6 +107,71 @@ function readEnvFileValue(key: string): string {
 
 function getRuntimeEnv(key: string): string {
   return process.env[key] || readEnvFileValue(key);
+}
+
+function appStoreReleaseApprovedTitle(status?: string) {
+  if (status === 'pending_release') return '审核通过，等待开发者发布';
+  if (status === 'ready_for_distribution') return '审核通过，可供分发';
+  if (status === 'ready_for_sale') return '已上架 App Store';
+  return '审核通过';
+}
+
+function shouldNotifyAppStoreReleaseApproved(previous: any, nextRelease: any) {
+  const nextStatus = String(nextRelease?.status || '');
+  if (!APPSTORE_RELEASE_APPROVED_STATUSES.has(nextStatus)) return false;
+  if (nextRelease?.reviewApprovalNotifiedAt) return false;
+  const previousStatus = String(previous?.status || '');
+  return !APPSTORE_RELEASE_APPROVED_STATUSES.has(previousStatus);
+}
+
+async function sendWeChatRobotMarkdown(content: string) {
+  const webhookUrl = String(getRuntimeEnv('WECHAT_WEBHOOK_URL') || '').trim();
+  if (!webhookUrl) {
+    logger.warn('企业微信机器人 Webhook 未配置，跳过消息发送');
+    return;
+  }
+  const response = await axios.post(webhookUrl, {
+    msgtype: 'markdown',
+    markdown: { content },
+    at: { isAtAll: true },
+  }, {
+    timeout: 10000,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (response.data?.errcode && response.data.errcode !== 0) {
+    throw new Error(response.data?.errmsg || '企业微信机器人消息发送失败');
+  }
+}
+
+function buildAppStoreReleaseApprovedMessage(jenkinsBuildNumber: number, release: any) {
+  const appVersion = String(release?.appVersion || '-');
+  const channelBuildNumber = String(release?.buildNumber || '-');
+  const branchName = String(release?.branchName || '-');
+  const statusText = appStoreReleaseApprovedTitle(String(release?.status || ''));
+  return `🎉 NNIM iOS 苹果商店包审核通过
+
+APP版本: ${appVersion}
+Bundle ID: com.nnhuyu.im
+发布渠道: AppStore
+Jenkins构建号: ${jenkinsBuildNumber}
+苹果构建号: ${channelBuildNumber}
+分支名称: ${branchName}
+状态: ${statusText}`;
+}
+
+function notifyAppStoreReleaseApproved(jenkinsBuildNumber: number, release: any) {
+  const message = buildAppStoreReleaseApprovedMessage(jenkinsBuildNumber, release);
+  void sendWeChatRobotMarkdown(message)
+    .then(() => logger.info('App Store 审核通过企业微信通知发送成功', {
+      buildNumber: jenkinsBuildNumber,
+      appVersion: release?.appVersion,
+      channelBuildNumber: release?.buildNumber,
+      status: release?.status,
+    }))
+    .catch((error) => logger.warn('App Store 审核通过企业微信通知发送失败', {
+      buildNumber: jenkinsBuildNumber,
+      error: error?.message,
+    }));
 }
 
 function normalizeQualitySuite(value?: string) {
@@ -974,6 +1052,130 @@ function saveTestFlightDistribution(buildNumber: number, distribution: any) {
   return nextCache.builds[String(buildNumber)];
 }
 
+function readAppStoreReleaseCache() {
+  const cache = readJsonFile(APPSTORE_RELEASE_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { builds: {} };
+}
+
+function getSavedAppStoreRelease(buildNumber: number) {
+  const cache = readAppStoreReleaseCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function saveAppStoreRelease(buildNumber: number, release: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const cache = readAppStoreReleaseCache();
+  const previous = cache?.builds?.[String(buildNumber)] || {};
+  const updatedAt = new Date().toISOString();
+  const nextRelease = {
+    ...previous,
+    ...release,
+    updatedAt,
+  };
+  const shouldNotifyApproved = shouldNotifyAppStoreReleaseApproved(previous, nextRelease);
+  if (shouldNotifyApproved) {
+    nextRelease.reviewApprovalNotifiedAt = updatedAt;
+  }
+  const nextCache = {
+    ...cache,
+    builds: {
+      ...(cache.builds || {}),
+      [String(buildNumber)]: nextRelease,
+    },
+  };
+  const tmpPath = `${APPSTORE_RELEASE_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
+  fs.renameSync(tmpPath, APPSTORE_RELEASE_CACHE_PATH);
+  if (shouldNotifyApproved) {
+    notifyAppStoreReleaseApproved(buildNumber, nextRelease);
+  }
+  return nextCache.builds[String(buildNumber)];
+}
+
+function readReleaseRequestCache() {
+  const cache = readJsonFile(RELEASE_REQUEST_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { requests: [], builds: {} };
+}
+
+function writeReleaseRequestCache(cache: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const tmpPath = `${RELEASE_REQUEST_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(cache, null, 2));
+  fs.renameSync(tmpPath, RELEASE_REQUEST_CACHE_PATH);
+}
+
+function saveReleaseRequestArchive(request: any) {
+  const cache = readReleaseRequestCache();
+  const requests = Array.isArray(cache.requests) ? cache.requests : [];
+  const nextRequest = {
+    id: crypto.randomUUID(),
+    branch: normalizeBranchName(String(request.branch || '')),
+    deployTarget: normalizeDeployTarget(String(request.deployTarget || '')),
+    releaseNotes: normalizeTestFlightWhatsNew(request.releaseNotes),
+    submittedAt: new Date().toISOString(),
+    queueUrl: request.queueUrl || '',
+  };
+  const nextCache = {
+    ...cache,
+    requests: [nextRequest, ...requests].slice(0, 200),
+    builds: cache.builds || {},
+  };
+  writeReleaseRequestCache(nextCache);
+  return nextRequest;
+}
+
+function getArchivedReleaseRequestForBuild(buildNumber: number) {
+  const cache = readReleaseRequestCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function matchReleaseRequestForBuild(build: any, branchName: string, publishChannel: string) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return null;
+  const cache = readReleaseRequestCache();
+  const existing = cache?.builds?.[String(buildNumber)];
+  if (existing) return existing;
+
+  const normalizedBranch = normalizeBranchName(branchName || '');
+  const normalizedChannel = normalizeDeployTarget(publishChannel || '');
+  const buildTimestamp = Number(build?.timestamp || 0);
+  if (!normalizedBranch || !normalizedChannel || !buildTimestamp) return null;
+
+  const requests = Array.isArray(cache.requests) ? cache.requests : [];
+  const matched = requests
+    .filter((request: any) => {
+      if (request.buildNumber) return false;
+      if (normalizeBranchName(String(request.branch || '')) !== normalizedBranch) return false;
+      if (normalizeDeployTarget(String(request.deployTarget || '')) !== normalizedChannel) return false;
+      const submittedAt = Date.parse(String(request.submittedAt || ''));
+      return Number.isFinite(submittedAt) &&
+        buildTimestamp >= submittedAt - 5 * 60 * 1000 &&
+        buildTimestamp <= submittedAt + 2 * 60 * 60 * 1000;
+    })
+    .sort((a: any, b: any) => Date.parse(String(b.submittedAt || '')) - Date.parse(String(a.submittedAt || '')))[0];
+  if (!matched) return null;
+
+  const archived = {
+    ...matched,
+    buildNumber,
+    matchedAt: new Date().toISOString(),
+  };
+  const nextRequests = requests.map((request: any) => request.id === matched.id ? archived : request);
+  writeReleaseRequestCache({
+    ...cache,
+    requests: nextRequests,
+    builds: {
+      ...(cache.builds || {}),
+      [String(buildNumber)]: archived,
+    },
+  });
+  return archived;
+}
+
 function readBranchCache() {
   const cache = readJsonFile(JENKINS_BRANCH_CACHE_PATH);
   const branches = Array.isArray(cache?.branches) ? cache.branches : [];
@@ -1042,7 +1244,7 @@ function createAppleJwt() {
 }
 
 async function requestAppStoreConnect<T>(
-  method: 'GET' | 'POST' | 'PATCH',
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   url: string,
   data?: any,
 ): Promise<T> {
@@ -1121,6 +1323,233 @@ async function submitBetaAppReview(buildId: string) {
     }
     throw error;
   }
+}
+
+async function fetchBuildAppStoreVersion(buildId: string) {
+  const response = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/builds/${encodeURIComponent(buildId)}/appStoreVersion`);
+  return response?.data || null;
+}
+
+async function fetchAppStoreVersionsByVersion(appId: string, appVersion: string) {
+  const params = new URLSearchParams({
+    'filter[versionString]': appVersion,
+    'filter[platform]': 'IOS',
+    limit: '10',
+  });
+  const response = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/apps/${encodeURIComponent(appId)}/appStoreVersions?${params.toString()}`);
+  return Array.isArray(response?.data) ? response.data : [];
+}
+
+async function fetchRecentAppStoreVersions(appId: string) {
+  const params = new URLSearchParams({
+    'filter[platform]': 'IOS',
+    limit: '50',
+  });
+  const response = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/apps/${encodeURIComponent(appId)}/appStoreVersions?${params.toString()}`);
+  return Array.isArray(response?.data) ? response.data : [];
+}
+
+async function submitAppStoreReview(appStoreVersionId: string) {
+  const submission = await requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/reviewSubmissions`, {
+    data: {
+      type: 'reviewSubmissions',
+      relationships: {
+        app: {
+          data: {
+            type: 'apps',
+            id: testFlightAppId(),
+          },
+        },
+      },
+    },
+  });
+  const reviewSubmissionId = String(submission?.data?.id || '');
+  if (!reviewSubmissionId) {
+    throw new Error('创建 App Store 审核提交失败');
+  }
+  await requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/reviewSubmissionItems`, {
+    data: {
+      type: 'reviewSubmissionItems',
+      relationships: {
+        reviewSubmission: {
+          data: {
+            type: 'reviewSubmissions',
+            id: reviewSubmissionId,
+          },
+        },
+        appStoreVersion: {
+          data: {
+            type: 'appStoreVersions',
+            id: appStoreVersionId,
+          },
+        },
+      },
+    },
+  });
+  await requestAppStoreConnect<any>('PATCH', `${ASC_API_BASE}/reviewSubmissions/${encodeURIComponent(reviewSubmissionId)}`, {
+    data: {
+      type: 'reviewSubmissions',
+      id: reviewSubmissionId,
+      attributes: {
+        submitted: true,
+      },
+    },
+  });
+  return reviewSubmissionId;
+}
+
+async function cancelAppStoreReview(appStoreVersionSubmissionId: string) {
+  await requestAppStoreConnect<any>('DELETE', `${ASC_API_BASE}/appStoreVersionSubmissions/${encodeURIComponent(appStoreVersionSubmissionId)}`);
+}
+
+function appStoreVersionStateStatus(appStoreState: string) {
+  switch (appStoreState) {
+    case 'PREPARE_FOR_SUBMISSION':
+      return { status: 'ready_for_review', message: '已准备好，可提交 App Store 审核' };
+    case 'WAITING_FOR_REVIEW':
+      return { status: 'waiting_for_review', message: '已提交 App Store 审核，等待审核' };
+    case 'IN_REVIEW':
+      return { status: 'in_review', message: 'App Store 审核中' };
+    case 'PENDING_DEVELOPER_RELEASE':
+      return { status: 'pending_release', message: '审核通过，等待开发者发布' };
+    case 'READY_FOR_DISTRIBUTION':
+      return { status: 'ready_for_distribution', message: '可供分发' };
+    case 'READY_FOR_SALE':
+      return { status: 'ready_for_sale', message: '已上架 App Store' };
+    case 'REJECTED':
+    case 'METADATA_REJECTED':
+      return { status: 'rejected', message: 'App Store 审核被拒' };
+    case 'DEVELOPER_REJECTED':
+      return { status: 'developer_rejected', message: '开发者已取消 App Store 审核' };
+    case 'DEVELOPER_ACTION_NEEDED':
+      return { status: 'developer_action_needed', message: 'App Store 审核需要开发者处理' };
+    case 'INVALID_BINARY':
+      return { status: 'failed', message: 'App Store 构建无效' };
+    case 'PENDING_AGREEMENT':
+      return { status: 'pending_agreement', message: '协议待处理，需在 App Store Connect 完成协议' };
+    default:
+      return { status: 'unconfirmed', message: appStoreState ? `App Store 状态为 ${appStoreState}` : '无法确认 App Store 审核状态' };
+  }
+}
+
+function isBlockingAppStoreReleaseState(appStoreState: string) {
+  return [
+    'WAITING_FOR_REVIEW',
+    'IN_REVIEW',
+    'PENDING_DEVELOPER_RELEASE',
+    'READY_FOR_DISTRIBUTION',
+    'READY_FOR_SALE',
+  ].includes(String(appStoreState || '').toUpperCase());
+}
+
+function isAppStoreVersionFloorState(appStoreState: string) {
+  return [
+    'WAITING_FOR_REVIEW',
+    'IN_REVIEW',
+    'PENDING_DEVELOPER_RELEASE',
+    'READY_FOR_DISTRIBUTION',
+    'READY_FOR_SALE',
+  ].includes(String(appStoreState || '').toUpperCase());
+}
+
+function appVersionFromReleaseBranch(branch: string) {
+  const match = normalizeBranchName(branch).match(/^release\/(\d+(?:\.\d+){2,})$/);
+  return match?.[1] || '';
+}
+
+function parseVersionParts(version: string) {
+  return String(version || '')
+    .trim()
+    .split('.')
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item));
+}
+
+function compareAppVersions(a: string, b: string) {
+  const av = parseVersionParts(a);
+  const bv = parseVersionParts(b);
+  const len = Math.max(av.length, bv.length);
+  for (let index = 0; index < len; index += 1) {
+    const diff = (av[index] || 0) - (bv[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return String(a || '').localeCompare(String(b || ''));
+}
+
+async function checkAppStoreReleaseBlocker(branch: string) {
+  const normalizedBranch = normalizeBranchName(branch);
+  const appVersion = appVersionFromReleaseBranch(normalizedBranch);
+  if (!appVersion) {
+    return {
+      blocked: false,
+      branch: normalizedBranch,
+      appVersion,
+      appStoreState: '',
+      status: '',
+      message: '当前分支不是 release/x.x.x 格式，跳过苹果商店版本状态检查',
+    };
+  }
+
+  const appId = testFlightAppId();
+  if (!appId) {
+    throw new JenkinsReleaseError('未配置 APP_STORE_CONNECT_APP_ID，无法检查苹果商店版本状态', 400);
+  }
+
+  const versions = await fetchAppStoreVersionsByVersion(appId, appVersion);
+  const exactVersion = versions.find((item: any) => String(item?.attributes?.versionString || '') === appVersion) || versions[0] || null;
+  const appStoreState = String(exactVersion?.attributes?.appStoreState || exactVersion?.attributes?.appVersionState || '');
+  const stateStatus = appStoreVersionStateStatus(appStoreState);
+  const blocked = Boolean(exactVersion?.id) && isBlockingAppStoreReleaseState(appStoreState);
+  const recentVersions = await fetchRecentAppStoreVersions(appId);
+  const higherVersion = recentVersions
+    .map((item: any) => {
+      const versionString = String(item?.attributes?.versionString || '');
+      const state = String(item?.attributes?.appStoreState || item?.attributes?.appVersionState || '');
+      return {
+        id: item?.id || '',
+        versionString,
+        state,
+        stateStatus: appStoreVersionStateStatus(state),
+      };
+    })
+    .filter((item: any) => item.versionString && isAppStoreVersionFloorState(item.state) && compareAppVersions(item.versionString, appVersion) > 0)
+    .sort((a: any, b: any) => compareAppVersions(b.versionString, a.versionString))[0];
+  if (higherVersion) {
+    return {
+      blocked: true,
+      branch: normalizedBranch,
+      appVersion,
+      appStoreVersionId: higherVersion.id,
+      appStoreState: higherVersion.state,
+      status: higherVersion.stateStatus.status,
+      latestAppStoreVersion: higherVersion.versionString,
+      message: `当前发布版本 ${appVersion} 低于商店版本 ${higherVersion.versionString}，不能发布`,
+    };
+  }
+
+  if (blocked) {
+    return {
+      blocked: true,
+      branch: normalizedBranch,
+      appVersion,
+      appStoreVersionId: exactVersion?.id || '',
+      appStoreState,
+      status: stateStatus.status,
+      message: `当前发布版本 ${appVersion} 为「${stateStatus.message}」，不能重复发布`,
+    };
+  }
+
+  return {
+    blocked: false,
+    branch: normalizedBranch,
+    appVersion,
+    appStoreVersionId: exactVersion?.id || '',
+    appStoreState,
+    status: stateStatus.status,
+    message: blocked
+      ? `当前发布版本 ${appVersion} 为「${stateStatus.message}」，不能重复发布`
+      : (exactVersion?.id ? stateStatus.message : `未找到 ${appVersion} 对应的 App Store 版本，可继续发布`),
+  };
 }
 
 function testFlightExternalStateStatus(externalBuildState: string) {
@@ -1362,6 +1791,117 @@ function scheduleTestFlightDistribution(build: any, options: { attempt?: number 
       logger.warn('TestFlight 自动分发失败', { buildNumber, error: error?.message });
     } finally {
       TESTFLIGHT_DISTRIBUTION_RUNNING.delete(cacheKey);
+    }
+  })();
+}
+
+function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {}) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return;
+  if (normalizeDeployTarget(build?.publishChannel) !== 'AppStore') return;
+  if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') return;
+
+  const cacheKey = String(buildNumber);
+  const saved = getSavedAppStoreRelease(buildNumber);
+  if (['failed', 'skipped'].includes(String(saved?.status || ''))) return;
+  if (saved?.status === 'ready_for_sale' && saved?.reviewApprovalNotifiedAt) return;
+  if (APPSTORE_RELEASE_RUNNING.has(cacheKey)) return;
+
+  const appId = testFlightAppId();
+  const appVersion = String(build?.appVersion || '').trim();
+  const channelBuildNumber = String(build?.buildNumber || '').trim();
+  const branchName = normalizeBranchName(String(build?.branchName || ''));
+  if (!appId) {
+    saveAppStoreRelease(buildNumber, {
+      status: 'skipped',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      branchName,
+      message: '未配置 APP_STORE_CONNECT_APP_ID',
+    });
+    return;
+  }
+  if (!appVersion || !channelBuildNumber) {
+    saveAppStoreRelease(buildNumber, {
+      status: 'skipped',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      branchName,
+      message: '缺少 App 版本或渠道构建号，无法匹配 App Store Connect 构建',
+    });
+    return;
+  }
+
+  APPSTORE_RELEASE_RUNNING.add(cacheKey);
+  if (!['waiting_for_review', 'in_review', 'pending_release'].includes(String(saved?.status || '')) && saved?.status !== 'waiting_processing') {
+    saveAppStoreRelease(buildNumber, {
+      status: 'waiting_processing',
+      appVersion,
+      buildNumber: channelBuildNumber,
+      branchName,
+      message: '等待 App Store Connect 构建处理完成',
+    });
+  }
+
+  void (async () => {
+    const attempt = options.attempt || 0;
+    try {
+      const appStoreBuild = await findAppStoreBuild(appId, appVersion, channelBuildNumber);
+      if (!appStoreBuild?.id) {
+        saveAppStoreRelease(buildNumber, {
+          status: 'uploaded',
+          appVersion,
+          buildNumber: channelBuildNumber,
+          branchName,
+          message: 'Jenkins 已成功上传到 App Store Connect，暂未匹配到正式包构建',
+        });
+        return;
+      }
+      const processingState = String(appStoreBuild?.attributes?.processingState || '');
+      if (processingState && processingState !== 'VALID') {
+        saveAppStoreRelease(buildNumber, {
+          status: /FAILED|INVALID/i.test(processingState) ? 'failed' : 'waiting_processing',
+          appVersion,
+          buildNumber: channelBuildNumber,
+          branchName,
+          appStoreBuildId: appStoreBuild.id,
+          processingState,
+          message: `App Store Connect 构建状态为 ${processingState}`,
+          failureReason: /FAILED|INVALID/i.test(processingState) ? `App Store Connect 构建状态为 ${processingState}` : '',
+        });
+        if (attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS && !/FAILED|INVALID/i.test(processingState)) {
+          setTimeout(() => scheduleAppStoreRelease(build, { attempt: attempt + 1 }), TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS);
+        }
+        return;
+      }
+
+      const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+      const appStoreVersionId = String(appStoreVersion?.id || '');
+      const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
+      const stateStatus = appStoreVersionStateStatus(appStoreState);
+      saveAppStoreRelease(buildNumber, {
+        status: stateStatus.status,
+        appVersion,
+        buildNumber: channelBuildNumber,
+        branchName,
+        appStoreBuildId: appStoreBuild.id,
+        appStoreVersionId,
+        processingState,
+        appStoreState,
+        message: stateStatus.message,
+        failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
+      });
+    } catch (error: any) {
+      saveAppStoreRelease(buildNumber, {
+        status: 'failed',
+        appVersion,
+        buildNumber: channelBuildNumber,
+        branchName,
+        message: appStoreConnectErrorMessage(error, 'App Store 发布状态查询失败'),
+      });
+      logger.warn('App Store 发布状态查询失败', { buildNumber, error: error?.message });
+    } finally {
+      APPSTORE_RELEASE_RUNNING.delete(cacheKey);
     }
   })();
 }
@@ -3133,15 +3673,18 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
         consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
         build.number,
       );
+      const branchName = buildParameters.branchName;
+      const archivedReleaseRequest = matchReleaseRequestForBuild(build, branchName, publishChannel);
+      const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || '';
 	      return {
 	        ...build,
 	        url: normalizeJenkinsUrl(build.url),
-	        branchName: buildParameters.branchName,
+	        branchName,
 	        publishChannel,
 	        commitHash: consoleMetadata.commitHash,
         buildNumber,
         appVersion,
-        testFlightWhatsNew: buildParameters.testFlightWhatsNew,
+        testFlightWhatsNew,
         packageUrl: consoleMetadata.packageUrl,
 	        installPackageUrl: consoleMetadata.installPackageUrl,
 	        channelQrUrl: consoleMetadata.channelQrUrl,
@@ -3149,10 +3692,12 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 	        archiveUrl: consoleMetadata.archiveUrl,
 	        dsymSync: getSavedBuildDsymSync(build.number),
 	        testFlightDistribution: getSavedTestFlightDistribution(build.number),
+	        appStoreRelease: getSavedAppStoreRelease(build.number),
 	      };
 	    }));
 	    buildsWithMetadata.forEach(scheduleAppStoreBuildDsymSync);
 	    buildsWithMetadata.forEach((build: any) => scheduleTestFlightDistribution(build));
+	    buildsWithMetadata.forEach((build: any) => scheduleAppStoreRelease(build));
 	    workflowIntegrationService.syncJenkinsBuilds(buildsWithMetadata);
 	    const builds = buildsWithMetadata.filter((build: any) => (
 	      (!deployTargetFilter || normalizeDeployTarget(build.publishChannel) === deployTargetFilter) &&
@@ -3224,18 +3769,30 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	    const buildMetadata = parseConsoleMetadata(log);
 	    const buildResponse = await fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url');
 	    const buildInfo = buildResponse.data || {};
+	    const publishChannel = buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel);
+	    const archivedReleaseRequest = getArchivedReleaseRequestForBuild(buildNumber) ||
+	      matchReleaseRequestForBuild(buildInfo, buildParameters.branchName, publishChannel);
+	    const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || '';
 	    const dsymSync = getSavedBuildDsymSync(buildNumber);
 	    const testFlightDistribution = getSavedTestFlightDistribution(buildNumber);
+	    const appStoreRelease = getSavedAppStoreRelease(buildNumber);
 	    scheduleAppStoreBuildDsymSync({
 	      ...buildInfo,
-	      publishChannel: buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel),
+	      publishChannel,
 	    });
 	    scheduleTestFlightDistribution({
 	      ...buildInfo,
-	      publishChannel: buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel),
+	      publishChannel,
 	      appVersion: buildMetadata.appVersion,
 	      buildNumber: buildMetadata.buildNumber,
-	      testFlightWhatsNew: buildParameters.testFlightWhatsNew,
+	      testFlightWhatsNew,
+	    });
+	    scheduleAppStoreRelease({
+	      ...buildInfo,
+	      publishChannel,
+	      appVersion: buildMetadata.appVersion,
+	      buildNumber: buildMetadata.buildNumber,
+	      branchName: buildParameters.branchName,
 	    });
 
 	    res.json({
@@ -3247,7 +3804,9 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	        failureAnalysis: savedFailureAnalysis?.analysis,
 	        failureAnalysisUpdatedAt: savedFailureAnalysis?.updatedAt,
 	        dsymSync,
+	        testFlightWhatsNew,
 	        testFlightDistribution,
+	        appStoreRelease,
 	        thirdSdkBranch: thirdSdk.branch,
         thirdSdkRevision: thirdSdk.revision,
         thirdSdkDependencies: thirdSdk.dependencies,
@@ -3284,6 +3843,203 @@ router.post('/nn/builds/:number/sync-dsyms', async (req: Request, res: Response)
     res.status(error.statusCode || 500).json({
       success: false,
       error: error.message || '同步 AppStore dSYM 失败',
+    });
+  }
+});
+
+router.post('/nn/builds/:number/submit-app-store-review', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const [buildMetadata, buildParameters] = await Promise.all([
+      fetchBuildConsoleMetadata(jobPath, buildNumber),
+      fetchBuildParameters(jobPath, buildNumber),
+    ]);
+    const appId = testFlightAppId();
+    const appVersion = String(buildMetadata.appVersion || '').trim();
+    const channelBuildNumber = String(buildMetadata.buildNumber || '').trim();
+    const branchName = normalizeBranchName(String(buildParameters.branchName || ''));
+    if (!appId || !appVersion || !channelBuildNumber) {
+      res.status(400).json({
+        success: false,
+        error: '缺少 APP_STORE_CONNECT_APP_ID、App 版本或渠道构建号，无法提交 App Store 审核',
+      });
+      return;
+    }
+
+    const appStoreBuild = await findAppStoreBuild(appId, appVersion, channelBuildNumber);
+    if (!appStoreBuild?.id) {
+      res.status(404).json({
+        success: false,
+        error: '未在 App Store Connect 匹配到正式包构建',
+      });
+      return;
+    }
+    const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+    const appStoreVersionId = String(appStoreVersion?.id || '');
+    if (!appStoreVersionId) {
+      res.status(404).json({
+        success: false,
+        error: '未找到当前构建关联的 App Store Version，请先在 App Store Connect 完成版本信息',
+      });
+      return;
+    }
+
+    const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
+    if (!['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED'].includes(appStoreState)) {
+      const stateStatus = appStoreVersionStateStatus(appStoreState);
+      const release = saveAppStoreRelease(buildNumber, {
+        status: stateStatus.status,
+        appVersion,
+        buildNumber: channelBuildNumber,
+        branchName,
+        appStoreBuildId: appStoreBuild.id,
+        appStoreVersionId,
+        processingState: String(appStoreBuild?.attributes?.processingState || ''),
+        appStoreState,
+        message: stateStatus.message,
+        failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
+      });
+      res.json({
+        success: true,
+        data: release,
+        message: stateStatus.message,
+      });
+      return;
+    }
+
+    const reviewSubmissionId = await submitAppStoreReview(appStoreVersionId);
+    const latestVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+    const latestState = String(latestVersion?.attributes?.appStoreState || latestVersion?.attributes?.appVersionState || appStoreState);
+    const stateStatus = appStoreVersionStateStatus(latestState);
+    const release = saveAppStoreRelease(buildNumber, {
+      status: stateStatus.status,
+      appVersion,
+      buildNumber: channelBuildNumber,
+      branchName,
+      appStoreBuildId: appStoreBuild.id,
+      appStoreVersionId,
+      reviewSubmissionId,
+      processingState: String(appStoreBuild?.attributes?.processingState || ''),
+      appStoreState: latestState,
+      message: stateStatus.message,
+      failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
+    });
+    res.json({
+      success: true,
+      data: release,
+      message: '已提交 App Store 审核',
+    });
+  } catch (error: any) {
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: appStoreConnectErrorMessage(error, '提交 App Store 审核失败'),
+    });
+  }
+});
+
+router.post('/nn/builds/:number/cancel-app-store-review', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const [buildMetadata, buildParameters] = await Promise.all([
+      fetchBuildConsoleMetadata(jobPath, buildNumber),
+      fetchBuildParameters(jobPath, buildNumber),
+    ]);
+    const appId = testFlightAppId();
+    const appVersion = String(buildMetadata.appVersion || '').trim();
+    const channelBuildNumber = String(buildMetadata.buildNumber || '').trim();
+    const branchName = normalizeBranchName(String(buildParameters.branchName || ''));
+    if (!appId || !appVersion || !channelBuildNumber) {
+      res.status(400).json({
+        success: false,
+        error: '缺少 APP_STORE_CONNECT_APP_ID、App 版本或渠道构建号，无法取消 App Store 审核',
+      });
+      return;
+    }
+
+    const appStoreBuild = await findAppStoreBuild(appId, appVersion, channelBuildNumber);
+    if (!appStoreBuild?.id) {
+      res.status(404).json({
+        success: false,
+        error: '未在 App Store Connect 匹配到正式包构建',
+      });
+      return;
+    }
+    const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+    const appStoreVersionId = String(appStoreVersion?.id || '');
+    if (!appStoreVersionId) {
+      res.status(404).json({
+        success: false,
+        error: '未找到当前构建关联的 App Store Version',
+      });
+      return;
+    }
+
+    const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
+    if (!['WAITING_FOR_REVIEW', 'IN_REVIEW'].includes(appStoreState)) {
+      const stateStatus = appStoreVersionStateStatus(appStoreState);
+      const release = saveAppStoreRelease(buildNumber, {
+        status: stateStatus.status,
+        appVersion,
+        buildNumber: channelBuildNumber,
+        branchName,
+        appStoreBuildId: appStoreBuild.id,
+        appStoreVersionId,
+        processingState: String(appStoreBuild?.attributes?.processingState || ''),
+        appStoreState,
+        message: stateStatus.message,
+        failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
+      });
+      res.json({
+        success: true,
+        data: release,
+        message: stateStatus.message,
+      });
+      return;
+    }
+
+    await cancelAppStoreReview(appStoreVersionId);
+    const latestVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+    const latestState = String(latestVersion?.attributes?.appStoreState || latestVersion?.attributes?.appVersionState || 'DEVELOPER_REJECTED');
+    const stateStatus = appStoreVersionStateStatus(latestState);
+    const release = saveAppStoreRelease(buildNumber, {
+      status: stateStatus.status,
+      appVersion,
+      buildNumber: channelBuildNumber,
+      branchName,
+      appStoreBuildId: appStoreBuild.id,
+      appStoreVersionId,
+      processingState: String(appStoreBuild?.attributes?.processingState || ''),
+      appStoreState: latestState,
+      message: stateStatus.message,
+      failureReason: ['developer_rejected', 'rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
+    });
+    res.json({
+      success: true,
+      data: release,
+      message: '已停止 App Store 审核',
+    });
+  } catch (error: any) {
+    res.status(error.response?.status || 500).json({
+      success: false,
+      error: appStoreConnectErrorMessage(error, '停止 App Store 审核失败'),
     });
   }
 });
@@ -3788,18 +4544,61 @@ router.post('/nn/release-gate/preview', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/build', async (req: Request, res: Response) => {
+router.post('/nn/app-store/release-guard', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const branch = normalizeBranchName(String(req.body?.branch || ''));
+    if (!isReleaseBranch(branch)) {
+      res.status(400).json({
+        success: false,
+        error: '苹果商店发布仅允许 release/x.x.x 分支',
+      });
+      return;
+    }
+    const guard = await checkAppStoreReleaseBlocker(branch);
+    res.json({
+      success: true,
+      data: guard,
+      message: guard.message,
+    });
+  } catch (error: any) {
+    const status = error instanceof JenkinsReleaseError ? error.statusCode : 502;
+    res.status(status).json({
+      success: false,
+      error: extractErrorMessage(error, '检查苹果商店版本状态失败'),
+      status: error.response?.status || status,
+      ...(error instanceof JenkinsReleaseError && error.data ? { data: error.data } : {}),
+    });
+  }
+});
+
+router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const gateBuildNumberValue = req.body?.gateBuildNumber;
     const hasReleaseGate = gateBuildNumberValue !== undefined && gateBuildNumberValue !== null && String(gateBuildNumberValue).trim() !== '';
+    const deployTarget = String(req.body?.deployTarget || 'Pgyer') as 'Pgyer' | 'TestFlight' | 'AppStore';
+    const branch = String(req.body?.branch || 'develop');
+    if (normalizeDeployTarget(deployTarget) === 'AppStore') {
+      const guard = await checkAppStoreReleaseBlocker(branch);
+      if (guard.blocked) {
+        throw new JenkinsReleaseError(guard.message, 409, { appStoreReleaseGuard: guard });
+      }
+    }
     const data = await jenkinsAssistantService.triggerRelease({
-      branch: String(req.body?.branch || 'develop'),
-      deployTarget: String(req.body?.deployTarget || 'Pgyer') as 'Pgyer' | 'TestFlight' | 'AppStore',
+      branch,
+      deployTarget,
       verificationPassword: String(req.body?.verificationPassword || ''),
       gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
       releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
       testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),
     });
+    if (normalizeDeployTarget(deployTarget) !== 'Pgyer') {
+      saveReleaseRequestArchive({
+        branch,
+        deployTarget,
+        releaseNotes: String(req.body?.testFlightWhatsNew || '').trim(),
+        queueUrl: data?.queueUrl || '',
+      });
+    }
 
     res.json({
       success: true,

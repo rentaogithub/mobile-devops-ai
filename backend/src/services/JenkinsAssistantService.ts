@@ -24,6 +24,10 @@ function isReleaseBranch(branch: string) {
   return /^(?:origin\/)?release\/\d+(?:\.\d+){2,}$/.test(String(branch || '').trim());
 }
 
+function normalizeReleaseNotes(value?: string) {
+  return String(value || '').trim();
+}
+
 function normalizeQualitySuite(value: string) {
   const text = String(value || 'smoke').trim();
   if (/monkey|随机|猴子/i.test(text)) return 'monkey';
@@ -502,6 +506,10 @@ export class JenkinsAssistantService {
     if (input.deployTarget !== 'Pgyer' && !String(input.verificationPassword || '').trim()) {
       throw new JenkinsReleaseError('TestFlight / AppStore 发布需要验证密码', 400);
     }
+    const releaseNotes = normalizeReleaseNotes(input.testFlightWhatsNew);
+    if (input.deployTarget !== 'Pgyer' && releaseNotes.length <= 4) {
+      throw new JenkinsReleaseError('TestFlight / AppStore 发布文案必填，且必须超过 4 个字', 400);
+    }
     const gateBuildNumber = input.gateBuildNumber === undefined ? undefined : Number(input.gateBuildNumber);
     if (input.requireReleaseGate && !gateBuildNumber) {
       throw new JenkinsReleaseError('AI 发布必须选择成功构建作为质量门禁来源', 400);
@@ -561,7 +569,7 @@ export class JenkinsAssistantService {
       RELEASE_GATE_STATUS: String(releaseGate?.status || ''),
       SOURCE_BUILD_NUMBER: gateBuildNumber ? String(gateBuildNumber) : '',
       RELEASE_GATE_OVERRIDE_REASON: gateBuildNumber ? String(input.releaseGateOverrideReason || '').trim() : '',
-      TESTFLIGHT_WHATS_NEW: input.deployTarget === 'TestFlight' ? String(input.testFlightWhatsNew || '').trim() : '',
+      TESTFLIGHT_WHATS_NEW: input.deployTarget !== 'Pgyer' ? releaseNotes : '',
     });
     const response = await axios.post(`${this.baseUrl}/${encodeJobPath(this.jobName)}/buildWithParameters`, params.toString(), {
       timeout: 30_000,
