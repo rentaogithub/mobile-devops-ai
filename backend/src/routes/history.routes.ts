@@ -1,10 +1,11 @@
 import { Router, Request, Response } from 'express';
 import historyService from '../services/HistoryService';
 import reportGenerator from '../services/ReportGeneratorService';
-import { adminMiddleware } from '../middleware/auth';
+import { adminMiddleware, requireAnyRole } from '../middleware/auth';
 import logger from '../utils/logger';
 
 const router = Router();
+const crashAnalysisMiddleware = requireAnyRole(['tester', 'developer', 'admin']);
 
 /**
  * GET /api/history/list
@@ -137,7 +138,7 @@ router.delete('/clear/all', adminMiddleware, async (req: Request, res: Response)
  * POST /api/history/:id/analyze
  * 对历史记录进行AI分析
  */
-router.post('/:id/analyze', async (req: Request, res: Response) => {
+router.post('/:id/analyze', crashAnalysisMiddleware, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { apiKey } = req.body;

@@ -5,11 +5,12 @@ import fs from 'fs';
 import path from 'path';
 import podService from '../services/PodService';
 import logger from '../utils/logger';
-import { adminMiddleware } from '../middleware/auth';
+import { requireAnyRole } from '../middleware/auth';
 import { getNNRtcJenkinsConfig } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 
 const router = Router();
+const podDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
 const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');
 const NNRTC_TASKS_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
@@ -306,7 +307,7 @@ async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ file
  * POST /api/pods/publish
  * 上传并发布 Pod 组件（需要管理员权限）
  */
-router.post('/publish', adminMiddleware, upload.single('file'), async (req: Request, res: Response) => {
+router.post('/publish', podDeveloperMiddleware, upload.single('file'), async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
@@ -369,7 +370,7 @@ router.post('/publish', adminMiddleware, upload.single('file'), async (req: Requ
  * GET /api/pods/nnrtc/jenkins/builds
  * 获取 NNRtc Jenkins 最近包含 tgz artifact 的构建列表
  */
-router.get('/nnrtc/jenkins/builds', adminMiddleware, async (req: Request, res: Response) => {
+router.get('/nnrtc/jenkins/builds', async (req: Request, res: Response) => {
   try {
     const builds = await listNNRtcJenkinsBuilds(Number(req.query.limit || 30));
     res.json({ success: true, data: builds });
@@ -383,7 +384,7 @@ router.get('/nnrtc/jenkins/builds', adminMiddleware, async (req: Request, res: R
  * GET /api/pods/nnrtc/jenkins/config
  * 获取 NNRtc Jenkins 配置
  */
-router.get('/nnrtc/jenkins/config', adminMiddleware, async (_req: Request, res: Response) => {
+router.get('/nnrtc/jenkins/config', async (_req: Request, res: Response) => {
   const { baseUrl, jobName, jobUrl } = getNNRtcJenkinsConfig();
   res.json({
     success: true,
@@ -399,7 +400,7 @@ router.get('/nnrtc/jenkins/config', adminMiddleware, async (_req: Request, res: 
  * GET /api/pods/leigod-im/imsdk/versions
  * 获取 IMSDK 共享目录中的 leigod_im_cross_sdk 版本列表
  */
-router.get('/leigod-im/imsdk/versions', adminMiddleware, async (_req: Request, res: Response) => {
+router.get('/leigod-im/imsdk/versions', async (_req: Request, res: Response) => {
   try {
     const versions = podService.listLeigodIMSDKVersions();
     res.json({ success: true, data: versions });
@@ -413,7 +414,7 @@ router.get('/leigod-im/imsdk/versions', adminMiddleware, async (_req: Request, r
  * POST /api/pods/leigod-im/imsdk/publish
  * 从 IMSDK 共享目录选择版本发布 leigod_im_cross_sdk
  */
-router.post('/leigod-im/imsdk/publish', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/leigod-im/imsdk/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { version, target_branch, sys_frameworks, sys_libraries, trigger_nnios_build } = req.body;
     if (!version) {
@@ -451,7 +452,7 @@ router.post('/leigod-im/imsdk/publish', adminMiddleware, async (req: Request, re
  * POST /api/pods/nnrtc/jenkins/publish
  * 从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
  */
-router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nnrtc/jenkins/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
@@ -496,7 +497,7 @@ router.post('/nnrtc/jenkins/publish', adminMiddleware, async (req: Request, res:
  * POST /api/pods/nnrtc/jenkins/publish-task
  * 后台任务：从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
  */
-router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nnrtc/jenkins/publish-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { build_number, version, target_branch, sys_frameworks, sys_libraries, package_type } = req.body;
     if (!version) return res.status(400).json({ success: false, error: '版本号为必填项' });
@@ -557,7 +558,7 @@ router.post('/nnrtc/jenkins/publish-task', adminMiddleware, async (req: Request,
  * POST /api/pods/nnrtc/:version/jenkins/replace
  * 从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
  */
-router.post('/nnrtc/:version/jenkins/replace', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nnrtc/:version/jenkins/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
@@ -598,7 +599,7 @@ router.post('/nnrtc/:version/jenkins/replace', adminMiddleware, async (req: Requ
  * POST /api/pods/nnrtc/:version/jenkins/replace-task
  * 后台任务：从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
  */
-router.post('/nnrtc/:version/jenkins/replace-task', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nnrtc/:version/jenkins/replace-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { build_number, target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
@@ -649,7 +650,7 @@ router.post('/nnrtc/:version/jenkins/replace-task', adminMiddleware, async (req:
  * GET /api/pods/nnrtc/tasks
  * 查询最近 NNRtc 发布/替换任务
  */
-router.get('/nnrtc/tasks', adminMiddleware, async (_req: Request, res: Response) => {
+router.get('/nnrtc/tasks', async (_req: Request, res: Response) => {
   const tasks = Array.from(nnrtcTasks.values()).sort((a, b) => b.updatedAt - a.updatedAt);
   res.json({ success: true, data: tasks });
 });
@@ -658,7 +659,7 @@ router.get('/nnrtc/tasks', adminMiddleware, async (_req: Request, res: Response)
  * GET /api/pods/nnrtc/tasks/:taskId
  * 查询 NNRtc 发布/替换任务进度
  */
-router.get('/nnrtc/tasks/:taskId', adminMiddleware, async (req: Request, res: Response) => {
+router.get('/nnrtc/tasks/:taskId', async (req: Request, res: Response) => {
   const task = nnrtcTasks.get(req.params.taskId);
   if (!task) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
   res.json({ success: true, data: task, warning: task.warning });
@@ -668,7 +669,7 @@ router.get('/nnrtc/tasks/:taskId', adminMiddleware, async (req: Request, res: Re
  * POST /api/pods/nnrtc/:version/dsym/backfill
  * 从 Jenkins release 构建补齐 NNRtc 正式包 dSYM，不重新发布 Pod
  */
-router.post('/nnrtc/:version/dsym/backfill', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nnrtc/:version/dsym/backfill', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
@@ -768,7 +769,7 @@ router.get('/:name/:version', async (req: Request, res: Response) => {
  * POST /api/pods/:name/:version/retry
  * 重试同步 spec 仓库（需要管理员权限）
  */
-router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/:name/:version/retry', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = requireTargetBranch(req.body?.target_branch);
     const component = await podService.retrySync(req.params.name, req.params.version, targetBranch);
@@ -784,7 +785,7 @@ router.post('/:name/:version/retry', adminMiddleware, async (req: Request, res: 
  * POST /api/pods/:name/:version/sync-branch
  * 将当前组件版本同步到指定 nnios 分支（需要管理员权限）
  */
-router.post('/:name/:version/sync-branch', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/:name/:version/sync-branch', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const current = await podService.getOne(req.params.name, req.params.version);
     const isTestPackage = current?.package_type === 'test' || isNNRtcTestVersion(req.params.version);
@@ -804,7 +805,7 @@ router.post('/:name/:version/sync-branch', adminMiddleware, async (req: Request,
  * PUT /api/pods/:name/:version/podspec
  * 更新 podspec 内容并同步到远程仓库（需要管理员权限）
  */
-router.put('/:name/:version/podspec', adminMiddleware, async (req: Request, res: Response) => {
+router.put('/:name/:version/podspec', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { podspec_content, target_branch } = req.body;
     if (!podspec_content) {
@@ -824,7 +825,7 @@ router.put('/:name/:version/podspec', adminMiddleware, async (req: Request, res:
  * POST /api/pods/:name/:version/replace
  * 重新上传 zip 文件替换已有版本（需要管理员权限）
  */
-router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), async (req: Request, res: Response) => {
+router.post('/:name/:version/replace', podDeveloperMiddleware, upload.single('file'), async (req: Request, res: Response) => {
   let tempPath: string | undefined;
   try {
     if (!req.file) {
@@ -859,7 +860,7 @@ router.post('/:name/:version/replace', adminMiddleware, upload.single('file'), a
  * POST /api/pods/leigod-im/:version/imsdk/replace
  * 从 IMSDK 共享目录对应版本替换 leigod_im_cross_sdk 二进制
  */
-router.post('/leigod-im/:version/imsdk/replace', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/leigod-im/:version/imsdk/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
@@ -904,7 +905,7 @@ router.get('/official/:name/:version/dependencies', async (req: Request, res: Re
  * POST /api/pods/official/import
  * 从官方 CocoaPods 导入组件到内部仓库（需要管理员权限）
  */
-router.post('/official/import', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/official/import', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { name, version, buildBinary, outputType, depVersionOverrides, selectedSubspecs, internalVersion, prepareCommand, target_branch } = req.body;
     if (!name || !version) {
@@ -935,7 +936,7 @@ router.post('/official/import', adminMiddleware, async (req: Request, res: Respo
  * DELETE /api/pods/:name/:version
  * 删除指定组件版本（需要管理员权限）
  */
-router.get('/:name/:version/delete-check', adminMiddleware, async (req: Request, res: Response) => {
+router.get('/:name/:version/delete-check', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = req.query.target_branch ? requireTargetBranch(req.query.target_branch) : undefined;
     const result = await podService.checkDeleteVersion(req.params.name, req.params.version, targetBranch);
@@ -949,7 +950,7 @@ router.get('/:name/:version/delete-check', adminMiddleware, async (req: Request,
   }
 });
 
-router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Response) => {
+router.delete('/:name/:version', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = req.query.target_branch ? requireTargetBranch(req.query.target_branch) : undefined;
     const result = await podService.deleteVersion(req.params.name, req.params.version, targetBranch);
@@ -967,7 +968,7 @@ router.delete('/:name/:version', adminMiddleware, async (req: Request, res: Resp
  * DELETE /api/pods/:name
  * 删除整个组件（所有版本，需要管理员权限）
  */
-router.delete('/:name', adminMiddleware, async (req: Request, res: Response) => {
+router.delete('/:name', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const result = await podService.deleteComponent(req.params.name);
     res.json({ success: true, data: { deletedVersions: result.deletedVersions }, warning: result.warning });

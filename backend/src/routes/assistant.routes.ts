@@ -41,7 +41,7 @@ function anonymousAssistantUser(req: Request, res: Response): PlatformUser {
     id: `assistant-anonymous:${clientHash}`,
     username: 'anonymous',
     displayName: '匿名访客',
-    role: 'admin',
+    role: 'guest',
     active: true,
   };
 }
@@ -50,7 +50,7 @@ router.use((req, _res, next) => {
   const sessionUser = authService.getSessionUser(req);
   const assistantUser = sessionUser || anonymousAssistantUser(req, _res);
   (req as any).authUser = assistantUser;
-  (req as any).isAdmin = true;
+  (req as any).isAdmin = assistantUser.role === 'admin';
   next();
 });
 

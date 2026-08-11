@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Layout, Menu, Dropdown, Space, Avatar, Button } from 'antd';
+import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   HomeOutlined,
@@ -16,8 +16,10 @@ import {
   MobileOutlined,
   ApartmentOutlined,
   UserOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
+import { authApi } from '../services/api';
 
 const { Header, Content } = Layout;
 
@@ -25,8 +27,34 @@ export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [, setAuthVersion] = useState(0);
+  const [pendingRegistrationCount, setPendingRegistrationCount] = useState(0);
   const isAuthenticated = authUtils.isAuthenticated();
-  const isAdmin = isAuthenticated && authUtils.isAdmin();
+  const currentUser = authUtils.getUser();
+  const currentRole = currentUser?.role || 'guest';
+  const isAdmin = isAuthenticated && currentRole === 'admin';
+  const canUseQuality = isAuthenticated && ['tester', 'developer', 'admin'].includes(currentRole);
+  const canAccessCrashTools = isAdmin;
+  const canAccessQualityCenter = isAdmin;
+  const canAccessRoleManagement = isAdmin;
+  const canAccessAccessStats = isAdmin;
+  const roleLabelMap = {
+    guest: '游客',
+    tester: '测试',
+    developer: '研发',
+    product: '产品运营',
+    admin: '管理员',
+  } as const;
+  const roleLabel = roleLabelMap[currentRole] || '游客';
+  const roleMenuTextColor = location.pathname.startsWith('/roles') ? '#fff' : 'rgba(255, 255, 255, 0.65)';
+  const roleMenuLabel = (
+    <Badge
+      dot={pendingRegistrationCount > 0}
+      offset={[8, -2]}
+      style={{ backgroundColor: '#ff4d4f' }}
+    >
+      <span style={{ color: roleMenuTextColor }}>角色权限管理</span>
+    </Badge>
+  );
 
   useEffect(() => {
     const refreshAuthState = () => setAuthVersion((value) => value + 1);
@@ -42,10 +70,63 @@ export default function MainLayout() {
     void authUtils.refreshUser();
   }, []);
 
+  useEffect(() => {
+    const path = location.pathname;
+    if (!canAccessCrashTools && ['/sentry-service', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
+      navigate('/history', { replace: true });
+      return;
+    }
+    if (!canAccessQualityCenter && path.startsWith('/workflow')) {
+      navigate('/', { replace: true });
+      return;
+    }
+    if (!canAccessRoleManagement && path.startsWith('/roles')) {
+      navigate('/', { replace: true });
+      return;
+    }
+    if (!canAccessAccessStats && path.startsWith('/access-stats')) {
+      navigate('/', { replace: true });
+    }
+  }, [
+    canAccessAccessStats,
+    canAccessCrashTools,
+    canAccessQualityCenter,
+    canAccessRoleManagement,
+    location.pathname,
+    navigate,
+  ]);
+
+  useEffect(() => {
+    const loadPendingRegistrationCount = async () => {
+      if (!authUtils.isAdmin()) {
+        setPendingRegistrationCount(0);
+        return;
+      }
+      try {
+        const response = await authApi.listRegistrationRequests();
+        const pendingCount = (response.data || []).filter((request) => (
+          request.status === 'pending' && request.requestedRole !== 'guest'
+        )).length;
+        setPendingRegistrationCount(pendingCount);
+      } catch {
+        setPendingRegistrationCount(0);
+      }
+    };
+
+    void loadPendingRegistrationCount();
+    window.addEventListener('platform-registration-requests-changed', loadPendingRegistrationCount);
+    return () => {
+      window.removeEventListener('platform-registration-requests-changed', loadPendingRegistrationCount);
+    };
+  }, [isAdmin, location.pathname]);
+
   // Determine which top-level menu key is active
   const getSelectedKey = () => {
     const path = location.pathname;
     if (path === '/') return '/';
+    if (path.startsWith('/roles')) {
+      return '/roles';
+    }
     if (['/sentry-service', '/history', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
       return '/symbolicate-group';
     }
@@ -63,20 +144,22 @@ export default function MainLayout() {
       icon: <HomeOutlined />,
       label: '首页',
     },
-    {
+    ...(canAccessQualityCenter ? [{
       key: '/workflow',
       icon: <ApartmentOutlined />,
       label: '质量中心',
-    },
+    }] : []),
     {
       key: '/symbolicate-group',
       icon: <BugOutlined />,
-      label: <span onClick={() => navigate('/sentry-service')}>Crash 服务</span>,
+      label: <span onClick={() => navigate(canAccessCrashTools ? '/sentry-service' : '/history')}>Crash 服务</span>,
       children: [
-        { key: '/sentry-service', label: 'Sentry 服务' },
+        ...(canAccessCrashTools ? [{ key: '/sentry-service', label: 'Sentry 服务' }] : []),
         { key: '/history', label: '历史记录' },
-        { key: '/symbolicate', label: 'Crash 符号化' },
-        { key: '/manage', label: 'dSYM 管理' },
+        ...(canAccessCrashTools ? [
+          { key: '/symbolicate', label: 'Crash 符号化' },
+          { key: '/manage', label: 'dSYM 管理' },
+        ] : []),
       ],
     },
     {
@@ -90,7 +173,7 @@ export default function MainLayout() {
       label: <span onClick={() => navigate('/cicd')}>CI/CD</span>,
       children: [
         { key: '/cicd', label: '发布管理' },
-        { key: '/cicd/quality', label: '自动质检' },
+        ...(canUseQuality ? [{ key: '/cicd/quality', label: '自动质检' }] : []),
         { key: '/cicd/devices', label: 'iOS设备注册' },
       ],
     },
@@ -119,7 +202,12 @@ export default function MainLayout() {
       icon: <MobileOutlined />,
       label: '跨端能力',
     },
-    ...(isAdmin ? [{
+    ...(canAccessRoleManagement ? [{
+      key: '/roles',
+      icon: <TeamOutlined />,
+      label: roleMenuLabel,
+    }] : []),
+    ...(canAccessAccessStats ? [{
       key: '/access-stats',
       icon: <BarChartOutlined />,
       label: '访问统计',
@@ -166,7 +254,7 @@ export default function MainLayout() {
               color: 'white',
               fontSize: '18px',
               fontWeight: 'bold',
-              marginRight: '32px',
+              marginRight: '20px',
               whiteSpace: 'nowrap',
               cursor: 'pointer',
             }}
@@ -186,12 +274,12 @@ export default function MainLayout() {
 
         {isAuthenticated ? (
           <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <Space style={{ cursor: 'pointer', padding: '0 16px' }}>
+            <Space style={{ cursor: 'pointer', paddingLeft: 12, whiteSpace: 'nowrap' }}>
               <Avatar
                 icon={isAdmin ? <CrownOutlined /> : <UserOutlined />}
                 style={{ backgroundColor: isAdmin ? '#faad14' : '#1677ff' }}
               />
-              <span style={{ color: 'white' }}>{authUtils.getUser()?.displayName || authUtils.getUser()?.username}</span>
+              <span style={{ color: 'white' }}>{roleLabel}・{currentUser?.username}</span>
             </Space>
           </Dropdown>
         ) : (
@@ -200,7 +288,7 @@ export default function MainLayout() {
             icon={<CrownOutlined />}
             onClick={handleLogin}
           >
-            管理员登录
+            登录
           </Button>
         )}
       </Header>

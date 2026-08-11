@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List, Modal, Select } from 'antd';
-import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined } from '@ant-design/icons';
+import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { dsymApi, moduleApi } from '../services/api';
+import { authApi, dsymApi, moduleApi, PlatformRegistrationRequest, PlatformRole, PlatformUser } from '../services/api';
 import { DSYMInfo } from '../types';
 import { formatFileSize, formatDateTime } from '../utils/helpers';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
 
-export default function ManagePage() {
+export default function ManagePage({ roleManagementOnly = false }: { roleManagementOnly?: boolean }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [dsyms, setDsyms] = useState<DSYMInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
@@ -22,9 +24,24 @@ export default function ManagePage() {
   const [customModules, setCustomModules] = useState<string[]>([]);
   const [moduleLoading, setModuleLoading] = useState(false);
   const [newModuleName, setNewModuleName] = useState('');
+  const [platformUsers, setPlatformUsers] = useState<PlatformUser[]>([]);
+  const [registrationRequests, setRegistrationRequests] = useState<PlatformRegistrationRequest[]>([]);
+  const [userLoading, setUserLoading] = useState(false);
+  const [registrationLoading, setRegistrationLoading] = useState(false);
+  const [userSaving, setUserSaving] = useState(false);
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState<PlatformUser | null>(null);
+  const [userForm, setUserForm] = useState({
+    username: '',
+    password: '',
+    role: 'guest' as PlatformRole,
+    active: true,
+  });
   
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
+  const activeTabKey = searchParams.get('tab') === 'modules' && isAdmin ? 'modules' : 'list';
+  const isUserRoleManagementView = roleManagementOnly;
 
   const loadDsyms = async () => {
     try {
@@ -55,6 +72,131 @@ export default function ManagePage() {
       setModuleLoading(false);
     }
   };
+
+  const loadPlatformUsers = async () => {
+    if (!isAdmin) return;
+    setUserLoading(true);
+    try {
+      const response = await authApi.listUsers();
+      setPlatformUsers(response.data || []);
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '获取平台用户失败');
+    } finally {
+      setUserLoading(false);
+    }
+  };
+
+  const loadRegistrationRequests = async () => {
+    if (!isAdmin) return;
+    setRegistrationLoading(true);
+    try {
+      const response = await authApi.listRegistrationRequests();
+      setRegistrationRequests(response.data || []);
+      window.dispatchEvent(new Event('platform-registration-requests-changed'));
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '获取注册申请失败');
+    } finally {
+      setRegistrationLoading(false);
+    }
+  };
+
+  const openCreateUserModal = () => {
+    setEditingUser(null);
+    setUserForm({ username: '', password: '', role: 'guest', active: true });
+    setUserModalOpen(true);
+  };
+
+  const openEditUserModal = (user: PlatformUser) => {
+    setEditingUser(user);
+    setUserForm({
+      username: user.username,
+      password: '',
+      role: user.role,
+      active: user.active,
+    });
+    setUserModalOpen(true);
+  };
+
+  const savePlatformUser = async () => {
+    const username = userForm.username.trim();
+    if (!editingUser && !username) {
+      message.warning('请输入用户名');
+      return;
+    }
+    if (!editingUser && userForm.password.length < 8) {
+      message.warning('新用户密码至少 8 位');
+      return;
+    }
+    if (editingUser && userForm.password && userForm.password.length < 8) {
+      message.warning('重置密码至少 8 位');
+      return;
+    }
+
+    setUserSaving(true);
+    try {
+      if (editingUser) {
+        await authApi.updateUser(editingUser.id, {
+          role: userForm.role,
+          active: userForm.active,
+          ...(userForm.password ? { password: userForm.password } : {}),
+        });
+        message.success('用户角色已更新');
+      } else {
+        await authApi.createUser({
+          username,
+          displayName: username,
+          password: userForm.password,
+          role: userForm.role,
+        });
+        message.success('用户已创建');
+      }
+      setUserModalOpen(false);
+      await loadPlatformUsers();
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '保存用户失败');
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const approveRegistrationRequest = async (id: string) => {
+    try {
+      await authApi.approveRegistrationRequest(id);
+      message.success('注册申请已通过');
+      await Promise.all([loadRegistrationRequests(), loadPlatformUsers()]);
+      window.dispatchEvent(new Event('platform-registration-requests-changed'));
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '通过注册申请失败');
+    }
+  };
+
+  const rejectRegistrationRequest = async (id: string) => {
+    try {
+      await authApi.rejectRegistrationRequest(id);
+      message.success('注册申请已拒绝');
+      await loadRegistrationRequests();
+      window.dispatchEvent(new Event('platform-registration-requests-changed'));
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '拒绝注册申请失败');
+    }
+  };
+
+  const roleTag = (role: PlatformRole) => {
+    if (role === 'admin') return <Tag color="gold">管理员</Tag>;
+    if (role === 'product') return <Tag color="magenta">产品运营</Tag>;
+    if (role === 'developer') return <Tag color="purple">研发</Tag>;
+    if (role === 'tester') return <Tag color="blue">测试</Tag>;
+    return <Tag>游客</Tag>;
+  };
+
+  const registrationStatusTag = (status: PlatformRegistrationRequest['status']) => {
+    if (status === 'approved') return <Tag color="green">已通过</Tag>;
+    if (status === 'rejected') return <Tag color="red">已拒绝</Tag>;
+    return <Tag color="processing">待审核</Tag>;
+  };
+
+  const visibleRegistrationRequests = registrationRequests.filter((request) => request.requestedRole !== 'guest');
+  const hasPendingVisibleRegistrationRequest = visibleRegistrationRequests.some((request) => request.status === 'pending');
 
   const handleAddModule = async () => {
     if (!newModuleName.trim()) {
@@ -132,8 +274,12 @@ export default function ManagePage() {
   };
 
   useEffect(() => {
-    loadDsyms();
-    loadModules();
+    if (!roleManagementOnly) {
+      loadDsyms();
+      loadModules();
+    }
+    loadPlatformUsers();
+    loadRegistrationRequests();
   }, []);
 
   const filteredDsyms = dsyms.filter(
@@ -231,19 +377,197 @@ export default function ManagePage() {
     },
   ];
 
+  const renderRegistrationRequests = () => (
+    <Card
+      title="注册申请审核"
+      extra={(
+        <Button icon={<ReloadOutlined />} onClick={loadRegistrationRequests} loading={registrationLoading}>
+          刷新
+        </Button>
+      )}
+    >
+      <Table<PlatformRegistrationRequest>
+        rowKey="id"
+        loading={registrationLoading}
+        dataSource={visibleRegistrationRequests}
+        pagination={{ pageSize: 8, showTotal: (total) => `共 ${total} 条申请` }}
+        locale={{ emptyText: '暂无注册申请' }}
+        columns={[
+          {
+            title: '申请用户',
+            dataIndex: 'username',
+            key: 'username',
+            render: (value: string) => <Text strong>{value}</Text>,
+          },
+          {
+            title: '申请角色',
+            dataIndex: 'requestedRole',
+            key: 'requestedRole',
+            width: 140,
+            render: (role: PlatformRole) => roleTag(role),
+          },
+          {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 120,
+            render: (status: PlatformRegistrationRequest['status']) => registrationStatusTag(status),
+          },
+          {
+            title: '申请时间',
+            dataIndex: 'createdAt',
+            key: 'createdAt',
+            width: 180,
+            render: (value: string) => formatDateTime(value),
+          },
+          {
+            title: '审核人',
+            dataIndex: 'reviewerUsername',
+            key: 'reviewerUsername',
+            width: 140,
+            render: (value?: string) => value || <Text type="secondary">-</Text>,
+          },
+          {
+            title: '操作',
+            key: 'actions',
+            width: 180,
+            render: (_, record) => record.status === 'pending' ? (
+              <Space>
+                <Popconfirm
+                  title="确定通过该注册申请吗？"
+                  okText="通过"
+                  cancelText="取消"
+                  onConfirm={() => approveRegistrationRequest(record.id)}
+                >
+                  <Button size="small" type="primary" icon={<CheckOutlined />}>
+                    通过
+                  </Button>
+                </Popconfirm>
+                <Popconfirm
+                  title="确定拒绝该注册申请吗？"
+                  okText="拒绝"
+                  cancelText="取消"
+                  onConfirm={() => rejectRegistrationRequest(record.id)}
+                >
+                  <Button size="small" danger icon={<CloseOutlined />}>
+                    拒绝
+                  </Button>
+                </Popconfirm>
+              </Space>
+            ) : <Text type="secondary">已处理</Text>,
+          },
+        ]}
+      />
+    </Card>
+  );
+
+  const renderUserRoles = () => (
+    <Card
+      title="用户角色"
+      extra={(
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={loadPlatformUsers} loading={userLoading}>
+            刷新
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateUserModal}>
+            新增用户
+          </Button>
+        </Space>
+      )}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 16 }}
+        message="角色权限说明"
+        description="游客可查看常用服务；测试可发布蒲公英/TestFlight 并执行自动质检；研发在测试权限基础上可维护 Pods 组件；产品运营可发布苹果商店包；管理员支持所有功能和角色权限管理。"
+      />
+      <Table<PlatformUser>
+        rowKey="id"
+        loading={userLoading}
+        dataSource={platformUsers}
+        pagination={false}
+        columns={[
+          {
+            title: '用户名',
+            dataIndex: 'username',
+            key: 'username',
+            render: (value: string) => <Text strong>{value}</Text>,
+          },
+          {
+            title: '角色',
+            dataIndex: 'role',
+            key: 'role',
+            width: 120,
+            render: (role: PlatformRole) => roleTag(role),
+          },
+          {
+            title: '状态',
+            dataIndex: 'active',
+            key: 'active',
+            width: 120,
+            render: (active: boolean) => active ? <Tag color="green">启用</Tag> : <Tag color="red">停用</Tag>,
+          },
+          {
+            title: '操作',
+            key: 'actions',
+            width: 140,
+            render: (_, record) => (
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEditUserModal(record)}>
+                编辑
+              </Button>
+            ),
+          },
+        ]}
+      />
+    </Card>
+  );
+
+  const renderPlatformUsers = () => (
+    <Tabs
+      defaultActiveKey="users"
+      items={[
+        {
+          key: 'users',
+          label: '用户角色',
+          children: renderUserRoles(),
+        },
+        {
+          key: 'registration',
+          label: (
+            <Badge dot={hasPendingVisibleRegistrationRequest} offset={[6, -1]}>
+              <span>注册申请审核</span>
+            </Badge>
+          ),
+          children: renderRegistrationRequests(),
+        },
+      ]}
+    />
+  );
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 24 }}>
         <div>
-          <Title level={2}>dSYM 文件管理</Title>
+          <Title level={2}>{isUserRoleManagementView ? '角色权限管理' : 'dSYM 文件管理'}</Title>
           <Paragraph type="secondary">
-            查看和管理 dSYM 文件，用于 Crash 符号化。主工程 NNIM 通过 CICD 上传，NNRtc 和 leigod_im_cross_sdk 通过组件发布入口上传。
+            {isUserRoleManagementView
+              ? '管理平台实名账号、角色和启停状态，控制 CI/CD、Pods、苹果商店发布等能力边界。'
+              : '查看和管理 dSYM 文件，用于 Crash 符号化。主工程 NNIM 通过 CICD 上传，NNRtc 和 leigod_im_cross_sdk 通过组件发布入口上传。'}
           </Paragraph>
         </div>
       </div>
 
+      {isUserRoleManagementView ? renderPlatformUsers() : (
       <Tabs
-        defaultActiveKey="list"
+        activeKey={activeTabKey}
+        onChange={(key) => {
+          if (key === 'list') {
+            setSearchParams({});
+          } else {
+            setSearchParams({ tab: key });
+          }
+        }}
         items={[
           {
             key: 'list',
@@ -388,6 +712,86 @@ export default function ManagePage() {
           }] : []),
         ]}
       />
+      )}
+
+      <Modal
+        title={editingUser ? `编辑用户 - ${editingUser.username}` : '新增平台用户'}
+        open={userModalOpen}
+        onCancel={() => setUserModalOpen(false)}
+        onOk={savePlatformUser}
+        confirmLoading={userSaving}
+        okText="保存"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={14} style={{ width: '100%' }}>
+          <div>
+            <Text strong>用户名</Text>
+            <Input
+              value={userForm.username}
+              disabled={Boolean(editingUser)}
+              placeholder="3-64 位字母、数字、点、下划线或连字符"
+              onChange={(event) => setUserForm((current) => ({ ...current, username: event.target.value }))}
+              style={{ marginTop: 6 }}
+            />
+          </div>
+          <div>
+            <Text strong>角色</Text>
+            <Select
+              value={userForm.role}
+              onChange={(role) => setUserForm((current) => ({ ...current, role }))}
+              style={{ width: '100%', marginTop: 6 }}
+              options={[
+                { label: '游客：普通用户，常用服务查看', value: 'guest' },
+                { label: '测试：蒲公英/TestFlight 发布、自动质检', value: 'tester' },
+                { label: '研发：测试权限 + Pods 增加/删除', value: 'developer' },
+                { label: '产品运营：苹果商店包发布', value: 'product' },
+                { label: '管理员：全部功能 + 角色权限管理', value: 'admin' },
+              ]}
+            />
+          </div>
+          <div>
+            <Text strong>{editingUser ? '重置密码' : '登录密码'}</Text>
+            {editingUser && (
+              <div style={{ marginTop: 6, marginBottom: 6 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  当前密码不可查看，可重置为默认密码：{editingUser.username}123
+                </Text>
+              </div>
+            )}
+            <Input.Password
+              value={userForm.password}
+              placeholder={editingUser ? '不填写则不修改' : '至少 8 位'}
+              onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
+              style={{ marginTop: 6 }}
+            />
+            {editingUser && (
+              <Button
+                type="link"
+                size="small"
+                style={{ paddingLeft: 0, marginTop: 4 }}
+                onClick={() => setUserForm((current) => ({ ...current, password: `${editingUser.username}123` }))}
+              >
+                填入默认密码
+              </Button>
+            )}
+          </div>
+          {editingUser && (
+            <div>
+              <Text strong>账号状态</Text>
+              <Select
+                value={userForm.active ? 'active' : 'inactive'}
+                onChange={(value) => setUserForm((current) => ({ ...current, active: value === 'active' }))}
+                style={{ width: '100%', marginTop: 6 }}
+                options={[
+                  { label: '启用', value: 'active' },
+                  { label: '停用', value: 'inactive' },
+                ]}
+              />
+            </div>
+          )}
+        </Space>
+      </Modal>
 
       <Modal
         title={`编辑关联主应用版本 - ${relationTarget?.appName || ''} ${relationTarget?.version || ''}`}

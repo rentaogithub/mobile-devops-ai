@@ -222,13 +222,14 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ### AI 会话执行中心安全边界
 
 - 普通聊天仅保存在当前浏览器页面，刷新后清空。
-- 查询工具直接执行；普通写操作需确认；发布和停止任务需管理员二次确认。
+- 查询工具直接执行；普通写操作需确认；CI/CD 写操作按游客、测试、研发、产品运营、管理员分角色控制。
 - AI 发布必须指定质量门禁源构建；源构建状态、分支、必需测试套件和阻塞级 Issue 校验与原 CI/CD 发布接口共用同一套服务。
 - TestFlight / App Store 验证密码仅在最终审批时直传执行服务，不发送给模型，也不写入操作审计。
 - 所有工具参数均经过 allowlist Schema 校验，模型不能访问任意 URL、Shell 或 SQL。
 - 实际工具调用、审批和结果会写入 `assistant_action_audits`，敏感字段自动脱敏。
 - 仅支持上传 `.crash`、`.ips`、`.txt`，附件 15 分钟后自动清理。
-- 管理员可通过 `POST /api/auth/users` 创建 `viewer`、`operator`、`admin` 账号。
+- 管理员可在 dSYM 管理页的“平台用户”页签创建 `guest`、`tester`、`developer`、`product`、`admin` 账号；也可通过 `POST /api/auth/users` 创建。
+- 角色边界：`guest` 游客可访问常用只读服务和 iOS 设备注册申请；`tester` 测试可发布蒲公英/TestFlight 并执行自动质检；`developer` 研发在测试权限基础上可增加/删除 Pods 组件；`product` 产品运营可发布苹果商店包；`admin` 管理员支持所有功能和角色权限管理。
 
 ## 🤝 贡献
 
@@ -237,8 +238,6 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
-
 
 
 

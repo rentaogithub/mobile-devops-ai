@@ -489,6 +489,7 @@ export class JenkinsAssistantService {
   async triggerRelease(input: {
     branch: string;
     deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
+    appVersion?: string;
     gateBuildNumber?: number;
     releaseGateOverrideReason?: string;
     verificationPassword?: string;
@@ -559,9 +560,12 @@ export class JenkinsAssistantService {
     }
 
     const headers = await this.crumbHeaders();
+    const releaseBranchVersion = isReleaseBranch(branch) ? branch.replace(/^release\//, '') : '';
+    const appVersion = String(input.appVersion || releaseBranchVersion).trim();
     const params = new URLSearchParams({
       branch: toJenkinsBranch(branch),
       DEPLOY_TARGET: input.deployTarget,
+      APP_VERSION: appVersion,
       VERIFICATION_PASSWORD: String(input.verificationPassword || ''),
       NOTIFY_WECHAT_ON_SUCCESS: 'true',
       FORCE_PRIVATE_POD_UPDATE: 'false',
@@ -583,6 +587,7 @@ export class JenkinsAssistantService {
       branch,
       jenkinsBranch: toJenkinsBranch(branch),
       deployTarget: input.deployTarget,
+      appVersion,
       sourceBuildNumber: gateBuildNumber,
       releaseGate,
       queueUrl: response.headers.location || null,

@@ -292,7 +292,7 @@ CREATE TABLE IF NOT EXISTS platform_users (
   username TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'viewer',
+  role TEXT NOT NULL DEFAULT 'guest',
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -312,6 +312,24 @@ CREATE TABLE IF NOT EXISTS platform_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_platform_sessions_user ON platform_sessions(user_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS idx_platform_sessions_token ON platform_sessions(token_hash);
+
+CREATE TABLE IF NOT EXISTS platform_user_registration_requests (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  requested_role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  reviewer_user_id TEXT,
+  reviewer_username TEXT,
+  review_message TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  reviewed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_user_registration_requests_status ON platform_user_registration_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_platform_user_registration_requests_username ON platform_user_registration_requests(username, status);
 
 -- AI 会话只持久化实际工具调用与审批，不保存普通聊天正文
 CREATE TABLE IF NOT EXISTS assistant_action_audits (

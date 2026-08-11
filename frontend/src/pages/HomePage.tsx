@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Alert,
   Avatar,
   Button,
   Card,
-  Drawer,
   Empty,
   Input,
-  List,
   Modal,
   Progress,
   QRCode,
@@ -22,7 +20,6 @@ import {
   message,
 } from 'antd';
 import {
-  AuditOutlined,
   BugOutlined,
   CheckOutlined,
   CheckCircleOutlined,
@@ -40,6 +37,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { sentryAnalysisApi } from '../services/api';
 import type { SentryIssueSummary, SentryOriginalCrashResult } from '../types';
+import { authUtils } from '../utils/auth';
+import type { AuthUser } from '../utils/auth';
 
 const { Text, Paragraph, Title } = Typography;
 const { TextArea } = Input;
@@ -76,18 +75,11 @@ interface UploadedAttachment {
   expiresAt: string;
 }
 
-interface Capability {
-  name: string;
-  domain: string;
-  description: string;
-  riskLevel: string;
-}
-
-const suggestions = [
-  '生成过去 24 小时移动端质量日报',
-  '按 UID 跨系统查询最近的 Crash、日志和相关任务',
-  '分析最近一次 Jenkins 失败构建，并给出修复和重建建议',
-  '搜索登录相关 API 和 App 路由',
+const suggestions: Array<{ text: string; roles?: AuthUser['role'][] }> = [
+  { text: '按 UID 跨系统查询最近的 Crash、日志和相关任务' },
+  { text: '搜索登录相关 API 和 App 路由' },
+  { text: '分析最近一次 Jenkins 失败构建，并给出修复和重建建议', roles: ['tester', 'developer', 'admin'] },
+  { text: '生成过去 24 小时移动端质量日报', roles: ['tester', 'developer', 'admin'] },
 ];
 
 function uid(prefix: string) {
@@ -802,9 +794,6 @@ export default function HomePage() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [attachment, setAttachment] = useState<UploadedAttachment | null>(null);
-  const [capabilities, setCapabilities] = useState<Capability[]>([]);
-  const [audits, setAudits] = useState<any[]>([]);
-  const [auditOpen, setAuditOpen] = useState(false);
   const [qrPreviewUrl, setQrPreviewUrl] = useState('');
   const [crashDetailOpen, setCrashDetailOpen] = useState(false);
   const [crashDetailLoading, setCrashDetailLoading] = useState(false);
@@ -814,12 +803,8 @@ export default function HomePage() {
   const [secretValues, setSecretValues] = useState<Record<string, Record<string, string>>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const buildTrackingTimers = useRef<Map<string, number>>(new Map());
-  useEffect(() => {
-    fetch('/api/assistant/capabilities', { credentials: 'include' })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('能力列表读取失败')))
-      .then((data) => setCapabilities(data.data || []))
-      .catch(() => setCapabilities([]));
-  }, []);
+  const currentRole = authUtils.getUser()?.role || 'guest';
+  const visibleSuggestions = suggestions.filter((suggestion) => !suggestion.roles || suggestion.roles.includes(currentRole));
 
   useEffect(() => {
     if (entries.length === 0) return;
@@ -830,8 +815,6 @@ export default function HomePage() {
     for (const timer of buildTrackingTimers.current.values()) window.clearTimeout(timer);
     buildTrackingTimers.current.clear();
   }, []);
-
-  const domains = useMemo(() => Array.from(new Set(capabilities.map((item) => item.domain))), [capabilities]);
 
   const updateAssistant = (id: string, updater: (entry: ChatEntry) => ChatEntry) => {
     setEntries((previous) => previous.map((entry) => entry.id === id ? updater(entry) : entry));
@@ -989,12 +972,6 @@ export default function HomePage() {
     return false;
   };
 
-  const openAudits = async () => {
-    setAuditOpen(true);
-    const response = await fetch('/api/assistant/audits?limit=100', { credentials: 'include' });
-    if (response.ok) setAudits((await response.json()).data || []);
-  };
-
   return (
     <div className="assistant-home">
       <div className="assistant-topbar">
@@ -1003,14 +980,10 @@ export default function HomePage() {
             <Avatar className="assistant-logo" icon={<RobotOutlined />} />
             <div>
               <Title level={4} style={{ margin: 0 }}>AI 会话执行中心</Title>
-              <Text type="secondary">免登录使用；查询直接执行，任务与发布按确认流程执行</Text>
+              <Text type="secondary">按当前角色权限执行；查询直接执行，任务与发布按确认流程执行</Text>
             </div>
           </Space>
         </div>
-        <Space wrap>
-          {domains.map((domain) => <Tag key={domain}>{domain.toUpperCase()}</Tag>)}
-          <Button icon={<AuditOutlined />} onClick={() => void openAudits()}>操作审计</Button>
-        </Space>
       </div>
 
       <div className="assistant-thread">
@@ -1020,8 +993,8 @@ export default function HomePage() {
               <Title level={3}>直接告诉我你想完成什么</Title>
               <Paragraph type="secondary">我可以查询 Crash、构建、质检和质量中心，并在你确认后执行受控操作。</Paragraph>
               <Space wrap className="assistant-suggestions">
-                {suggestions.map((suggestion) => (
-                  <Button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</Button>
+                {visibleSuggestions.map((suggestion) => (
+                  <Button key={suggestion.text} onClick={() => void send(suggestion.text)}>{suggestion.text}</Button>
                 ))}
               </Space>
             </Empty>
@@ -1139,23 +1112,8 @@ export default function HomePage() {
           />
           <Button type="primary" shape="circle" icon={<SendOutlined />} loading={loading} disabled={!input.trim() && !attachment} onClick={() => void send()} />
         </div>
-        <Text type="secondary" className="assistant-disclaimer">AI 可能出错。所有写操作仍受参数校验、确认和审计保护。</Text>
+        <Text type="secondary" className="assistant-disclaimer">AI 可能出错。所有写操作仍受权限、参数校验、确认和审计保护。</Text>
       </div>
-
-      <Drawer title="AI 操作审计" width={720} open={auditOpen} onClose={() => setAuditOpen(false)}>
-        <List
-          dataSource={audits}
-          locale={{ emptyText: '暂无执行记录' }}
-          renderItem={(audit) => (
-            <List.Item>
-              <List.Item.Meta
-                title={<Space><Tag>{audit.status}</Tag><Text strong>{audit.toolName}</Text><Text type="secondary">{audit.username}</Text></Space>}
-                description={`${audit.createdAt} · ${audit.riskLevel} · ${audit.durationMs ?? '-'}ms`}
-              />
-            </List.Item>
-          )}
-        />
-      </Drawer>
 
       <Modal
         title="崩溃详情"

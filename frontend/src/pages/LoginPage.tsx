@@ -1,21 +1,25 @@
 import { useState } from 'react';
-import { Card, Input, Button, message, Typography, Space } from 'antd';
-import { LockOutlined } from '@ant-design/icons';
+import { Card, Input, Button, message, Typography, Space, Segmented, Select } from 'antd';
+import { LockOutlined, UserAddOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { AuthUser } from '../utils/auth';
+import { authApi, PlatformRole } from '../services/api';
 
-const { Title, Paragraph } = Typography;
+const { Title, Paragraph, Text } = Typography;
 
 interface LoginPageProps {
   onLogin: (user: AuthUser) => void;
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [username, setUsername] = useState('admin');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [requestedRole, setRequestedRole] = useState<PlatformRole | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const registrationPassword = username.trim() ? `${username.trim()}123` : '';
 
   const redirectPath = (() => {
     const value = new URLSearchParams(location.search).get('redirect') || '/';
@@ -25,7 +29,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   const handleSubmit = async () => {
     if (!username.trim() || !password.trim()) {
-      message.warning('请输入用户名和密码');
+      message.warning('请输入 NN 邮箱前缀和密码');
       return;
     }
 
@@ -44,7 +48,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
       if (data.success) {
         const user = data.data?.user as AuthUser;
-        message.success(`欢迎，${user.displayName || user.username}`);
+        message.success(`欢迎，${user.username}`);
         onLogin(user);
         navigate(redirectPath, { replace: true });
       } else {
@@ -57,9 +61,47 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     }
   };
 
+  const handleRegister = async () => {
+    const nextUsername = username.trim();
+    if (!nextUsername) {
+      message.warning('请输入 NN 邮箱前缀');
+      return;
+    }
+    if (!requestedRole) {
+      message.warning('请选择申请角色');
+      return;
+    }
+    const initialPassword = `${nextUsername}123`;
+
+    setLoading(true);
+    try {
+      const response = await authApi.register({
+        username: nextUsername,
+        password: initialPassword,
+        requestedRole,
+      });
+      if (!response.success) throw new Error(response.error || '提交注册申请失败');
+      message.success('注册申请已提交，等待管理员审核');
+      setMode('login');
+    } catch (error: any) {
+      const errorText = typeof error === 'string' ? error : (error?.error || error?.message || '');
+      if (errorText.includes('Cannot POST /api/auth/register')) {
+        message.error('注册接口未生效，请重启后端服务');
+      } else {
+        message.error(errorText || '提交注册申请失败');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      handleSubmit();
+      if (mode === 'login') {
+        handleSubmit();
+      } else {
+        handleRegister();
+      }
     }
   };
 
@@ -83,30 +125,107 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <div style={{ textAlign: 'center' }}>
             <LockOutlined style={{ fontSize: 48, color: '#faad14', marginBottom: 16 }} />
             <Title level={2} style={{ marginBottom: 8 }}>
-              平台实名登录
+              {mode === 'login' ? '平台实名登录' : '注册申请'}
             </Title>
-            <Paragraph type="secondary">AI 执行与审批必须关联到具体操作者</Paragraph>
+            <Paragraph type="secondary">
+              {mode === 'login' ? 'AI 执行与审批必须关联到具体操作者' : '提交后需管理员审核角色，通过后即可登录'}
+            </Paragraph>
           </div>
+
+          <Segmented
+            block
+            value={mode}
+            onChange={(value) => {
+              setMode(value as 'login' | 'register');
+              setPassword('');
+            }}
+            options={[
+              { label: '登录', value: 'login' },
+              { label: '注册申请', value: 'register' },
+            ]}
+          />
 
           <Input
             size="large"
-            placeholder="用户名"
+            placeholder="NN 邮箱前缀"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             onKeyDown={handleKeyPress}
           />
 
-          <Input.Password
-            size="large"
-            placeholder="请输入密码"
-            prefix={<LockOutlined />}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={handleKeyPress}
-          />
+          {mode === 'register' && (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Space.Compact style={{ width: '100%' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0 11px',
+                    border: '1px solid #d9d9d9',
+                    borderRight: 0,
+                    borderRadius: '6px 0 0 6px',
+                    background: '#fafafa',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <Text strong>
+                    <Text type="danger">*</Text> 角色：
+                  </Text>
+                </div>
+                <Select
+                  size="large"
+                  placeholder="请选择申请角色"
+                  value={requestedRole}
+                  onChange={setRequestedRole}
+                  style={{ flex: 1 }}
+                  options={[
+                    { label: '测试', value: 'tester' },
+                    { label: '研发', value: 'developer' },
+                    { label: '产品运营', value: 'product' },
+                  ]}
+                />
+              </Space.Compact>
+              <Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
+                请按实际岗位选择，避免选错后需要管理员重新处理
+              </Paragraph>
+            </Space>
+          )}
 
-          <Button type="primary" size="large" block loading={loading} onClick={handleSubmit}>
-            登录
+          {mode === 'login' && (
+            <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Input.Password
+                size="large"
+                placeholder="请输入密码"
+                prefix={<LockOutlined />}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={handleKeyPress}
+              />
+              <Paragraph type="secondary" style={{ margin: 0, fontSize: 12 }}>
+                如果忘记密码，可向管理员获取
+              </Paragraph>
+            </Space>
+          )}
+
+          {mode === 'register' && (
+            <Input.Password
+              size="large"
+              placeholder="默认密码：NN 邮箱前缀 + 123"
+              prefix={<LockOutlined />}
+              value={registrationPassword}
+              readOnly
+            />
+          )}
+
+          <Button
+            type="primary"
+            size="large"
+            block
+            loading={loading}
+            icon={mode === 'register' ? <UserAddOutlined /> : undefined}
+            onClick={mode === 'login' ? handleSubmit : handleRegister}
+          >
+            {mode === 'login' ? '登录' : '提交注册申请'}
           </Button>
           
           <Button type="link" block onClick={() => navigate(redirectPath, { replace: true })}>

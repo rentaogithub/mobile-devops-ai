@@ -18,17 +18,25 @@ import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
-import { adminMiddleware } from '../middleware/auth';
+import { requireAnyRole, requireRole } from '../middleware/auth';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
+const cicdTestReleaseMiddleware = requireAnyRole(['tester', 'developer', 'admin']);
+const cicdDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
+const cicdProductReleaseMiddleware = requireAnyRole(['product', 'admin']);
+const cicdReleaseMiddleware = requireAnyRole(['tester', 'developer', 'product', 'admin']);
+const cicdAdminMiddleware = requireRole('admin');
 
 const adminOnlyAppleReleaseMiddleware = (req: Request, res: Response, next: () => void) => {
   const deployTarget = normalizeDeployTarget(String(req.body?.deployTarget || ''));
-  if (deployTarget === 'TestFlight' || deployTarget === 'AppStore') {
-    return adminMiddleware(req, res, next);
+  if (deployTarget === 'Pgyer' || deployTarget === 'TestFlight') {
+    return cicdTestReleaseMiddleware(req, res, next);
   }
-  return next();
+  if (deployTarget === 'AppStore') {
+    return cicdProductReleaseMiddleware(req, res, next);
+  }
+  return cicdTestReleaseMiddleware(req, res, next);
 };
 
 const JENKINS_BASE_URL = getJenkinsBaseUrl();
@@ -3823,7 +3831,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/builds/:number/sync-dsyms', async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/sync-dsyms', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -3847,7 +3855,7 @@ router.post('/nn/builds/:number/sync-dsyms', async (req: Request, res: Response)
   }
 });
 
-router.post('/nn/builds/:number/submit-app-store-review', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -3946,7 +3954,7 @@ router.post('/nn/builds/:number/submit-app-store-review', adminMiddleware, async
   }
 });
 
-router.post('/nn/builds/:number/cancel-app-store-review', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/cancel-app-store-review', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -4141,7 +4149,7 @@ router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Resp
   }
 });
 
-router.get('/nn/quality/local-artifact', async (req: Request, res: Response) => {
+router.get('/nn/quality/local-artifact', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const filePath = path.resolve(String(req.query.path || ''));
     if (!isAllowedLocalQualityArtifact(filePath) || !fs.existsSync(filePath)) {
@@ -4159,7 +4167,7 @@ router.get('/nn/quality/local-artifact', async (req: Request, res: Response) => 
   }
 });
 
-router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) => {
+router.get('/nn/quality/artifact-preview', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const artifactUrl = String(req.query.url || '').trim();
     if (!artifactUrl) {
@@ -4213,7 +4221,7 @@ router.get('/nn/quality/artifact-preview', async (req: Request, res: Response) =
   }
 });
 
-router.get('/nn/quality/performance-samples', async (req: Request, res: Response) => {
+router.get('/nn/quality/performance-samples', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const artifactUrl = String(req.query.url || '').trim();
     if (!artifactUrl) {
@@ -4251,7 +4259,7 @@ router.get('/nn/quality/performance-samples', async (req: Request, res: Response
   }
 });
 
-router.get('/nn/quality/builds', async (req: Request, res: Response) => {
+router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
     const tree = [
@@ -4385,7 +4393,7 @@ router.get('/nn/quality/builds', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
+router.get('/nn/quality/sonic/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   const sonicConfig = getSonicConfig();
   const configured = Boolean(sonicConfig.apiBase);
   const status = {
@@ -4448,14 +4456,14 @@ router.get('/nn/quality/sonic/status', async (_req: Request, res: Response) => {
   }
 });
 
-router.get('/nn/quality/sonic/device-pools', async (_req: Request, res: Response) => {
+router.get('/nn/quality/sonic/device-pools', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   res.json({
     success: true,
     data: getQualityDevicePools(),
   });
 });
 
-router.get('/nn/quality/sonic/device-pools/status', async (_req: Request, res: Response) => {
+router.get('/nn/quality/sonic/device-pools/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   try {
     res.json({
       success: true,
@@ -4469,7 +4477,7 @@ router.get('/nn/quality/sonic/device-pools/status', async (_req: Request, res: R
   }
 });
 
-router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response) => {
+router.put('/nn/quality/sonic/device-pools', cicdAdminMiddleware, async (req: Request, res: Response) => {
   try {
     const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
       .map(normalizeQualityDevicePool)
@@ -4509,7 +4517,7 @@ router.put('/nn/quality/sonic/device-pools', async (req: Request, res: Response)
   }
 });
 
-router.post('/nn/quality/job/sync', async (_req: Request, res: Response) => {
+router.post('/nn/quality/job/sync', cicdAdminMiddleware, async (_req: Request, res: Response) => {
   try {
     const data = await syncQualityJenkinsJobConfig();
     res.json({
@@ -4525,7 +4533,7 @@ router.post('/nn/quality/job/sync', async (_req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/release-gate/preview', async (req: Request, res: Response) => {
+router.post('/nn/release-gate/preview', cicdReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const gateBuildNumber = Number(req.body?.gateBuildNumber);
     const branch = normalizeBranchName(String(req.body?.branch || ''));
@@ -4544,7 +4552,7 @@ router.post('/nn/release-gate/preview', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/app-store/release-guard', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/app-store/release-guard', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const branch = normalizeBranchName(String(req.body?.branch || ''));
     if (!isReleaseBranch(branch)) {
@@ -4586,6 +4594,7 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
     const data = await jenkinsAssistantService.triggerRelease({
       branch,
       deployTarget,
+      appVersion: String(req.body?.appVersion || '').trim(),
       verificationPassword: String(req.body?.verificationPassword || ''),
       gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
       releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
@@ -4615,7 +4624,7 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
   }
 });
 
-router.post('/nn/release-branch', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/release-branch', cicdAdminMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
     const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';
@@ -4721,7 +4730,7 @@ router.post('/nn/release-branch', adminMiddleware, async (req: Request, res: Res
   }
 });
 
-router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -4750,7 +4759,7 @@ router.post('/nn/builds/:number/stop', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Response) => {
+router.post('/nn/quality/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -4780,7 +4789,7 @@ router.post('/nn/quality/builds/:number/stop', async (req: Request, res: Respons
   }
 });
 
-router.post('/nn/quality/wda/cleanup', async (req: Request, res: Response) => {
+router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const deviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
     const result = await cleanupLocalQualityProcesses(deviceUdid);
@@ -4799,7 +4808,7 @@ router.post('/nn/quality/wda/cleanup', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/nn/quality', async (req: Request, res: Response) => {
+router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
     const sonicConfig = getSonicConfig();

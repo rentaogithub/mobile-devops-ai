@@ -158,6 +158,7 @@ export class AssistantService {
     }
     assistantToolRegistry.validate(tool, args);
     const context = { user };
+    assistantToolRegistry.assertExecutable(tool, args, context);
     const preview = tool.preview ? await tool.preview(args, context) : { title: tool.description };
     const idempotencyKey = tool.idempotent ? assistantAuditService.idempotencyKey(user, tool.name, args) : undefined;
 

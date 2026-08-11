@@ -68,7 +68,7 @@ describe('Sentry assistant issue context', () => {
 
     const result = await registry.get('sentry_get_issue_context')!.execute(
       { issueId: '151217' },
-      { user: { id: 'viewer-1', username: 'viewer', displayName: 'Viewer', role: 'viewer', active: true } },
+      { user: { id: 'guest-1', username: 'guest', displayName: 'Viewer', role: 'guest', active: true } },
     ) as any;
 
     expect(list).not.toHaveBeenCalled();

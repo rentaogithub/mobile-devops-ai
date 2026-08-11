@@ -218,11 +218,11 @@ export default function PodsPage() {
       : !isNNRtcReleaseBuildBranch(build.branchName))
   ), [nnrtcBuilds, selectedNNRtcPackageType]);
 
-  // 检查是否是管理员
-  const isAdmin = authUtils.isAdmin();
+  // 研发和管理员可以维护 Pods 组件，其他角色只读查看。
+  const canManagePods = authUtils.hasAnyRole(['developer', 'admin']);
 
   const loadNniosBranches = useCallback(async (): Promise<string[]> => {
-    if (!isAdmin) return [];
+    if (!canManagePods) return [];
     setNniosBranchLoading(true);
     try {
       const res = await jenkinsApi.listBranches();
@@ -238,10 +238,10 @@ export default function PodsPage() {
     } finally {
       setNniosBranchLoading(false);
     }
-  }, [form, isAdmin]);
+  }, [form, canManagePods]);
 
   const loadNNRtcBuilds = useCallback(async () => {
-    if (!isAdmin) return;
+    if (!canManagePods) return;
     setNnrtcBuildLoading(true);
     try {
       const [configRes, res] = await Promise.all([
@@ -266,10 +266,10 @@ export default function PodsPage() {
     } finally {
       setNnrtcBuildLoading(false);
     }
-  }, [detailJenkinsBuildNumber, form, isAdmin]);
+  }, [detailJenkinsBuildNumber, form, canManagePods]);
 
   const loadLeigodIMSDKVersions = useCallback(async () => {
-    if (!isAdmin) return;
+    if (!canManagePods) return;
     setLeigodIMSDKLoading(true);
     setLeigodIMSDKError('');
     try {
@@ -307,7 +307,7 @@ export default function PodsPage() {
     } finally {
       setLeigodIMSDKLoading(false);
     }
-  }, [components, form, isAdmin]);
+  }, [components, form, canManagePods]);
 
   const fetchComponents = useCallback(async () => {
     setLoading(true);
@@ -328,10 +328,10 @@ export default function PodsPage() {
   }, [fetchComponents]);
 
   useEffect(() => {
-    if (publishModalOpen && isAdmin) {
+    if (publishModalOpen && canManagePods) {
       loadNniosBranches();
     }
-  }, [isAdmin, loadNniosBranches, publishModalOpen]);
+  }, [canManagePods, loadNniosBranches, publishModalOpen]);
 
   useEffect(() => {
     if (publishModalOpen && publishTabKey === 'local' && isNNRtcPublish) {
@@ -348,10 +348,10 @@ export default function PodsPage() {
   }, [isLeigodIMPublish, loadLeigodIMSDKVersions, publishModalOpen, publishTabKey]);
 
   useEffect(() => {
-    if (detailDrawerOpen && isAdmin) {
+    if (detailDrawerOpen && canManagePods) {
       loadNniosBranches();
     }
-  }, [detailDrawerOpen, isAdmin, loadNniosBranches]);
+  }, [detailDrawerOpen, canManagePods, loadNniosBranches]);
 
   useEffect(() => {
     if (detailDrawerOpen && selectedComponent?.name === 'NNRtc') {
@@ -1337,13 +1337,13 @@ export default function PodsPage() {
     {
       title: '操作',
       key: 'action',
-      width: isAdmin ? 230 : 80,
+      width: canManagePods ? 230 : 80,
       render: (_, record) => (
         <Space size={0}>
           <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => showDetail(record)}>
             详情
           </Button>
-          {isAdmin && (
+          {canManagePods && (
             <>
               {!(record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version))) && (
                 <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
@@ -1374,7 +1374,7 @@ export default function PodsPage() {
         </div>
         <Space>
           <Button icon={<SyncOutlined />} onClick={fetchComponents} loading={loading}>刷新</Button>
-          {isAdmin && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setPublishTabKey('local'); setPublishModalOpen(true); }}>发布组件</Button>}
+          {canManagePods && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setPublishTabKey('local'); setPublishModalOpen(true); }}>发布组件</Button>}
         </Space>
       </div>
 
@@ -1501,7 +1501,7 @@ export default function PodsPage() {
             )
           }
           extra={
-            selectedGroup && isAdmin && (
+            selectedGroup && canManagePods && (
               <Button
                 type="primary"
                 size="small"
@@ -1726,7 +1726,7 @@ export default function PodsPage() {
                         </Form.Item>
                       </>
                     )}
-                    {isAdmin && (
+                    {canManagePods && (
                       <Form.Item
                         name="target_branch"
                         label="同步到 nnios 分支"
@@ -1999,7 +1999,7 @@ export default function PodsPage() {
                       )}
                     </div>
                   )}
-                  {officialVersions.length > 0 && isAdmin && (
+                  {officialVersions.length > 0 && canManagePods && (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ marginBottom: 4 }}>
                         <Text strong>同步到 nnios 分支</Text>
@@ -2199,7 +2199,7 @@ export default function PodsPage() {
               )}
             </Descriptions>
 
-            {isAdmin && !selectedIsOfficial && (
+            {canManagePods && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 8 }}>
               {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -2234,7 +2234,7 @@ export default function PodsPage() {
             </Card>
             )}
 
-            {isAdmin && !selectedIsOfficial && selectedComponent && supportsNniosBuildTask(selectedComponent.name) && (
+            {canManagePods && !selectedIsOfficial && selectedComponent && supportsNniosBuildTask(selectedComponent.name) && (
             <Card size="small" style={{ marginBottom: 16 }}>
               <Checkbox
                 checked={detailTriggerNniosBuild}
@@ -2245,7 +2245,7 @@ export default function PodsPage() {
             </Card>
             )}
 
-            {isAdmin && !selectedIsOfficial && (
+            {canManagePods && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 16 }}>
               {isLeigodIMComponent(selectedComponent) ? (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2371,7 +2371,7 @@ export default function PodsPage() {
             </Card>
             )}
 
-            {isAdmin && (
+            {canManagePods && (
             <Card size="small" style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
@@ -2400,7 +2400,7 @@ export default function PodsPage() {
                 <Button size="small" icon={<CopyOutlined />} onClick={() => handleCopyPodspec(editingPodspec ? podspecDraft : selectedComponent.podspec_content)}>
                   复制
                 </Button>
-                {isAdmin && (editingPodspec ? (
+                {canManagePods && (editingPodspec ? (
                   <>
                     <Button size="small" onClick={() => { setEditingPodspec(false); setPodspecDraft(selectedComponent.podspec_content); }}>
                       取消

@@ -49,6 +49,7 @@ export default function HistoryPage() {
   const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const autoAnalyzingRecordIds = useRef(new Set<number>());
   const isAdmin = authUtils.isAdmin();
+  const canAnalyzeCrash = authUtils.hasAnyRole(['tester', 'developer', 'admin']);
 
   // 从 localStorage 获取保存的 OpenAI API Key
   const getSavedApiKey = () => {
@@ -248,13 +249,17 @@ export default function HistoryPage() {
   };
 
   const handleAnalyze = () => {
+    if (!canAnalyzeCrash) {
+      message.warning('AI 分析需要测试、研发或管理员权限');
+      return;
+    }
     const savedApiKey = getSavedApiKey();
     startAnalysis(savedApiKey || '');
   };
 
   const handleTabChange = (activeKey: string) => {
     setActiveTab(activeKey); // 更新当前激活的标签
-    if (activeKey === 'analysis' && selectedRecord && !selectedRecord.aiAnalysis && !analyzing) {
+    if (activeKey === 'analysis' && canAnalyzeCrash && selectedRecord && !selectedRecord.aiAnalysis && !analyzing) {
       if (!autoAnalyzingRecordIds.current.has(selectedRecord.id)) {
         autoAnalyzingRecordIds.current.add(selectedRecord.id);
         startAnalysis(getSavedApiKey() || '');
@@ -860,7 +865,7 @@ export default function HistoryPage() {
                             <Text type="secondary">AI 正在分析中，请稍候...</Text>
                           </div>
                         </div>
-                      ) : (
+                      ) : canAnalyzeCrash ? (
                         <Empty
                           description="暂无 AI 分析结果"
                           style={{ padding: '40px 0' }}
@@ -873,6 +878,11 @@ export default function HistoryPage() {
                             AI 智能分析
                           </Button>
                         </Empty>
+                      ) : (
+                        <Empty
+                          description="暂无 AI 分析结果"
+                          style={{ padding: '40px 0' }}
+                        />
                       )}
                     </Card>
                   ),

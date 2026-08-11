@@ -22,6 +22,19 @@ router.post('/login', (req, res) => {
   res.json({ success: true, data: { user } });
 });
 
+router.post('/register', (req, res) => {
+  try {
+    const request = authService.createRegistrationRequest(req.body || {});
+    res.json({
+      success: true,
+      data: request,
+      message: '注册申请已提交，等待管理员审核',
+    });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '提交注册申请失败' });
+  }
+});
+
 router.post('/logout', (req, res) => {
   authService.clearSession(req, res);
   res.json({ success: true });
@@ -38,6 +51,28 @@ router.get('/me', (req, res) => {
 
 router.get('/users', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
   res.json({ success: true, data: authService.listUsers() });
+});
+
+router.get('/registration-requests', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
+  res.json({ success: true, data: authService.listRegistrationRequests() });
+});
+
+router.post('/registration-requests/:id/approve', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const result = authService.approveRegistrationRequest(req.params.id, (req as any).authUser);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '通过注册申请失败' });
+  }
+});
+
+router.post('/registration-requests/:id/reject', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const request = authService.rejectRegistrationRequest(req.params.id, (req as any).authUser, req.body?.message);
+    res.json({ success: true, data: request });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '拒绝注册申请失败' });
+  }
 });
 
 router.post('/users', sessionAuthMiddleware, requireRole('admin'), (req, res) => {

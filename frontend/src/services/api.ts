@@ -27,6 +27,32 @@ const api = axios.create({
 
 const EXCLUDED_SENTRY_APP_VERSIONS = new Set(['10.0.0']);
 
+export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
+
+export interface PlatformUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: PlatformRole;
+  active: boolean;
+}
+
+export type PlatformRegistrationStatus = 'pending' | 'approved' | 'rejected';
+
+export interface PlatformRegistrationRequest {
+  id: string;
+  username: string;
+  displayName: string;
+  requestedRole: PlatformRole;
+  status: PlatformRegistrationStatus;
+  reviewerUserId?: string;
+  reviewerUsername?: string;
+  reviewMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt?: string;
+}
+
 // 响应拦截器
 api.interceptors.response.use(
   (response) => {
@@ -49,6 +75,67 @@ api.interceptors.response.use(
     }
   }
 );
+
+export const authApi = {
+  register: async (payload: {
+    username: string;
+    displayName?: string;
+    password: string;
+    requestedRole: PlatformRole;
+  }): Promise<ApiResponse<PlatformRegistrationRequest>> => {
+    const response = await api.post<ApiResponse<PlatformRegistrationRequest>>('/auth/register', payload);
+    return response.data;
+  },
+
+  listUsers: async (): Promise<ApiResponse<PlatformUser[]>> => {
+    const response = await api.get<ApiResponse<PlatformUser[]>>('/auth/users');
+    return response.data;
+  },
+
+  listRegistrationRequests: async (): Promise<ApiResponse<PlatformRegistrationRequest[]>> => {
+    const response = await api.get<ApiResponse<PlatformRegistrationRequest[]>>('/auth/registration-requests');
+    return response.data;
+  },
+
+  approveRegistrationRequest: async (id: string): Promise<ApiResponse<{
+    request: PlatformRegistrationRequest;
+    user: PlatformUser;
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      request: PlatformRegistrationRequest;
+      user: PlatformUser;
+    }>>(`/auth/registration-requests/${encodeURIComponent(id)}/approve`);
+    return response.data;
+  },
+
+  rejectRegistrationRequest: async (id: string, message?: string): Promise<ApiResponse<PlatformRegistrationRequest>> => {
+    const response = await api.post<ApiResponse<PlatformRegistrationRequest>>(
+      `/auth/registration-requests/${encodeURIComponent(id)}/reject`,
+      { message },
+    );
+    return response.data;
+  },
+
+  createUser: async (payload: {
+    username: string;
+    displayName?: string;
+    password: string;
+    role: PlatformRole;
+  }): Promise<ApiResponse<PlatformUser>> => {
+    const response = await api.post<ApiResponse<PlatformUser>>('/auth/users', payload);
+    return response.data;
+  },
+
+  updateUser: async (id: string, payload: {
+    displayName?: string;
+    password?: string;
+    role?: PlatformRole;
+    active?: boolean;
+  }): Promise<ApiResponse<PlatformUser>> => {
+    const response = await api.patch<ApiResponse<PlatformUser>>(`/auth/users/${id}`, payload);
+    return response.data;
+  },
+};
 
 export const dsymApi = {
   /**
@@ -2447,6 +2534,7 @@ export const jenkinsApi = {
     deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
     verificationPassword?: string;
     branch?: string;
+    appVersion?: string;
     gateBuildNumber?: number;
     releaseGateOverrideReason?: string;
     testFlightWhatsNew?: string;

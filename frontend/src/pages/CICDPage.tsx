@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import * as echarts from 'echarts';
 import { Typography, Card, Row, Col, Button, Space, Table, Tag, message, Modal, Alert, Radio, Input, Select, QRCode, AutoComplete, Popconfirm, Tabs, Descriptions, Empty, Image, Progress, Checkbox, Collapse, Upload } from 'antd';
 import {
@@ -223,6 +223,11 @@ function releaseNotesLength(value: string) {
 function getReleaseVersion(branch: string) {
   const match = branch.trim().replace(/^origin\//, '').match(/^release\/(\d+(?:\.\d+){2,})$/);
   return match ? match[1].split('.').map((item) => Number(item)) : [];
+}
+
+function getReleaseVersionText(branch: string) {
+  const match = branch.trim().replace(/^origin\//, '').match(/^release\/(\d+(?:\.\d+){2,})$/);
+  return match?.[1] || '';
 }
 
 function getBranchVersion(branch: string) {
@@ -2595,6 +2600,7 @@ function CrashAnalysisSummary({
 
 export default function CICDPage() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [data, setData] = useState<JenkinsBuildListResult | null>(null);
   const initialSection: CICDSection = location.pathname.startsWith('/cicd/quality')
     ? 'quality'
@@ -2662,6 +2668,7 @@ export default function CICDPage() {
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [filterBranchName, setFilterBranchName] = useState('');
   const [publishBranch, setPublishBranch] = useState('develop');
+  const [publishAppVersion, setPublishAppVersion] = useState('');
   const [branches, setBranches] = useState<string[]>([]);
   const [branchLoading, setBranchLoading] = useState(false);
   const [verificationPassword, setVerificationPassword] = useState('');
@@ -2705,6 +2712,17 @@ export default function CICDPage() {
   const buildPollingRef = useRef(false);
   const appStoreReleaseGuardSeqRef = useRef(0);
   const isAdmin = authUtils.isAuthenticated() && authUtils.isAdmin();
+  const canPublishPgyerOrTestFlight = authUtils.isAuthenticated() && authUtils.hasAnyRole(['tester', 'developer', 'admin']);
+  const canUseQuality = canPublishPgyerOrTestFlight;
+  const canPublishAppStore = authUtils.isAuthenticated() && authUtils.hasAnyRole(['product', 'admin']);
+  const canOperateCicd = canPublishPgyerOrTestFlight || canPublishAppStore;
+  const canAdminCicd = isAdmin;
+  const availableDeployTargetOptions = useMemo(() => DEPLOY_TARGET_OPTIONS.filter((option) => (
+    option.value === 'AppStore' ? canPublishAppStore : canPublishPgyerOrTestFlight
+  )), [canPublishAppStore, canPublishPgyerOrTestFlight]);
+  const firstAvailableDeployTarget = availableDeployTargetOptions[0]?.value;
+  const autoPublishAppVersion = getReleaseVersionText(publishBranch);
+  const resolvedPublishAppVersion = autoPublishAppVersion || publishAppVersion.trim();
 
   useEffect(() => {
     if (!publishModalOpen || !publishGateBuildNumber || !publishBranch) {
@@ -2733,7 +2751,7 @@ export default function CICDPage() {
   }, [publishModalOpen, publishGateBuildNumber, publishBranch]);
 
   useEffect(() => {
-    if (!publishModalOpen || deployTarget !== 'AppStore' || !publishBranch || !isAdmin) {
+    if (!publishModalOpen || deployTarget !== 'AppStore' || !publishBranch || !canPublishAppStore) {
       setAppStoreReleaseGuard(null);
       setAppStoreReleaseGuardError('');
       setAppStoreReleaseGuardLoading(false);
@@ -2764,7 +2782,7 @@ export default function CICDPage() {
       });
 
     return () => { canceled = true; };
-  }, [publishModalOpen, deployTarget, publishBranch, isAdmin]);
+  }, [publishModalOpen, deployTarget, publishBranch, canPublishAppStore]);
 
   const loadBuilds = async (target = filterDeployTarget, options?: { silent?: boolean }, branch = filterBranchName) => {
     if (!options?.silent) {
@@ -3176,6 +3194,10 @@ export default function CICDPage() {
   };
 
   const openDevicePoolModal = () => {
+    if (!canAdminCicd) {
+      message.warning('设备池配置仅管理员可操作');
+      return;
+    }
     setDevicePoolDrafts(sonicDevicePools.map((pool) => ({ ...pool })));
     setDevicePoolModalOpen(true);
   };
@@ -3244,6 +3266,10 @@ export default function CICDPage() {
   }));
 
   const saveDevicePools = async () => {
+    if (!canAdminCicd) {
+      message.warning('设备池配置仅管理员可操作');
+      return;
+    }
     const normalized = cleanDevicePoolsForSave(devicePoolDrafts);
 
     if (normalized.some((pool) => !pool.label || !pool.value)) {
@@ -3269,6 +3295,10 @@ export default function CICDPage() {
   };
 
   const addUnassignedDevicesToPool = async () => {
+    if (!canAdminCicd) {
+      message.warning('设备池配置仅管理员可操作');
+      return;
+    }
     const devices = devicePoolStatus?.unassignedDevices || [];
     if (devices.length === 0) {
       message.info('没有可加入的在线设备');
@@ -3318,6 +3348,10 @@ export default function CICDPage() {
   };
 
   const syncQualityJobConfig = async () => {
+    if (!canAdminCicd) {
+      message.warning('同步 Jenkins 配置仅管理员可操作');
+      return;
+    }
     setQualityJobSyncing(true);
     try {
       const response = await jenkinsApi.syncQualityJobConfig();
@@ -3332,6 +3366,14 @@ export default function CICDPage() {
   };
 
   const publish = async () => {
+    if ((deployTarget === 'Pgyer' || deployTarget === 'TestFlight') && !canPublishPgyerOrTestFlight) {
+      message.warning('蒲公英 / TestFlight 发布需要测试、研发或管理员权限');
+      return;
+    }
+    if (deployTarget === 'AppStore' && !canPublishAppStore) {
+      message.warning('苹果商店包发布需要产品运营或管理员权限');
+      return;
+    }
     if (!publishBranch.trim()) {
       message.warning('请输入发布分支');
       return;
@@ -3340,8 +3382,16 @@ export default function CICDPage() {
       message.warning('TestFlight / 苹果商店只能选择 release/x.x.x 格式分支');
       return;
     }
-    if (deployTarget !== 'Pgyer' && !authUtils.isAdmin()) {
-      message.warning('TestFlight / 苹果商店发布仅管理员可操作');
+    if (deployTarget !== 'Pgyer' && !resolvedPublishAppVersion) {
+      message.warning('未识别到发布版本，请选择 release/x.x.x 格式分支');
+      return;
+    }
+    if (deployTarget === 'TestFlight' && !canPublishPgyerOrTestFlight) {
+      message.warning('TestFlight 发布需要测试、研发或管理员权限');
+      return;
+    }
+    if (deployTarget === 'AppStore' && !canPublishAppStore) {
+      message.warning('苹果商店包发布需要产品运营或管理员权限');
       return;
     }
     if (deployTarget !== 'Pgyer' && !verificationPassword.trim()) {
@@ -3366,6 +3416,7 @@ export default function CICDPage() {
       const response = await jenkinsApi.publishNN({
         deployTarget: publishTarget,
         branch: publishBranch.trim(),
+        appVersion: resolvedPublishAppVersion || undefined,
         verificationPassword: verificationPassword.trim(),
         gateBuildNumber: publishGateBuildNumber,
         releaseGateOverrideReason: releaseGateOverrideReason.trim() || undefined,
@@ -3390,7 +3441,7 @@ export default function CICDPage() {
   };
 
   const openReleaseBranchModal = () => {
-    if (!isAdmin) {
+    if (!canAdminCicd) {
       message.warning('拉取新分支仅管理员可操作');
       return;
     }
@@ -3448,6 +3499,10 @@ export default function CICDPage() {
   };
 
   const stopBuild = async (buildNumber: number) => {
+    if (!canUseQuality) {
+      message.warning('取消构建需要测试、研发或管理员权限');
+      return;
+    }
     setStoppingBuild(buildNumber);
     try {
       await jenkinsApi.stopBuild(buildNumber);
@@ -3496,6 +3551,10 @@ export default function CICDPage() {
   };
 
   const stopQualityBuild = async (buildNumber: number, deviceUdid?: string) => {
+    if (!canUseQuality) {
+      message.warning('停止质检任务需要测试、研发或管理员权限');
+      return;
+    }
     setStoppingQualityBuild(buildNumber);
     try {
       await jenkinsApi.stopQualityBuild(buildNumber, deviceUdid ? { deviceUdid } : undefined);
@@ -3509,6 +3568,10 @@ export default function CICDPage() {
   };
 
   const cleanupQualityWda = async (deviceUdid?: string) => {
+    if (!canUseQuality) {
+      message.warning('清理 WDA 需要测试、研发或管理员权限');
+      return;
+    }
     if (!deviceUdid && hasRunningQualityBuild) {
       message.warning('当前有质检任务运行中，请先停止或等待任务结束后再清理 WDA');
       return;
@@ -3585,6 +3648,7 @@ export default function CICDPage() {
     setDeployTarget('Pgyer');
     setVerificationPassword('');
     setPublishBranch(build.branchName || 'develop');
+    setPublishAppVersion(build.appVersion || getReleaseVersionText(build.branchName || ''));
     setPublishGateBuildNumber(undefined);
     setReleaseGateOverrideReason('');
     setTestFlightWhatsNew('');
@@ -3592,19 +3656,34 @@ export default function CICDPage() {
   };
 
   const openPublishModal = () => {
-    const nextBranch = deployTarget !== 'Pgyer' ? getHighestReleaseBranch(branches) : publishBranch;
-    if (deployTarget !== 'Pgyer') {
+    if (!canOperateCicd) {
+      message.warning('发布需要测试、研发、产品运营或管理员权限');
+      return;
+    }
+    const nextDeployTarget = availableDeployTargetOptions.some((option) => option.value === deployTarget)
+      ? deployTarget
+      : firstAvailableDeployTarget;
+    if (nextDeployTarget) {
+      setDeployTarget(nextDeployTarget);
+    }
+    const nextBranch = nextDeployTarget !== 'Pgyer' ? getHighestReleaseBranch(branches) : publishBranch;
+    if (nextDeployTarget !== 'Pgyer') {
       setPublishBranch(nextBranch);
     }
+    setPublishAppVersion(getReleaseVersionText(nextBranch));
     setPublishGateBuildNumber(undefined);
     setReleaseGateOverrideReason('');
-    if (deployTarget !== 'TestFlight') {
+    if (nextDeployTarget !== 'TestFlight') {
       setTestFlightWhatsNew('');
     }
     setPublishModalOpen(true);
   };
 
   const openQualityModal = (build?: JenkinsBuild) => {
+    if (!canUseQuality) {
+      message.warning('开始质检需要测试、研发或管理员权限');
+      return;
+    }
     const fallbackBuild = build || data?.builds?.find((item) => item.result === 'SUCCESS') || data?.builds?.[0] || null;
     const nextPool = sonicDevicePools.find((pool) => (pool.stats?.idle || 0) > 0)?.value || sonicDevicePools[0]?.value || 'ios-default';
     setQualitySubmitMessage('');
@@ -3620,6 +3699,10 @@ export default function CICDPage() {
   };
 
   const triggerQuality = async () => {
+    if (!canUseQuality) {
+      message.warning('开始质检需要测试、研发或管理员权限');
+      return;
+    }
     if (!qualityBuild) {
       message.warning('请选择需要质检的构建');
       return;
@@ -3777,6 +3860,10 @@ export default function CICDPage() {
     const nextSection: CICDSection = location.pathname.startsWith('/cicd/quality')
       ? 'quality'
       : (location.pathname.startsWith('/cicd/devices') ? 'devices' : 'release');
+    if (nextSection === 'quality' && !canUseQuality) {
+      navigate('/cicd', { replace: true });
+      return;
+    }
     setActiveSection(nextSection);
     if (nextSection === 'quality') {
       refreshQualitySection();
@@ -3789,7 +3876,7 @@ export default function CICDPage() {
       appleEnrollmentAutoCreatedRef.current = false;
       setQualityError('');
     }
-  }, [location.pathname]);
+  }, [location.pathname, canUseQuality, navigate]);
 
   useEffect(() => {
     if (activeSection !== 'devices') return;
@@ -3832,9 +3919,22 @@ export default function CICDPage() {
     if (deployTarget !== 'Pgyer' && branches.length > 0) {
       const nextBranch = getHighestReleaseBranch(branches);
       setPublishBranch(nextBranch);
+      setPublishAppVersion(getReleaseVersionText(nextBranch));
       setPublishGateBuildNumber(undefined);
     }
   }, [deployTarget, branches, data?.builds]);
+
+  useEffect(() => {
+    const branchVersion = getReleaseVersionText(publishBranch);
+    setPublishAppVersion(branchVersion);
+  }, [publishBranch]);
+
+  useEffect(() => {
+    if (!firstAvailableDeployTarget) return;
+    if (!availableDeployTargetOptions.some((option) => option.value === deployTarget)) {
+      setDeployTarget(firstAvailableDeployTarget);
+    }
+  }, [availableDeployTargetOptions, deployTarget, firstAvailableDeployTarget]);
 
   useEffect(() => {
     if (!qualityReportBuild) return;
@@ -3935,7 +4035,7 @@ export default function CICDPage() {
     [qualityData],
   );
   const hasQualitySourceBuilds = (data?.builds || []).length > 0;
-  const canOpenQualityModal = hasQualitySourceBuilds && !loading;
+  const canOpenQualityModal = canUseQuality && hasQualitySourceBuilds && !loading;
   const availableQualityDevicePools = useMemo(
     () => sonicDevicePools.filter((pool) => (pool.stats?.idle ?? 0) > 0),
     [sonicDevicePools],
@@ -4247,7 +4347,7 @@ export default function CICDPage() {
         </div>
         {activeSection === 'release' ? (
           <Space>
-            {isAdmin && (
+            {canAdminCicd && (
               <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
                 拉取新分支
               </Button>
@@ -4255,24 +4355,32 @@ export default function CICDPage() {
             <Button icon={<ReloadOutlined />} onClick={() => loadBuilds()} loading={loading}>
               刷新
             </Button>
-            <Button type="primary" icon={<PlayCircleOutlined />} loading={publishing} onClick={openPublishModal}>
-              发布
-            </Button>
+            {canOperateCicd && (
+              <Button type="primary" icon={<PlayCircleOutlined />} loading={publishing} onClick={openPublishModal}>
+                发布
+              </Button>
+            )}
           </Space>
         ) : activeSection === 'quality' ? (
           <Space>
-            <Button icon={<SettingOutlined />} loading={qualityJobSyncing} onClick={syncQualityJobConfig}>
-              同步 Jenkins 配置
-            </Button>
-            <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
-              设备池
-            </Button>
+            {canAdminCicd && (
+              <>
+                <Button icon={<SettingOutlined />} loading={qualityJobSyncing} onClick={syncQualityJobConfig}>
+                  同步 Jenkins 配置
+                </Button>
+                <Button icon={<SettingOutlined />} onClick={openDevicePoolModal}>
+                  设备池
+                </Button>
+              </>
+            )}
             <Button icon={<ReloadOutlined />} onClick={() => refreshQualitySection()} loading={qualityLoading}>
               刷新
             </Button>
-            <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
-              开始质检
-            </Button>
+            {canUseQuality && (
+              <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
+                开始质检
+              </Button>
+            )}
           </Space>
         ) : null}
       </div>
@@ -4466,15 +4574,19 @@ export default function CICDPage() {
                   <Button size="small" icon={<FileTextOutlined />} onClick={() => showBuildLog(record)}>
                     详情
                   </Button>
-                  <Button size="small" icon={<RocketOutlined />} onClick={() => openQualityModal(record)}>
-                    质检
-                  </Button>
-                  {record.publishChannel === 'Pgyer' && (
-                    <Button size="small" type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openPgyerPublish(record)}>
-                      发布
+                  {canUseQuality && (
+                    <Button size="small" icon={<RocketOutlined />} onClick={() => openQualityModal(record)}>
+                      质检
                     </Button>
                   )}
-                  {isAdmin && record.publishChannel === 'AppStore' && ['ready_for_review', 'rejected', 'developer_rejected', 'developer_action_needed'].includes(String(record.appStoreRelease?.status || '')) && (
+                  {record.publishChannel === 'Pgyer' && (
+                    canPublishPgyerOrTestFlight && (
+                      <Button size="small" type="primary" ghost icon={<PlayCircleOutlined />} onClick={() => openPgyerPublish(record)}>
+                        发布
+                      </Button>
+                    )
+                  )}
+                  {canPublishAppStore && record.publishChannel === 'AppStore' && ['ready_for_review', 'rejected', 'developer_rejected', 'developer_action_needed'].includes(String(record.appStoreRelease?.status || '')) && (
                     <Popconfirm
                       title="提交 App Store 审核？"
                       description={`确定提交 #${record.number} / ${getChannelBuildNumber(record) || '-'} 到 App Store 审核吗？`}
@@ -4493,7 +4605,7 @@ export default function CICDPage() {
                       </Button>
                     </Popconfirm>
                   )}
-                  {isAdmin && record.publishChannel === 'AppStore' && ['waiting_for_review', 'in_review'].includes(String(record.appStoreRelease?.status || '')) && (
+                  {canPublishAppStore && record.publishChannel === 'AppStore' && ['waiting_for_review', 'in_review'].includes(String(record.appStoreRelease?.status || '')) && (
                     <Popconfirm
                       title="停止 App Store 审核？"
                       description={`确定停止 #${record.number} / ${getChannelBuildNumber(record) || '-'} 的 App Store 审核吗？停止后需要重新提交审核。`}
@@ -4511,7 +4623,7 @@ export default function CICDPage() {
                       </Button>
                     </Popconfirm>
                   )}
-                  {record.building && (
+                  {record.building && canUseQuality && (
                     <Popconfirm
                       title="取消构建？"
                       description={`确定要取消 #${record.number} 吗？`}
@@ -4581,7 +4693,7 @@ export default function CICDPage() {
                         showIcon
                         message="检测到未加入设备池的在线设备"
                         description={(devicePoolStatus?.unassignedDevices || []).map((device) => `${device.udid}${device.marketName ? ` ${device.marketName}` : ''}`).join('；')}
-                        action={(
+                        action={canAdminCicd ? (
                           <Space>
                             <Select
                               size="small"
@@ -4594,7 +4706,7 @@ export default function CICDPage() {
                               加入设备池
                             </Button>
                           </Space>
-                        )}
+                        ) : undefined}
                       />
                     </Col>
                   )}
@@ -4642,9 +4754,11 @@ export default function CICDPage() {
                         {qualityData?.job.fullName && <Tag color="blue">{qualityData.job.fullName}</Tag>}
                         {qualityData?.job.buildable === false && <Tag color="red">不可构建</Tag>}
                       </Space>
-                      <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
-                        新建质检
-                      </Button>
+                      {canUseQuality && (
+                        <Button type="primary" icon={<RocketOutlined />} onClick={() => openQualityModal()} loading={loading} disabled={!canOpenQualityModal}>
+                          新建质检
+                        </Button>
+                      )}
                     </div>
                   }
                 >
@@ -4800,7 +4914,7 @@ export default function CICDPage() {
                             >
                               报告
                             </Button>
-                            {isQualityBuildEffectivelyRunning(record) && (
+                            {isQualityBuildEffectivelyRunning(record) && canUseQuality && (
                               <Popconfirm
                                 title="停止质检任务？"
                                 description={`确定要停止 #${record.number} 吗？`}
@@ -4917,7 +5031,6 @@ export default function CICDPage() {
                       <Button
                         size="small"
                         type="primary"
-                        disabled={!isAdmin}
                         loading={approvingAppleRegistrationRequest === record.id}
                         onClick={() => approveAppleRegistrationRequest(record.id)}
                       >
@@ -5211,6 +5324,10 @@ export default function CICDPage() {
         confirmLoading={publishing}
         okButtonProps={{
           disabled: (
+            !canOperateCicd ||
+            ((deployTarget === 'Pgyer' || deployTarget === 'TestFlight') && !canPublishPgyerOrTestFlight) ||
+            (deployTarget === 'AppStore' && !canPublishAppStore) ||
+            (deployTarget !== 'Pgyer' && !resolvedPublishAppVersion) ||
             (deployTarget === 'AppStore' && (appStoreReleaseGuardLoading || Boolean(appStoreReleaseGuard?.blocked))) ||
             (deployTarget !== 'Pgyer' && releaseNotesLength(testFlightWhatsNew) <= 4)
           ),
@@ -5236,12 +5353,29 @@ export default function CICDPage() {
                 }
               />
             ) : (
-              <Input
-                value={publishBranch || '未找到 release/x.x.x 分支'}
-                readOnly
-                status={publishBranch ? undefined : 'warning'}
-                style={{ marginTop: 8 }}
-              />
+              <Space.Compact style={{ marginTop: 8, width: '100%' }}>
+                <Input
+                  value={publishBranch || '未找到 release/x.x.x 分支'}
+                  readOnly
+                  status={publishBranch ? undefined : 'warning'}
+                />
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '0 11px',
+                    border: '1px solid #d9d9d9',
+                    borderLeft: 0,
+                    borderRadius: '0 6px 6px 0',
+                    background: '#fafafa',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <Tag color={resolvedPublishAppVersion ? 'blue' : 'red'} style={{ marginInlineEnd: 0 }}>
+                    发布版本 {resolvedPublishAppVersion || '未识别'}
+                  </Tag>
+                </div>
+              </Space.Compact>
             )}
             <Space style={{ marginTop: 8 }}>
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -5279,6 +5413,11 @@ export default function CICDPage() {
                 style={{ marginTop: 8 }}
               />
             )}
+            {deployTarget !== 'Pgyer' && !resolvedPublishAppVersion && (
+              <Text type="danger" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+                未识别到发布版本
+              </Text>
+            )}
           </div>
           <div>
             <Text strong>发布渠道</Text>
@@ -5286,10 +5425,7 @@ export default function CICDPage() {
           <Radio.Group
             optionType="button"
             buttonStyle="solid"
-            options={DEPLOY_TARGET_OPTIONS.map((option) => ({
-              ...option,
-              disabled: option.value !== 'Pgyer' && !isAdmin,
-            }))}
+            options={availableDeployTargetOptions}
             value={deployTarget}
             onChange={(event) => {
               const nextTarget = event.target.value as DeployTarget;
@@ -5354,7 +5490,9 @@ export default function CICDPage() {
             showIcon
             message={deployTarget === 'Pgyer'
               ? '蒲公英发布无需验证密码'
-              : (isAdmin ? 'TestFlight / 苹果商店发布需要验证密码' : 'TestFlight / 苹果商店发布仅管理员可操作')}
+              : (deployTarget === 'AppStore'
+                ? (canPublishAppStore ? '苹果商店发布需要验证密码' : '苹果商店发布仅产品运营或管理员可操作')
+                : (canPublishPgyerOrTestFlight ? 'TestFlight 发布需要验证密码' : 'TestFlight 发布仅测试、研发或管理员可操作'))}
           />
           <Collapse
             className="publish-advanced-options"
@@ -6190,7 +6328,7 @@ export default function CICDPage() {
                       )}
                     </Descriptions>
                   )}
-                  {isAdmin && selectedBuildLog.build.appStoreRelease && ['waiting_for_review', 'in_review'].includes(String(selectedBuildLog.build.appStoreRelease.status || '')) && (
+                  {canPublishAppStore && selectedBuildLog.build.appStoreRelease && ['waiting_for_review', 'in_review'].includes(String(selectedBuildLog.build.appStoreRelease.status || '')) && (
                     <Alert
                       type="warning"
                       showIcon

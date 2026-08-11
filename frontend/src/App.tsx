@@ -54,6 +54,7 @@ function App() {
             {/* Crash 服务 */}
             <Route path="symbolicate" element={<SymbolicatePage />} />
             <Route path="manage" element={<ManagePage />} />
+            <Route path="roles" element={<ManagePage roleManagementOnly />} />
             <Route path="history" element={<HistoryPage />} />
             <Route path="sentry-service" element={<SentryServicePage />} />
             {/* Pods 组件管理 */}

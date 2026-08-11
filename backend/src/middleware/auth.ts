@@ -104,16 +104,61 @@ export const sessionAuthMiddleware = (req: Request, res: Response, next: NextFun
   next();
 };
 
-const ROLE_RANK: Record<PlatformRole, number> = { viewer: 1, operator: 2, admin: 3 };
+function roleLabel(role: PlatformRole) {
+  const labels: Record<PlatformRole, string> = {
+    guest: '游客',
+    tester: '测试',
+    developer: '研发',
+    product: '产品运营',
+    admin: '管理员',
+  };
+  return labels[role] || role;
+}
+
+function canSatisfyRole(userRole: PlatformRole, requiredRole: PlatformRole) {
+  if (userRole === 'admin') return true;
+  if (requiredRole === 'guest') return ['guest', 'tester', 'developer', 'product'].includes(userRole);
+  if (requiredRole === 'tester') return ['tester', 'developer'].includes(userRole);
+  if (requiredRole === 'developer') return userRole === 'developer';
+  if (requiredRole === 'product') return userRole === 'product';
+  return false;
+}
 
 export function requireRole(role: PlatformRole) {
   return (req: Request, res: Response, next: NextFunction) => {
     const user = ((req as any).authUser || authService.getSessionUser(req)) as PlatformUser | null;
-    if (!user || ROLE_RANK[user.role] < ROLE_RANK[role]) {
-      res.status(403).json({ success: false, error: `需要 ${role} 或更高权限`, code: 'FORBIDDEN' });
+    if (!AUTH_ENABLED) {
+      (req as any).isAdmin = true;
+      next();
+      return;
+    }
+    if (!user || !canSatisfyRole(user.role, role)) {
+      res.status(403).json({ success: false, error: `需要 ${roleLabel(role)} 权限`, code: 'FORBIDDEN' });
       return;
     }
     (req as any).authUser = user;
+    next();
+  };
+}
+
+export function requireAnyRole(roles: PlatformRole[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = ((req as any).authUser || authService.getSessionUser(req)) as PlatformUser | null;
+    if (!AUTH_ENABLED) {
+      (req as any).isAdmin = true;
+      next();
+      return;
+    }
+    if (!user || !roles.includes(user.role)) {
+      res.status(403).json({
+        success: false,
+        error: `需要 ${roles.map(roleLabel).join('、')} 权限`,
+        code: 'FORBIDDEN',
+      });
+      return;
+    }
+    (req as any).authUser = user;
+    (req as any).isAdmin = user.role === 'admin';
     next();
   };
 }

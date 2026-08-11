@@ -15,15 +15,17 @@ describe('assistant identity, permissions and audit', () => {
   const auth = new AuthService();
   const registry = new AssistantToolRegistry();
   const audits = new AssistantAuditService();
-  let viewer: PlatformUser;
-  let operator: PlatformUser;
+  let guest: PlatformUser;
+  let tester: PlatformUser;
+  let product: PlatformUser;
   let admin: PlatformUser;
 
   beforeAll(() => {
     process.env.DB_PATH = path.join(tempDir, 'assistant.sqlite');
     initializeDatabase();
-    viewer = auth.createUser({ username: 'viewer.one', displayName: '只读用户', password: 'viewer-password', role: 'viewer' })!;
-    operator = auth.createUser({ username: 'operator.one', displayName: '执行用户', password: 'operator-password', role: 'operator' })!;
+    guest = auth.createUser({ username: 'guest.one', displayName: '只读用户', password: 'guest-password', role: 'guest' })!;
+    tester = auth.createUser({ username: 'tester.one', displayName: '执行用户', password: 'tester-password', role: 'tester' })!;
+    product = auth.createUser({ username: 'product.one', displayName: '产品运营', password: 'product-password', role: 'product' })!;
     admin = auth.createUser({ username: 'admin.one', displayName: '管理员', password: 'admin-password', role: 'admin' })!;
   });
 
@@ -38,7 +40,7 @@ describe('assistant identity, permissions and audit', () => {
     expect(encoded).not.toContain('secret-password');
     expect(auth.verifyPassword('secret-password', encoded)).toBe(true);
     expect(auth.verifyPassword('wrong-password', encoded)).toBe(false);
-    expect(auth.authenticate('operator.one', 'operator-password')?.role).toBe('operator');
+    expect(auth.authenticate('tester.one', 'tester-password')?.role).toBe('tester');
   });
 
   it('provides all registered capabilities to an anonymous assistant client', () => {
@@ -46,22 +48,22 @@ describe('assistant identity, permissions and audit', () => {
       id: 'assistant-anonymous:test-client',
       username: 'anonymous',
       displayName: '匿名访客',
-      role: 'admin',
+      role: 'guest',
       active: true,
     };
     expect(guest).toMatchObject({
       username: 'anonymous',
       displayName: '匿名访客',
-      role: 'admin',
+      role: 'guest',
       active: true,
     });
-    expect(registry.listForUser(guest).map((tool) => tool.name)).toContain('cicd_trigger_release');
+    expect(registry.listForUser(guest).map((tool) => tool.name)).not.toContain('cicd_trigger_release');
   });
 
   it('exposes tools according to the role matrix', () => {
-    const viewerTools = registry.listForUser(viewer).map((tool) => tool.name);
-    const operatorTools = registry.listForUser(operator).map((tool) => tool.name);
-    expect(viewerTools).toContain('workflow_overview');
+    const viewerTools = registry.listForUser(guest).map((tool) => tool.name);
+    const operatorTools = registry.listForUser(tester).map((tool) => tool.name);
+    const productTools = registry.listForUser(product).map((tool) => tool.name);
     expect(viewerTools).toEqual(expect.arrayContaining([
       'platform_cross_system_diagnosis',
       'logs_search',
@@ -70,20 +72,33 @@ describe('assistant identity, permissions and audit', () => {
       'pods_analyze_impact',
       'api_search',
       'routes_search',
-      'quality_daily_report',
       'task_track',
     ]));
+    expect(viewerTools).not.toContain('workflow_overview');
+    expect(viewerTools).not.toContain('quality_daily_report');
     expect(viewerTools).toContain('cicd_analyze_build_failure');
     expect(viewerTools).toContain('cicd_verify_build');
-    expect(viewerTools).toContain('workflow_verify_task');
+    expect(viewerTools).not.toContain('workflow_verify_task');
     expect(viewerTools).not.toContain('quality_create_task');
     expect(viewerTools).not.toContain('cicd_retry_build');
+    expect(operatorTools).toContain('quality_daily_report');
     expect(operatorTools).toContain('quality_create_task');
     expect(operatorTools).toContain('cicd_trigger_build');
     expect(operatorTools).toContain('cicd_retry_build');
     expect(operatorTools).toContain('quality_retry_task');
-    expect(operatorTools).not.toContain('cicd_trigger_release');
-    expect(() => registry.assertAllowed('quality_create_task', viewer)).toThrow('无权');
+    expect(operatorTools).toContain('cicd_trigger_release');
+    expect(productTools).toContain('cicd_trigger_release');
+    expect(productTools).not.toContain('cicd_trigger_build');
+    expect(productTools).not.toContain('quality_daily_report');
+    expect(productTools).not.toContain('quality_create_task');
+    expect(() => registry.assertAllowed('quality_create_task', guest)).toThrow('无权');
+    expect(() => registry.assertExecutable(registry.get('cicd_trigger_release')!, { deployTarget: 'AppStore' }, { user: tester })).toThrow('产品运营或管理员');
+    expect(() => registry.assertExecutable(registry.get('cicd_trigger_release')!, { deployTarget: 'TestFlight' }, { user: product })).toThrow('测试、研发或管理员');
+    expect(registry.assertExecutable(registry.get('cicd_trigger_release')!, { deployTarget: 'AppStore' }, { user: product })).toBeUndefined();
+    expect(registry.listForUser(admin)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'workflow_overview' }),
+      expect.objectContaining({ name: 'quality_daily_report' }),
+    ]));
     expect(registry.listForUser(admin).some((tool) => /delete|remove/i.test(tool.name))).toBe(false);
     expect(registry.listForUser(admin).every((tool) => tool.parameters && (tool.parameters as any).additionalProperties === false)).toBe(true);
   });
@@ -116,7 +131,7 @@ describe('assistant identity, permissions and audit', () => {
 
   it('redacts secrets while persisting approval and execution audit', () => {
     const audit = audits.create({
-      user: operator,
+      user: tester,
       toolName: 'quality_create_task',
       domain: 'quality',
       riskLevel: 'confirm',
@@ -158,7 +173,7 @@ describe('assistant identity, permissions and audit', () => {
       state: { style: 'responses', previousResponseId: 'response_done' },
     });
 
-    await service.turn(viewer, [{ role: 'user', content: '查看质量中心概览' }], (event) => events.push(event));
+    await service.turn(admin, [{ role: 'user', content: '查看质量中心概览' }], (event) => events.push(event));
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'tool.started', toolName: 'workflow_overview' }),
       expect.objectContaining({ type: 'tool.completed', toolName: 'workflow_overview' }),
@@ -168,7 +183,7 @@ describe('assistant identity, permissions and audit', () => {
     jest.restoreAllMocks();
   });
 
-  it('requires one confirmation for operator writes and can reject safely', async () => {
+  it('requires one confirmation for tester writes and can reject safely', async () => {
     const service = new AssistantService();
     const events: AssistantEvent[] = [];
     jest.spyOn(assistantModelGateway, 'start').mockResolvedValueOnce({
@@ -180,10 +195,10 @@ describe('assistant identity, permissions and audit', () => {
       text: '已按你的决定取消执行。', calls: [], state: { style: 'responses', previousResponseId: 'response_rejected' },
     });
 
-    await service.turn(operator, [{ role: 'user', content: '创建 smoke 质检' }], (event) => events.push(event));
+    await service.turn(tester, [{ role: 'user', content: '创建 smoke 质检' }], (event) => events.push(event));
     const proposal = events.find((event) => event.type === 'tool.proposed');
     expect(proposal).toMatchObject({ confirmationsRequired: 1, confirmationStep: 1 });
-    await service.decide(operator, String(proposal?.actionId), 'reject', (event) => events.push(event));
+    await service.decide(tester, String(proposal?.actionId), 'reject', (event) => events.push(event));
     expect(events).toContainEqual(expect.objectContaining({ type: 'tool.completed', status: 'rejected' }));
     jest.restoreAllMocks();
   });
@@ -191,7 +206,7 @@ describe('assistant identity, permissions and audit', () => {
   it('routes an explicit branch package request to a confirmed Pgyer build', async () => {
     const result = await assistantModelGateway.start(
       [{ role: 'user', content: '发布一个develop分支的包' }],
-      registry.listForUser(operator),
+      registry.listForUser(tester),
     );
     expect(result.calls).toEqual([
       expect.objectContaining({ name: 'cicd_trigger_build', arguments: '{"branch":"develop"}' }),
@@ -202,7 +217,7 @@ describe('assistant identity, permissions and audit', () => {
   it('queries the latest feedback logs without inventing a time range', async () => {
     const result = await assistantModelGateway.start(
       [{ role: 'user', content: '查询下用户131088950的最近反馈日志' }],
-      registry.listForUser(viewer),
+      registry.listForUser(guest),
     );
     expect(result.calls).toEqual([
       expect.objectContaining({ name: 'logs_search', arguments: '{"uid":"131088950","limit":10}' }),
