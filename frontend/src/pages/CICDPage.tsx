@@ -18,7 +18,7 @@ import {
   MobileOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { AppleDeveloperDevice, AppleDeveloperDeviceListResult, AppleDeveloperDeviceLookupResult, AppleDeviceConfigStatus, AppleDeviceEnrollment, AppleDeviceEnrollmentCreateResult, AppleDeviceRegistrationRequest, AppleDeviceRegistrationRequestListResult, JenkinsAppStoreReleaseGuard, JenkinsBuild, JenkinsBuildDsymSync, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, appleDeviceApi, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
+import { AppleDeveloperDevice, AppleDeveloperDeviceListResult, AppleDeveloperDeviceLookupResult, AppleDeviceConfigStatus, AppleDeviceEnrollment, AppleDeviceEnrollmentCreateResult, AppleDeviceRegistrationRequest, AppleDeviceRegistrationRequestListResult, JenkinsAppStoreReleaseGuard, JenkinsBuild, JenkinsBuildFailureAnalysis, JenkinsBuildListResult, JenkinsQualityArtifactPreview, JenkinsQualityBuild, JenkinsQualityListResult, JenkinsQualityPerformanceSamples, JenkinsQualitySuite, SonicDevicePool, SonicDevicePoolStatusResult, WorkflowReleaseGate, appleDeviceApi, dsymApi, jenkinsApi, symbolicateApi } from '../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../types';
 import { authUtils } from '../utils/auth';
 import appleDeviceEnrollGuide from '../assets/apple-device-enroll-guide.svg';
@@ -2658,8 +2658,6 @@ export default function CICDPage() {
 	    thirdSdkMissingFiles?: string[];
 	    thirdSdkError?: string;
 	  } | null>(null);
-	  const [buildDsymSyncing, setBuildDsymSyncing] = useState(false);
-	  const [buildDsymSync, setBuildDsymSync] = useState<JenkinsBuildDsymSync | null>(null);
   const [deployTarget, setDeployTarget] = useState<DeployTarget>('Pgyer');
   const [filterDeployTarget, setFilterDeployTarget] = useState<DeployTarget | ''>('');
   const [filterBranchName, setFilterBranchName] = useState('');
@@ -3392,6 +3390,10 @@ export default function CICDPage() {
   };
 
   const openReleaseBranchModal = () => {
+    if (!isAdmin) {
+      message.warning('拉取新分支仅管理员可操作');
+      return;
+    }
     setReleaseBranchBase('develop');
     setReleaseBranchName('');
     setReleaseBranchLog('');
@@ -3680,7 +3682,6 @@ export default function CICDPage() {
 
 	  const showBuildLog = async (build: JenkinsBuild) => {
 	    setLogModalOpen(true);
-	    setBuildDsymSync(build.dsymSync || null);
 	    setBuildFailureAnalysis(null);
     setSelectedBuildLog({ build, log: '', thirdSdkBranch: build.branchName || 'develop', thirdSdkDependencies: [] });
     setLogLoading(true);
@@ -3701,7 +3702,6 @@ export default function CICDPage() {
 	        thirdSdkMissingFiles: response.data?.thirdSdkMissingFiles || [],
 	        thirdSdkError: response.data?.thirdSdkError,
 	      });
-	      setBuildDsymSync(response.data?.dsymSync || build.dsymSync || null);
 	      setBuildFailureAnalysis(response.data?.failureAnalysis || null);
     } catch (err: any) {
       message.error(err?.error || err?.message || '加载打包日志失败');
@@ -3736,23 +3736,6 @@ export default function CICDPage() {
     if (!canAnalyzeBuildFailure(selectedBuildLog.build, selectedBuildLog.log)) return;
     void analyzeSelectedBuildFailure(false);
   };
-
-	  const handleBuildDsymSync = async (force = true) => {
-	    if (!selectedBuildLog) return;
-	    setBuildDsymSyncing(true);
-	    try {
-	      const response = await jenkinsApi.syncBuildDsyms(selectedBuildLog.build.number, force);
-	      if (!response.success || !response.data) {
-	        throw new Error(response.error || '同步 dSYM 失败');
-	      }
-	      setBuildDsymSync(response.data);
-	      message.success(response.data.message || 'dSYM 同步完成');
-	    } catch (err: any) {
-	      message.error(err?.error || err?.message || '同步 dSYM 失败');
-	    } finally {
-	      setBuildDsymSyncing(false);
-	    }
-	  };
 
   const downloadBuildLog = () => {
     if (!selectedBuildLog) return;
@@ -4264,12 +4247,11 @@ export default function CICDPage() {
         </div>
         {activeSection === 'release' ? (
           <Space>
-            <Button icon={<ExportOutlined />} onClick={() => openExternalUrl(data?.job.url || `${window.location.protocol}//${window.location.hostname}:8080/job/nn/`)}>
-              打开 Jenkins
-            </Button>
-            <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
-              拉取新分支
-            </Button>
+            {isAdmin && (
+              <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
+                拉取新分支
+              </Button>
+            )}
             <Button icon={<ReloadOutlined />} onClick={() => loadBuilds()} loading={loading}>
               刷新
             </Button>
@@ -4373,19 +4355,27 @@ export default function CICDPage() {
           loading={loading}
           dataSource={filteredBuilds}
           tableLayout="fixed"
-          scroll={{ x: 1410 }}
+          scroll={{ x: 1290 }}
           pagination={{ pageSize: 10, showSizeChanger: false }}
           columns={[
             {
-              title: '构建',
+              title: '构建/渠道号',
               dataIndex: 'number',
               key: 'number',
-              width: 90,
-              render: (number: number, record) => (
-                <Button type="link" onClick={() => openExternalUrl(record.url)}>
-                  #{number}
-                </Button>
-              ),
+              width: 140,
+              render: (number: number, record) => {
+                const channelBuildNumber = getChannelBuildNumber(record);
+                return (
+                  <Space size={0} wrap={false}>
+                    {isAdmin ? (
+                      <Button type="link" style={{ padding: 0 }} onClick={() => openExternalUrl(record.url)}>
+                        #{number}
+                      </Button>
+                    ) : <Text>#{number}</Text>}
+                    {channelBuildNumber && <Text>，{channelBuildNumber}</Text>}
+                  </Space>
+                );
+              },
             },
             {
               title: '发布渠道',
@@ -4408,12 +4398,6 @@ export default function CICDPage() {
               key: 'commitHash',
               width: 130,
               render: (value?: string) => value ? <Text code title={value}>{value.slice(0, 6)}</Text> : <Text type="secondary">-</Text>,
-            },
-            {
-              title: '渠道构建号',
-              key: 'buildNumber',
-              width: 120,
-              render: (_, record) => getChannelBuildNumber(record) || <Text type="secondary">-</Text>,
             },
             {
               title: 'APP版本',
@@ -4476,17 +4460,9 @@ export default function CICDPage() {
             {
               title: '操作',
               key: 'action',
-              width: 270,
+              width: 220,
               render: (_, record) => (
                 <Space size={8}>
-                  <Button
-                    size="small"
-                    icon={<DownloadOutlined />}
-                    disabled={!record.archiveUrl}
-                    onClick={() => openExternalUrl(record.archiveUrl)}
-                  >
-                    下载
-                  </Button>
                   <Button size="small" icon={<FileTextOutlined />} onClick={() => showBuildLog(record)}>
                     详情
                   </Button>
@@ -4685,11 +4661,11 @@ export default function CICDPage() {
                         dataIndex: 'number',
                         key: 'number',
                         width: 120,
-                        render: (number: number, record) => (
+                        render: (number: number, record) => isAdmin ? (
                           <Button type="link" onClick={() => openExternalUrl(record.url)}>
                             #{number}
                           </Button>
-                        ),
+                        ) : <Text>#{number}</Text>,
                       },
                       {
                         title: '来源构建',
@@ -6195,42 +6171,20 @@ export default function CICDPage() {
                     <Descriptions
                       bordered
                       size="small"
-                      column={{ xs: 1, sm: 2, md: 3 }}
+                      column={2}
                     >
                       <Descriptions.Item label="审核状态">
                         <Space size={4} wrap>
                           {appStoreReleaseTag(selectedBuildLog.build)}
-                          {selectedBuildLog.build.appStoreRelease.appStoreState && (
-                            <Text code>{selectedBuildLog.build.appStoreRelease.appStoreState}</Text>
-                          )}
                         </Space>
-                      </Descriptions.Item>
-                      <Descriptions.Item label="APP版本">
-                        {selectedBuildLog.build.appStoreRelease.appVersion || selectedBuildLog.build.appVersion || '-'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="构建号">
-                        {selectedBuildLog.build.appStoreRelease.buildNumber || getChannelBuildNumber(selectedBuildLog.build) || '-'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="App Store Version ID">
-                        {selectedBuildLog.build.appStoreRelease.appStoreVersionId ? (
-                          <Text code copyable>{selectedBuildLog.build.appStoreRelease.appStoreVersionId}</Text>
-                        ) : '-'}
-                      </Descriptions.Item>
-                      <Descriptions.Item label="审核提交 ID">
-                        {selectedBuildLog.build.appStoreRelease.reviewSubmissionId ? (
-                          <Text code copyable>{selectedBuildLog.build.appStoreRelease.reviewSubmissionId}</Text>
-                        ) : '-'}
                       </Descriptions.Item>
                       <Descriptions.Item label="更新时间">
                         {selectedBuildLog.build.appStoreRelease.updatedAt
                           ? new Date(selectedBuildLog.build.appStoreRelease.updatedAt).toLocaleString('zh-CN')
                           : '-'}
                       </Descriptions.Item>
-                      <Descriptions.Item label="状态说明" span={3}>
-                        {selectedBuildLog.build.appStoreRelease.message || '-'}
-                      </Descriptions.Item>
                       {selectedBuildLog.build.appStoreRelease.failureReason && (
-                        <Descriptions.Item label="失败原因" span={3}>
+                        <Descriptions.Item label="失败原因" span={2}>
                           <Text type="danger">{selectedBuildLog.build.appStoreRelease.failureReason}</Text>
                         </Descriptions.Item>
                       )}
@@ -6262,58 +6216,6 @@ export default function CICDPage() {
                       )}
                     />
                   )}
-	                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-	                  <Space direction="vertical" size={4}>
-	                    <Space wrap>
-	                      <Text strong>AppStore dSYM 同步</Text>
-	                      {buildDsymSync?.status && (
-	                        <Tag color={buildDsymSync.status === 'success' ? 'green' : (buildDsymSync.status === 'partial' ? 'orange' : (buildDsymSync.status === 'running' ? 'blue' : 'red'))}>
-	                          {buildDsymSync.status === 'success' ? '已同步' : (buildDsymSync.status === 'partial' ? '部分缺失' : (buildDsymSync.status === 'running' ? '同步中' : '同步失败'))}
-	                        </Tag>
-	                      )}
-	                    </Space>
-	                    <Text type="secondary" style={{ fontSize: 12 }}>
-	                      自动同步主包 dSYM，并将已上传的 leigod_im_cross_sdk、NNRtc 对应版本关联到本次 APP 版本。
-	                    </Text>
-	                  </Space>
-	                  <Button
-	                    icon={<ReloadOutlined />}
-	                    loading={buildDsymSyncing}
-	                    onClick={() => handleBuildDsymSync(true)}
-	                  >
-	                    {buildDsymSyncing ? '同步中...' : '重新同步'}
-	                  </Button>
-	                </div>
-	                {buildDsymSync ? (
-	                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
-	                    <Alert
-	                      showIcon
-	                      type={buildDsymSync.status === 'success' ? 'success' : (buildDsymSync.status === 'partial' || buildDsymSync.status === 'running' ? 'warning' : 'error')}
-	                      message={buildDsymSync.message || '等待 dSYM 同步结果'}
-	                    />
-	                    {buildDsymSync.main && (
-	                      <Space size={6} wrap>
-	                        <Tag color="green">{buildDsymSync.main.skipped ? '主包已存在' : '主包已入库'}</Tag>
-	                        <Text>{buildDsymSync.main.appName}@{buildDsymSync.main.version}</Text>
-	                        <Text code>{buildDsymSync.main.uuid}</Text>
-	                      </Space>
-	                    )}
-	                    {buildDsymSync.components?.length ? (
-	                      <Space size={[6, 6]} wrap>
-	                        {buildDsymSync.components.map((component) => (
-	                          <Tag
-	                            key={`${component.name}-${component.version}`}
-	                            color={component.status === 'linked' ? 'purple' : 'orange'}
-	                          >
-	                            {component.name} {component.version} {component.status === 'linked' ? '已关联' : '未找到'}
-	                          </Tag>
-	                        ))}
-	                      </Space>
-	                    ) : null}
-	                  </Space>
-	                ) : (
-	                  <Text type="secondary">构建成功后会自动同步；如未看到结果，可手动重新同步一次。</Text>
-	                )}
 	              </Space>
 	            </Card>
 	          )}

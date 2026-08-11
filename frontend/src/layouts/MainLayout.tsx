@@ -127,7 +127,8 @@ export default function MainLayout() {
   ];
 
   const handleLogin = () => {
-    navigate('/login');
+    const redirect = `${location.pathname}${location.search}${location.hash}`;
+    navigate(`/login?redirect=${encodeURIComponent(redirect)}`);
   };
 
   const handleLogout = async () => {
@@ -183,7 +184,7 @@ export default function MainLayout() {
           />
         </div>
 
-        {location.pathname === '/' ? null : isAuthenticated ? (
+        {isAuthenticated ? (
           <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
             <Space style={{ cursor: 'pointer', padding: '0 16px' }}>
               <Avatar

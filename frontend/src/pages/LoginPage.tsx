@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Card, Input, Button, message, Typography, Space } from 'antd';
 import { LockOutlined } from '@ant-design/icons';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { AuthUser } from '../utils/auth';
 
 const { Title, Paragraph } = Typography;
@@ -15,6 +15,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
+
+  const redirectPath = (() => {
+    const value = new URLSearchParams(location.search).get('redirect') || '/';
+    if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/login')) return '/';
+    return value;
+  })();
 
   const handleSubmit = async () => {
     if (!username.trim() || !password.trim()) {
@@ -39,7 +46,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         const user = data.data?.user as AuthUser;
         message.success(`欢迎，${user.displayName || user.username}`);
         onLogin(user);
-        navigate('/');
+        navigate(redirectPath, { replace: true });
       } else {
         message.error(data.error || '密码错误');
       }
@@ -102,8 +109,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             登录
           </Button>
           
-          <Button type="link" block onClick={() => navigate('/')}>
-            返回首页
+          <Button type="link" block onClick={() => navigate(redirectPath, { replace: true })}>
+            返回原页面
           </Button>
         </Space>
       </Card>
