@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import AdmZip from 'adm-zip';
 import podDepsResolver from '../services/PodDependencyResolver';
 import aiAnalysisService from '../services/AIAnalysisService';
 import { FileHandlerService, StorageService } from '../services';
@@ -67,6 +68,7 @@ const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-poo
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
 const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
 const BUILD_DSYM_SYNC_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-dsym-sync.json');
+const PACKAGE_SIZE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-package-size-analysis.json');
 const TESTFLIGHT_DISTRIBUTION_CACHE_PATH = path.join(DATA_DIR, 'jenkins-testflight-distribution.json');
 const APPSTORE_RELEASE_CACHE_PATH = path.join(DATA_DIR, 'jenkins-appstore-release.json');
 const RELEASE_REQUEST_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-requests.json');
@@ -1024,6 +1026,39 @@ function saveBuildDsymSync(buildNumber: number, sync: any) {
   const tmpPath = `${BUILD_DSYM_SYNC_CACHE_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
   fs.renameSync(tmpPath, BUILD_DSYM_SYNC_CACHE_PATH);
+  return nextCache.builds[String(buildNumber)];
+}
+
+function readPackageSizeAnalysisCache() {
+  const cache = readJsonFile(PACKAGE_SIZE_ANALYSIS_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { builds: {} };
+}
+
+function getSavedPackageSizeAnalysis(buildNumber: number) {
+  const cache = readPackageSizeAnalysisCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function savePackageSizeAnalysis(buildNumber: number, analysis: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const cache = readPackageSizeAnalysisCache();
+  const updatedAt = new Date().toISOString();
+  const nextCache = {
+    ...cache,
+    builds: {
+      ...(cache.builds || {}),
+      [String(buildNumber)]: {
+        ...analysis,
+        cached: false,
+        updatedAt,
+      },
+    },
+  };
+  const tmpPath = `${PACKAGE_SIZE_ANALYSIS_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
+  fs.renameSync(tmpPath, PACKAGE_SIZE_ANALYSIS_CACHE_PATH);
   return nextCache.builds[String(buildNumber)];
 }
 
@@ -3107,6 +3142,350 @@ function parseCheckoutRevision(consoleText: string) {
   );
 }
 
+function formatBytes(bytes?: number) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 100 || unitIndex === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function normalizeLocalArtifactPath(value?: string) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.startsWith('file://')) {
+    try {
+      return decodeURI(new URL(text).pathname);
+    } catch {
+      return text.replace(/^file:\/\//i, '');
+    }
+  }
+  if (/^https?:\/\//i.test(text)) return '';
+  if (text.startsWith('smb://')) return '';
+  return text;
+}
+
+function packageSizeEntryLabel(type: string, name: string) {
+  if (name) return name;
+  const labels: Record<string, string> = {
+    executable: '主可执行文件',
+    framework: 'Frameworks',
+    dylib: '动态库',
+    plugin: 'PlugIns',
+    asset: 'Assets.car',
+    bundle: 'Bundle 资源',
+    resource: '资源文件',
+    swiftSupport: 'SwiftSupport',
+    symbol: '符号文件',
+    other: '其他',
+  };
+  return labels[type] || '其他';
+}
+
+function classifyIpaEntry(entryName: string) {
+  const normalized = entryName.replace(/\\/g, '/');
+  const appMatch = normalized.match(/^Payload\/[^/]+\.app\/(.+)$/);
+  if (!appMatch) {
+    if (normalized.startsWith('SwiftSupport/')) {
+      return { key: 'swiftSupport:SwiftSupport', type: 'swiftSupport', name: 'SwiftSupport', path: 'SwiftSupport' };
+    }
+    if (/\.dSYM\//.test(normalized) || normalized.startsWith('Symbols/')) {
+      return { key: 'symbol:Symbols', type: 'symbol', name: 'Symbols', path: 'Symbols' };
+    }
+    return { key: 'other:IPA 其他文件', type: 'other', name: 'IPA 其他文件', path: normalized.split('/')[0] || normalized };
+  }
+
+  const appRelativePath = appMatch[1];
+  const framework = appRelativePath.match(/^Frameworks\/([^/]+\.framework)\//);
+  if (framework) {
+    return { key: `framework:${framework[1]}`, type: 'framework', name: framework[1], path: `Frameworks/${framework[1]}` };
+  }
+  const dylib = appRelativePath.match(/^Frameworks\/([^/]+\.dylib)$/) || appRelativePath.match(/^([^/]+\.dylib)$/);
+  if (dylib) {
+    return { key: `dylib:${dylib[1]}`, type: 'dylib', name: dylib[1], path: appRelativePath };
+  }
+  const plugin = appRelativePath.match(/^PlugIns\/([^/]+)/);
+  if (plugin) {
+    return { key: `plugin:${plugin[1]}`, type: 'plugin', name: plugin[1], path: `PlugIns/${plugin[1]}` };
+  }
+  if (appRelativePath === 'Assets.car' || appRelativePath.endsWith('/Assets.car')) {
+    const parts = appRelativePath.split('/');
+    return { key: `asset:${appRelativePath}`, type: 'asset', name: parts[parts.length - 1] || 'Assets.car', path: appRelativePath };
+  }
+  const bundle = appRelativePath.match(/^([^/]+\.bundle)\//) || appRelativePath.match(/^Frameworks\/[^/]+\.framework\/([^/]+\.bundle)\//);
+  if (bundle) {
+    return { key: `bundle:${bundle[1]}`, type: 'bundle', name: bundle[1], path: appRelativePath.split('/').slice(0, 2).join('/') };
+  }
+  if (!appRelativePath.includes('/') && !/\.[a-z0-9]{1,8}$/i.test(appRelativePath)) {
+    return { key: `executable:${appRelativePath}`, type: 'executable', name: appRelativePath, path: appRelativePath };
+  }
+  return { key: 'resource:App 资源', type: 'resource', name: 'App 资源', path: 'Payload/*.app' };
+}
+
+function analyzeLocalIpaPackageSize(ipaPath: string) {
+  const zip = new AdmZip(ipaPath);
+  const groups = new Map<string, { type: string; name: string; path: string; bytes: number; fileCount: number }>();
+
+  for (const entry of zip.getEntries()) {
+    if (entry.isDirectory) continue;
+    const bytes = Number(entry.header?.size || 0);
+    const classified = classifyIpaEntry(entry.entryName);
+    const current = groups.get(classified.key) || {
+      type: classified.type,
+      name: classified.name,
+      path: classified.path,
+      bytes: 0,
+      fileCount: 0,
+    };
+    current.bytes += bytes;
+    current.fileCount += 1;
+    groups.set(classified.key, current);
+  }
+
+  const totalBytes = fs.statSync(ipaPath).size;
+  const uncompressedBytes = Array.from(groups.values()).reduce((sum, item) => sum + item.bytes, 0);
+  const entries = Array.from(groups.values())
+    .filter((item) => item.bytes > 0)
+    .sort((a, b) => b.bytes - a.bytes)
+    .map((item, index) => ({
+      key: `${item.type}-${item.name || index}`,
+      type: item.type,
+      name: packageSizeEntryLabel(item.type, item.name),
+      path: item.path,
+      bytes: item.bytes,
+      text: formatBytes(item.bytes),
+      percent: uncompressedBytes > 0 ? Number(((item.bytes / uncompressedBytes) * 100).toFixed(1)) : 0,
+      fileCount: item.fileCount,
+    }));
+
+  return {
+    totalBytes,
+    totalText: formatBytes(totalBytes),
+    uncompressedBytes,
+    uncompressedText: formatBytes(uncompressedBytes),
+    entries,
+  };
+}
+
+async function fetchRemoteContentLength(url: string) {
+  try {
+    const response = await axios.head(url, {
+      timeout: 10000,
+      maxRedirects: 5,
+      ...buildAuthConfig(),
+    });
+    const length = Number(response.headers?.['content-length']);
+    return Number.isFinite(length) && length > 0 ? length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function buildPackageSizeComparison(current: any, baseline: any | null) {
+  if (!baseline) return null;
+  const deltaBytes = Number(current.totalBytes || 0) - Number(baseline.totalBytes || 0);
+  const deltaUncompressedBytes = Number(current.uncompressedBytes || 0) - Number(baseline.uncompressedBytes || 0);
+  const baselineTotalBytes = Number(baseline.totalBytes || 0);
+  const baselineUncompressedBytes = Number(baseline.uncompressedBytes || 0);
+  const baselineEntries = new Map<string, any>();
+  for (const entry of Array.isArray(baseline.entries) ? baseline.entries : []) {
+    baselineEntries.set(`${entry.type}:${entry.name}`, entry);
+  }
+  const entryDiffs = (Array.isArray(current.entries) ? current.entries : []).map((entry: any) => {
+    const previous = baselineEntries.get(`${entry.type}:${entry.name}`);
+    const entryDeltaBytes = Number(entry.bytes || 0) - Number(previous?.bytes || 0);
+    const previousBytes = Number(previous?.bytes || 0);
+    return {
+      key: entry.key,
+      type: entry.type,
+      name: entry.name,
+      path: entry.path,
+      bytes: Number(entry.bytes || 0),
+      text: entry.text || formatBytes(entry.bytes),
+      baselineBytes: previousBytes,
+      baselineText: formatBytes(previousBytes),
+      deltaBytes: entryDeltaBytes,
+      deltaText: `${entryDeltaBytes >= 0 ? '+' : '-'}${formatBytes(Math.abs(entryDeltaBytes))}`,
+      deltaPercent: previousBytes > 0 ? Number(((entryDeltaBytes / previousBytes) * 100).toFixed(1)) : null,
+    };
+  }).sort((a: any, b: any) => Math.abs(b.deltaBytes) - Math.abs(a.deltaBytes));
+
+  return {
+    baseline: {
+      buildNumber: baseline.buildNumber,
+      appVersion: baseline.appVersion,
+      publishChannel: baseline.publishChannel,
+      channelBuildNumber: baseline.channelBuildNumber,
+      branchName: baseline.branchName,
+      totalBytes: baseline.totalBytes,
+      totalText: baseline.totalText,
+      uncompressedBytes: baseline.uncompressedBytes,
+      uncompressedText: baseline.uncompressedText,
+      updatedAt: baseline.updatedAt,
+    },
+    totalBytes: Number(current.totalBytes || 0),
+    baselineTotalBytes,
+    deltaBytes,
+    deltaText: `${deltaBytes >= 0 ? '+' : '-'}${formatBytes(Math.abs(deltaBytes))}`,
+    deltaPercent: baselineTotalBytes > 0 ? Number(((deltaBytes / baselineTotalBytes) * 100).toFixed(1)) : null,
+    uncompressedBytes: Number(current.uncompressedBytes || 0),
+    baselineUncompressedBytes,
+    deltaUncompressedBytes,
+    deltaUncompressedText: `${deltaUncompressedBytes >= 0 ? '+' : '-'}${formatBytes(Math.abs(deltaUncompressedBytes))}`,
+    deltaUncompressedPercent: baselineUncompressedBytes > 0 ? Number(((deltaUncompressedBytes / baselineUncompressedBytes) * 100).toFixed(1)) : null,
+    entries: entryDiffs,
+  };
+}
+
+async function fetchBuildConsoleText(jobPath: string, buildNumber: number) {
+  try {
+    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+      timeout: 30000,
+      responseType: 'text',
+      ...buildAuthConfig(),
+    });
+    return String(response.data || '');
+  } catch {
+    const localLogPath = path.join(localJenkinsJobDir(DEFAULT_JOB_NAME), 'builds', String(buildNumber), 'log');
+    if (fs.existsSync(localLogPath)) {
+      return fs.readFileSync(localLogPath, 'utf-8');
+    }
+    return '';
+  }
+}
+
+async function resolvePackageSizeBuildContext(jobPath: string, buildNumber: number, log: string) {
+  const [buildParameters, buildResponse] = await Promise.all([
+    fetchBuildParameters(jobPath, buildNumber).catch(() => ({ branchName: '' })),
+    fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url,timestamp').catch(() => ({ data: {} })),
+  ]);
+  const buildInfo = buildResponse.data || {};
+  const metadata = parseConsoleMetadata(log);
+  const descriptionMetadata = parseBuildDescription(buildInfo.description);
+  const branchName = normalizeBranchName(String(buildParameters.branchName || ''));
+  return {
+    metadata,
+    branchName,
+    result: String(buildInfo.result || ''),
+    building: Boolean(buildInfo.building),
+    timestamp: Number(buildInfo.timestamp || 0),
+    publishChannel: metadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel),
+    appVersion: metadata.appVersion || appVersionFromReleaseBranch(branchName),
+    channelBuildNumber: metadata.buildNumber || descriptionMetadata.buildNumber || '',
+  };
+}
+
+async function findPreviousReleaseBuild(jobPath: string, currentBuildNumber: number, current: any) {
+  const currentVersion = String(current.appVersion || appVersionFromReleaseBranch(current.branchName || '') || '').trim();
+  const currentChannel = normalizeDeployTarget(current.publishChannel || '');
+  if (!currentVersion || !currentChannel) return null;
+
+  const response = await fetchJenkinsJobJson(jobPath, `builds[number,result,timestamp,duration,building,url,description]{0,${RELEASE_BRANCH_BUILD_SCAN_LIMIT}}`);
+  const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
+  const candidates: any[] = [];
+  for (const build of builds) {
+    const candidateBuildNumber = Number(build?.number);
+    if (!Number.isFinite(candidateBuildNumber) || candidateBuildNumber <= 0 || candidateBuildNumber === currentBuildNumber) continue;
+    if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') continue;
+    const log = await fetchBuildConsoleText(jobPath, candidateBuildNumber);
+    const context = await resolvePackageSizeBuildContext(jobPath, candidateBuildNumber, log);
+    const branchName = normalizeBranchName(context.branchName || '');
+    const appVersion = context.appVersion || appVersionFromReleaseBranch(branchName);
+    if (!isReleaseBranch(branchName)) continue;
+    if (normalizeDeployTarget(context.publishChannel) !== currentChannel) continue;
+    if (!appVersion || compareAppVersions(appVersion, currentVersion) >= 0) continue;
+    candidates.push({
+      buildNumber: candidateBuildNumber,
+      branchName,
+      appVersion,
+      publishChannel: context.publishChannel,
+      channelBuildNumber: context.channelBuildNumber,
+      timestamp: Number(build?.timestamp || context.timestamp || 0),
+    });
+  }
+  candidates.sort((a, b) => {
+    const versionDiff = compareAppVersions(b.appVersion, a.appVersion);
+    if (versionDiff !== 0) return versionDiff;
+    return Number(b.buildNumber || 0) - Number(a.buildNumber || 0);
+  });
+  return candidates[0] || null;
+}
+
+async function analyzeAndSavePackageSize(jobPath: string, buildNumber: number, options: { force?: boolean; includeComparison?: boolean } = {}) {
+  const force = Boolean(options.force);
+  const saved = getSavedPackageSizeAnalysis(buildNumber);
+  if (!force && saved) {
+    return {
+      ...saved,
+      cached: true,
+    };
+  }
+
+  const log = await fetchBuildConsoleText(jobPath, buildNumber);
+  const context = await resolvePackageSizeBuildContext(jobPath, buildNumber, log);
+  const metadata = context.metadata;
+  const candidateValues = [
+    metadata.installPackageUrl,
+    metadata.packageUrl,
+  ].filter(Boolean);
+  const localIpaPath = candidateValues.map(normalizeLocalArtifactPath).find((value) => value && fs.existsSync(value) && fs.statSync(value).isFile()) || '';
+  const remoteUrl = candidateValues.find((value) => /^https?:\/\//i.test(value)) || '';
+  const warnings: string[] = [];
+
+  let analysis = {
+    totalBytes: 0,
+    totalText: '0 B',
+    uncompressedBytes: 0,
+    uncompressedText: '0 B',
+    entries: [] as Array<{
+      key: string;
+      type: string;
+      name: string;
+      path: string;
+      bytes: number;
+      text: string;
+      percent: number;
+      fileCount: number;
+    }>,
+  };
+
+  if (localIpaPath) {
+    analysis = analyzeLocalIpaPackageSize(localIpaPath);
+  } else if (remoteUrl) {
+    const remoteBytes = await fetchRemoteContentLength(remoteUrl);
+    analysis.totalBytes = remoteBytes;
+    analysis.totalText = formatBytes(remoteBytes);
+    warnings.push(remoteBytes > 0
+      ? '当前只获取到远端安装包总大小，未找到本地 IPA，无法展开内部结构。'
+      : '未找到本地 IPA，远端安装包大小也无法读取。');
+  } else {
+    warnings.push('构建日志中未解析到 IPA 路径或安装包地址。');
+  }
+
+  const result = {
+    jobName: DEFAULT_JOB_NAME,
+    buildNumber,
+    appVersion: context.appVersion,
+    publishChannel: context.publishChannel,
+    channelBuildNumber: context.channelBuildNumber,
+    branchName: context.branchName,
+    ipaPath: localIpaPath,
+    ipaUrl: remoteUrl || metadata.packageUrl || '',
+    warnings,
+    ...analysis,
+  };
+  const savedAnalysis = savePackageSizeAnalysis(buildNumber, result);
+  return {
+    ...savedAnalysis,
+    cached: false,
+  };
+}
+
 async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
   try {
     const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
@@ -3827,6 +4206,52 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       success: false,
       error: extractErrorMessage(error, '获取 Jenkins 打包日志失败'),
       status: error.response?.status,
+    });
+  }
+});
+
+router.get('/nn/builds/:number/package-size', async (req: Request, res: Response) => {
+  try {
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const buildNumber = Number(req.params.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
+      res.status(400).json({
+        success: false,
+        error: '构建号无效',
+      });
+      return;
+    }
+
+    const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase());
+    const currentAnalysis = await analyzeAndSavePackageSize(jobPath, buildNumber, { force });
+    const previousReleaseBuild = await findPreviousReleaseBuild(jobPath, buildNumber, currentAnalysis);
+    let comparison = null;
+    const comparisonWarnings = [...(currentAnalysis.warnings || [])];
+    if (previousReleaseBuild?.buildNumber) {
+      const baselineAnalysis = await analyzeAndSavePackageSize(jobPath, previousReleaseBuild.buildNumber, { force: false });
+      comparison = buildPackageSizeComparison(currentAnalysis, baselineAnalysis);
+    } else {
+      comparisonWarnings.push('未找到可对比的前一个 release 成功构建。');
+    }
+
+    const savedAnalysis = savePackageSizeAnalysis(buildNumber, {
+      ...currentAnalysis,
+      cached: false,
+      warnings: Array.from(new Set(comparisonWarnings)),
+      comparison,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...savedAnalysis,
+        cached: currentAnalysis.cached && !force,
+      },
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: extractErrorMessage(error, '分析包体积失败'),
     });
   }
 });

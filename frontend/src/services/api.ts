@@ -2014,6 +2014,66 @@ export interface JenkinsBuildLogResult {
   thirdSdkError?: string;
 }
 
+export interface JenkinsPackageSizeAnalysis {
+  jobName: string;
+  buildNumber: number;
+  appVersion?: string;
+  publishChannel?: string;
+  channelBuildNumber?: string;
+  ipaPath?: string;
+  ipaUrl?: string;
+  totalBytes: number;
+  totalText: string;
+  uncompressedBytes: number;
+  uncompressedText: string;
+  warnings?: string[];
+  cached?: boolean;
+  updatedAt?: string;
+  comparison?: {
+    baseline: {
+      buildNumber: number;
+      appVersion?: string;
+      publishChannel?: string;
+      channelBuildNumber?: string;
+      branchName?: string;
+      totalBytes?: number;
+      totalText?: string;
+      uncompressedBytes?: number;
+      uncompressedText?: string;
+      updatedAt?: string;
+    };
+    deltaBytes: number;
+    deltaText: string;
+    deltaPercent: number | null;
+    deltaUncompressedBytes: number;
+    deltaUncompressedText: string;
+    deltaUncompressedPercent: number | null;
+    entries: Array<{
+      key: string;
+      type: string;
+      name: string;
+      path: string;
+      bytes: number;
+      text: string;
+      baselineBytes: number;
+      baselineText: string;
+      deltaBytes: number;
+      deltaText: string;
+      deltaPercent: number | null;
+    }>;
+  } | null;
+  entries: Array<{
+    key: string;
+    type: string;
+    name: string;
+    path: string;
+    bytes: number;
+    text: string;
+    percent: number;
+    fileCount: number;
+  }>;
+}
+
 export interface JenkinsBuildDsymSync {
   buildNumber: number;
   status: 'running' | 'success' | 'partial' | 'failed';
@@ -2612,6 +2672,14 @@ export const jenkinsApi = {
   getBuildLog: async (buildNumber: number): Promise<ApiResponse<JenkinsBuildLogResult>> => {
     const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/nn/builds/${buildNumber}/log`, {
       timeout: 120000,
+    });
+    return response.data;
+  },
+
+  getBuildPackageSize: async (buildNumber: number, force = false): Promise<ApiResponse<JenkinsPackageSizeAnalysis>> => {
+    const response = await api.get<ApiResponse<JenkinsPackageSizeAnalysis>>(`/jenkins/nn/builds/${buildNumber}/package-size`, {
+      timeout: 120000,
+      params: force ? { force: 1 } : undefined,
     });
     return response.data;
   },
