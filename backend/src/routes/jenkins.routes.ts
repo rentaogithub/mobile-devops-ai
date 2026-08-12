@@ -5049,7 +5049,7 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
   }
 });
 
-router.post('/nn/release-branch', cicdAdminMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
     const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';

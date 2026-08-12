@@ -2763,6 +2763,7 @@ export default function CICDPage() {
   const canPublishAppStore = authUtils.isAuthenticated() && authUtils.hasAnyRole(['product', 'admin']);
   const canOperateCicd = canPublishPgyerOrTestFlight || canPublishAppStore;
   const canAdminCicd = isAdmin;
+  const canCreateReleaseBranch = authUtils.isAuthenticated() && authUtils.hasAnyRole(['developer', 'admin']);
   const availableDeployTargetOptions = useMemo(() => DEPLOY_TARGET_OPTIONS.filter((option) => (
     option.value === 'AppStore' ? canPublishAppStore : canPublishPgyerOrTestFlight
   )), [canPublishAppStore, canPublishPgyerOrTestFlight]);
@@ -3487,8 +3488,8 @@ export default function CICDPage() {
   };
 
   const openReleaseBranchModal = () => {
-    if (!canAdminCicd) {
-      message.warning('拉取新分支仅管理员可操作');
+    if (!canCreateReleaseBranch) {
+      message.warning('拉取新分支仅研发或管理员可操作');
       return;
     }
     setReleaseBranchBase('develop');
@@ -4558,7 +4559,7 @@ export default function CICDPage() {
         </div>
         {activeSection === 'release' ? (
           <Space>
-            {canAdminCicd && (
+            {canCreateReleaseBranch && (
               <Button icon={<BranchesOutlined />} onClick={openReleaseBranchModal}>
                 拉取新分支
               </Button>
