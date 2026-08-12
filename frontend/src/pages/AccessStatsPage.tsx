@@ -17,6 +17,31 @@ const isLoopbackIp = (value: string) => {
   return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1' || normalized.startsWith('127.');
 };
 
+const roleLabels: Record<string, string> = {
+  guest: '游客',
+  tester: '测试',
+  developer: '研发',
+  product: '产品运营',
+  admin: '管理员',
+  user: '用户',
+};
+
+const roleColors: Record<string, string> = {
+  guest: 'default',
+  tester: 'blue',
+  developer: 'purple',
+  product: 'magenta',
+  admin: 'gold',
+  user: 'default',
+};
+
+const visitorIdentity = (visitor: ServiceAccessVisitor) => {
+  if (visitor.identity) return visitor.identity;
+  const role = visitor.platformRole || visitor.role || 'user';
+  const name = visitor.displayName || visitor.username || '';
+  return name ? `${roleLabels[role] || role}・${name}` : (roleLabels[role] || role || '用户');
+};
+
 export default function AccessStatsPage() {
   const [loading, setLoading] = useState(false);
   const [summary, setSummary] = useState<ServiceAccessSummary | null>(null);
@@ -43,8 +68,12 @@ export default function AccessStatsPage() {
     {
       title: '身份',
       dataIndex: 'role',
-      width: 90,
-      render: (role) => role === 'admin' ? <Tag color="gold">管理员</Tag> : <Tag>用户</Tag>,
+      width: 180,
+      ellipsis: true,
+      render: (_role, record) => {
+        const role = record.platformRole || record.role || 'user';
+        return <Tag color={roleColors[role] || 'default'}>{visitorIdentity(record)}</Tag>;
+      },
     },
     {
       title: 'IP',

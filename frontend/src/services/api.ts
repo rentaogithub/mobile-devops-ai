@@ -311,6 +311,10 @@ export interface UserQueryRecord extends OpUserInfo {
 export interface ServiceAccessVisitor {
   visitorId: string;
   role: 'admin' | 'user' | string;
+  username?: string;
+  displayName?: string;
+  platformRole?: PlatformRole | string;
+  identity?: string;
   ip: string;
   accessHost?: string;
   userAgent: string;
@@ -718,10 +722,14 @@ const getServiceVisitorId = (): string => {
 
 export const accessStatsApi = {
   track: async (path: string): Promise<void> => {
+    const currentUser = authUtils.getUser();
     await api.post('/access-stats/track', {
       visitorId: getServiceVisitorId(),
       path,
       isAdmin: authUtils.isAdmin(),
+      username: currentUser?.username,
+      displayName: currentUser?.displayName,
+      role: currentUser?.role,
       accessHost: window.location.hostname,
     }).catch(() => {});
   },

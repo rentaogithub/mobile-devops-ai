@@ -31,10 +31,21 @@ message.config({
 
 function AccessTracker() {
   const location = useLocation();
+  const currentPath = `${location.pathname}${location.search}`;
 
   useEffect(() => {
-    accessStatsApi.track(`${location.pathname}${location.search}`);
-  }, [location.pathname, location.search]);
+    accessStatsApi.track(currentPath);
+  }, [currentPath]);
+
+  useEffect(() => {
+    const handleAuthStateChanged = () => {
+      accessStatsApi.track(currentPath);
+    };
+    window.addEventListener('auth-state-changed', handleAuthStateChanged);
+    return () => {
+      window.removeEventListener('auth-state-changed', handleAuthStateChanged);
+    };
+  }, [currentPath]);
 
   return null;
 }
