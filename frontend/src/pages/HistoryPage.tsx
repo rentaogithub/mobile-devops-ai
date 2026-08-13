@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Typography, Card, Space, Tag, Button, message, Popconfirm, Empty, Spin, Modal, Tabs, Input, Select } from 'antd';
-import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, UpOutlined, DownOutlined } from '@ant-design/icons';
+import { ClockCircleOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, DownloadOutlined, ShareAltOutlined, CheckCircleOutlined, CloseCircleOutlined, SearchOutlined, UpOutlined, DownOutlined, LinkOutlined } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 import { formatDateTime } from '../utils/helpers';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -19,6 +19,8 @@ interface HistoryRecord {
   lastStackCall?: string;
   crashModule?: string;
   crashLocation?: string;
+  uid?: string;
+  deviceId?: string;
   originalLog: string;
   symbolicatedLog: string;
   usedUuids: string[];
@@ -26,6 +28,7 @@ interface HistoryRecord {
   isFixed: boolean;
   fixedVersion?: string;
   fixedRemark?: string;
+  sentryOriginalUrl?: string;
   createdAt: string;
 }
 
@@ -73,6 +76,10 @@ export default function HistoryPage() {
   const autoAnalyzingRecordIds = useRef(new Set<number>());
   const isAdmin = authUtils.isAdmin();
   const canAnalyzeCrash = authUtils.hasAnyRole(['tester', 'developer', 'admin']);
+
+  const openSentryOriginalUrl = (url: string) => {
+    window.open(url.startsWith('/sentry/') ? url : `/sentry${url.startsWith('/') ? url : `/${url}`}`, '_blank', 'noopener,noreferrer');
+  };
 
   // 从 localStorage 获取保存的 OpenAI API Key
   const getSavedApiKey = () => {
@@ -587,6 +594,8 @@ export default function HistoryPage() {
       record.lastStackCall,
       record.crashModule,
       record.crashLocation,
+      record.uid,
+      record.deviceId,
       record.fixedVersion,
       record.fixedRemark,
       record.createdAt,
@@ -677,7 +686,7 @@ export default function HistoryPage() {
             onChange={(value) => setCrashCategoryFilter(value || 'all')}
             style={{ width: 220 }}
             options={[
-              { value: 'all', label: '全部' },
+              { value: 'all', label: '全部崩溃类型' },
               ...CRASH_CATEGORY_OPTIONS,
             ]}
           />
@@ -780,6 +789,22 @@ export default function HistoryPage() {
                           <Text>{record.crashReason}</Text>
                         </div>
                       )}
+                      {(record.uid || record.deviceId) && (
+                        <Space wrap>
+                          {record.uid && (
+                            <span>
+                              <Text type="secondary">UID：</Text>
+                              <Text code copyable style={{ fontSize: 12 }}>{record.uid}</Text>
+                            </span>
+                          )}
+                          {record.deviceId && (
+                            <span>
+                              <Text type="secondary">DeviceID：</Text>
+                              <Text code copyable style={{ fontSize: 12 }}>{record.deviceId}</Text>
+                            </span>
+                          )}
+                        </Space>
+                      )}
                       {record.fixedRemark && (
                         <div>
                           <Text type="secondary">修复备注：</Text>
@@ -818,6 +843,14 @@ export default function HistoryPage() {
               >
                 分享
               </Button>
+              {selectedRecord?.sentryOriginalUrl && (
+                <Button
+                  icon={<LinkOutlined />}
+                  onClick={() => openSentryOriginalUrl(selectedRecord.sentryOriginalUrl!)}
+                >
+                  原始 Sentry
+                </Button>
+              )}
               <Button
                 type="primary"
                 icon={<DownloadOutlined />}
@@ -857,6 +890,34 @@ export default function HistoryPage() {
                 {selectedRecord.crashType && <Tag color="red">{selectedRecord.crashType}</Tag>}
                 {selectedRecord.crashLocation && <Tag color="purple">{selectedRecord.crashLocation}</Tag>}
               </Space>
+              {(selectedRecord.uid || selectedRecord.deviceId) && (
+                <Space wrap>
+                  {selectedRecord.uid && (
+                    <span>
+                      <Text strong>UID：</Text>
+                      <Text code copyable>{selectedRecord.uid}</Text>
+                    </span>
+                  )}
+                  {selectedRecord.deviceId && (
+                    <span>
+                      <Text strong>DeviceID：</Text>
+                      <Text code copyable>{selectedRecord.deviceId}</Text>
+                    </span>
+                  )}
+                </Space>
+              )}
+              {selectedRecord.sentryOriginalUrl && (
+                <div>
+                  <Text strong>原始 Sentry 地址：</Text>
+                  <Text
+                    code
+                    copyable={{ text: `${window.location.origin}/sentry${selectedRecord.sentryOriginalUrl.startsWith('/') ? selectedRecord.sentryOriginalUrl : `/${selectedRecord.sentryOriginalUrl}`}` }}
+                    style={{ marginLeft: 8 }}
+                  >
+                    {selectedRecord.sentryOriginalUrl}
+                  </Text>
+                </div>
+              )}
               {selectedRecord.crashModule && (
                 <div>
                   <Text strong>崩溃模块：</Text>

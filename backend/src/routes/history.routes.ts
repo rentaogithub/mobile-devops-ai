@@ -58,10 +58,14 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const record = historyService.getHistoryById(parseInt(id));
+    const sentryOriginalUrl = historyService.getSentryOriginalUrlByHistoryId(parseInt(id, 10));
 
     res.json({
       success: true,
-      data: record,
+      data: {
+        ...record,
+        sentryOriginalUrl,
+      },
     });
   } catch (error: any) {
     logger.error('获取历史记录失败', { error: error.message });

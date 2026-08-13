@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS symbolication_history (
   last_stack_call TEXT,  -- 最后堆栈调用名
   crash_module TEXT,  -- 崩溃模块
   crash_location TEXT,  -- 崩溃位置
+  uid TEXT,  -- Sentry 用户 UID
+  device_id TEXT,  -- Sentry 设备 ID
   original_log TEXT NOT NULL,  -- 原始崩溃日志
   symbolicated_log TEXT NOT NULL,  -- 符号化后的日志
   used_uuids TEXT NOT NULL,  -- 使用的 UUID 列表（JSON 数组）

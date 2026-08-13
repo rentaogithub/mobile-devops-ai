@@ -10,6 +10,8 @@ export interface SymbolicationHistoryRecord {
   lastStackCall?: string;
   crashModule?: string;
   crashLocation?: string;
+  uid?: string;
+  deviceId?: string;
   originalLog: string;
   symbolicatedLog: string;
   usedUuids: string[];
@@ -17,6 +19,7 @@ export interface SymbolicationHistoryRecord {
   isFixed: boolean;
   fixedVersion?: string;
   fixedRemark?: string;
+  sentryOriginalUrl?: string;
   createdAt: string;
 }
 
@@ -32,8 +35,15 @@ export interface SaveHistoryParams {
   lastStackCall?: string;
   crashModule?: string;
   crashLocation?: string;
+  uid?: string;
+  deviceId?: string;
   crashModuleUuid?: string;
   blockerThreadId?: string;
+}
+
+interface UserIdentifiers {
+  uid?: string;
+  deviceId?: string;
 }
 
 export class HistoryService {
@@ -131,6 +141,7 @@ export class HistoryService {
   async saveHistory(params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
     const db = getDatabase();
     const normalizedParams = this.resolveCrashModuleFromDSYM(params);
+    const userIdentifiers = this.extractUserIdentifiers(normalizedParams);
 
     try {
       // 检查是否存在重复记录
@@ -146,6 +157,8 @@ export class HistoryService {
                 last_stack_call = ?,
                 crash_module = ?,
                 crash_location = ?,
+                uid = ?,
+                device_id = ?,
                 symbolicated_log = ?,
                 used_uuids = ?,
                 ai_analysis = ?
@@ -160,6 +173,8 @@ export class HistoryService {
             normalizedParams.lastStackCall || null,
             normalizedParams.crashModule || null,
             normalizedParams.crashLocation || null,
+            userIdentifiers.uid || null,
+            userIdentifiers.deviceId || null,
             normalizedParams.symbolicatedLog,
             JSON.stringify(normalizedParams.usedUuids),
             normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
@@ -183,8 +198,8 @@ export class HistoryService {
       const stmt = db.prepare(`
         INSERT INTO symbolication_history (
           app_version, version_detected, crash_type, crash_reason, last_stack_call, crash_module, crash_location,
-          original_log, symbolicated_log, used_uuids, ai_analysis
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          uid, device_id, original_log, symbolicated_log, used_uuids, ai_analysis
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
@@ -195,6 +210,8 @@ export class HistoryService {
         normalizedParams.lastStackCall || null,
         normalizedParams.crashModule || null,
         normalizedParams.crashLocation || null,
+        userIdentifiers.uid || null,
+        userIdentifiers.deviceId || null,
         normalizedParams.originalLog,
         normalizedParams.symbolicatedLog,
         JSON.stringify(normalizedParams.usedUuids),
@@ -315,6 +332,7 @@ export class HistoryService {
   async updateSymbolicationResult(id: number, params: SaveHistoryParams): Promise<SymbolicationHistoryRecord> {
     const db = getDatabase();
     const normalizedParams = this.resolveCrashModuleFromDSYM(params);
+    const userIdentifiers = this.extractUserIdentifiers(normalizedParams);
 
     try {
       const stmt = db.prepare(`
@@ -326,6 +344,8 @@ export class HistoryService {
             last_stack_call = ?,
             crash_module = ?,
             crash_location = ?,
+            uid = ?,
+            device_id = ?,
             symbolicated_log = ?,
             used_uuids = ?,
             ai_analysis = ?
@@ -340,6 +360,8 @@ export class HistoryService {
         normalizedParams.lastStackCall || null,
         normalizedParams.crashModule || null,
         normalizedParams.crashLocation || null,
+        userIdentifiers.uid || null,
+        userIdentifiers.deviceId || null,
         normalizedParams.symbolicatedLog,
         JSON.stringify(normalizedParams.usedUuids),
         normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
@@ -465,6 +487,46 @@ export class HistoryService {
     return current === next;
   }
 
+  updateUserIdentifiers(id: number, identifiers: UserIdentifiers): void {
+    const uid = identifiers.uid?.trim();
+    const deviceId = identifiers.deviceId?.trim();
+    if (!uid && !deviceId) {
+      return;
+    }
+
+    const db = getDatabase();
+    try {
+      db.prepare(`
+        UPDATE symbolication_history
+        SET uid = COALESCE(NULLIF(?, ''), uid),
+            device_id = COALESCE(NULLIF(?, ''), device_id)
+        WHERE id = ?
+      `).run(uid || '', deviceId || '', id);
+    } catch (error: any) {
+      logger.warn('更新历史记录用户标识失败', { id, error: error.message });
+    }
+  }
+
+  getSentryOriginalUrlByHistoryId(id: number): string | undefined {
+    const db = getDatabase();
+    try {
+      const row = db.prepare(`
+        SELECT issue_id, short_id, permalink
+        FROM sentry_issue_symbolication_history
+        WHERE history_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `).get(id) as { issue_id?: string; short_id?: string; permalink?: string } | undefined;
+
+      return this.buildSentryOriginalUrl(row);
+    } catch (error: any) {
+      if (!String(error.message || '').includes('no such table')) {
+        logger.warn('获取历史记录 Sentry 原始地址失败', { id, error: error.message });
+      }
+      return undefined;
+    }
+  }
+
   /**
    * 删除历史记录
    */
@@ -571,6 +633,13 @@ export class HistoryService {
    * 将数据库行映射为记录对象
    */
   private mapRowToRecord(row: any): SymbolicationHistoryRecord {
+    const extractedIdentifiers = this.extractUserIdentifiers({
+      originalLog: row.original_log,
+      symbolicatedLog: row.symbolicated_log,
+    });
+    const uid = row.uid || extractedIdentifiers.uid;
+    const deviceId = row.device_id || extractedIdentifiers.deviceId;
+
     return {
       id: row.id,
       appVersion: row.app_version,
@@ -580,6 +649,8 @@ export class HistoryService {
       lastStackCall: row.last_stack_call,
       crashModule: row.crash_module,
       crashLocation: row.crash_location,
+      uid,
+      deviceId,
       originalLog: row.original_log,
       symbolicatedLog: row.symbolicated_log,
       usedUuids: JSON.parse(row.used_uuids),
@@ -589,6 +660,69 @@ export class HistoryService {
       fixedRemark: row.fixed_remark,
       createdAt: row.created_at,
     };
+  }
+
+  private buildSentryOriginalUrl(row?: { issue_id?: string; short_id?: string; permalink?: string }): string | undefined {
+    if (!row) {
+      return undefined;
+    }
+
+    const permalink = String(row.permalink || '').trim();
+    if (permalink) {
+      try {
+        const parsed = new URL(permalink);
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+      } catch {
+        return permalink.startsWith('/sentry/') ? permalink.replace(/^\/sentry(?=\/)/, '') : permalink;
+      }
+    }
+
+    const issueId = String(row.issue_id || row.short_id || '').trim();
+    if (!issueId) {
+      return undefined;
+    }
+
+    return `/organizations/sentry/issues/${encodeURIComponent(issueId)}/?project=6&query=&referrer=project-issue-stream`;
+  }
+
+  private extractUserIdentifiers(params: Pick<SaveHistoryParams, 'uid' | 'deviceId' | 'originalLog' | 'symbolicatedLog'>): UserIdentifiers {
+    const text = [params.originalLog, params.symbolicatedLog].filter(Boolean).join('\n');
+    return {
+      uid: this.normalizeIdentifier(params.uid) || this.extractIdentifierFromText(text, 'uid'),
+      deviceId: this.normalizeIdentifier(params.deviceId) || this.extractIdentifierFromText(text, 'deviceId') || this.extractIdentifierFromText(text, 'deviceid'),
+    };
+  }
+
+  private extractIdentifierFromText(text: string, key: 'uid' | 'deviceId' | 'deviceid'): string | undefined {
+    if (!text) {
+      return undefined;
+    }
+
+    const labelPattern = key === 'uid'
+      ? /\bUID\b\s*[:=]\s*([^\s,\]\}"']+)/i
+      : /\bDeviceID\b|\bdeviceId\b|\bdeviceid\b/i;
+    if (key === 'uid') {
+      const labelMatch = text.match(labelPattern as RegExp);
+      const value = this.normalizeIdentifier(labelMatch?.[1]);
+      if (value) return value;
+    } else {
+      const labelMatch = text.match(/(?:\bDeviceID\b|\bdeviceId\b|\bdeviceid\b)\s*[:=]\s*([A-Za-z0-9._:-]+)/i);
+      const value = this.normalizeIdentifier(labelMatch?.[1]);
+      if (value) return value;
+    }
+
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const jsonTagPattern = new RegExp(`"key"\\s*:\\s*"${escapedKey}"[\\s\\S]{0,120}?"value"\\s*:\\s*"([^"]+)"`, 'i');
+    const reverseJsonTagPattern = new RegExp(`"value"\\s*:\\s*"([^"]+)"[\\s\\S]{0,120}?"key"\\s*:\\s*"${escapedKey}"`, 'i');
+    return this.normalizeIdentifier(text.match(jsonTagPattern)?.[1] || text.match(reverseJsonTagPattern)?.[1]);
+  }
+
+  private normalizeIdentifier(value: unknown): string | undefined {
+    const text = String(value || '').trim();
+    if (!text || text === 'N/A' || text === '-' || text.toLowerCase() === 'null' || text.toLowerCase() === 'undefined') {
+      return undefined;
+    }
+    return text.slice(0, 128);
   }
 }
 

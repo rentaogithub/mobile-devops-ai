@@ -36,12 +36,18 @@ function ensureSentryIssueHistoryTable() {
     CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
       issue_id TEXT PRIMARY KEY,
       short_id TEXT,
+      permalink TEXT,
       history_id INTEGER NOT NULL,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_sentry_issue_history_short_id
       ON sentry_issue_symbolication_history(short_id);
   `);
+
+  const columns = db.prepare("PRAGMA table_info(sentry_issue_symbolication_history)").all() as any[];
+  if (!columns.some((column) => column.name === 'permalink')) {
+    db.exec('ALTER TABLE sentry_issue_symbolication_history ADD COLUMN permalink TEXT');
+  }
 }
 
 function upsertSentryIssueHistory(issue: any, historyId?: number) {
@@ -52,13 +58,14 @@ function upsertSentryIssueHistory(issue: any, historyId?: number) {
 
   ensureSentryIssueHistoryTable();
   getDatabase().prepare(`
-    INSERT INTO sentry_issue_symbolication_history (issue_id, short_id, history_id, updated_at)
-    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO sentry_issue_symbolication_history (issue_id, short_id, permalink, history_id, updated_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(issue_id) DO UPDATE SET
       short_id = excluded.short_id,
+      permalink = COALESCE(excluded.permalink, sentry_issue_symbolication_history.permalink),
       history_id = excluded.history_id,
       updated_at = CURRENT_TIMESTAMP
-  `).run(issueId, issue?.shortId || null, historyId);
+  `).run(issueId, issue?.shortId || null, issue?.permalink || null, historyId);
 }
 
 function getSentryIssueHistoryMap(issues: any[]) {
@@ -343,12 +350,18 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
       const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
       const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
       const recordAppVersion = getHistoryAppVersion(extractedVersion, appVersion);
+      const userIdentifiers = sentryIssueService.extractEventUserIdentifiers(event);
       let existingHistory =
         historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
         historyService.findDuplicateByOriginalLog(crashLog, recordAppVersion) ||
         historyService.findDuplicateByOriginalLog(crashLog);
 
       if (existingHistory) {
+        if ((!existingHistory.uid && userIdentifiers.uid) || (!existingHistory.deviceId && userIdentifiers.deviceId)) {
+          historyService.updateUserIdentifiers(existingHistory.id, userIdentifiers);
+          existingHistory = historyService.getHistoryById(existingHistory.id);
+        }
+
         const shouldRefreshVersion = extractedVersion && existingHistory.appVersion !== recordAppVersion;
         if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs) || shouldRefreshVersion) {
           logger.info('Sentry 自动符号化命中旧历史，刷新缺失 dSYM 的符号化结果', {
@@ -372,6 +385,8 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
             lastStackCall: crashInfo.lastStackCall,
             crashModule: crashInfo.crashModule,
             crashLocation: crashInfo.crashLocation,
+            uid: userIdentifiers.uid,
+            deviceId: userIdentifiers.deviceId,
             originalLog: crashLog,
             symbolicatedLog: symbolicated.symbolicatedLog,
             usedUuids: targetUUIDs,
@@ -405,6 +420,8 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
         lastStackCall: crashInfo.lastStackCall,
         crashModule: crashInfo.crashModule,
         crashLocation: crashInfo.crashLocation,
+        uid: userIdentifiers.uid,
+        deviceId: userIdentifiers.deviceId,
         originalLog: crashLog,
         symbolicatedLog: symbolicated.symbolicatedLog,
         usedUuids: targetUUIDs,
@@ -873,12 +890,18 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     const targetUUIDs = crashDSYMInfos.map((dsym) => dsym.uuid);
     const dsymPaths = crashDSYMInfos.map((dsym) => dsym.filePath);
     const recordAppVersion = getHistoryAppVersion(extractedVersion, appVersion);
+    const userIdentifiers = sentryIssueService.extractEventUserIdentifiers(event);
     let existingHistory =
       historyService.findDuplicateHistory(crashLog, targetUUIDs) ||
       historyService.findDuplicateByOriginalLog(crashLog, recordAppVersion) ||
       historyService.findDuplicateByOriginalLog(crashLog);
 
     if (existingHistory) {
+      if ((!existingHistory.uid && userIdentifiers.uid) || (!existingHistory.deviceId && userIdentifiers.deviceId)) {
+        historyService.updateUserIdentifiers(existingHistory.id, userIdentifiers);
+        existingHistory = historyService.getHistoryById(existingHistory.id);
+      }
+
       const shouldRefreshVersion = extractedVersion && existingHistory.appVersion !== recordAppVersion;
       if (isHistoryMissingTargetUUIDs(existingHistory.usedUuids, targetUUIDs) || shouldRefreshVersion) {
         logger.info('Sentry 历史记录缺少当前可用 dSYM，刷新符号化结果', {
@@ -902,6 +925,8 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
           lastStackCall: crashInfo.lastStackCall,
           crashModule: crashInfo.crashModule,
           crashLocation: crashInfo.crashLocation,
+          uid: userIdentifiers.uid,
+          deviceId: userIdentifiers.deviceId,
           originalLog: crashLog,
           symbolicatedLog: symbolicated.symbolicatedLog,
           usedUuids: targetUUIDs,
@@ -1002,6 +1027,8 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       lastStackCall: crashInfo.lastStackCall,
       crashModule: crashInfo.crashModule,
       crashLocation: crashInfo.crashLocation,
+      uid: userIdentifiers.uid,
+      deviceId: userIdentifiers.deviceId,
       originalLog: crashLog,
       symbolicatedLog: symbolicated.symbolicatedLog,
       usedUuids: targetUUIDs,

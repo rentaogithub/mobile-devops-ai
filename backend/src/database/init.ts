@@ -69,6 +69,8 @@ function migrateDatabase(): void {
     const hasFixedVersion = historyTableInfo.some((col: any) => col.name === 'fixed_version');
     const hasFixedRemark = historyTableInfo.some((col: any) => col.name === 'fixed_remark');
     const hasVersionDetected = historyTableInfo.some((col: any) => col.name === 'version_detected');
+    const hasUid = historyTableInfo.some((col: any) => col.name === 'uid');
+    const hasDeviceId = historyTableInfo.some((col: any) => col.name === 'device_id');
 
     if (!hasLastStackCall) {
       console.log('Adding last_stack_call column to symbolication_history...');
@@ -110,6 +112,18 @@ function migrateDatabase(): void {
       console.log('Adding version_detected column to symbolication_history...');
       db.exec('ALTER TABLE symbolication_history ADD COLUMN version_detected INTEGER DEFAULT 1');
       console.log('Migration completed: added version_detected column');
+    }
+
+    if (!hasUid) {
+      console.log('Adding uid column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN uid TEXT');
+      console.log('Migration completed: added uid column');
+    }
+
+    if (!hasDeviceId) {
+      console.log('Adding device_id column to symbolication_history...');
+      db.exec('ALTER TABLE symbolication_history ADD COLUMN device_id TEXT');
+      console.log('Migration completed: added device_id column');
     }
 
     const assistantAuditForeignKeys = db.prepare('PRAGMA foreign_key_list(assistant_action_audits)').all() as any[];

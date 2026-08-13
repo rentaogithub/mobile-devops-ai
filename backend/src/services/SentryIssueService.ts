@@ -316,6 +316,13 @@ export class SentryIssueService {
     };
   }
 
+  extractEventUserIdentifiers(event?: SentryEventDetail): { uid?: string; deviceId?: string } {
+    return {
+      uid: this.tagValue(event, 'uid') || undefined,
+      deviceId: this.tagValue(event, 'deviceId') || this.tagValue(event, 'deviceid') || undefined,
+    };
+  }
+
   private convertSentryEventToCrash(issue: SentryIssueSummary, event?: SentryEventDetail): string {
     const entries = event?.entries || [];
     const exceptionEntry = entries.find((entry: any) => entry?.type === 'exception');
@@ -335,6 +342,7 @@ export class SentryIssueService {
     const osVersion = osContext.version || this.tagValue(event, 'os')?.replace(/^iOS\s+/i, '') || '';
     const osBuild = osContext.build || '';
     const debugImages = this.extractDebugImages(debugMetaEntry, event);
+    const userIdentifiers = this.extractEventUserIdentifiers(event);
     const threadValues = threadsEntry?.data?.values || [];
     const exceptionThreadId = firstException.threadId;
     const syntheticExceptionThread = firstException.stacktrace || firstException.rawStacktrace
@@ -353,6 +361,12 @@ export class SentryIssueService {
 
     lines.push(`Incident Identifier: ${(event as any)?.eventID || event?.id || 'N/A'}`);
     lines.push(`CrashReporter Key:   ${(event as any)?.user?.id || 'N/A'}`);
+    if (userIdentifiers.uid) {
+      lines.push(`UID:                 ${userIdentifiers.uid}`);
+    }
+    if (userIdentifiers.deviceId) {
+      lines.push(`DeviceID:            ${userIdentifiers.deviceId}`);
+    }
     lines.push(`Hardware Model:      ${deviceContext.model || deviceContext.model_id || this.tagValue(event, 'device') || 'N/A'}`);
     lines.push(`Process:             ${processName} [0]`);
     lines.push('Path:                N/A');
@@ -450,7 +464,8 @@ export class SentryIssueService {
   }
 
   private tagValue(event: SentryEventDetail | undefined, key: string): string | undefined {
-    return event?.tags?.find((tag) => tag.key === key)?.value;
+    const targetKey = key.toLowerCase();
+    return event?.tags?.find((tag) => tag.key.toLowerCase() === targetKey)?.value;
   }
 
   private basename(value: string): string {
