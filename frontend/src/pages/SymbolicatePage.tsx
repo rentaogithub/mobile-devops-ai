@@ -61,7 +61,7 @@ export default function SymbolicatePage() {
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [originalCrashFileName, setOriginalCrashFileName] = useState('');
-  const isAdmin = authUtils.isAdmin();
+  const canAnalyzeCrash = authUtils.hasAnyRole(['developer', 'admin']);
 
   // 加载 dSYM 列表
   useEffect(() => {
@@ -964,7 +964,7 @@ Binary Images:
             )}
           </div>
 
-          {isAdmin && (
+          {canAnalyzeCrash && (
             <div>
               <Space style={{ marginBottom: 8 }}>
                 <RobotOutlined />
@@ -989,7 +989,7 @@ Binary Images:
             >
               {symbolicating ? '符号化中...' : result !== null ? '已完成符号化' : '开始符号化'}
             </Button>
-            {isAdmin && (
+            {canAnalyzeCrash && (
               <Button
                 type="default"
                 icon={<RobotOutlined />}

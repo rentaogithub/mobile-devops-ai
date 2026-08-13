@@ -40,6 +40,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
   
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
+  const canManageDsym = authUtils.hasAnyRole(['developer', 'admin']);
   const activeTabKey = searchParams.get('tab') === 'modules' && isAdmin ? 'modules' : 'list';
   const isUserRoleManagementView = roleManagementOnly;
 
@@ -634,7 +635,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         <GroupedView 
                           dsyms={filteredDsyms.filter(d => d.appName.toUpperCase() !== 'NNIM')} 
                           loading={loading}
-                          isAdmin={isAdmin}
+                          canManageDsym={canManageDsym}
                           onDownload={handleDownload}
                           onEditRelations={openRelationEditor}
                         />
@@ -839,12 +840,12 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 interface GroupedViewProps {
   dsyms: DSYMInfo[];
   loading: boolean;
-  isAdmin: boolean;
+  canManageDsym: boolean;
   onDownload: (dsym: DSYMInfo) => void;
   onEditRelations: (dsym: DSYMInfo) => void;
 }
 
-function GroupedView({ dsyms, loading, isAdmin, onDownload, onEditRelations }: GroupedViewProps) {
+function GroupedView({ dsyms, loading, canManageDsym, onDownload, onEditRelations }: GroupedViewProps) {
   // 按应用名称分组
   const groupedDsyms = dsyms.reduce((acc, dsym) => {
     const appName = dsym.appName;
@@ -933,7 +934,7 @@ function GroupedView({ dsyms, loading, isAdmin, onDownload, onEditRelations }: G
             fixed: 'right' as const,
             render: (_, record) => (
               <Space>
-                {isAdmin && (
+                {canManageDsym && (
                   <Button
                     type="link"
                     icon={<EditOutlined />}

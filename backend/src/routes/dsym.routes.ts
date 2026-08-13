@@ -6,12 +6,13 @@ import path from 'path';
 import { FileHandlerService, StorageService } from '../services';
 import { AppError, ErrorCode } from '../types';
 import logger from '../utils/logger';
-import { adminMiddleware } from '../middleware/auth';
+import { requireAnyRole } from '../middleware/auth';
 import historyService from '../services/HistoryService';
 import symbolicationCache from '../services/SymbolicationCacheService';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 
 const router = Router();
+const dsymDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
 
 // 配置 Multer
 const upload = multer({
@@ -97,7 +98,7 @@ async function saveDSYMToStorage(dsymPath: string): Promise<{
  * POST /api/dsym/upload
  * 上传 dSYM 文件（需要管理员权限）
  */
-router.post('/upload', adminMiddleware, upload.single('file'), async (req: Request, res: Response) => {
+router.post('/upload', dsymDeveloperMiddleware, upload.single('file'), async (req: Request, res: Response) => {
   let tempPath: string | undefined;
   let dsymPath: string | undefined;
   let permanentPath: string | undefined;
@@ -178,7 +179,7 @@ router.post('/upload', adminMiddleware, upload.single('file'), async (req: Reque
  * POST /api/dsym/upload-from-xcarchive
  * 从服务器本机 .xcarchive 自动提取主工程 dSYM（需要管理员权限）
  */
-router.post('/upload-from-xcarchive', adminMiddleware, async (req: Request, res: Response) => {
+router.post('/upload-from-xcarchive', dsymDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempDir: string | undefined;
   let dsymPath: string | undefined;
   let permanentPath: string | undefined;
@@ -260,7 +261,7 @@ router.get('/list', async (req: Request, res: Response) => {
  * PUT /api/dsym/:uuid
  * 更新 dSYM 信息（需要管理员权限）
  */
-router.put('/:uuid', adminMiddleware, async (req: Request, res: Response) => {
+router.put('/:uuid', dsymDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { uuid } = req.params;
     const { version, notes, relatedAppVersions } = req.body;
@@ -362,7 +363,7 @@ router.get('/:uuid/download', async (req: Request, res: Response) => {
  * DELETE /api/dsym/:uuid
  * 删除 dSYM 文件（需要管理员权限）
  */
-router.delete('/:uuid', adminMiddleware, async (req: Request, res: Response) => {
+router.delete('/:uuid', dsymDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { uuid } = req.params;
 

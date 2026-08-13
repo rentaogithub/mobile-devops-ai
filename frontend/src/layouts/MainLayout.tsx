@@ -33,7 +33,7 @@ export default function MainLayout() {
   const currentRole = currentUser?.role || 'guest';
   const isAdmin = isAuthenticated && currentRole === 'admin';
   const canUseQuality = isAuthenticated && ['tester', 'developer', 'admin'].includes(currentRole);
-  const canAccessCrashTools = isAdmin;
+  const canAccessCrashTools = isAuthenticated && ['developer', 'admin'].includes(currentRole);
   const canAccessQualityCenter = isAdmin;
   const canAccessRoleManagement = isAdmin;
   const canAccessAccessStats = isAdmin;

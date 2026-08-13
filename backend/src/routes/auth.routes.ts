@@ -41,7 +41,7 @@ router.post('/logout', (req, res) => {
 });
 
 router.get('/me', (req, res) => {
-  const user = authService.getSessionUser(req);
+  const user = authService.refreshSession(req, res);
   if (!user) {
     res.status(401).json({ success: false, error: '未登录' });
     return;
@@ -102,7 +102,7 @@ router.patch('/users/:id', sessionAuthMiddleware, requireRole('admin'), (req, re
  */
 router.get('/status', (req, res) => {
   const authEnabled = process.env.AUTH_ENABLED === 'true';
-  const user = authService.getSessionUser(req);
+  const user = authService.refreshSession(req, res);
   res.json({
     success: true,
     data: {

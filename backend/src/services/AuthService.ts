@@ -30,7 +30,7 @@ export interface PlatformRegistrationRequest {
 }
 
 const SESSION_COOKIE = 'nn_platform_session';
-const SESSION_TTL_MS = Math.max(60 * 60 * 1000, Number(process.env.AUTH_SESSION_TTL_HOURS || 12) * 60 * 60 * 1000);
+const SESSION_TTL_MS = Math.max(60 * 60 * 1000, Number(process.env.AUTH_SESSION_TTL_HOURS || 24 * 30) * 60 * 60 * 1000);
 const VALID_ROLES: PlatformRole[] = ['guest', 'tester', 'developer', 'product', 'admin'];
 const SELF_REGISTER_ROLES: PlatformRole[] = ['guest', 'tester', 'developer', 'product'];
 
@@ -49,6 +49,18 @@ function parseCookies(req: Request): Record<string, string> {
     if (index < 0) return ['', ''];
     return [item.slice(0, index).trim(), decodeURIComponent(item.slice(index + 1).trim())];
   }).filter(([key]) => key));
+}
+
+function sessionCookieHeader(token: string, maxAgeSeconds = Math.floor(SESSION_TTL_MS / 1000)) {
+  const secure = process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_SECURE !== 'false';
+  return [
+    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`,
+    secure ? 'Secure' : '',
+  ].filter(Boolean).join('; ');
 }
 
 function userFromRow(row: any): PlatformUser | null {
@@ -157,15 +169,7 @@ export class AuthService {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(randomUUID(), user.id, hashToken(token), expiresAt, timestamp, timestamp, req.ip, String(req.headers['user-agent'] || '').slice(0, 500));
 
-    const secure = process.env.NODE_ENV === 'production' && process.env.AUTH_COOKIE_SECURE !== 'false';
-    res.setHeader('Set-Cookie', [
-      `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-      'Path=/',
-      'HttpOnly',
-      'SameSite=Lax',
-      `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
-      secure ? 'Secure' : '',
-    ].filter(Boolean).join('; '));
+    res.setHeader('Set-Cookie', sessionCookieHeader(token));
   }
 
   clearSession(req: Request, res: Response) {
@@ -185,6 +189,23 @@ export class AuthService {
     `).get(hashToken(token), now()) as any;
     if (!row) return null;
     getDatabase().prepare('UPDATE platform_sessions SET last_seen_at = ? WHERE id = ?').run(now(), row.session_id);
+    return userFromRow(row);
+  }
+
+  refreshSession(req: Request, res: Response): PlatformUser | null {
+    const token = parseCookies(req)[SESSION_COOKIE];
+    if (!token) return null;
+    const row = getDatabase().prepare(`
+      SELECT u.*, s.id AS session_id
+      FROM platform_sessions s
+      JOIN platform_users u ON u.id = s.user_id
+      WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1
+    `).get(hashToken(token), now()) as any;
+    if (!row) return null;
+    const timestamp = now();
+    const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+    getDatabase().prepare('UPDATE platform_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?').run(timestamp, expiresAt, row.session_id);
+    res.setHeader('Set-Cookie', sessionCookieHeader(token));
     return userFromRow(row);
   }
 
