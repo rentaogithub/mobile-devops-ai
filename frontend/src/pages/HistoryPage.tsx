@@ -30,6 +30,28 @@ interface HistoryRecord {
 }
 
 type ModuleFilter = 'rtc' | 'im' | 'other';
+type CrashCategoryFilter =
+  | 'unrecognized_selector'
+  | 'wild_pointer'
+  | 'memory_leak'
+  | 'non_ui_thread'
+  | 'watchdog'
+  | 'app_hanging'
+  | 'memory'
+  | 'signal'
+  | 'other';
+
+const CRASH_CATEGORY_OPTIONS: Array<{ value: CrashCategoryFilter; label: string }> = [
+  { value: 'unrecognized_selector', label: 'Unrecognized Selector' },
+  { value: 'wild_pointer', label: '野指针' },
+  { value: 'memory_leak', label: '内存泄露' },
+  { value: 'non_ui_thread', label: '非UI线程操作' },
+  { value: 'watchdog', label: 'Watchdog 超时' },
+  { value: 'app_hanging', label: 'App hanging' },
+  { value: 'memory', label: '内存过高/Jetsam' },
+  { value: 'signal', label: 'Signal/EXC' },
+  { value: 'other', label: '其他' },
+];
 
 export default function HistoryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -45,6 +67,7 @@ export default function HistoryPage() {
   const [fixedFilter, setFixedFilter] = useState<'all' | 'fixed' | 'unfixed'>('all');
   const [versionFilter, setVersionFilter] = useState('all');
   const [moduleFilters, setModuleFilters] = useState<ModuleFilter[]>([]);
+  const [crashCategoryFilter, setCrashCategoryFilter] = useState<CrashCategoryFilter | 'all'>('all');
   const openedUrlHistoryIdRef = useRef<number | null>(null);
   const detailMatchRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const autoAnalyzingRecordIds = useRef(new Set<number>());
@@ -469,6 +492,53 @@ export default function HistoryPage() {
     setModuleFilters(values.filter((value): value is ModuleFilter => value === 'rtc' || value === 'im' || value === 'other'));
   };
 
+  const getRecordCrashCategories = (record: HistoryRecord): CrashCategoryFilter[] => {
+    const text = normalizeSearchValue([
+      record.crashType,
+      record.crashReason,
+      record.lastStackCall,
+      record.crashModule,
+      record.crashLocation,
+      record.aiAnalysis?.summary,
+      record.aiAnalysis?.rootCause,
+      record.aiAnalysis?.crashType,
+      record.aiAnalysis?.crashReason,
+      extractCrashedThreadSearchText(record.symbolicatedLog),
+      extractCrashedThreadSearchText(record.originalLog),
+    ].filter(Boolean).join('\n'));
+    const compact = compactSearchValue(text);
+    const groups = new Set<CrashCategoryFilter>();
+
+    if (/unrecognized selector|does not recognize selector|doesnotrecognizeselector|selector sent to instance|-[^\\n]+ unrecognized selector/i.test(text)) {
+      groups.add('unrecognized_selector');
+    }
+    if (/野指针|zombie|use after free|use-after-free|dangling pointer|invalid pointer|bad access|exc bad access|kern invalid address|objc msgsend/i.test(text)) {
+      groups.add('wild_pointer');
+    }
+    if (/内存泄露|memory leak|leaked|malloc.*leak|leaks/i.test(text)) {
+      groups.add('memory_leak');
+    }
+    if (/非ui线程|非 ui 线程|main thread checker|ui api called on a background thread|background thread.*ui|not on main thread|uikit.*background/i.test(text)) {
+      groups.add('non_ui_thread');
+    }
+    if (/watchdog|8badf00d/i.test(text)) {
+      groups.add('watchdog');
+    }
+    if (/app hang|app hanging|hang fully blocked|runloop hang|run loop hang|主线程卡死|卡死/i.test(text)) {
+      groups.add('app_hanging');
+    }
+    if (/jetsam|内存不足|out of memory|oom|memory pressure|highwater|per-process-limit/i.test(text)) {
+      groups.add('memory');
+    }
+    if (/exc_|sig(abrt|segv|bus|trap|ill)|signal|exception type/i.test(text) || compact.includes('exc_bad_access')) {
+      groups.add('signal');
+    }
+    if (groups.size === 0) {
+      groups.add('other');
+    }
+    return Array.from(groups);
+  };
+
   const normalizedQuery = normalizeSearchValue(queryText);
   const versionOptions = useMemo(() => {
     const counts = new Map<string, number>();
@@ -493,6 +563,12 @@ export default function HistoryPage() {
     if (moduleFilters.length > 0) {
       const recordGroups = getRecordModuleGroups(record);
       if (!moduleFilters.some((filter) => recordGroups.includes(filter))) {
+        return false;
+      }
+    }
+    if (crashCategoryFilter !== 'all') {
+      const recordCategories = getRecordCrashCategories(record);
+      if (!recordCategories.includes(crashCategoryFilter)) {
         return false;
       }
     }
@@ -592,6 +668,17 @@ export default function HistoryPage() {
               { value: 'rtc', label: 'RTC' },
               { value: 'im', label: 'IM' },
               { value: 'other', label: '其他' },
+            ]}
+          />
+          <Select
+            allowClear
+            placeholder="全部崩溃类型"
+            value={crashCategoryFilter}
+            onChange={(value) => setCrashCategoryFilter(value || 'all')}
+            style={{ width: 220 }}
+            options={[
+              { value: 'all', label: '全部' },
+              ...CRASH_CATEGORY_OPTIONS,
             ]}
           />
           <Text type="secondary">
