@@ -3527,7 +3527,7 @@ export default function CICDPage() {
     }
   };
 
-  const loadBranches = async () => {
+  const loadBranches = async (options?: { silent?: boolean }) => {
     setBranchLoading(true);
     try {
       const response = await jenkinsApi.listBranches();
@@ -3538,7 +3538,11 @@ export default function CICDPage() {
       }
       return nextBranches;
     } catch (err: any) {
-      message.warning(err?.error || err?.message || '加载分支列表失败，可直接输入分支名');
+      if (options?.silent) {
+        console.warn('加载分支列表失败，可直接输入分支名', err);
+      } else {
+        message.warning(err?.error || err?.message || '加载分支列表失败，可直接输入分支名');
+      }
       return [];
     } finally {
       setBranchLoading(false);
@@ -4049,7 +4053,7 @@ export default function CICDPage() {
     const initialPath = location.pathname;
     if (!initialPath.startsWith('/cicd/quality') && !initialPath.startsWith('/cicd/devices')) {
       loadBuilds();
-      loadBranches();
+      loadBranches({ silent: true });
     }
   }, []);
 
@@ -4083,7 +4087,7 @@ export default function CICDPage() {
       refreshAppleDeviceSection();
     } else {
       if (branches.length === 0) {
-        loadBranches();
+        loadBranches({ silent: true });
       }
       appleEnrollmentAutoCreatedRef.current = false;
       setQualityError('');
@@ -5500,7 +5504,7 @@ export default function CICDPage() {
               notFoundContent={branchLoading ? '正在加载分支...' : '未找到 release 分支'}
               style={{ marginTop: 8, width: '100%' }}
             />
-            <Button size="small" type="link" onClick={loadBranches} loading={branchLoading} disabled={releaseBranchCreating} style={{ paddingInline: 0, marginTop: 4 }}>
+            <Button size="small" type="link" onClick={() => loadBranches()} loading={branchLoading} disabled={releaseBranchCreating} style={{ paddingInline: 0, marginTop: 4 }}>
               刷新分支列表
             </Button>
           </div>
@@ -5597,7 +5601,7 @@ export default function CICDPage() {
                     ? '可选择已有分支，也可直接输入分支名'
                     : 'TestFlight / 苹果商店自动使用当前 release/ 下最高版本分支'}
               </Text>
-              <Button size="small" type="link" onClick={loadBranches} loading={branchLoading}>
+              <Button size="small" type="link" onClick={() => loadBranches()} loading={branchLoading}>
                 刷新分支
               </Button>
             </Space>

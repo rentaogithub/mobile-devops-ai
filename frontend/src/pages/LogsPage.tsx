@@ -166,7 +166,7 @@ export default function LogsPage() {
     userQueryRecordApi.list()
       .then(setUserQueryRecords)
       .catch((error: any) => {
-        message.error(error?.message || error?.error || '加载查询用户记录失败');
+        console.warn('加载查询用户记录失败', error);
       });
   }, []);
 

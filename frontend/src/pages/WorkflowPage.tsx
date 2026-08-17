@@ -78,6 +78,7 @@ function dateText(value?: string) {
 
 export default function WorkflowPage() {
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [overview, setOverview] = useState<WorkflowOverview>();
   const [issues, setIssues] = useState<WorkflowIssue[]>([]);
   const [gates, setGates] = useState<WorkflowReleaseGate[]>([]);
@@ -96,8 +97,9 @@ export default function WorkflowPage() {
   const [observationForm] = Form.useForm();
   const [knowledgeForm] = Form.useForm();
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (options?: { silent?: boolean }) => {
     setLoading(true);
+    setLoadError('');
     try {
       // 读取标准质量任务时，后端会把 Jenkins/local artifacts 同步进 Workflow 数据模型。
       await qualityApi.listTasks().catch(() => undefined);
@@ -118,14 +120,20 @@ export default function WorkflowPage() {
       setObservations(observationResponse.data || []);
       setEvaluations(evaluationResponse.data || []);
     } catch (error: any) {
-      message.error(error?.error || error?.message || '加载 Workflow 数据失败');
+      const errorMessage = error?.error || error?.message || '加载 Workflow 数据失败';
+      setLoadError(errorMessage);
+      if (options?.silent) {
+        console.warn('加载 Workflow 数据失败', error);
+      } else {
+        message.error(errorMessage);
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadAll();
+    loadAll({ silent: true });
   }, [loadAll]);
 
   const openJson = (title: string, value: unknown) => {
@@ -562,8 +570,17 @@ export default function WorkflowPage() {
           <Title level={4} style={{ marginBottom: 6 }}><ApartmentOutlined style={{ color: '#1677ff', marginRight: 8 }} />移动研发质量中心</Title>
           <Paragraph type="secondary" style={{ margin: 0 }}>统一汇聚 Artifact、质量任务和 Issue，为变更分析、发布决策、确定性回归及质量知识沉淀提供依据。</Paragraph>
         </div>
-        <Button icon={<ReloadOutlined />} loading={loading} onClick={loadAll}>刷新</Button>
+        <Button icon={<ReloadOutlined />} loading={loading} onClick={() => loadAll()}>刷新</Button>
       </Space>
+      {loadError ? (
+        <Alert
+          showIcon
+          type="warning"
+          style={{ marginBottom: 16 }}
+          message="Workflow 数据暂未加载"
+          description={loadError}
+        />
+      ) : null}
       <Alert
         showIcon
         type="info"

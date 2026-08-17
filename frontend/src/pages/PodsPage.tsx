@@ -324,7 +324,7 @@ export default function PodsPage() {
     }
   }, [components, form, canManagePods]);
 
-  const fetchComponents = useCallback(async () => {
+  const fetchComponents = useCallback(async (options?: { silent?: boolean }) => {
     setLoading(true);
     try {
       const res = await podsApi.list();
@@ -332,14 +332,18 @@ export default function PodsPage() {
         setComponents(res.data || []);
       }
     } catch (error: any) {
-      message.error(error?.error || '获取组件列表失败');
+      if (options?.silent) {
+        console.warn('获取组件列表失败', error);
+      } else {
+        message.error(error?.error || '获取组件列表失败');
+      }
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchComponents();
+    fetchComponents({ silent: true });
   }, [fetchComponents]);
 
   useEffect(() => {
@@ -1390,7 +1394,7 @@ export default function PodsPage() {
           </Paragraph>
         </div>
         <Space>
-          <Button icon={<SyncOutlined />} onClick={fetchComponents} loading={loading}>刷新</Button>
+          <Button icon={<SyncOutlined />} onClick={() => fetchComponents()} loading={loading}>刷新</Button>
           {canManagePods && <Button type="primary" icon={<PlusOutlined />} onClick={() => { setPublishTabKey('local'); setPublishModalOpen(true); }}>发布组件</Button>}
         </Space>
       </div>
