@@ -537,6 +537,50 @@ function testFlightDistributionTag(build: JenkinsBuild) {
   return <Tag title={title}>待监听</Tag>;
 }
 
+function testFlightManualIntervention(build: JenkinsBuild) {
+  if (build.publishChannel !== 'TestFlight' || build.building || build.result !== 'SUCCESS') return null;
+  const distribution = build.testFlightDistribution;
+  if (!distribution) {
+    return {
+      type: 'info' as const,
+      message: '等待平台监听 TestFlight 分发状态',
+      description: '构建刚完成或列表尚未刷新，平台会继续轮询 App Store Connect。',
+    };
+  }
+  const status = String(distribution.status || '');
+  const rawMessage = String(distribution.message || '').trim();
+  if (status === 'skipped') {
+    return {
+      type: 'warning' as const,
+      message: 'TestFlight 自动分发未启用',
+      description: rawMessage || '缺少 App Store Connect App ID 或 TestFlight 测试组配置，需要管理员补齐平台配置后重新触发或刷新。',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      type: 'error' as const,
+      message: 'TestFlight 自动分发失败，需要人工处理',
+      description: rawMessage || '请检查 App Store Connect API Key 权限、Apple 协议、构建处理状态或测试组配置。',
+    };
+  }
+  if (status === 'unconfirmed') {
+    const needsExportCompliance = /出口合规|MISSING_EXPORT_COMPLIANCE/i.test(`${rawMessage} ${distribution.externalBuildState || ''}`);
+    return {
+      type: 'warning' as const,
+      message: needsExportCompliance ? '缺少出口合规信息，需要到 App Store Connect 处理' : 'TestFlight 状态无法确认，需要人工核对',
+      description: rawMessage || '平台暂时无法确认外部测试状态，请到 App Store Connect 检查构建处理、测试组和审核状态。',
+    };
+  }
+  if (status === 'uploaded' && /无法|确认|团队|API Key/i.test(rawMessage)) {
+    return {
+      type: 'warning' as const,
+      message: '已上传但未确认分发，需要人工核对',
+      description: rawMessage,
+    };
+  }
+  return null;
+}
+
 function appStoreReleaseTag(build: JenkinsBuild) {
   if (build.publishChannel !== 'AppStore') {
     return <Text type="secondary">-</Text>;
@@ -595,6 +639,35 @@ function appStoreReleaseTag(build: JenkinsBuild) {
     return <Tag color="warning" title={title}>未配置</Tag>;
   }
   return <Tag color="warning" title={title}>无法确认</Tag>;
+}
+
+function appStoreManualIntervention(build: JenkinsBuild) {
+  if (build.publishChannel !== 'AppStore' || build.building || build.result !== 'SUCCESS') return null;
+  const release = build.appStoreRelease;
+  if (!release) {
+    return {
+      type: 'info' as const,
+      message: '等待平台监听 App Store 发布状态',
+      description: '构建刚完成或列表尚未刷新，平台会继续轮询 App Store Connect。',
+    };
+  }
+  const status = String(release.status || '');
+  const detail = release.failureReason || release.message || release.appStoreState || '';
+  if (status === 'pending_agreement') {
+    return {
+      type: 'warning' as const,
+      message: 'Apple 协议待处理，需要人工介入',
+      description: detail || '请使用 Account Holder/Admin 账号进入 App Store Connect 完成协议签署。',
+    };
+  }
+  if (['developer_action_needed', 'rejected', 'developer_rejected', 'failed', 'skipped', 'unconfirmed'].includes(status)) {
+    return {
+      type: status === 'skipped' || status === 'unconfirmed' ? 'warning' as const : 'error' as const,
+      message: 'App Store 发布需要人工处理',
+      description: detail || '请到 App Store Connect 检查版本信息、审核反馈、API Key 权限或构建处理状态。',
+    };
+  }
+  return null;
 }
 
 function buildStatusTags(build: JenkinsBuild) {
@@ -6518,6 +6591,68 @@ export default function CICDPage() {
               </Space>
             </Card>
           )}
+          {selectedBuildLog?.build.publishChannel === 'TestFlight' && (
+            <Card size="small">
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Text strong>TestFlight 分发状态</Text>
+                {selectedBuildLog.build.testFlightDistribution ? (
+                  <Descriptions bordered size="small" column={2}>
+                    <Descriptions.Item label="分发状态">
+                      <Space size={4} wrap>
+                        {testFlightDistributionTag(selectedBuildLog.build)}
+                      </Space>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="更新时间">
+                      {selectedBuildLog.build.testFlightDistribution.updatedAt
+                        ? new Date(selectedBuildLog.build.testFlightDistribution.updatedAt).toLocaleString('zh-CN')
+                        : '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="App Store Build ID">
+                      {selectedBuildLog.build.testFlightDistribution.appStoreBuildId || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="处理状态">
+                      {selectedBuildLog.build.testFlightDistribution.processingState || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="内部测试">
+                      {selectedBuildLog.build.testFlightDistribution.internalBuildState || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="外部测试">
+                      {selectedBuildLog.build.testFlightDistribution.externalBuildState || '-'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="测试组" span={2}>
+                      {selectedBuildLog.build.testFlightDistribution.groups?.length
+                        ? (
+                          <Space size={4} wrap>
+                            {selectedBuildLog.build.testFlightDistribution.groups.map((group) => (
+                              <Tag key={group.id}>{group.name}</Tag>
+                            ))}
+                          </Space>
+                        )
+                        : <Text type="secondary">-</Text>}
+                    </Descriptions.Item>
+                    {selectedBuildLog.build.testFlightDistribution.message && (
+                      <Descriptions.Item label="状态说明" span={2}>
+                        {selectedBuildLog.build.testFlightDistribution.message}
+                      </Descriptions.Item>
+                    )}
+                  </Descriptions>
+                ) : (
+                  <Alert type="info" showIcon message="等待平台监听 TestFlight 分发状态" />
+                )}
+                {(() => {
+                  const intervention = testFlightManualIntervention(selectedBuildLog.build);
+                  return intervention ? (
+                    <Alert
+                      showIcon
+                      type={intervention.type}
+                      message={intervention.message}
+                      description={intervention.description}
+                    />
+                  ) : null;
+                })()}
+              </Space>
+            </Card>
+          )}
 	          {selectedBuildLog?.build.publishChannel === 'AppStore' && (
 	            <Card size="small">
 	              <Space direction="vertical" size={10} style={{ width: '100%' }}>
@@ -6544,6 +6679,17 @@ export default function CICDPage() {
                       )}
                     </Descriptions>
                   )}
+                  {(() => {
+                    const intervention = appStoreManualIntervention(selectedBuildLog.build);
+                    return intervention ? (
+                      <Alert
+                        showIcon
+                        type={intervention.type}
+                        message={intervention.message}
+                        description={intervention.description}
+                      />
+                    ) : null;
+                  })()}
                   {canPublishAppStore && selectedBuildLog.build.appStoreRelease && ['waiting_for_review', 'in_review'].includes(String(selectedBuildLog.build.appStoreRelease.status || '')) && (
                     <Alert
                       type="warning"

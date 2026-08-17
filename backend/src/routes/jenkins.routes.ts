@@ -1846,7 +1846,6 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
 
   const cacheKey = String(buildNumber);
   const saved = getSavedAppStoreRelease(buildNumber);
-  if (['failed', 'skipped'].includes(String(saved?.status || ''))) return;
   if (saved?.status === 'ready_for_sale' && saved?.reviewApprovalNotifiedAt) return;
   if (APPSTORE_RELEASE_RUNNING.has(cacheKey)) return;
 
