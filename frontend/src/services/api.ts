@@ -1933,6 +1933,37 @@ export interface JenkinsBuild {
   testFlightWhatsNew?: string;
   testFlightDistribution?: JenkinsTestFlightDistribution;
   appStoreRelease?: JenkinsAppStoreRelease;
+  releaseOrder?: JenkinsReleaseOrder;
+}
+
+export interface JenkinsReleaseOrderEvent {
+  id: string;
+  type: string;
+  title: string;
+  status: 'success' | 'processing' | 'warning' | 'error' | 'default' | string;
+  detail?: string;
+  at: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface JenkinsReleaseOrder {
+  id: string;
+  branch: string;
+  deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore' | string;
+  appVersion?: string;
+  releaseNotes?: string;
+  gateBuildNumber?: number;
+  releaseGateOverrideReason?: string;
+  jenkinsQueueUrl?: string;
+  jenkinsBuildNumber?: number;
+  jenkinsBuildUrl?: string;
+  channelBuildNumber?: string;
+  status?: string;
+  phase?: string;
+  failureReason?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  events?: JenkinsReleaseOrderEvent[];
 }
 
 export interface JenkinsTestFlightDistribution {
@@ -1977,6 +2008,33 @@ export interface JenkinsAppStoreReleaseGuard {
   message?: string;
 }
 
+export interface JenkinsReleasePreflightCheck {
+  key: string;
+  label: string;
+  status: 'passed' | 'warning' | 'blocked';
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface JenkinsReleasePreflightResult {
+  passed: boolean;
+  branch: string;
+  deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore' | string;
+  appVersion?: string;
+  blockers: JenkinsReleasePreflightCheck[];
+  warnings: JenkinsReleasePreflightCheck[];
+  checks: JenkinsReleasePreflightCheck[];
+}
+
+export interface JenkinsCicdHealthResult {
+  healthy: boolean;
+  blockers: JenkinsReleasePreflightCheck[];
+  warnings: JenkinsReleasePreflightCheck[];
+  checks: JenkinsReleasePreflightCheck[];
+  checkedAt: string;
+  elapsedMs: number;
+}
+
 export interface JenkinsJobInfo {
   name: string;
   fullName: string;
@@ -2007,6 +2065,7 @@ export interface JenkinsBuildLogResult {
   testFlightWhatsNew?: string;
   testFlightDistribution?: JenkinsTestFlightDistribution;
   appStoreRelease?: JenkinsAppStoreRelease;
+  releaseOrder?: JenkinsReleaseOrder;
   thirdSdkBranch: string;
   thirdSdkRevision?: string;
   thirdSdkDependencies: Array<{
@@ -2610,8 +2669,24 @@ export const jenkinsApi = {
     gateBuildNumber?: number;
     releaseGateOverrideReason?: string;
     testFlightWhatsNew?: string;
-  }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate }>>('/jenkins/nn/build', payload);
+  }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate; releaseOrder?: JenkinsReleaseOrder }>> => {
+    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate; releaseOrder?: JenkinsReleaseOrder }>>('/jenkins/nn/build', payload);
+    return response.data;
+  },
+
+  preflightRelease: async (payload: {
+    deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
+    branch?: string;
+    appVersion?: string;
+    gateBuildNumber?: number;
+    testFlightWhatsNew?: string;
+  }): Promise<ApiResponse<JenkinsReleasePreflightResult>> => {
+    const response = await api.post<ApiResponse<JenkinsReleasePreflightResult>>('/jenkins/nn/release/preflight', payload);
+    return response.data;
+  },
+
+  getCicdHealth: async (): Promise<ApiResponse<JenkinsCicdHealthResult>> => {
+    const response = await api.get<ApiResponse<JenkinsCicdHealthResult>>('/jenkins/nn/cicd/health');
     return response.data;
   },
 

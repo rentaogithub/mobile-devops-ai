@@ -63,6 +63,9 @@ const RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT = Math.min(
 const JENKINS_LIST_TIMEOUT_MS = Number(process.env.JENKINS_LIST_TIMEOUT_MS || 2500);
 const JENKINS_BUILD_METADATA_TIMEOUT_MS = Number(process.env.JENKINS_BUILD_METADATA_TIMEOUT_MS || 1500);
 const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 3 * 60 * 1000);
+const RELEASE_SYNC_INTERVAL_MS = Math.max(15000, Number(process.env.JENKINS_RELEASE_SYNC_INTERVAL_MS || 60000) || 60000);
+const RELEASE_SYNC_SCAN_LIMIT = Math.min(80, Math.max(10, Number(process.env.JENKINS_RELEASE_SYNC_SCAN_LIMIT || 40) || 40));
+const RELEASE_SYNC_CONCURRENCY = Math.min(8, Math.max(1, Number(process.env.JENKINS_RELEASE_SYNC_CONCURRENCY || 4) || 4));
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
@@ -72,6 +75,7 @@ const PACKAGE_SIZE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-package-si
 const TESTFLIGHT_DISTRIBUTION_CACHE_PATH = path.join(DATA_DIR, 'jenkins-testflight-distribution.json');
 const APPSTORE_RELEASE_CACHE_PATH = path.join(DATA_DIR, 'jenkins-appstore-release.json');
 const RELEASE_REQUEST_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-requests.json');
+const RELEASE_ORDER_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-orders.json');
 const JENKINS_BRANCH_CACHE_PATH = path.join(DATA_DIR, 'jenkins-branches.json');
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
@@ -81,6 +85,7 @@ const podService = new PodService();
 const BUILD_DSYM_SYNC_RUNNING = new Set<string>();
 const TESTFLIGHT_DISTRIBUTION_RUNNING = new Set<string>();
 const APPSTORE_RELEASE_RUNNING = new Set<string>();
+let RELEASE_SYNC_RUNNING = false;
 const ASC_API_BASE = 'https://api.appstoreconnect.apple.com/v1';
 const TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS = Math.max(
   5000,
@@ -328,6 +333,35 @@ function getNniosRepoLocalDir() {
     path.resolve(process.cwd(), '..', '..', 'nnios'),
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, '.git'))) || candidates[0];
+}
+
+function readShellConfigValue(configPath: string, key: string): string {
+  try {
+    if (!fs.existsSync(configPath)) return '';
+    const lines = fs.readFileSync(configPath, 'utf-8').split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const match = trimmed.match(new RegExp(`^(?:export\\s+)?${key}=([\\s\\S]*)$`));
+      if (!match) continue;
+      return String(match[1] || '').trim().replace(/^['"]|['"]$/g, '');
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function getJenkinsRepoLocalDir() {
+  const configured = String(getRuntimeEnv('NN_IOS_JENKINS_DIR') || getRuntimeEnv('JENKINS_NN_IOS_JENKINS_DIR') || '').trim();
+  if (configured) return path.resolve(configured);
+  const platformRoot = getPlatformRootDir();
+  const candidates = [
+    path.resolve(platformRoot, '..', 'nn-ios-jekins'),
+    path.resolve(process.cwd(), '..', 'nn-ios-jekins'),
+    path.resolve(process.cwd(), '..', '..', 'nn-ios-jekins'),
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'cicd/jenkins/build_config.sh'))) || candidates[0];
 }
 
 function getMgitPublishRepos(repoDir: string) {
@@ -1092,7 +1126,28 @@ function saveTestFlightDistribution(buildNumber: number, distribution: any) {
   const tmpPath = `${TESTFLIGHT_DISTRIBUTION_CACHE_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
   fs.renameSync(tmpPath, TESTFLIGHT_DISTRIBUTION_CACHE_PATH);
-  return nextCache.builds[String(buildNumber)];
+  const nextDistribution = nextCache.builds[String(buildNumber)];
+  const distributionStatus = String(nextDistribution?.status || '');
+  const eventStatus = distributionStatus === 'distributed'
+    ? 'success'
+    : (distributionStatus === 'failed' ? 'error' : (distributionStatus === 'skipped' || distributionStatus === 'unconfirmed' ? 'warning' : 'processing'));
+  updateReleaseOrderByBuild(buildNumber, {
+    status: distributionStatus === 'distributed' ? 'published' : (distributionStatus === 'failed' ? 'failed' : 'syncing'),
+    phase: `testflight_${distributionStatus || 'syncing'}`,
+    failureReason: distributionStatus === 'failed' ? String(nextDistribution?.message || 'TestFlight 自动分发失败') : '',
+  }, releaseOrderEvent(
+    `testflight.${distributionStatus || 'updated'}`,
+    'TestFlight 状态同步',
+    eventStatus,
+    String(nextDistribution?.message || ''),
+    {
+      appStoreBuildId: nextDistribution?.appStoreBuildId,
+      processingState: nextDistribution?.processingState,
+      internalBuildState: nextDistribution?.internalBuildState,
+      externalBuildState: nextDistribution?.externalBuildState,
+    },
+  ));
+  return nextDistribution;
 }
 
 function readAppStoreReleaseCache() {
@@ -1131,6 +1186,27 @@ function saveAppStoreRelease(buildNumber: number, release: any) {
   const tmpPath = `${APPSTORE_RELEASE_CACHE_PATH}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
   fs.renameSync(tmpPath, APPSTORE_RELEASE_CACHE_PATH);
+  const nextStatus = String(nextRelease?.status || '');
+  const eventStatus = ['ready_for_sale', 'ready_for_distribution'].includes(nextStatus)
+    ? 'success'
+    : (['failed', 'rejected', 'developer_action_needed'].includes(nextStatus) ? 'error' : (['skipped', 'unconfirmed', 'pending_agreement'].includes(nextStatus) ? 'warning' : 'processing'));
+  updateReleaseOrderByBuild(buildNumber, {
+    status: nextStatus === 'ready_for_sale' ? 'published' : (eventStatus === 'error' ? 'failed' : 'syncing'),
+    phase: `appstore_${nextStatus || 'syncing'}`,
+    failureReason: eventStatus === 'error' ? String(nextRelease?.failureReason || nextRelease?.message || 'App Store 自动发布异常') : '',
+  }, releaseOrderEvent(
+    `appstore.${nextStatus || 'updated'}`,
+    'App Store 状态同步',
+    eventStatus,
+    String(nextRelease?.failureReason || nextRelease?.message || nextRelease?.appStoreState || ''),
+    {
+      appStoreBuildId: nextRelease?.appStoreBuildId,
+      appStoreVersionId: nextRelease?.appStoreVersionId,
+      reviewSubmissionId: nextRelease?.reviewSubmissionId,
+      appStoreState: nextRelease?.appStoreState,
+      releaseType: nextRelease?.releaseType,
+    },
+  ));
   if (shouldNotifyApproved) {
     notifyAppStoreReleaseApproved(buildNumber, nextRelease);
   }
@@ -1217,6 +1293,174 @@ function matchReleaseRequestForBuild(build: any, branchName: string, publishChan
     },
   });
   return archived;
+}
+
+function readReleaseOrderCache() {
+  const cache = readJsonFile(RELEASE_ORDER_CACHE_PATH);
+  return cache && typeof cache === 'object' ? cache : { orders: [], builds: {} };
+}
+
+function writeReleaseOrderCache(cache: any) {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  const tmpPath = `${RELEASE_ORDER_CACHE_PATH}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(cache, null, 2));
+  fs.renameSync(tmpPath, RELEASE_ORDER_CACHE_PATH);
+}
+
+function releaseOrderEvent(type: string, title: string, status: string, detail?: string, payload?: any) {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    title,
+    status,
+    detail: detail || '',
+    payload: payload || undefined,
+    at: new Date().toISOString(),
+  };
+}
+
+function createReleaseOrder(input: any) {
+  const now = new Date().toISOString();
+  const normalizedDeployTarget = normalizeDeployTarget(String(input.deployTarget || 'Pgyer')) || 'Pgyer';
+  const normalizedBranch = normalizeBranchName(String(input.branch || ''));
+  const releaseOrder = {
+    id: crypto.randomUUID(),
+    branch: normalizedBranch,
+    deployTarget: normalizedDeployTarget,
+    appVersion: String(input.appVersion || appVersionFromReleaseBranch(normalizedBranch) || '').trim(),
+    releaseNotes: normalizeTestFlightWhatsNew(input.releaseNotes || input.testFlightWhatsNew),
+    gateBuildNumber: input.gateBuildNumber ? Number(input.gateBuildNumber) : undefined,
+    releaseGateOverrideReason: String(input.releaseGateOverrideReason || '').trim(),
+    jenkinsQueueUrl: String(input.queueUrl || ''),
+    jenkinsBuildNumber: input.jenkinsBuildNumber ? Number(input.jenkinsBuildNumber) : undefined,
+    channelBuildNumber: String(input.channelBuildNumber || ''),
+    status: String(input.status || 'queued'),
+    phase: String(input.phase || 'jenkins_queued'),
+    failureReason: String(input.failureReason || ''),
+    createdAt: now,
+    updatedAt: now,
+    events: [
+      releaseOrderEvent('release.created', '创建发布单', 'success', `${normalizedDeployTarget} / ${normalizedBranch}`),
+    ],
+  };
+  const cache = readReleaseOrderCache();
+  writeReleaseOrderCache({
+    ...cache,
+    orders: [releaseOrder, ...(Array.isArray(cache.orders) ? cache.orders : [])].slice(0, 500),
+    builds: cache.builds || {},
+  });
+  return releaseOrder;
+}
+
+function saveReleaseOrder(orderId: string, patch: any = {}, event?: any) {
+  if (!orderId) return null;
+  const cache = readReleaseOrderCache();
+  const orders = Array.isArray(cache.orders) ? cache.orders : [];
+  let updatedOrder: any = null;
+  const nextOrders = orders.map((order: any) => {
+    if (String(order?.id || '') !== orderId) return order;
+    const currentEvents = Array.isArray(order.events) ? order.events : [];
+    const lastEvent = currentEvents[currentEvents.length - 1];
+    const shouldAppendEvent = Boolean(event) && !(
+      lastEvent &&
+      lastEvent.type === event.type &&
+      lastEvent.status === event.status &&
+      String(lastEvent.detail || '') === String(event.detail || '')
+    );
+    const nextEvents = shouldAppendEvent ? [...currentEvents, event] : currentEvents;
+    updatedOrder = {
+      ...order,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+      events: nextEvents.slice(-80),
+    };
+    return updatedOrder;
+  });
+  if (!updatedOrder) return null;
+  const nextBuilds = { ...(cache.builds || {}) };
+  if (updatedOrder.jenkinsBuildNumber) {
+    nextBuilds[String(updatedOrder.jenkinsBuildNumber)] = updatedOrder;
+  }
+  writeReleaseOrderCache({
+    ...cache,
+    orders: nextOrders,
+    builds: nextBuilds,
+  });
+  return updatedOrder;
+}
+
+function getReleaseOrderForBuild(buildNumber: number) {
+  const cache = readReleaseOrderCache();
+  return cache?.builds?.[String(buildNumber)] || null;
+}
+
+function latestUnlinkedReleaseOrder(branchName: string, deployTarget: string, buildTimestamp: number) {
+  const cache = readReleaseOrderCache();
+  const normalizedBranch = normalizeBranchName(branchName || '');
+  const normalizedChannel = normalizeDeployTarget(deployTarget || '');
+  const orders = Array.isArray(cache.orders) ? cache.orders : [];
+  return orders
+    .filter((order: any) => {
+      if (order.jenkinsBuildNumber) return false;
+      if (normalizeBranchName(String(order.branch || '')) !== normalizedBranch) return false;
+      if (normalizeDeployTarget(String(order.deployTarget || '')) !== normalizedChannel) return false;
+      const createdAt = Date.parse(String(order.createdAt || order.submittedAt || ''));
+      return Number.isFinite(createdAt) &&
+        buildTimestamp >= createdAt - 5 * 60 * 1000 &&
+        buildTimestamp <= createdAt + 2 * 60 * 60 * 1000;
+    })
+    .sort((a: any, b: any) => Date.parse(String(b.createdAt || '')) - Date.parse(String(a.createdAt || '')))[0] || null;
+}
+
+function releaseOrderPhaseFromBuild(build: any, publishChannel: string) {
+  if (build?.building) return { status: 'running', phase: 'jenkins_building', title: 'Jenkins 构建中', eventStatus: 'processing' };
+  const result = String(build?.result || '').toUpperCase();
+  if (result === 'SUCCESS') {
+    if (normalizeDeployTarget(publishChannel) === 'Pgyer') return { status: 'published', phase: 'pgyer_uploaded', title: '蒲公英发布完成', eventStatus: 'success' };
+    return { status: 'uploaded', phase: 'jenkins_success', title: 'Jenkins 打包上传完成', eventStatus: 'success' };
+  }
+  if (result === 'ABORTED') return { status: 'canceled', phase: 'jenkins_aborted', title: 'Jenkins 构建已取消', eventStatus: 'warning' };
+  if (result) return { status: 'failed', phase: 'jenkins_failed', title: 'Jenkins 构建失败', eventStatus: 'error' };
+  return { status: 'unknown', phase: 'jenkins_unknown', title: '等待 Jenkins 状态', eventStatus: 'default' };
+}
+
+function matchReleaseOrderForBuild(build: any, branchName: string, publishChannel: string, metadata: any = {}) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return null;
+  const existing = getReleaseOrderForBuild(buildNumber);
+  const normalizedBranch = normalizeBranchName(branchName || '');
+  const normalizedChannel = normalizeDeployTarget(publishChannel || '');
+  const buildTimestamp = Number(build?.timestamp || 0);
+  let order = existing || latestUnlinkedReleaseOrder(normalizedBranch, normalizedChannel, buildTimestamp);
+  if (!order) return null;
+
+  const phase = releaseOrderPhaseFromBuild(build, normalizedChannel);
+  const existingPhase = String(order.phase || '');
+  const hasChannelSyncPhase = /^(appstore|testflight)_/.test(existingPhase);
+  const patch = {
+    jenkinsBuildNumber: buildNumber,
+    jenkinsBuildUrl: normalizeJenkinsUrl(build?.url),
+    branch: normalizedBranch || order.branch,
+    deployTarget: normalizedChannel || order.deployTarget,
+    appVersion: String(metadata.appVersion || order.appVersion || appVersionFromReleaseBranch(normalizedBranch) || '').trim(),
+    channelBuildNumber: String(metadata.buildNumber || order.channelBuildNumber || '').trim(),
+    status: hasChannelSyncPhase ? order.status : phase.status,
+    phase: hasChannelSyncPhase ? order.phase : phase.phase,
+    failureReason: phase.status === 'failed' ? 'Jenkins 构建失败，请查看构建日志' : String(order.failureReason || ''),
+  };
+  const alreadyRecorded = Array.isArray(order.events) && order.events.some((event: any) => event.type === `release.${phase.phase}`);
+  order = saveReleaseOrder(order.id, patch, alreadyRecorded || hasChannelSyncPhase
+    ? undefined
+    : releaseOrderEvent(`release.${phase.phase}`, phase.title, phase.eventStatus, `Jenkins #${buildNumber}`));
+  return order;
+}
+
+function updateReleaseOrderByBuild(buildNumber: number, patch: any, event?: any) {
+  const order = getReleaseOrderForBuild(buildNumber);
+  if (!order?.id) return null;
+  return saveReleaseOrder(order.id, patch, event);
 }
 
 function readBranchCache() {
@@ -4097,6 +4341,286 @@ async function assertAppStoreReleasePreconditions(branch: string, appVersion: st
   }
 }
 
+type ReleasePreflightCheckStatus = 'passed' | 'warning' | 'blocked';
+
+function buildReleasePreflightCheck(key: string, label: string, status: ReleasePreflightCheckStatus, message: string, details?: any) {
+  return { key, label, status, message, details };
+}
+
+function ascConfigStatus() {
+  const keyPath = String(getRuntimeEnv('APP_STORE_CONNECT_API_KEY_PATH') || '').trim();
+  const keyId = String(getRuntimeEnv('APP_STORE_CONNECT_API_KEY_ID') || '').trim();
+  const issuerId = String(getRuntimeEnv('APP_STORE_CONNECT_API_ISSUER_ID') || '').trim();
+  const appId = String(getRuntimeEnv('APP_STORE_CONNECT_APP_ID') || '').trim();
+  return {
+    configured: Boolean(keyPath && keyId && issuerId && appId),
+    keyPathConfigured: Boolean(keyPath),
+    keyFileExists: keyPath ? fs.existsSync(keyPath) : false,
+    keyIdConfigured: Boolean(keyId),
+    issuerIdConfigured: Boolean(issuerId),
+    appIdConfigured: Boolean(appId),
+  };
+}
+
+function pgyerConfigStatus() {
+  const platformApiKeyConfigured = Boolean(String(getRuntimeEnv('PGYER_API_KEY') || '').trim());
+  const platformAppKeyConfigured = Boolean(String(getRuntimeEnv('PGYER_APP_KEY') || '').trim());
+  const platformShortcutConfigured = Boolean(String(getRuntimeEnv('PGYER_SHORTCUT_URL') || '').trim());
+  const jenkinsConfigPath = path.join(getJenkinsRepoLocalDir(), 'cicd/jenkins/build_config.sh');
+  const jenkinsApiKeyConfigured = Boolean(readShellConfigValue(jenkinsConfigPath, 'PGYER_API_KEY'));
+  const jenkinsAppKeyConfigured = Boolean(readShellConfigValue(jenkinsConfigPath, 'PGYER_APP_KEY'));
+  const jenkinsShortcutConfigured = Boolean(readShellConfigValue(jenkinsConfigPath, 'PGYER_SHORTCUT_URL'));
+  return {
+    configured: platformApiKeyConfigured || jenkinsApiKeyConfigured,
+    apiKeyConfigured: platformApiKeyConfigured || jenkinsApiKeyConfigured,
+    platformApiKeyConfigured,
+    jenkinsApiKeyConfigured,
+    appKeyConfigured: platformAppKeyConfigured || jenkinsAppKeyConfigured,
+    shortcutConfigured: platformShortcutConfigured || jenkinsShortcutConfigured,
+    jenkinsConfigPath,
+  };
+}
+
+async function buildReleasePreflight(input: {
+  branch: string;
+  deployTarget: string;
+  appVersion?: string;
+  gateBuildNumber?: number;
+  testFlightWhatsNew?: string;
+}) {
+  const checks: any[] = [];
+  const branch = normalizeBranchName(input.branch || '');
+  const deployTarget = normalizeDeployTarget(input.deployTarget || 'Pgyer');
+  const releaseBranchVersion = appVersionFromReleaseBranch(branch);
+  const requestedAppVersion = String(input.appVersion || releaseBranchVersion || '').trim();
+  const releaseNotes = normalizeTestFlightWhatsNew(input.testFlightWhatsNew);
+
+  checks.push(buildReleasePreflightCheck(
+    'branch',
+    '发布分支',
+    branch ? 'passed' : 'blocked',
+    branch ? `发布分支：${branch}` : '发布分支不能为空',
+  ));
+  checks.push(buildReleasePreflightCheck(
+    'deploy_target',
+    '发布渠道',
+    DEPLOY_TARGETS.has(deployTarget) ? 'passed' : 'blocked',
+    DEPLOY_TARGETS.has(deployTarget) ? `发布渠道：${deployTarget}` : '发布渠道无效',
+  ));
+
+  if (deployTarget !== 'Pgyer') {
+    checks.push(buildReleasePreflightCheck(
+      'release_branch',
+      'Release 分支',
+      isReleaseBranch(branch) ? 'passed' : 'blocked',
+      isReleaseBranch(branch) ? '符合 release/x.x.x 分支规则' : 'TestFlight/App Store 仅允许 release/x.x.x 分支',
+    ));
+    checks.push(buildReleasePreflightCheck(
+      'version_match',
+      '版本一致性',
+      releaseBranchVersion && (!requestedAppVersion || requestedAppVersion === releaseBranchVersion) ? 'passed' : 'blocked',
+      releaseBranchVersion
+        ? (requestedAppVersion && requestedAppVersion !== releaseBranchVersion
+          ? `发布版本 ${requestedAppVersion} 与分支版本 ${releaseBranchVersion} 不一致`
+          : `App 版本与分支版本一致：${releaseBranchVersion}`)
+        : '无法从 release 分支解析 App 版本',
+    ));
+    checks.push(buildReleasePreflightCheck(
+      'release_notes',
+      '发布文案',
+      releaseNotes.length > 4 ? 'passed' : 'blocked',
+      releaseNotes.length > 4 ? '发布文案已填写' : 'TestFlight/App Store 发布文案必填，且必须超过 4 个字',
+    ));
+    const ascStatus = ascConfigStatus();
+    checks.push(buildReleasePreflightCheck(
+      'asc_config',
+      'App Store Connect 配置',
+      ascStatus.configured && (!ascStatus.keyPathConfigured || ascStatus.keyFileExists) ? 'passed' : 'blocked',
+      ascStatus.configured
+        ? (ascStatus.keyFileExists ? 'ASC API 配置可用' : 'ASC API Key 文件路径不存在')
+        : '缺少 APP_STORE_CONNECT_API_KEY_PATH/ID/ISSUER_ID/APP_ID 配置',
+      ascStatus,
+    ));
+  } else {
+    const pgyerStatus = pgyerConfigStatus();
+    checks.push(buildReleasePreflightCheck(
+    'pgyer_config',
+    '蒲公英配置',
+      pgyerStatus.apiKeyConfigured ? 'passed' : 'warning',
+      pgyerStatus.apiKeyConfigured
+        ? (pgyerStatus.platformApiKeyConfigured ? '平台已配置蒲公英 API Key' : 'Jenkins build_config 已配置蒲公英 API Key')
+        : '未检测到 PGYER_API_KEY，Jenkins 侧可能会发布失败',
+      pgyerStatus,
+    ));
+  }
+
+  if (deployTarget === 'AppStore') {
+    try {
+      const guard = await checkAppStoreReleaseBlocker(branch);
+      checks.push(buildReleasePreflightCheck(
+        'appstore_version_state',
+        'ASC 版本状态',
+        guard.blocked ? 'blocked' : 'passed',
+        guard.message || 'ASC 版本状态允许发布',
+        guard,
+      ));
+    } catch (error: any) {
+      checks.push(buildReleasePreflightCheck(
+        'appstore_version_state',
+        'ASC 版本状态',
+        'blocked',
+        extractErrorMessage(error, '检查苹果商店版本状态失败'),
+      ));
+    }
+
+    if (input.gateBuildNumber) {
+      try {
+        await assertAppStoreReleasePreconditions(branch, requestedAppVersion, Number(input.gateBuildNumber));
+        checks.push(buildReleasePreflightCheck(
+          'optional_gate_source',
+          '可选门禁源',
+          'passed',
+          `已选择同分支最新 TestFlight 成功构建 #${Number(input.gateBuildNumber)}`,
+        ));
+      } catch (error: any) {
+        checks.push(buildReleasePreflightCheck(
+          'optional_gate_source',
+          '可选门禁源',
+          'blocked',
+          extractErrorMessage(error, '门禁源不符合发布要求'),
+          error instanceof JenkinsReleaseError ? error.data : undefined,
+        ));
+      }
+    } else {
+      checks.push(buildReleasePreflightCheck(
+        'optional_gate_source',
+        '可选门禁源',
+        'warning',
+        '未选择门禁源，将跳过质量门禁评分',
+      ));
+    }
+  }
+
+  const blockers = checks.filter((check) => check.status === 'blocked');
+  const warnings = checks.filter((check) => check.status === 'warning');
+  return {
+    passed: blockers.length === 0,
+    branch,
+    deployTarget,
+    appVersion: requestedAppVersion,
+    blockers,
+    warnings,
+    checks,
+  };
+}
+
+async function loadReleaseBuildForSync(jobPath: string, build: any) {
+  const buildNumber = Number(build?.number);
+  if (!Number.isFinite(buildNumber) || buildNumber <= 0) return null;
+  const descriptionMetadata = parseBuildDescription(build.description);
+  const [consoleMetadata, buildParameters] = await Promise.all([
+    fetchBuildConsoleMetadata(jobPath, buildNumber).catch(() => ({} as any)),
+    fetchBuildParameters(jobPath, buildNumber).catch(() => ({ branchName: '', testFlightWhatsNew: '' })),
+  ]);
+  const publishChannel = consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel);
+  if (!normalizeDeployTarget(publishChannel)) return null;
+  const channelBuildNumber = await resolveChannelBuildNumber(
+    publishChannel,
+    consoleMetadata.buildNumber || descriptionMetadata.buildNumber,
+    buildNumber,
+  );
+  const branchName = normalizeBranchName(buildParameters.branchName || '');
+  const releaseOrder = matchReleaseOrderForBuild(build, branchName, publishChannel, {
+    appVersion: consoleMetadata.appVersion,
+    buildNumber: channelBuildNumber,
+  });
+  const archivedReleaseRequest = getArchivedReleaseRequestForBuild(buildNumber) ||
+    matchReleaseRequestForBuild(build, branchName, publishChannel);
+  const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || releaseOrder?.releaseNotes || '';
+  return {
+    ...build,
+    url: normalizeJenkinsUrl(build.url),
+    branchName,
+    publishChannel,
+    commitHash: consoleMetadata.commitHash,
+    buildNumber: channelBuildNumber,
+    appVersion: consoleMetadata.appVersion || appVersionFromReleaseBranch(branchName),
+    testFlightWhatsNew,
+    packageUrl: consoleMetadata.packageUrl,
+    installPackageUrl: consoleMetadata.installPackageUrl,
+    channelQrUrl: consoleMetadata.channelQrUrl,
+    xcarchivePath: consoleMetadata.xcarchivePath,
+    archiveUrl: consoleMetadata.archiveUrl,
+    releaseOrder,
+  };
+}
+
+async function syncRecentReleaseBuilds(reason = 'timer') {
+  if (RELEASE_SYNC_RUNNING) return { skipped: true, reason: 'running' };
+  RELEASE_SYNC_RUNNING = true;
+  const startedAt = Date.now();
+  try {
+    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const tree = `builds[number,result,timestamp,duration,building,url,description]{0,${RELEASE_SYNC_SCAN_LIMIT}}`;
+    const response = await fetchJenkinsJobJson(jobPath, tree);
+    const rawBuilds = Array.isArray(response.data?.builds) ? response.data.builds : [];
+    const syncedBuilds: any[] = [];
+    for (let index = 0; index < rawBuilds.length; index += RELEASE_SYNC_CONCURRENCY) {
+      const batch = rawBuilds.slice(index, index + RELEASE_SYNC_CONCURRENCY);
+      const loadedBuilds = await Promise.all(batch.map(async (rawBuild: any) => {
+        try {
+          return await loadReleaseBuildForSync(jobPath, rawBuild);
+        } catch (error: any) {
+          logger.warn('CI/CD 发布状态单条同步失败', {
+            reason,
+            buildNumber: rawBuild?.number,
+            error: error?.message,
+          });
+          return null;
+        }
+      }));
+      for (const build of loadedBuilds) {
+        if (!build) continue;
+        syncedBuilds.push(build);
+        scheduleAppStoreBuildDsymSync(build);
+        scheduleTestFlightDistribution(build);
+        scheduleAppStoreRelease(build);
+      }
+    }
+    if (syncedBuilds.length > 0) {
+      workflowIntegrationService.syncJenkinsBuilds(syncedBuilds);
+    }
+    return {
+      skipped: false,
+      reason,
+      count: syncedBuilds.length,
+      elapsedMs: Date.now() - startedAt,
+      syncedAt: new Date().toISOString(),
+    };
+  } catch (error: any) {
+    logger.warn('CI/CD 发布状态后台同步失败', { reason, error: error?.message });
+    return {
+      skipped: false,
+      reason,
+      error: error?.message || 'CI/CD 发布状态后台同步失败',
+      elapsedMs: Date.now() - startedAt,
+      syncedAt: new Date().toISOString(),
+    };
+  } finally {
+    RELEASE_SYNC_RUNNING = false;
+  }
+}
+
+function startReleaseStatusSyncer() {
+  if (String(process.env.JENKINS_RELEASE_SYNC_DISABLED || '').toLowerCase() === 'true') return;
+  setTimeout(() => {
+    void syncRecentReleaseBuilds('startup');
+  }, 5000).unref?.();
+  setInterval(() => {
+    void syncRecentReleaseBuilds('timer');
+  }, RELEASE_SYNC_INTERVAL_MS).unref?.();
+}
+
 async function fetchRecentJenkinsBuildBranches(jobPath: string) {
   const tree = `builds[number]{0,${RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT}}`;
   const response = await fetchJenkinsJobJson(jobPath, tree);
@@ -4192,7 +4716,11 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
       );
       const branchName = buildParameters.branchName;
       const archivedReleaseRequest = matchReleaseRequestForBuild(build, branchName, publishChannel);
-      const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || '';
+      const releaseOrder = matchReleaseOrderForBuild(build, branchName, publishChannel, {
+        appVersion,
+        buildNumber,
+      });
+      const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || releaseOrder?.releaseNotes || '';
 	      return {
 	        ...build,
 	        url: normalizeJenkinsUrl(build.url),
@@ -4210,6 +4738,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 	        dsymSync: getSavedBuildDsymSync(build.number),
 	        testFlightDistribution: getSavedTestFlightDistribution(build.number),
 	        appStoreRelease: getSavedAppStoreRelease(build.number),
+          releaseOrder,
 	      };
 	    }));
 	    buildsWithMetadata.forEach(scheduleAppStoreBuildDsymSync);
@@ -4289,7 +4818,11 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	    const publishChannel = buildMetadata.publishChannel || normalizeDeployTarget(parseBuildDescription(buildInfo.description).publishChannel);
 	    const archivedReleaseRequest = getArchivedReleaseRequestForBuild(buildNumber) ||
 	      matchReleaseRequestForBuild(buildInfo, buildParameters.branchName, publishChannel);
-	    const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || '';
+      const releaseOrder = matchReleaseOrderForBuild(buildInfo, buildParameters.branchName, publishChannel, {
+        appVersion: buildMetadata.appVersion,
+        buildNumber: buildMetadata.buildNumber,
+      });
+	    const testFlightWhatsNew = buildParameters.testFlightWhatsNew || archivedReleaseRequest?.releaseNotes || releaseOrder?.releaseNotes || '';
 	    const dsymSync = getSavedBuildDsymSync(buildNumber);
 	    const testFlightDistribution = getSavedTestFlightDistribution(buildNumber);
 	    const appStoreRelease = getSavedAppStoreRelease(buildNumber);
@@ -4324,6 +4857,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	        testFlightWhatsNew,
 	        testFlightDistribution,
 	        appStoreRelease,
+          releaseOrder,
 	        thirdSdkBranch: thirdSdk.branch,
         thirdSdkRevision: thirdSdk.revision,
         thirdSdkDependencies: thirdSdk.dependencies,
@@ -5139,12 +5673,122 @@ router.post('/nn/app-store/release-guard', cicdProductReleaseMiddleware, async (
   }
 });
 
+router.post('/nn/release/preflight', cicdReleaseMiddleware, async (req: Request, res: Response) => {
+  try {
+    const data = await buildReleasePreflight({
+      branch: String(req.body?.branch || ''),
+      deployTarget: String(req.body?.deployTarget || 'Pgyer'),
+      appVersion: String(req.body?.appVersion || '').trim(),
+      gateBuildNumber: req.body?.gateBuildNumber ? Number(req.body.gateBuildNumber) : undefined,
+      testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),
+    });
+    res.status(data.passed ? 200 : 409).json({
+      success: data.passed,
+      data,
+      error: data.passed ? undefined : data.blockers.map((item: any) => item.message).join('；'),
+    });
+  } catch (error: any) {
+    res.status(502).json({
+      success: false,
+      error: extractErrorMessage(error, '发布前预检失败'),
+      status: error.response?.status,
+    });
+  }
+});
+
+router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: Response) => {
+  const checks: any[] = [];
+  const startedAt = Date.now();
+  try {
+    await fetchJenkinsJobJson(encodeJobPath(DEFAULT_JOB_NAME), 'displayName,buildable,color');
+    checks.push(buildReleasePreflightCheck('jenkins', 'Jenkins', 'passed', 'Jenkins 主 Job 可访问'));
+  } catch (error: any) {
+    checks.push(buildReleasePreflightCheck('jenkins', 'Jenkins', 'blocked', extractErrorMessage(error, 'Jenkins 主 Job 不可访问')));
+  }
+
+  const ascStatus = ascConfigStatus();
+  checks.push(buildReleasePreflightCheck(
+    'asc',
+    'App Store Connect',
+    ascStatus.configured && (!ascStatus.keyPathConfigured || ascStatus.keyFileExists) ? 'passed' : 'warning',
+    ascStatus.configured
+      ? (ascStatus.keyFileExists ? 'ASC API 配置已就绪' : 'ASC API Key 文件路径不存在')
+      : 'ASC API 配置不完整，TestFlight/App Store 自动化不可用',
+    ascStatus,
+  ));
+
+  const pgyerStatus = pgyerConfigStatus();
+  checks.push(buildReleasePreflightCheck(
+    'pgyer',
+    '蒲公英',
+    pgyerStatus.apiKeyConfigured ? 'passed' : 'warning',
+    pgyerStatus.apiKeyConfigured
+      ? (pgyerStatus.platformApiKeyConfigured ? '平台已配置蒲公英 API Key' : 'Jenkins build_config 已配置蒲公英 API Key')
+      : '未配置 PGYER_API_KEY',
+    pgyerStatus,
+  ));
+
+  checks.push(buildReleasePreflightCheck(
+    'data_dir',
+    '平台数据目录',
+    fs.existsSync(DATA_DIR) ? 'passed' : 'warning',
+    fs.existsSync(DATA_DIR) ? `数据目录可访问：${DATA_DIR}` : `数据目录不存在，将在写入时创建：${DATA_DIR}`,
+  ));
+
+  const qualityPools = getQualityDevicePools();
+  checks.push(buildReleasePreflightCheck(
+    'device_pools',
+    '质检设备池',
+    Array.isArray(qualityPools) && qualityPools.length > 0 ? 'passed' : 'warning',
+    Array.isArray(qualityPools) && qualityPools.length > 0 ? `已配置 ${qualityPools.length} 个设备池` : '未配置质检设备池',
+  ));
+
+  const blockers = checks.filter((check) => check.status === 'blocked');
+  const warnings = checks.filter((check) => check.status === 'warning');
+  res.json({
+    success: blockers.length === 0,
+    data: {
+      healthy: blockers.length === 0,
+      blockers,
+      warnings,
+      checks,
+      checkedAt: new Date().toISOString(),
+      elapsedMs: Date.now() - startedAt,
+    },
+  });
+});
+
 router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, res: Response) => {
+  let releaseOrder: any = null;
   try {
     const gateBuildNumberValue = req.body?.gateBuildNumber;
     const hasReleaseGate = gateBuildNumberValue !== undefined && gateBuildNumberValue !== null && String(gateBuildNumberValue).trim() !== '';
     const deployTarget = String(req.body?.deployTarget || 'Pgyer') as 'Pgyer' | 'TestFlight' | 'AppStore';
     const branch = String(req.body?.branch || 'develop');
+    const preflight = await buildReleasePreflight({
+      branch,
+      deployTarget,
+      appVersion: String(req.body?.appVersion || '').trim(),
+      gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
+      testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),
+    });
+    if (!preflight.passed) {
+      throw new JenkinsReleaseError(preflight.blockers.map((item: any) => item.message).join('；'), 400, { preflight });
+    }
+    releaseOrder = createReleaseOrder({
+      branch,
+      deployTarget,
+      appVersion: String(req.body?.appVersion || '').trim(),
+      gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
+      releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
+      releaseNotes: String(req.body?.testFlightWhatsNew || '').trim(),
+      status: 'preflight_passed',
+      phase: 'preflight_passed',
+    });
+    saveReleaseOrder(releaseOrder.id, {
+      status: 'queued',
+      phase: 'jenkins_queued',
+    }, releaseOrderEvent('release.preflight_passed', '发布前预检通过', 'success'));
     if (normalizeDeployTarget(deployTarget) === 'AppStore') {
       const guard = await checkAppStoreReleaseBlocker(branch);
       if (guard.blocked) {
@@ -5165,6 +5809,13 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
       releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
       testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),
     });
+    if (releaseOrder?.id) {
+      releaseOrder = saveReleaseOrder(releaseOrder.id, {
+        jenkinsQueueUrl: data?.queueUrl || data?.url || '',
+        status: 'queued',
+        phase: 'jenkins_queued',
+      }, releaseOrderEvent('release.jenkins_queued', '已触发 Jenkins 发布', 'processing', data?.queueUrl || data?.url || ''));
+    }
     if (normalizeDeployTarget(deployTarget) !== 'Pgyer') {
       saveReleaseRequestArchive({
         branch,
@@ -5176,9 +5827,19 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
 
     res.json({
       success: true,
-      data: publicJenkinsUrlsInValue(req, data),
+      data: publicJenkinsUrlsInValue(req, {
+        ...data,
+        releaseOrder,
+      }),
     });
   } catch (error: any) {
+    if (releaseOrder?.id) {
+      saveReleaseOrder(releaseOrder.id, {
+        status: 'failed',
+        phase: 'trigger_failed',
+        failureReason: extractErrorMessage(error, '触发 Jenkins 发布失败'),
+      }, releaseOrderEvent('release.trigger_failed', '触发发布失败', 'error', extractErrorMessage(error, '触发 Jenkins 发布失败')));
+    }
     const status = error instanceof JenkinsReleaseError ? error.statusCode : 502;
     res.status(status).json({
       success: false,
@@ -5640,5 +6301,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     });
   }
 });
+
+startReleaseStatusSyncer();
 
 export default router;
