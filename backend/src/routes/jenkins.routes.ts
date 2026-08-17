@@ -4046,6 +4046,57 @@ async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
   });
 }
 
+async function findLatestSuccessfulTestFlightBuild(branch: string) {
+  const normalizedBranch = normalizeBranchName(branch);
+  if (!normalizedBranch) return null;
+  const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+  const response = await fetchJenkinsJobJson(jobPath, `builds[number,result,building,description]{0,${RELEASE_BRANCH_BUILD_SCAN_LIMIT}}`);
+  const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
+  const candidates: any[] = [];
+  for (const build of builds) {
+    const buildNumber = Number(build?.number);
+    if (!Number.isFinite(buildNumber) || buildNumber <= 0) continue;
+    if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') continue;
+    const descriptionMetadata = parseBuildDescription(build.description);
+    const [consoleMetadata, buildParameters] = await Promise.all([
+      fetchBuildConsoleMetadata(jobPath, buildNumber).catch(() => ({} as any)),
+      fetchBuildParameters(jobPath, buildNumber).catch(() => ({ branchName: '', testFlightWhatsNew: '' })),
+    ]);
+    const publishChannel = consoleMetadata.publishChannel || normalizeDeployTarget(descriptionMetadata.publishChannel);
+    if (normalizeDeployTarget(publishChannel) !== 'TestFlight') continue;
+    const buildBranch = normalizeBranchName(buildParameters.branchName || '');
+    const buildAppVersion = String(consoleMetadata.appVersion || '').trim();
+    if (buildBranch !== normalizedBranch) continue;
+    candidates.push({
+      number: buildNumber,
+      branchName: buildBranch,
+      appVersion: buildAppVersion,
+      publishChannel: 'TestFlight',
+    });
+  }
+  return candidates.sort((a, b) => Number(b.number || 0) - Number(a.number || 0))[0] || null;
+}
+
+async function assertAppStoreReleasePreconditions(branch: string, appVersion: string, gateBuildNumber?: number) {
+  const normalizedBranch = normalizeBranchName(branch);
+  const releaseBranchVersion = appVersionFromReleaseBranch(normalizedBranch);
+  const normalizedAppVersion = String(appVersion || releaseBranchVersion || '').trim();
+  if (!releaseBranchVersion) {
+    throw new JenkinsReleaseError('苹果商店发布仅允许 release/x.x.x 分支', 400);
+  }
+  if (normalizedAppVersion && normalizedAppVersion !== releaseBranchVersion) {
+    throw new JenkinsReleaseError(`发布版本 ${normalizedAppVersion} 与发布分支版本 ${releaseBranchVersion} 不一致`, 400);
+  }
+  if (!gateBuildNumber) return;
+  const latestTestFlightBuild = await findLatestSuccessfulTestFlightBuild(normalizedBranch);
+  if (!latestTestFlightBuild?.number) {
+    throw new JenkinsReleaseError(`未找到分支 ${normalizedBranch} 对应的 TestFlight 成功构建，无法使用门禁源`, 400);
+  }
+  if (Number(gateBuildNumber) !== Number(latestTestFlightBuild.number)) {
+    throw new JenkinsReleaseError(`门禁源必须选择同分支的最新 TestFlight 成功构建 #${latestTestFlightBuild.number}`, 400, { latestTestFlightBuild });
+  }
+}
+
 async function fetchRecentJenkinsBuildBranches(jobPath: string) {
   const tree = `builds[number]{0,${RELEASE_BRANCH_LIST_BUILD_SCAN_LIMIT}}`;
   const response = await fetchJenkinsJobJson(jobPath, tree);
@@ -5099,6 +5150,11 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
       if (guard.blocked) {
         throw new JenkinsReleaseError(guard.message, 409, { appStoreReleaseGuard: guard });
       }
+      await assertAppStoreReleasePreconditions(
+        branch,
+        String(req.body?.appVersion || '').trim(),
+        hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
+      );
     }
     const data = await jenkinsAssistantService.triggerRelease({
       branch,

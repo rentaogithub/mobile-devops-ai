@@ -3542,6 +3542,18 @@ export default function CICDPage() {
       message.warning('TestFlight / 苹果商店发布文案必填，且必须超过 4 个字');
       return;
     }
+    if (deployTarget === 'AppStore' && publishGateBuildNumber && (releaseGatePreviewLoading || !releaseGatePreview)) {
+      message.warning('质量门禁预检尚未完成，请稍后再发布');
+      return;
+    }
+    if (deployTarget === 'AppStore' && publishGateBuildNumber && releaseGatePreview?.status === 'blocked') {
+      message.warning('质量门禁存在阻断项，不能发布 App Store 包');
+      return;
+    }
+    if (deployTarget === 'AppStore' && publishGateBuildNumber && releaseGatePreview?.status === 'warning' && !releaseGateOverrideReason.trim()) {
+      message.warning('质量门禁存在风险项，请填写人工放行原因');
+      return;
+    }
     setPublishing(true);
     const publishTarget = deployTarget;
     const previousLatestBuild = data?.job.lastBuild?.number;
@@ -4325,6 +4337,9 @@ export default function CICDPage() {
       .join(','),
     [data],
   );
+  const appStoreGatePending = deployTarget === 'AppStore' && Boolean(publishGateBuildNumber) && (releaseGatePreviewLoading || !releaseGatePreview);
+  const appStoreGateBlocked = deployTarget === 'AppStore' && Boolean(publishGateBuildNumber) && releaseGatePreview?.status === 'blocked';
+  const appStoreGateWarningNeedsReason = deployTarget === 'AppStore' && Boolean(publishGateBuildNumber) && releaseGatePreview?.status === 'warning' && !releaseGateOverrideReason.trim();
   const previousHasRunningQualityBuildRef = useRef(false);
   const hasRunningQualityBuild = useMemo(
     () => (qualityData?.builds || []).some((build) => isQualityBuildEffectivelyRunning(build)),
@@ -4446,15 +4461,21 @@ export default function CICDPage() {
     const builds = data?.builds || [];
     return builds;
   }, [data?.builds]);
-  const publishGateBuildOptions = useMemo(
-    () => (data?.builds || [])
+  const publishGateBuildOptions = useMemo(() => {
+    const builds = (data?.builds || [])
       .filter((build) => build.result === 'SUCCESS' && isSameBranch(build.branchName || '', publishBranch))
+      .sort((a, b) => Number(b.number || 0) - Number(a.number || 0));
+    const candidates = deployTarget === 'AppStore'
+      ? builds
+        .filter((build) => build.publishChannel === 'TestFlight')
+        .slice(0, 1)
+      : builds;
+    return candidates
       .map((build) => ({
         value: build.number,
         label: `#${build.number} · ${build.appVersion || '-'} · ${build.publishChannel || '-'} · ${build.commitHash?.slice(0, 8) || '-'}`,
-      })),
-    [data?.builds, publishBranch],
-  );
+      }));
+  }, [data?.builds, deployTarget, publishBranch]);
   const releaseBaseBranchOptions = useMemo(() => {
     const items = ['develop', ...getLatestReleaseBranches(branches, 2)];
     return Array.from(new Set(items)).map((branch) => ({ value: branch, label: branch }));
@@ -5606,6 +5627,9 @@ export default function CICDPage() {
             (deployTarget === 'AppStore' && !canPublishAppStore) ||
             (deployTarget !== 'Pgyer' && !resolvedPublishAppVersion) ||
             (deployTarget === 'AppStore' && (appStoreReleaseGuardLoading || Boolean(appStoreReleaseGuard?.blocked))) ||
+            appStoreGatePending ||
+            appStoreGateBlocked ||
+            appStoreGateWarningNeedsReason ||
             (deployTarget !== 'Pgyer' && releaseNotesLength(testFlightWhatsNew) <= 4)
           ),
         }}
@@ -5762,25 +5786,23 @@ export default function CICDPage() {
               )}
             />
           )}
-          <Alert
-            type={deployTarget === 'Pgyer' ? 'info' : 'warning'}
-            showIcon
-            message={deployTarget === 'Pgyer'
-              ? '蒲公英发布无需验证密码'
-              : (deployTarget === 'AppStore'
-                ? (canPublishAppStore ? '苹果商店发布需要验证密码' : '苹果商店发布仅产品运营或管理员可操作')
-                : (canPublishPgyerOrTestFlight ? 'TestFlight 发布需要验证密码' : 'TestFlight 发布仅测试、研发或管理员可操作'))}
-          />
           <Collapse
             className="publish-advanced-options"
             size="small"
             ghost
             items={[{
               key: 'quality-gate',
-              label: '发布前检查（可选）',
+              label: '发布前门禁（可选）',
               children: (
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                  <Text type="secondary">如需执行质量门禁，可选择一个已完成构建；未选择时直接按常规 CI/CD 流程发布。</Text>
+                  <Text type="secondary">
+                    {deployTarget === 'AppStore'
+                      ? '苹果商店包可选择门禁源构建；如选择，必须使用同发布分支的最新 TestFlight 成功构建。'
+                      : '如需执行质量门禁，可选择一个已完成构建；未选择时直接按常规 CI/CD 流程发布。'}
+                  </Text>
+                  {deployTarget === 'AppStore' && publishGateBuildOptions.length === 0 && (
+                    <Alert type="info" showIcon message="当前没有可选的同分支 TestFlight 成功构建；可不选择门禁直接发布。" />
+                  )}
                   <Select
                     allowClear
                     value={publishGateBuildNumber}

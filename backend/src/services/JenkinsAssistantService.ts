@@ -511,9 +511,14 @@ export class JenkinsAssistantService {
     if (input.deployTarget !== 'Pgyer' && releaseNotes.length <= 4) {
       throw new JenkinsReleaseError('TestFlight / AppStore 发布文案必填，且必须超过 4 个字', 400);
     }
+    const releaseBranchVersion = isReleaseBranch(branch) ? branch.replace(/^release\//, '') : '';
+    const requestedAppVersion = String(input.appVersion || releaseBranchVersion).trim();
+    if (input.deployTarget !== 'Pgyer' && releaseBranchVersion && requestedAppVersion && requestedAppVersion !== releaseBranchVersion) {
+      throw new JenkinsReleaseError(`发布版本 ${requestedAppVersion} 与发布分支版本 ${releaseBranchVersion} 不一致`, 400);
+    }
     const gateBuildNumber = input.gateBuildNumber === undefined ? undefined : Number(input.gateBuildNumber);
     if (input.requireReleaseGate && !gateBuildNumber) {
-      throw new JenkinsReleaseError('AI 发布必须选择成功构建作为质量门禁来源', 400);
+      throw new JenkinsReleaseError('当前发布必须选择成功构建作为质量门禁来源', 400);
     }
     if (gateBuildNumber !== undefined && (!Number.isFinite(gateBuildNumber) || gateBuildNumber <= 0)) {
       throw new JenkinsReleaseError('质量门禁源构建无效', 400);
@@ -525,13 +530,6 @@ export class JenkinsAssistantService {
       workflowIntegrationService.syncJenkinsBuild(gateBuild);
       if (gateBuild.building || String(gateBuild.result || '').toUpperCase() !== 'SUCCESS') {
         throw new JenkinsReleaseError(`源构建 #${gateBuildNumber} 尚未成功完成，不允许发布`);
-      }
-      if (gateBuild.branchName && normalizeBranchName(gateBuild.branchName) !== branch) {
-        throw new JenkinsReleaseError(`门禁源构建分支 ${gateBuild.branchName} 与待发布分支 ${branch} 不一致`);
-      }
-      const releaseBranchVersion = isReleaseBranch(branch) ? branch.replace(/^release\//, '') : '';
-      if (input.deployTarget !== 'Pgyer' && releaseBranchVersion && gateBuild.appVersion && String(gateBuild.appVersion) !== releaseBranchVersion) {
-        throw new JenkinsReleaseError(`门禁源构建版本 ${gateBuild.appVersion} 与发布分支版本 ${releaseBranchVersion} 不一致`);
       }
       releaseGate = qualityGateService.evaluate({
         projectId: 'nn-ios',
@@ -560,8 +558,7 @@ export class JenkinsAssistantService {
     }
 
     const headers = await this.crumbHeaders();
-    const releaseBranchVersion = isReleaseBranch(branch) ? branch.replace(/^release\//, '') : '';
-    const appVersion = String(input.appVersion || releaseBranchVersion).trim();
+    const appVersion = requestedAppVersion;
     const params = new URLSearchParams({
       branch: toJenkinsBranch(branch),
       DEPLOY_TARGET: input.deployTarget,
