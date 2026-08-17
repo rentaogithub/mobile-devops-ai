@@ -1363,7 +1363,7 @@ export interface LeigodIMSDKVersion {
 export const podsApi = {
   /** 发布组件 */
   publish: async (
-    file: File,
+    file: File | undefined,
     params: {
       name: string;
       version: string;
@@ -1383,7 +1383,9 @@ export const podsApi = {
     }
   ): Promise<ApiResponse<PodComponent>> => {
     const formData = new FormData();
-    formData.append('file', file, file.name);
+    if (file) {
+      formData.append('file', file, file.name);
+    }
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== '') {
         formData.append(key, value);
@@ -1400,7 +1402,7 @@ export const podsApi = {
   publishNNRtcFromJenkins: async (params: {
     build_number: string;
     version: string;
-    target_branch: string;
+    target_branch?: string;
     package_type?: 'release' | 'test';
     sys_frameworks?: string;
     sys_libraries?: string;
@@ -1415,7 +1417,7 @@ export const podsApi = {
   startNNRtcPublishTask: async (params: {
     build_number: string;
     version: string;
-    target_branch: string;
+    target_branch?: string;
     package_type?: 'release' | 'test';
     sys_frameworks?: string;
     sys_libraries?: string;
@@ -1452,7 +1454,7 @@ export const podsApi = {
   /** 从 IMSDK 共享目录发布 leigod_im_cross_sdk */
   publishLeigodIMFromIMSDK: async (params: {
     version: string;
-    target_branch: string;
+    target_branch?: string;
     sys_frameworks?: string;
     sys_libraries?: string;
   }): Promise<ApiResponse<PodComponent>> => {

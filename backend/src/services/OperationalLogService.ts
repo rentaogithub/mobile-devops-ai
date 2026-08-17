@@ -98,6 +98,26 @@ function normalizePayload(payload: any): FeedbackLogRecord[] {
   return Array.isArray(result?.records) ? result.records : Array.isArray(result) ? result : [];
 }
 
+function isLogFile(entryName: string) {
+  const filename = path.basename(entryName);
+  return /\.log$/i.test(filename) && !filename.startsWith('.');
+}
+
+function isBusinessLogFile(entryName: string) {
+  const filename = path.basename(entryName);
+  return (
+    /^logs.*\.log$/i.test(filename) ||
+    /^app_nn_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
+    /(?:^|[_-])\d{8}[_-]\d{6}(?:[_-]\d+)?\.log$/i.test(filename)
+  );
+}
+
+function selectLogEntries(entries: string[]) {
+  const logEntries = entries.filter((item) => item && isLogFile(item));
+  const businessEntries = logEntries.filter(isBusinessLogFile);
+  return businessEntries.length > 0 ? businessEntries : logEntries;
+}
+
 export class OperationalLogService {
   private authHeaders() {
     const token = getOpAccessToken();
@@ -162,10 +182,10 @@ export class OperationalLogService {
     try {
       await fsPromises.writeFile(archivePath, buffer);
       const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], { maxBuffer: 10 * 1024 * 1024 });
-      const entries = String(stdout || '')
+      const entries = selectLogEntries(String(stdout || '')
         .split('\n')
         .map((item) => item.trim())
-        .filter((item) => item && /^logs.*\.log$/i.test(path.basename(item)))
+        .filter(Boolean))
         .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
         .slice(0, 8);
       const files: Array<{ name: string; content: string }> = [];

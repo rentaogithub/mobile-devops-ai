@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react';
-import { Button, Input, message, Modal, Space, Table, Tabs, Tag, Tree, Typography } from 'antd';
+import { useMemo, useState, type ReactNode } from 'react';
+import { Alert, Button, Input, message, Modal, Space, Table, Tabs, Tag, Tree, Typography } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -160,9 +160,16 @@ function normalizeApiPath(api?: string): string {
 }
 
 function parseLogTimeValue(time: string): number {
-  const match = time.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?/);
-  if (!match) return 0;
-  const [, month, day, hour, minute, second, millisecond = '0'] = match;
+  const normalized = time.replace(/^\[|\]$/g, '');
+  const fullMatch = normalized.match(/^(\d{4})[/-](\d{2})[/-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?/);
+  if (fullMatch) {
+    const [, year, month, day, hour, minute, second, millisecond = '0'] = fullMatch;
+    return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(millisecond.padEnd(3, '0'))).getTime();
+  }
+
+  const shortMatch = normalized.match(/^(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:[.:](\d{1,3}))?/);
+  if (!shortMatch) return 0;
+  const [, month, day, hour, minute, second, millisecond = '0'] = shortMatch;
   return new Date(2000, Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), Number(millisecond.padEnd(3, '0'))).getTime();
 }
 
@@ -307,7 +314,9 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
 }
 
 function parseBusinessLogLine(line: string): ParsedBusinessLog {
-  const time = line.match(/^\[([^\]]+)\]/)?.[1] || '';
+  const time = line.match(/^\[([^\]]+)\]/)?.[1]
+    || line.match(/^(\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.:]\d+)?)/)?.[1]
+    || '';
   const categoryMatches = [...line.matchAll(/\[([A-Za-z][A-Za-z0-9_+\-.]*)\]/g)].map((item) => item[1]);
   const category = categoryMatches.find((item) => item !== time && !item.includes(':')) || '业务';
   const event = line.match(/\bevent=([A-Za-z0-9_:.+-]+)/)?.[1] || 'raw_log';
@@ -316,6 +325,25 @@ function parseBusinessLogLine(line: string): ParsedBusinessLog {
   const retCode = fields.retCode;
   const level = /⚠️|\[Warning\]|error|fail|exception/i.test(line) || (retCode && !['0', '100', '200'].includes(retCode)) ? 'warning' : 'info';
   return { time, category, event, level, fields, line };
+}
+
+function splitConcatenatedBusinessLogLine(line: string): string[] {
+  const physicalLines = line
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return physicalLines.flatMap((physicalLine) => {
+    const recordStartPattern = /\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}[.:]\d{1,6}(?=\s+\[)/g;
+    const starts = [...physicalLine.matchAll(recordStartPattern)]
+      .map((match) => match.index ?? 0)
+      .filter((index) => index === 0 || /\s/.test(physicalLine[index - 1] || ''));
+    if (starts.length <= 1) return [physicalLine];
+
+    return starts
+      .map((start, index) => physicalLine.slice(start, starts[index + 1] ?? physicalLine.length).trim())
+      .filter(Boolean);
+  });
 }
 
 function topCounts(values: string[], limit = 12) {
@@ -334,7 +362,7 @@ function getLogModuleGroup(log: ParsedBusinessLog): { key: string; label: string
 }
 
 export function analyzeBusinessLogLines(lines: string[], source: string): BusinessLogAnalysis {
-  const parsedLogs = lines.map(parseBusinessLogLine);
+  const parsedLogs = lines.flatMap(splitConcatenatedBusinessLogLine).map(parseBusinessLogLine);
   const apiRequests = parsedLogs.filter((log) => log.event === 'api_request');
   const apiResponses = parsedLogs.filter((log) => log.event === 'api_response');
   const failedResponses = apiResponses.filter((log) => {
@@ -519,6 +547,127 @@ interface BusinessLogAnalysisModalProps {
 export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: BusinessLogAnalysisModalProps) {
   const [apiResponseJsonSearchText, setApiResponseJsonSearchText] = useState('');
   const [apiSearchText, setApiSearchText] = useState('');
+  const [logSearchText, setLogSearchText] = useState('');
+  const [activeTabKey, setActiveTabKey] = useState<string>();
+
+  const activeGroup = useMemo(() => {
+    if (!analysisResult) return null;
+    const defaultKey = analysisResult.functionGroups.find((group) => group.label === 'API')?.key || analysisResult.functionGroups[0]?.key;
+    const key = activeTabKey || defaultKey;
+    return analysisResult.functionGroups.find((group) => group.key === key) || analysisResult.functionGroups[0] || null;
+  }, [activeTabKey, analysisResult]);
+
+  const defaultActiveKey = analysisResult?.functionGroups.find((group) => group.label === 'API')?.key || analysisResult?.functionGroups[0]?.key || 'unknown';
+  const currentActiveKey = activeGroup?.key || defaultActiveKey;
+
+  const renderAnalysisSummary = () => {
+    if (!analysisResult) return null;
+    const group = activeGroup;
+    return (
+      <div
+        style={{
+          padding: '10px 12px',
+          background: '#fafafa',
+          border: '1px solid #f0f0f0',
+          borderRadius: 6,
+        }}
+      >
+        <Space direction="vertical" size={8} style={{ width: '100%' }}>
+          <Space size={[8, 8]} wrap>
+            <Tag color="blue">总日志 {analysisResult.total}</Tag>
+            <Tag color={analysisResult.warnings ? 'orange' : 'green'}>异常 {analysisResult.warnings}</Tag>
+            <Tag>API 请求 {analysisResult.apiRequests}</Tag>
+            <Tag>API 响应 {analysisResult.apiResponses}</Tag>
+            {group ? <Tag color="geekblue">当前分类 {group.label} / {group.logs.length}</Tag> : null}
+            {group?.warnings ? <Tag color="orange">当前异常 {group.warnings}</Tag> : null}
+          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>时间范围：{analysisResult.timeRange}</Text>
+          {group?.eventCounts?.length ? (
+            <Space size={[6, 6]} wrap>
+              <Text type="secondary" style={{ fontSize: 12 }}>事件统计：</Text>
+              {group.eventCounts.map((item) => (
+                <Tag key={item.event}>{item.event} {item.count}</Tag>
+              ))}
+            </Space>
+          ) : null}
+          {analysisResult.suggestions.length ? (
+            <Alert
+              type={analysisResult.warnings ? 'warning' : 'success'}
+              showIcon
+              message={analysisResult.suggestions.join(' ')}
+              style={{ padding: '6px 10px' }}
+            />
+          ) : null}
+        </Space>
+      </div>
+    );
+  };
+
+  const filterLogs = (logs: ParsedBusinessLog[]) => {
+    const keyword = logSearchText.trim().toLowerCase();
+    if (!keyword) return logs;
+    return logs.filter((log) => [
+      log.time,
+      log.category,
+      log.event,
+      log.line,
+      ...Object.entries(log.fields).flatMap(([key, value]) => [key, value]),
+    ].join('\n').toLowerCase().includes(keyword));
+  };
+
+  const renderNormalLogTable = (group: BusinessLogAnalysis['functionGroups'][number]) => {
+    const filteredLogs = filterLogs(group.logs);
+    const keyword = logSearchText.trim();
+    return (
+      <Space direction="vertical" size="small" style={{ width: '100%' }}>
+        {keyword ? (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            命中 {filteredLogs.length} 条
+          </Text>
+        ) : null}
+        <Table
+          size="small"
+          bordered
+          rowKey={(record: ParsedBusinessLog, index) => `${record.time}-${index}`}
+          dataSource={filteredLogs}
+          pagination={filteredLogs.length > 30 ? { pageSize: 30, showSizeChanger: false } : false}
+          scroll={{ y: 'calc(100vh - 430px)' }}
+          columns={[
+            { title: '时间', dataIndex: 'time', width: 160, sorter: (a, b) => parseLogTimeValue(a.time) - parseLogTimeValue(b.time) },
+            {
+              title: '事件',
+              dataIndex: 'event',
+              width: 180,
+              filters: group.eventCounts.map((item) => ({ text: `${item.event} (${item.count})`, value: item.event })),
+              onFilter: (value, record) => record.event === value,
+              render: (value: string, record) => (
+                <Tag color={record.level === 'info' ? 'default' : 'orange'}>{highlightText(value, keyword)}</Tag>
+              ),
+            },
+            {
+              title: '日志',
+              dataIndex: 'line',
+              render: (value: string) => (
+                <pre
+                  style={{
+                    margin: 0,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontFamily: 'Menlo, Monaco, Consolas, monospace',
+                    fontSize: 12,
+                    lineHeight: 1.6,
+                    background: 'transparent',
+                  }}
+                >
+                  {highlightText(value, keyword)}
+                </pre>
+              ),
+            },
+          ]}
+        />
+      </Space>
+    );
+  };
 
   const renderApiTimelineTable = (dataSource: ApiTimelineRow[], pageSize = 20) => {
     const normalizedApiSearchText = apiSearchText.trim().toLowerCase();
@@ -541,20 +690,11 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
 
     return (
       <Space direction="vertical" size="small" style={{ width: '100%' }}>
-        <Space>
-          <Input.Search
-            allowClear
-            placeholder="检索接口 / 日志内容"
-            value={apiSearchText}
-            onChange={(event) => setApiSearchText(event.target.value)}
-            style={{ width: 360 }}
-          />
-          {normalizedApiSearchText && (
-            <Text type="secondary" style={{ fontSize: 12 }}>
-              命中 {filteredDataSource.length} 条
-            </Text>
-          )}
-        </Space>
+        {normalizedApiSearchText && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            命中 {filteredDataSource.length} 条
+          </Text>
+        )}
         <Table
           size="small"
           bordered
@@ -693,31 +833,37 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
       destroyOnHidden
     >
       {analysisResult ? (
-        <Tabs
-          defaultActiveKey={analysisResult.functionGroups.find((group) => group.label === 'API')?.key || analysisResult.functionGroups[0]?.key || 'unknown'}
-          items={analysisResult.functionGroups.map((group) => ({
-            key: group.key,
-            label: `${group.label} (${group.logs.length})`,
-            children: group.label === 'API' ? (
-              renderApiTimelineTable(analysisResult.apiTimeline)
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          {renderAnalysisSummary()}
+          <Space>
+            {activeGroup?.label === 'API' ? (
+              <Input.Search
+                allowClear
+                placeholder="检索接口 / 日志内容"
+                value={apiSearchText}
+                onChange={(event) => setApiSearchText(event.target.value)}
+                style={{ width: 360 }}
+              />
             ) : (
-              <Space direction="vertical" size="small" style={{ width: '100%' }}>
-                <Table
-                  size="small"
-                  bordered
-                  rowKey={(record: ParsedBusinessLog, index) => `${record.time}-${index}`}
-                  dataSource={group.logs.slice(0, 100)}
-                  pagination={{ pageSize: 10 }}
-                  columns={[
-                    { title: '时间', dataIndex: 'time', width: 150 },
-                    { title: '事件', dataIndex: 'event', width: 180 },
-                    { title: '日志', dataIndex: 'line', render: (value: string) => <Text code>{value}</Text> },
-                  ]}
-                />
-              </Space>
-            ),
-          }))}
-        />
+              <Input.Search
+                allowClear
+                placeholder="搜索当前分类日志"
+                value={logSearchText}
+                onChange={(event) => setLogSearchText(event.target.value)}
+                style={{ width: 360 }}
+              />
+            )}
+          </Space>
+          <Tabs
+            activeKey={currentActiveKey}
+            onChange={setActiveTabKey}
+            items={analysisResult.functionGroups.map((group) => ({
+              key: group.key,
+              label: `${group.label} (${group.logs.length})`,
+              children: group.label === 'API' ? renderApiTimelineTable(analysisResult.apiTimeline) : renderNormalLogTable(group),
+            }))}
+          />
+        </Space>
       ) : null}
     </Modal>
   );

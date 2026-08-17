@@ -1478,6 +1478,56 @@ ${sourceLine}
     return component;
   }
 
+  async publishMetadata(params: PodUploadParams): Promise<PodComponent> {
+    const { name, version } = params;
+
+    if (!params.lib_type) {
+      params.lib_type = 'framework';
+    }
+    if (!params.lib_name) {
+      params.lib_name = params.lib_type === 'static_library' ? `lib${name}.a` : `${name}.framework`;
+    }
+
+    const existing = await this.getOne(name, version);
+    if (existing) {
+      this.cleanPodxCache(name);
+    }
+
+    const podspecContent = this.generatePodspec(params);
+    let status: 'published' | 'failed' = 'published';
+    let errorMessage: string | undefined;
+    try {
+      await this.syncToSpecRepo(name, version, podspecContent);
+    } catch (error: any) {
+      status = 'failed';
+      errorMessage = `spec 仓库同步失败: ${error.message}`;
+      logger.warn('元信息发布 Spec 同步失败', { name, version, error: error.message });
+    }
+
+    if (status === 'published' && params.target_branch) {
+      try {
+        this.syncVersionToNnios(name, version, params.target_branch);
+      } catch (error: any) {
+        status = 'failed';
+        errorMessage = error.message;
+      }
+    }
+
+    return this.saveComponent({
+      name,
+      version,
+      summary: params.summary || '',
+      homepage: params.homepage || '',
+      source_zip_url: `${NEXUS_BASE_URL}/${name}/${version}.zip`,
+      podspec_content: podspecContent,
+      status,
+      error_message: errorMessage,
+      package_type: params.package_type,
+      build_id: params.build_id,
+      nnios_branch: params.package_type === 'test' ? params.target_branch : undefined,
+    });
+  }
+
   /**
    * 保存组件信息到数据库（同名同版本自动覆盖）
    */

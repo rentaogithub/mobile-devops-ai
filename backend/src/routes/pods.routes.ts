@@ -109,6 +109,11 @@ function requireTargetBranch(value: unknown): string {
   return targetBranch;
 }
 
+function optionalTargetBranch(value: unknown): string | undefined {
+  const targetBranch = String(value || '').trim();
+  return targetBranch || undefined;
+}
+
 function isNNRtcPackageFile(fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
   return lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz');
@@ -161,8 +166,12 @@ function findNNRtcArtifact(artifacts: any[]) {
   return artifacts.find((item: any) => {
     const fileName = String(item?.fileName || '').toLowerCase();
     const relativePath = String(item?.relativePath || '').toLowerCase();
-    return fileName === 'nrt.tgz' || fileName === 'nrtc.tgz' || fileName === 'nnrtc.tgz' ||
-      relativePath.endsWith('/nrt.tgz') || relativePath.endsWith('/nrtc.tgz') || relativePath.endsWith('/nnrtc.tgz');
+    const artifactName = fileName || path.basename(relativePath);
+    const isSupportedArchive = artifactName.endsWith('.tgz') || artifactName.endsWith('.tar.gz') || artifactName.endsWith('.zip');
+    const isNNRtcArchive =
+      /^nnrtc.*\.(?:tgz|tar\.gz|zip)$/.test(artifactName) ||
+      /^(?:nrt|nrtc)\.(?:tgz|tar\.gz|zip)$/.test(artifactName);
+    return isSupportedArchive && isNNRtcArchive;
   });
 }
 
@@ -311,23 +320,17 @@ router.post('/publish', podDeveloperMiddleware, upload.single('file'), async (re
   let tempPath: string | undefined;
 
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: '未上传文件' });
-    }
-
     const { name, version, lib_type, lib_name, summary, homepage, authors, license,
       platform_version, dependencies, sys_frameworks, sys_libraries, target_branch, package_type, build_id } = req.body;
 
     if (!name || !version) {
-      fs.unlinkSync(req.file.path);
+      if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.status(400).json({ success: false, error: '组件名称和版本号为必填项' });
     }
 
-    tempPath = req.file.path;
+    const targetBranch = optionalTargetBranch(target_branch);
 
-    const targetBranch = requireTargetBranch(target_branch);
-
-    logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file.originalname });
+    logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file?.originalname });
 
     const nnrtcPackageType: 'release' | 'test' | undefined = name === 'NNRtc'
       ? (package_type === 'test' || isNNRtcTestVersion(version) ? 'test' : 'release')
@@ -339,16 +342,21 @@ router.post('/publish', podDeveloperMiddleware, upload.single('file'), async (re
       build_id,
     };
     let component;
-    if (name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+    if (!req.file) {
+      component = await podService.publishMetadata(params);
+    } else if (name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+      tempPath = req.file.path;
       component = await podService.publishNNRtcPackage(tempPath, req.file.originalname, params);
     } else if (name === 'leigod_im_cross_sdk' && isNNRtcPackageFile(req.file.originalname)) {
+      tempPath = req.file.path;
       component = await podService.publishLeigodIMCrossSDKPackage(tempPath, req.file.originalname, params);
     } else {
+      tempPath = req.file.path;
       component = await podService.publish(tempPath, req.file.originalname, params);
     }
 
     // 清理临时文件
-    if (fs.existsSync(tempPath)) {
+    if (tempPath && fs.existsSync(tempPath)) {
       fs.unlinkSync(tempPath);
     }
 
@@ -420,7 +428,7 @@ router.post('/leigod-im/imsdk/publish', podDeveloperMiddleware, async (req: Requ
     if (!version) {
       return res.status(400).json({ success: false, error: '版本号为必填项' });
     }
-    const targetBranch = requireTargetBranch(target_branch);
+    const targetBranch = optionalTargetBranch(target_branch);
 
     logger.info('从 IMSDK 共享目录发布 leigod_im_cross_sdk', {
       version,
@@ -460,7 +468,7 @@ router.post('/nnrtc/jenkins/publish', podDeveloperMiddleware, async (req: Reques
     if (!version) {
       return res.status(400).json({ success: false, error: '版本号为必填项' });
     }
-    const targetBranch = requireTargetBranch(target_branch);
+    const targetBranch = optionalTargetBranch(target_branch);
     const artifact = await downloadNNRtcJenkinsArtifact(build_number);
     tempPath = artifact.filePath;
 
@@ -501,7 +509,7 @@ router.post('/nnrtc/jenkins/publish-task', podDeveloperMiddleware, async (req: R
   try {
     const { build_number, version, target_branch, sys_frameworks, sys_libraries, package_type } = req.body;
     if (!version) return res.status(400).json({ success: false, error: '版本号为必填项' });
-    const targetBranch = requireTargetBranch(target_branch);
+    const targetBranch = optionalTargetBranch(target_branch);
     const task = createNNRtcTask('publish');
     scheduleTaskCleanup();
     res.json({ success: true, data: task });

@@ -440,7 +440,7 @@ export default function LogsPage() {
         loadFeedbackLogFile(sortedResult.files[0].path, true);
       }
       if (sortedResult.files.length === 0) {
-        message.info('压缩包中未找到 logs*.log 文件');
+        message.info('压缩包中未找到业务日志文件');
       }
     } catch (error: any) {
       message.error(error?.message || error?.error || '查看日志失败');
@@ -474,7 +474,7 @@ export default function LogsPage() {
       );
       if (files.length === 0) {
         message.destroy('feedback-log-analysis');
-        message.info('压缩包中未找到 logs*.log 文件');
+        message.info('压缩包中未找到业务日志文件');
         return;
       }
 
@@ -1079,7 +1079,7 @@ export default function LogsPage() {
                 }))}
               />
             ) : (
-              <Alert type="warning" showIcon message="压缩包中未找到 logs*.log 文件" />
+              <Alert type="warning" showIcon message="压缩包中未找到业务日志文件" />
             )}
           </div>
         ) : null}

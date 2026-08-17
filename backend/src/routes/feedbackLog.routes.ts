@@ -95,12 +95,39 @@ function downloadFile(targetURL: URL, redirectCount = 0): Promise<Buffer> {
   });
 }
 
-function isTargetLogFile(entryName: string): boolean {
+function isLogFile(entryName: string): boolean {
   const filename = path.basename(entryName);
-  return /^logs.*\.log$/i.test(filename);
+  return /\.log$/i.test(filename) && !filename.startsWith('.');
+}
+
+function isBusinessLogFile(entryName: string): boolean {
+  const filename = path.basename(entryName);
+  return (
+    /^logs.*\.log$/i.test(filename) ||
+    /^app_nn_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
+    /(?:^|[_-])\d{8}[_-]\d{6}(?:[_-]\d+)?\.log$/i.test(filename)
+  );
+}
+
+function selectPreviewLogEntries(entries: string[]): string[] {
+  const logEntries = entries.filter((item) => item && isLogFile(item));
+  const businessEntries = logEntries.filter(isBusinessLogFile);
+  return businessEntries.length > 0 ? businessEntries : logEntries;
+}
+
+function isTargetLogFile(entryName: string): boolean {
+  return isLogFile(entryName);
 }
 
 function parseFeedbackLogLine(line: string): { time: string; content: string } | null {
+  const prefixedFullTimeMatch = line.match(/^(\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.:]\d+)?)\s*(.*)$/);
+  if (prefixedFullTimeMatch) {
+    return {
+      time: prefixedFullTimeMatch[1],
+      content: prefixedFullTimeMatch[2] || '',
+    };
+  }
+
   const shortTimeMatch = line.match(/^\[(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\]\s*(.*)$/);
   if (shortTimeMatch) {
     return {
@@ -200,10 +227,10 @@ async function extractLogsWithUnzip(archivePath: string, tempDir: string): Promi
   const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], {
     maxBuffer: 10 * 1024 * 1024,
   });
-  const entries = stdout
+  const entries = selectPreviewLogEntries(stdout
     .split('\n')
     .map((item) => item.trim())
-    .filter((item) => item && isTargetLogFile(item));
+    .filter(Boolean));
 
   if (entries.length === 0) {
     return [];
@@ -223,10 +250,10 @@ async function extractLogsWithBsdtar(archivePath: string, tempDir: string): Prom
   const { stdout } = await execFileAsync('bsdtar', ['-tf', archivePath], {
     maxBuffer: 10 * 1024 * 1024,
   });
-  const entries = stdout
+  const entries = selectPreviewLogEntries(stdout
     .split('\n')
     .map((item) => item.trim())
-    .filter((item) => item && isTargetLogFile(item));
+    .filter(Boolean));
 
   if (entries.length === 0) {
     return [];
@@ -261,7 +288,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     }
 
     if (files.length === 0 && unzipErrorMessage) {
-      logger.warn('反馈日志压缩包未提取到 logs*.log 文件', { unzipError: unzipErrorMessage });
+      logger.warn('反馈日志压缩包未提取到业务日志文件', { unzipError: unzipErrorMessage });
     }
 
     res.json({
