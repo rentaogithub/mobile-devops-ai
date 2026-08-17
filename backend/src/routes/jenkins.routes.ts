@@ -1678,6 +1678,58 @@ async function upsertBetaBuildLocalization(buildId: string, whatsNew: string) {
   });
 }
 
+async function upsertAppStoreVersionReleaseNotes(appStoreVersionId: string, releaseNotes: string) {
+  const normalizedReleaseNotes = normalizeTestFlightWhatsNew(releaseNotes);
+  if (!appStoreVersionId || !normalizedReleaseNotes) return null;
+  const locale = String(getRuntimeEnv('APPSTORE_RELEASE_NOTES_LOCALE') || getRuntimeEnv('TESTFLIGHT_WHATS_NEW_LOCALE') || 'zh-Hans').trim() || 'zh-Hans';
+  const listResponse = await requestAppStoreConnect<any>('GET', `${ASC_API_BASE}/appStoreVersions/${encodeURIComponent(appStoreVersionId)}/appStoreVersionLocalizations?${new URLSearchParams({
+    limit: '200',
+  }).toString()}`);
+  const localizations = Array.isArray(listResponse?.data) ? listResponse.data : [];
+  const existing = localizations.find((item: any) => String(item?.attributes?.locale || '') === locale) || null;
+  if (existing?.id) {
+    return requestAppStoreConnect<any>('PATCH', `${ASC_API_BASE}/appStoreVersionLocalizations/${encodeURIComponent(existing.id)}`, {
+      data: {
+        type: 'appStoreVersionLocalizations',
+        id: existing.id,
+        attributes: {
+          whatsNew: normalizedReleaseNotes,
+        },
+      },
+    });
+  }
+  return requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/appStoreVersionLocalizations`, {
+    data: {
+      type: 'appStoreVersionLocalizations',
+      attributes: {
+        locale,
+        whatsNew: normalizedReleaseNotes,
+      },
+      relationships: {
+        appStoreVersion: {
+          data: {
+            type: 'appStoreVersions',
+            id: appStoreVersionId,
+          },
+        },
+      },
+    },
+  });
+}
+
+async function setAppStoreVersionAutomaticRelease(appStoreVersionId: string) {
+  if (!appStoreVersionId) return null;
+  return requestAppStoreConnect<any>('PATCH', `${ASC_API_BASE}/appStoreVersions/${encodeURIComponent(appStoreVersionId)}`, {
+    data: {
+      type: 'appStoreVersions',
+      id: appStoreVersionId,
+      attributes: {
+        releaseType: 'AFTER_APPROVAL',
+      },
+    },
+  });
+}
+
 async function addBuildToBetaGroup(buildId: string, groupId: string) {
   try {
     await requestAppStoreConnect<any>('POST', `${ASC_API_BASE}/betaGroups/${encodeURIComponent(groupId)}/relationships/builds`, {
@@ -1853,6 +1905,7 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
   const appVersion = String(build?.appVersion || '').trim();
   const channelBuildNumber = String(build?.buildNumber || '').trim();
   const branchName = normalizeBranchName(String(build?.branchName || ''));
+  const releaseNotes = normalizeTestFlightWhatsNew(build?.testFlightWhatsNew);
   if (!appId) {
     saveAppStoreRelease(buildNumber, {
       status: 'skipped',
@@ -1920,6 +1973,31 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
       const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
       const appStoreVersionId = String(appStoreVersion?.id || '');
       const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
+      const appStoreReleaseType = String(appStoreVersion?.attributes?.releaseType || '');
+      if (appStoreVersionId && appStoreState === 'PREPARE_FOR_SUBMISSION' && !saved?.reviewSubmissionId) {
+        await upsertAppStoreVersionReleaseNotes(appStoreVersionId, releaseNotes);
+        await setAppStoreVersionAutomaticRelease(appStoreVersionId);
+        const reviewSubmissionId = await submitAppStoreReview(appStoreVersionId);
+        const latestVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+        const latestState = String(latestVersion?.attributes?.appStoreState || latestVersion?.attributes?.appVersionState || appStoreState);
+        const latestStatus = appStoreVersionStateStatus(latestState);
+        saveAppStoreRelease(buildNumber, {
+          status: latestStatus.status,
+          appVersion,
+          buildNumber: channelBuildNumber,
+          branchName,
+          appStoreBuildId: appStoreBuild.id,
+          appStoreVersionId,
+          reviewSubmissionId,
+          processingState,
+          appStoreState: latestState,
+          releaseNotes,
+          releaseType: 'AFTER_APPROVAL',
+          message: latestStatus.message,
+          failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(latestStatus.status)) ? latestStatus.message : '',
+        });
+        return;
+      }
       const stateStatus = appStoreVersionStateStatus(appStoreState);
       saveAppStoreRelease(buildNumber, {
         status: stateStatus.status,
@@ -1930,6 +2008,8 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
         appStoreVersionId,
         processingState,
         appStoreState,
+        releaseNotes,
+        releaseType: appStoreReleaseType,
         message: stateStatus.message,
         failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
       });
@@ -4299,6 +4379,7 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
     const appVersion = String(buildMetadata.appVersion || '').trim();
     const channelBuildNumber = String(buildMetadata.buildNumber || '').trim();
     const branchName = normalizeBranchName(String(buildParameters.branchName || ''));
+    const releaseNotes = normalizeTestFlightWhatsNew(buildParameters.testFlightWhatsNew);
     if (!appId || !appVersion || !channelBuildNumber) {
       res.status(400).json({
         success: false,
@@ -4348,6 +4429,8 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
       return;
     }
 
+    await upsertAppStoreVersionReleaseNotes(appStoreVersionId, releaseNotes);
+    await setAppStoreVersionAutomaticRelease(appStoreVersionId);
     const reviewSubmissionId = await submitAppStoreReview(appStoreVersionId);
     const latestVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
     const latestState = String(latestVersion?.attributes?.appStoreState || latestVersion?.attributes?.appVersionState || appStoreState);
@@ -4362,6 +4445,8 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
       reviewSubmissionId,
       processingState: String(appStoreBuild?.attributes?.processingState || ''),
       appStoreState: latestState,
+      releaseNotes,
+      releaseType: 'AFTER_APPROVAL',
       message: stateStatus.message,
       failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(stateStatus.status)) ? stateStatus.message : '',
     });

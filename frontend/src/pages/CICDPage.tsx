@@ -597,7 +597,7 @@ function appStoreReleaseTag(build: JenkinsBuild) {
   }
   const title = release.message || release.appStoreState || undefined;
   if (release.status === 'ready_for_review') {
-    return <Tag color="warning" title={title}>准备提交审核</Tag>;
+    return <Tag color="processing" title={title}>自动提交中</Tag>;
   }
   if (release.status === 'waiting_for_review') {
     return <Tag color="processing" title={title}>等待审核</Tag>;
@@ -606,7 +606,7 @@ function appStoreReleaseTag(build: JenkinsBuild) {
     return <Tag color="processing" title={title}>审核中</Tag>;
   }
   if (release.status === 'pending_release') {
-    return <Tag color="success" title={title}>可供分发</Tag>;
+    return <Tag color="processing" title={title}>等待发布</Tag>;
   }
   if (release.status === 'ready_for_distribution') {
     return <Tag color="success" title={title}>可供分发</Tag>;
@@ -653,11 +653,25 @@ function appStoreManualIntervention(build: JenkinsBuild) {
   }
   const status = String(release.status || '');
   const detail = release.failureReason || release.message || release.appStoreState || '';
+  if (status === 'ready_for_review') {
+    return {
+      type: 'info' as const,
+      message: '等待自动提交 App Store 审核',
+      description: detail || 'App Store Connect 构建已处理完成，平台会自动提交审核。',
+    };
+  }
   if (status === 'pending_agreement') {
     return {
       type: 'warning' as const,
       message: 'Apple 协议待处理，需要人工介入',
       description: detail || '请使用 Account Holder/Admin 账号进入 App Store Connect 完成协议签署。',
+    };
+  }
+  if (status === 'pending_release') {
+    return {
+      type: 'warning' as const,
+      message: '审核已通过，等待 ASC 发布',
+      description: detail || '平台已将 ASC 版本设置为审核通过后自动上架，并会继续监听至已上架；如果长时间停留，请检查 ASC 版本发布方式是否保存成功。',
     };
   }
   if (['developer_action_needed', 'rejected', 'developer_rejected', 'failed', 'skipped', 'unconfirmed'].includes(status)) {
@@ -668,6 +682,13 @@ function appStoreManualIntervention(build: JenkinsBuild) {
     };
   }
   return null;
+}
+
+function appStoreReleaseTypeText(releaseType?: string) {
+  if (releaseType === 'AFTER_APPROVAL') return '审核通过后自动上架';
+  if (releaseType === 'MANUAL') return '手动发布';
+  if (releaseType === 'SCHEDULED') return '定时发布';
+  return releaseType || '-';
 }
 
 function buildStatusTags(build: JenkinsBuild) {
@@ -2726,7 +2747,6 @@ export default function CICDPage() {
   const [qualityLoading, setQualityLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [stoppingBuild, setStoppingBuild] = useState<number | null>(null);
-  const [submittingAppStoreReview, setSubmittingAppStoreReview] = useState<number | null>(null);
   const [cancelingAppStoreReview, setCancelingAppStoreReview] = useState<number | null>(null);
   const [stoppingQualityBuild, setStoppingQualityBuild] = useState<number | null>(null);
   const [cleaningQualityWda, setCleaningQualityWda] = useState<string | null>(null);
@@ -3636,19 +3656,6 @@ export default function CICDPage() {
       message.error(err?.error || err?.message || '取消构建失败');
     } finally {
       setStoppingBuild(null);
-    }
-  };
-
-  const submitAppStoreReview = async (buildNumber: number) => {
-    setSubmittingAppStoreReview(buildNumber);
-    try {
-      const response = await jenkinsApi.submitAppStoreReview(buildNumber);
-      message.success(response.data?.message || '已提交 App Store 审核');
-      await loadBuilds(filterDeployTarget, { silent: true }, filterBranchName);
-    } catch (err: any) {
-      message.error(err?.error || err?.message || '提交 App Store 审核失败');
-    } finally {
-      setSubmittingAppStoreReview(null);
     }
   };
 
@@ -4874,25 +4881,6 @@ export default function CICDPage() {
                         发布
                       </Button>
                     )
-                  )}
-                  {canPublishAppStore && record.publishChannel === 'AppStore' && ['ready_for_review', 'rejected', 'developer_rejected', 'developer_action_needed'].includes(String(record.appStoreRelease?.status || '')) && (
-                    <Popconfirm
-                      title="提交 App Store 审核？"
-                      description={`确定提交 #${record.number} / ${getChannelBuildNumber(record) || '-'} 到 App Store 审核吗？`}
-                      okText="提交审核"
-                      cancelText="取消"
-                      onConfirm={() => submitAppStoreReview(record.number)}
-                    >
-                      <Button
-                        size="small"
-                        type="primary"
-                        ghost
-                        icon={<RocketOutlined />}
-                        loading={submittingAppStoreReview === record.number}
-                      >
-                        提交审核
-                      </Button>
-                    </Popconfirm>
                   )}
                   {canPublishAppStore && record.publishChannel === 'AppStore' && ['waiting_for_review', 'in_review'].includes(String(record.appStoreRelease?.status || '')) && (
                     <Popconfirm
@@ -6672,9 +6660,22 @@ export default function CICDPage() {
                           ? new Date(selectedBuildLog.build.appStoreRelease.updatedAt).toLocaleString('zh-CN')
                           : '-'}
                       </Descriptions.Item>
+                      <Descriptions.Item label="上架方式">
+                        {appStoreReleaseTypeText(selectedBuildLog.build.appStoreRelease.releaseType)}
+                      </Descriptions.Item>
                       {selectedBuildLog.build.appStoreRelease.failureReason && (
                         <Descriptions.Item label="失败原因" span={2}>
                           <Text type="danger">{selectedBuildLog.build.appStoreRelease.failureReason}</Text>
+                        </Descriptions.Item>
+                      )}
+                      {(selectedBuildLog.build.appStoreRelease.releaseNotes || selectedBuildLog.build.testFlightWhatsNew) && (
+                        <Descriptions.Item label="提审文案" span={2}>
+                          <Paragraph
+                            style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
+                            copyable={{ text: selectedBuildLog.build.appStoreRelease.releaseNotes || selectedBuildLog.build.testFlightWhatsNew }}
+                          >
+                            {selectedBuildLog.build.appStoreRelease.releaseNotes || selectedBuildLog.build.testFlightWhatsNew}
+                          </Paragraph>
                         </Descriptions.Item>
                       )}
                     </Descriptions>

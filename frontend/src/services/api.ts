@@ -1959,6 +1959,8 @@ export interface JenkinsAppStoreRelease {
   reviewSubmissionId?: string;
   processingState?: string;
   appStoreState?: string;
+  releaseNotes?: string;
+  releaseType?: string;
   failureReason?: string;
   message?: string;
   updatedAt?: string;
