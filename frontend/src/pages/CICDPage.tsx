@@ -6617,34 +6617,12 @@ export default function CICDPage() {
                         ? new Date(selectedBuildLog.build.testFlightDistribution.updatedAt).toLocaleString('zh-CN')
                         : '-'}
                     </Descriptions.Item>
-                    <Descriptions.Item label="App Store Build ID">
-                      {selectedBuildLog.build.testFlightDistribution.appStoreBuildId || '-'}
-                    </Descriptions.Item>
-                    <Descriptions.Item label="处理状态">
-                      {selectedBuildLog.build.testFlightDistribution.processingState || '-'}
-                    </Descriptions.Item>
                     <Descriptions.Item label="内部测试">
                       {selectedBuildLog.build.testFlightDistribution.internalBuildState || '-'}
                     </Descriptions.Item>
                     <Descriptions.Item label="外部测试">
                       {selectedBuildLog.build.testFlightDistribution.externalBuildState || '-'}
                     </Descriptions.Item>
-                    <Descriptions.Item label="测试组" span={2}>
-                      {selectedBuildLog.build.testFlightDistribution.groups?.length
-                        ? (
-                          <Space size={4} wrap>
-                            {selectedBuildLog.build.testFlightDistribution.groups.map((group) => (
-                              <Tag key={group.id}>{group.name}</Tag>
-                            ))}
-                          </Space>
-                        )
-                        : <Text type="secondary">-</Text>}
-                    </Descriptions.Item>
-                    {selectedBuildLog.build.testFlightDistribution.message && (
-                      <Descriptions.Item label="状态说明" span={2}>
-                        {selectedBuildLog.build.testFlightDistribution.message}
-                      </Descriptions.Item>
-                    )}
                   </Descriptions>
                 ) : (
                   <Alert type="info" showIcon message="等待平台监听 TestFlight 分发状态" />
