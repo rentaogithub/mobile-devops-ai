@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import { JenkinsBuildListResult } from '../../services/api';
+import type { JenkinsBuildListResult } from '../../services/api';
 import {
   buildBuildBranchFilterOptions,
   buildPublishBranchOptions,
@@ -8,7 +8,8 @@ import {
   buildReleaseBaseBranchOptions,
 } from './cicdBranchOptions';
 import { getBuildStats } from './cicdStats';
-import { DeployTarget } from './qualityOptions';
+import { DEPLOY_TARGET_OPTIONS, filterDeployTargetOptions } from './qualityOptions';
+import type { DeployTarget } from './qualityOptions';
 
 interface UseCicdDerivedOptionsParams {
   branches: string[];
@@ -16,6 +17,8 @@ interface UseCicdDerivedOptionsParams {
   deployTarget: DeployTarget;
   publishBranch: string;
   canUseQuality: boolean;
+  canPublishAppStore: boolean;
+  canPublishPgyerOrTestFlight: boolean;
   loading: boolean;
 }
 
@@ -25,8 +28,15 @@ export function useCicdDerivedOptions({
   deployTarget,
   publishBranch,
   canUseQuality,
+  canPublishAppStore,
+  canPublishPgyerOrTestFlight,
   loading,
 }: UseCicdDerivedOptionsParams) {
+  const availableDeployTargetOptions = useMemo(
+    () => filterDeployTargetOptions(DEPLOY_TARGET_OPTIONS, { canPublishAppStore, canPublishPgyerOrTestFlight }),
+    [canPublishAppStore, canPublishPgyerOrTestFlight],
+  );
+  const firstAvailableDeployTarget = availableDeployTargetOptions[0]?.value;
   const stats = useMemo(() => getBuildStats(data), [data]);
   const canOpenQualityModal = canUseQuality && (data?.builds || []).length > 0 && !loading;
   const publishBranchOptions = useMemo(
@@ -48,6 +58,8 @@ export function useCicdDerivedOptions({
 
   return {
     stats,
+    availableDeployTargetOptions,
+    firstAvailableDeployTarget,
     canOpenQualityModal,
     publishBranchOptions,
     buildBranchFilterOptions,
