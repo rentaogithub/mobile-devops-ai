@@ -5,6 +5,7 @@ import { adminMiddleware } from '../middleware/auth';
 import { getDatabase } from '../database';
 import { apiRequestSampleService } from '../services/ApiRequestSampleService';
 import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
+import { clearOpAccessToken, getOpAccessToken } from '../services/OpCookieJar';
 
 const router = Router();
 const sourceBase = 'https://test1-doc.nn.com';
@@ -190,12 +191,28 @@ function previousCacheFile(service: string): string {
   return path.join(previousCacheDirectory, `${service}.json`);
 }
 
+function isSwaggerDocument(data: unknown): data is { paths?: Record<string, unknown>; swagger?: string; openapi?: string } {
+  if (!data || typeof data !== 'object') return false;
+  const record = data as Record<string, unknown>;
+  return (typeof record.swagger === 'string' || typeof record.openapi === 'string') && Boolean(record.paths && typeof record.paths === 'object');
+}
+
+function extractSwaggerDocument(data: unknown): unknown {
+  if (isSwaggerDocument(data)) return data;
+  if (!data || typeof data !== 'object') return undefined;
+  const record = data as Record<string, unknown>;
+  const retData = record.retData ?? record.data;
+  return isSwaggerDocument(retData) ? retData : undefined;
+}
+
 function readCachedDocument(service: string): { expiresAt: number; data: unknown } | undefined {
   const memory = cache.get(service);
-  if (memory) return memory;
+  if (memory && extractSwaggerDocument(memory.data)) return memory;
+  if (memory) cache.delete(service);
   try {
     const filePath = cacheFile(service);
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = extractSwaggerDocument(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+    if (!data) return undefined;
     const cached = { data, expiresAt: fs.statSync(filePath).mtimeMs + 10 * 60 * 1000 };
     cache.set(service, cached);
     return cached;
@@ -205,13 +222,15 @@ function readCachedDocument(service: string): { expiresAt: number; data: unknown
 }
 
 function writeCachedDocument(service: string, data: unknown): void {
+  const document = extractSwaggerDocument(data);
+  if (!document) throw new Error('上游返回的不是有效 API 文档，已拒绝写入缓存');
   fs.mkdirSync(cacheDirectory, { recursive: true });
   fs.mkdirSync(previousCacheDirectory, { recursive: true });
   const filePath = cacheFile(service);
   if (fs.existsSync(filePath)) {
     try {
       const previousData = fs.readFileSync(filePath, 'utf8');
-      const nextData = JSON.stringify(data);
+      const nextData = JSON.stringify(document);
       if (previousData && previousData !== nextData) {
         fs.writeFileSync(previousCacheFile(service), previousData);
       }
@@ -219,8 +238,8 @@ function writeCachedDocument(service: string, data: unknown): void {
       // 历史快照失败不影响当前文档写入。
     }
   }
-  fs.writeFileSync(filePath, JSON.stringify(data));
-  cache.set(service, { data, expiresAt: Date.now() + 10 * 60 * 1000 });
+  fs.writeFileSync(filePath, JSON.stringify(document));
+  cache.set(service, { data: document, expiresAt: Date.now() + 10 * 60 * 1000 });
 }
 
 type ApiDocOperation = { summary?: string; operationId?: string; tags?: string[]; parameters?: unknown[]; responses?: unknown };
@@ -471,12 +490,30 @@ async function fetchDocument(service: string, options: { fallbackOnError?: boole
   for (let attempt = 0; attempt < 3; attempt += 1) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, attempt * 500));
     try {
-      const response = await fetch(`${sourceBase}${source}`, { signal: AbortSignal.timeout(30_000) });
+      const url = new URL(source, sourceBase);
+      if (!url.searchParams.has('reqChannel')) url.searchParams.set('reqChannel', publicHeaders.reqChannel);
+      const token = getOpAccessToken();
+      const response = await fetch(url, {
+        headers: {
+          ...publicHeaders,
+          ...(token ? { token, 'x-access-token': token } : {}),
+        },
+        signal: AbortSignal.timeout(30_000),
+      });
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`HTTP ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ''}`);
       }
-      const data = withFallbackDocument(service, await response.json());
+      const rawData = await response.json();
+      if (invalidTokenRetCodes.has(responseRetCode(rawData))) {
+        clearOpAccessToken();
+        throw new Error(responseRetMessage(rawData) || 'OP token 已失效，请在 OP 页面重新登录后再同步');
+      }
+      const document = extractSwaggerDocument(rawData);
+      if (!document) {
+        throw new Error(responseRetMessage(rawData) || '上游返回的不是有效 API 文档');
+      }
+      const data = withFallbackDocument(service, document);
       if (shouldWriteCache) writeCachedDocument(service, data);
       return data;
     } catch (error) {
@@ -538,10 +575,25 @@ router.get('/search/all', async (req, res) => {
 
 router.post('/sync/all', adminMiddleware, async (_req, res) => {
   const results = await Promise.allSettled(Object.keys(sources).map(async (service) => {
-    await fetchDocument(service);
-    return service;
+    try {
+      await fetchDocument(service);
+      return { service, mode: 'latest' as const };
+    } catch (error) {
+      const cached = readCachedDocument(service);
+      if (cached) {
+        return {
+          service,
+          mode: 'cache' as const,
+          message: error instanceof Error ? error.message : '上游同步失败，已使用本地缓存',
+        };
+      }
+      throw error;
+    }
   }));
-  const succeeded = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+  const succeeded = results.flatMap((result) => result.status === 'fulfilled' && result.value.mode === 'latest' ? [result.value.service] : []);
+  const cached = results.flatMap((result) => result.status === 'fulfilled' && result.value.mode === 'cache'
+    ? [{ service: result.value.service, message: result.value.message }]
+    : []);
   const failed = results.flatMap((result, index) => result.status === 'rejected'
     ? [{ service: Object.keys(sources)[index], message: result.reason instanceof Error ? result.reason.message : '未知错误' }]
     : []);
@@ -549,6 +601,7 @@ router.post('/sync/all', adminMiddleware, async (_req, res) => {
     success: failed.length === 0,
     total: Object.keys(sources).length,
     succeeded,
+    cached,
     failed,
     syncedAt: new Date().toISOString(),
   });

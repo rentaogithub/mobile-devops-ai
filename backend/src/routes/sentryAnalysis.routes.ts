@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import sentryIssueService from '../services/SentryIssueService';
 import aiAnalysisService from '../services/AIAnalysisService';
-import { StorageService, SymbolizerService } from '../services';
+import { SymbolizerService } from '../services';
 import historyService from '../services/HistoryService';
 import { AppError, DSYMInfo, ErrorCode } from '../types';
 import { extractCrashInfo } from '../utils/crashLogParser';
@@ -9,21 +9,29 @@ import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
+import { crashGovernanceService, CrashGovernanceRecord, CrashGovernanceStatus } from '../services/CrashGovernanceService';
+import { dsymMatcherService } from '../services/DSYMMatcherService';
+import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 
 const router = Router();
-const storage = new StorageService();
 const symbolizer = new SymbolizerService();
-const excludedSentryAppVersions = new Set(
-  (process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0')
-    .split(',')
-    .map((version) => version.trim())
-    .filter(Boolean)
-);
-const defaultSentryIssueQuery = `is:unresolved ${Array.from(excludedSentryAppVersions)
-  .map((version) => `!release:"${version.replace(/"/g, '\\"')}"`)
-  .join(' ')}`.trim();
+
+const GOVERNANCE_SYNC_LIMIT = Number(process.env.CRASH_GOVERNANCE_SYNC_LIMIT || 20);
+
+function getExcludedSentryAppVersions() {
+  return new Set(crashGovernanceService.getExcludedVersions());
+}
+
+function getDefaultSentryIssueQuery() {
+  return crashGovernanceService.getDefaultIssueQuery();
+}
+
+function getRequestOperator(req: Request): string | undefined {
+  const user = (req as any).authUser;
+  return user?.displayName || user?.username || undefined;
+}
 
 interface SymbolicationAttemptDetail {
   appVersion: string;
@@ -125,6 +133,7 @@ function compareVersions(a: string, b: string): number {
 }
 
 function getHighestIssueVersion(issue: any): string {
+  const excludedSentryAppVersions = getExcludedSentryAppVersions();
   const versions = [
     issue?.maxAppVersion,
     ...(Array.isArray(issue?.appVersions) ? issue.appVersions : []),
@@ -137,6 +146,7 @@ function getHighestIssueVersion(issue: any): string {
 }
 
 function getIssueVersionCandidates(issue: any, extractedVersion?: string, requestedAppVersion?: string): string[] {
+  const excludedSentryAppVersions = getExcludedSentryAppVersions();
   const issueVersions = [
     issue?.maxAppVersion,
     issue?.minAppVersion,
@@ -159,23 +169,7 @@ function getIssueVersionCandidates(issue: any, extractedVersion?: string, reques
 }
 
 async function findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
-  const allDSYMs = await storage.getAllDSYMs();
-  const exactMainApps = allDSYMs.filter((dsym) =>
-    dsym.appName.toUpperCase() === 'NNIM' && dsym.version === appVersion
-  );
-  const relatedComponents = allDSYMs.filter((dsym) =>
-    dsym.appName.toUpperCase() !== 'NNIM' &&
-    Array.isArray(dsym.relatedAppVersions) &&
-    dsym.relatedAppVersions.includes(appVersion)
-  );
-
-  const candidates = exactMainApps.length > 0 || relatedComponents.length > 0
-    ? [...exactMainApps, ...relatedComponents]
-    : allDSYMs.filter((dsym) => dsym.version === appVersion);
-
-  const unique = new Map<string, DSYMInfo>();
-  candidates.forEach((dsym) => unique.set(dsym.uuid, dsym));
-  return Array.from(unique.values());
+  return dsymMatcherService.findDSYMsForAppVersion(appVersion);
 }
 
 function normalizeUUID(uuid?: string): string {
@@ -192,29 +186,7 @@ function hasDWARFFile(dsymPath: string): boolean {
 }
 
 function resolveDSYMFilePath(dsym: DSYMInfo): string {
-  if (hasDWARFFile(dsym.filePath)) {
-    return dsym.filePath;
-  }
-
-  const dsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data', 'dsyms');
-  const dsymName = path.basename(dsym.filePath || `${dsym.appName}.dSYM`);
-  const candidates = [
-    path.join(dsymDir, dsym.uuid, dsymName),
-    path.join(dsymDir, dsym.uuid, `${dsym.appName}.dSYM`),
-    path.join(dsymDir, dsym.uuid, `${dsym.appName}.app.dSYM`),
-  ];
-  const resolved = candidates.find((candidate) => hasDWARFFile(candidate));
-  if (resolved) {
-    logger.warn('修正 dSYM 旧路径', {
-      appName: dsym.appName,
-      uuid: dsym.uuid,
-      oldPath: dsym.filePath,
-      resolvedPath: resolved,
-    });
-    return resolved;
-  }
-
-  return dsym.filePath;
+  return dsymMatcherService.resolveDSYMFilePath(dsym);
 }
 
 function extractCrashBinaryNames(crashLog: string): Set<string> {
@@ -312,12 +284,147 @@ function assertSentryCrashLogSymbolicatable(crashLog: string, issue: any, eventI
   );
 }
 
+function getCrashGovernanceWebhookUrl() {
+  return String(process.env.CRASH_GOVERNANCE_WEBHOOK_URL || process.env.WECHAT_WEBHOOK_URL || '').trim();
+}
+
+function isHighRiskCrash(record: CrashGovernanceRecord) {
+  const level = String(record.level || '').toLowerCase();
+  return ['fatal', 'critical', 'error'].includes(level) || record.eventCount >= 20 || record.userCount >= 5;
+}
+
+function getNotificationTypes(record: CrashGovernanceRecord): string[] {
+  const types: string[] = [];
+  if (isHighRiskCrash(record)) {
+    types.push('high_risk');
+  }
+  if (record.governanceStatus === 'regression') {
+    types.push('regression');
+  }
+  if (record.dsymCoverageStatus === 'missing') {
+    types.push('dsym_missing');
+  }
+  return types;
+}
+
+function buildCrashGovernanceNotification(record: CrashGovernanceRecord, type: string) {
+  const baseUrl = process.env.BASE_URL || process.env.FRONTEND_BASE_URL || '';
+  const detailUrl = baseUrl ? `${baseUrl.replace(/\/+$/, '')}/sentry-service` : '';
+  const typeLabel = type === 'regression'
+    ? '疑似回归 Crash'
+    : type === 'dsym_missing'
+      ? 'Crash dSYM 缺失'
+      : '高风险 Crash';
+  return [
+    `【${typeLabel}】${record.shortId || record.sourceIssueId}`,
+    `标题：${record.title}`,
+    `版本：${record.appVersion || record.appVersionRange || '-'}`,
+    `事件/用户：${record.eventCount || 0}/${record.userCount || 0}`,
+    `状态：${record.governanceStatus}，符号化：${record.symbolicationStatus}，dSYM：${record.dsymCoverageStatus}`,
+    record.crashModule ? `模块：${record.crashModule}` : '',
+    record.crashLocation ? `位置：${record.crashLocation}` : '',
+    record.symbolicationError ? `符号化失败：${record.symbolicationError}` : '',
+    record.lastSyncError ? `同步失败：${record.lastSyncError}` : '',
+    detailUrl ? `平台详情：${detailUrl}` : '',
+    record.permalink ? `Sentry：${record.permalink}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function notifyCrashGovernanceRecords(records: CrashGovernanceRecord[]) {
+  const webhookUrl = getCrashGovernanceWebhookUrl();
+  if (!webhookUrl) {
+    return;
+  }
+
+  for (const record of records) {
+    for (const type of getNotificationTypes(record)) {
+      if (crashGovernanceService.wasNotificationSent(record.id, type)) {
+        continue;
+      }
+      try {
+        await axios.post(webhookUrl, {
+          msgtype: 'text',
+          text: {
+            content: buildCrashGovernanceNotification(record, type),
+          },
+        }, { timeout: 15000 });
+        crashGovernanceService.markNotificationSent(record.id, type);
+        logger.info('Crash 治理企业微信通知已发送', {
+          recordId: record.id,
+          type,
+          sourceIssueId: record.sourceIssueId,
+        });
+      } catch (error: any) {
+        logger.warn('Crash 治理企业微信通知发送失败', {
+          recordId: record.id,
+          type,
+          error: error.message,
+        });
+      }
+    }
+  }
+}
+
+async function syncGovernanceIssue(issue: any) {
+  const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+  const record = crashGovernanceService.upsertSentryIssue(normalizedIssue);
+  try {
+    const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
+    const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
+    const refreshed = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+      eventId: event?.id,
+      symbolicationStatus: originalCrashFile.crashLog.includes('Sentry event does not contain stacktrace/threads') ||
+        originalCrashFile.crashLog.includes('Sentry event does not contain debug images')
+        ? 'incomplete'
+        : record.symbolicationStatus,
+      symbolicationError: originalCrashFile.crashLog.includes('Sentry event does not contain stacktrace/threads') ||
+        originalCrashFile.crashLog.includes('Sentry event does not contain debug images')
+        ? 'Sentry 原始信息不全，缺少线程栈或 Binary Images'
+        : undefined,
+    });
+    await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, originalCrashFile.crashLog);
+    return crashGovernanceService.getById(refreshed.id) || refreshed;
+  } catch (error: any) {
+    return crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+      syncError: error.message || '同步 Sentry Issue 失败',
+    });
+  }
+}
+
+async function syncGovernanceIssues(options: {
+  period?: string;
+  limit?: number;
+  query?: string;
+} = {}) {
+  const defaultSentryIssueQuery = getDefaultSentryIssueQuery();
+  const issues = await sentryIssueService.listNewIssues({
+    period: options.period || '24h',
+    limit: Math.min(Math.max(Number(options.limit || GOVERNANCE_SYNC_LIMIT), 1), 50),
+    query: options.query || defaultSentryIssueQuery,
+    enrichVersions: true,
+  });
+  workflowIntegrationService.syncSentryIssues(issues);
+  const records = [];
+  for (const issue of issues) {
+    records.push(await syncGovernanceIssue(issue));
+  }
+  await notifyCrashGovernanceRecords(records);
+  return {
+    period: options.period || '24h',
+    query: options.query || defaultSentryIssueQuery,
+    total: records.length,
+    records,
+  };
+}
+
 async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '') {
   if (!issue?.id) {
     throw new AppError(ErrorCode.INVALID_CRASH_LOG, '请选择要解析的 Sentry 问题', 400);
   }
+  const excludedSentryAppVersions = getExcludedSentryAppVersions();
 
   const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
+  crashGovernanceService.upsertSentryIssue(normalizedIssue, { symbolicationStatus: 'pending' });
   const event = await sentryIssueService.getLatestEvent(normalizedIssue.id);
   const originalCrashFile = sentryIssueService.buildOriginalCrashFile(normalizedIssue, event);
   const crashLog = originalCrashFile.crashLog;
@@ -395,6 +502,15 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
         }
 
         upsertSentryIssueHistory(normalizedIssue, existingHistory.id);
+        const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+          eventId: event?.id,
+          historyId: existingHistory.id,
+          symbolicationStatus: 'success',
+          analysisStatus: existingHistory.aiAnalysis ? 'success' : 'pending',
+          analysis: existingHistory.aiAnalysis,
+        });
+        await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
+        await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
         return {
           issue: normalizedIssue,
           eventId: event?.id,
@@ -428,6 +544,14 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
       });
 
       upsertSentryIssueHistory(normalizedIssue, savedRecord.id);
+      const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+        eventId: event?.id,
+        historyId: savedRecord.id,
+        symbolicationStatus: 'success',
+        analysisStatus: 'pending',
+      });
+      await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
+      await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
       return {
         issue: normalizedIssue,
         eventId: event?.id,
@@ -447,6 +571,11 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
   }
 
   const attemptMessages = attempts.map((attempt) => `${attempt.appVersion}: ${attempt.error}`);
+  crashGovernanceService.markSymbolication(normalizedIssue.id, {
+    status: 'failed',
+    eventId: event?.id,
+    error: attemptMessages.join('；') || '候选版本均符号化失败',
+  });
   throw new AppError(
     ErrorCode.DSYM_NOT_FOUND,
     `候选版本均符号化失败：${attemptMessages.join('；')}`,
@@ -465,8 +594,391 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
   );
 }
 
+router.get('/governance/dashboard', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: crashGovernanceService.dashboard(),
+    });
+  } catch (error: any) {
+    logger.error('获取 Crash 治理看板失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取 Crash 治理看板失败',
+    });
+  }
+});
+
+router.get('/governance/config', (_req: Request, res: Response) => {
+  try {
+    res.json({
+      success: true,
+      data: crashGovernanceService.getConfig(),
+    });
+  } catch (error: any) {
+    logger.error('获取 Crash 治理配置失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取 Crash 治理配置失败',
+    });
+  }
+});
+
+router.patch('/governance/config', (req: Request, res: Response) => {
+  try {
+    const config = crashGovernanceService.updateConfig({
+      excludedVersions: req.body?.excludedVersions,
+    });
+    res.json({
+      success: true,
+      data: config,
+    });
+  } catch (error: any) {
+    logger.error('更新 Crash 治理配置失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '更新 Crash 治理配置失败',
+    });
+  }
+});
+
+router.get('/governance/issues', (req: Request, res: Response) => {
+  try {
+    const status = typeof req.query.status === 'string' ? req.query.status as CrashGovernanceStatus | 'open' : undefined;
+    const source = typeof req.query.source === 'string' ? req.query.source : undefined;
+    const appVersion = typeof req.query.appVersion === 'string' ? req.query.appVersion : undefined;
+    const dsymCoverageStatus = typeof req.query.dsymCoverageStatus === 'string' ? req.query.dsymCoverageStatus : undefined;
+    const symbolicationStatus = typeof req.query.symbolicationStatus === 'string' ? req.query.symbolicationStatus : undefined;
+    const symbolicationFailureCategory = typeof req.query.symbolicationFailureCategory === 'string' ? req.query.symbolicationFailureCategory : undefined;
+    const analysisStatus = typeof req.query.analysisStatus === 'string' ? req.query.analysisStatus : undefined;
+    const owner = typeof req.query.owner === 'string' ? req.query.owner : undefined;
+    const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : undefined;
+    const limit = Number(req.query.limit || 50);
+    res.json({
+      success: true,
+      data: {
+        issues: crashGovernanceService.list({
+          status,
+          source,
+          appVersion,
+          dsymCoverageStatus,
+          symbolicationStatus,
+          symbolicationFailureCategory,
+          analysisStatus,
+          owner,
+          keyword,
+          limit,
+        }),
+      },
+    });
+  } catch (error: any) {
+    logger.error('获取 Crash 治理列表失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取 Crash 治理列表失败',
+    });
+  }
+});
+
+router.post('/governance/sync', async (req: Request, res: Response) => {
+  try {
+    const defaultSentryIssueQuery = getDefaultSentryIssueQuery();
+    const {
+      period = '24h',
+      limit = GOVERNANCE_SYNC_LIMIT,
+      query = defaultSentryIssueQuery,
+    } = req.body || {};
+    const result = await syncGovernanceIssues({
+      period: String(period || '24h'),
+      limit: Number(limit || GOVERNANCE_SYNC_LIMIT),
+      query: String(query || defaultSentryIssueQuery),
+    });
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    logger.error('同步 Crash 治理状态失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '同步 Crash 治理状态失败',
+    });
+  }
+});
+
+router.get('/governance/events', (req: Request, res: Response) => {
+  try {
+    const scope = typeof req.query.scope === 'string' ? req.query.scope : undefined;
+    const toStatus = typeof req.query.toStatus === 'string' ? req.query.toStatus : undefined;
+    const operator = typeof req.query.operator === 'string' ? req.query.operator : undefined;
+    const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : undefined;
+    const limit = Number(req.query.limit || 100);
+    res.json({
+      success: true,
+      data: {
+        events: crashGovernanceService.listRecentGovernanceEvents({
+          scope,
+          toStatus,
+          operator,
+          keyword,
+          limit,
+        }),
+      },
+    });
+  } catch (error: any) {
+    logger.error('获取 Crash 治理记录失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取 Crash 治理记录失败',
+    });
+  }
+});
+
+router.get('/governance/events/export', (req: Request, res: Response) => {
+  try {
+    const scope = typeof req.query.scope === 'string' ? req.query.scope : undefined;
+    const toStatus = typeof req.query.toStatus === 'string' ? req.query.toStatus : undefined;
+    const operator = typeof req.query.operator === 'string' ? req.query.operator : undefined;
+    const keyword = typeof req.query.keyword === 'string' ? req.query.keyword : undefined;
+    const limit = Number(req.query.limit || 200);
+    const csv = `\uFEFF${crashGovernanceService.exportGovernanceEventsCsv({
+      scope,
+      toStatus,
+      operator,
+      keyword,
+      limit,
+    })}`;
+    const fileName = `crash-governance-events-${new Date().toISOString().slice(0, 10)}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(csv);
+  } catch (error: any) {
+    logger.error('导出 Crash 治理记录失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '导出 Crash 治理记录失败',
+    });
+  }
+});
+
+router.post('/governance/versions/:appVersion/refresh-coverage', async (req: Request, res: Response) => {
+  try {
+    const appVersion = String(req.params.appVersion || '').trim();
+    if (!appVersion) {
+      res.status(400).json({ success: false, error: 'App 版本不能为空' });
+      return;
+    }
+    const result = await crashGovernanceService.refreshCoverageByVersion(appVersion);
+    res.json({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    logger.error('批量重查版本 dSYM 覆盖失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '批量重查版本 dSYM 覆盖失败',
+    });
+  }
+});
+
+router.get('/governance/issues/:id', (req: Request, res: Response) => {
+  try {
+    const record = crashGovernanceService.getById(Number(req.params.id));
+    if (!record) {
+      res.status(404).json({ success: false, error: 'Crash 记录不存在' });
+      return;
+    }
+    const history = record.historyId ? historyService.getHistoryById(record.historyId) : undefined;
+    const fingerprintGroup = crashGovernanceService.getFingerprintGroupByRecordId(record.id);
+    const events = crashGovernanceService.listGovernanceEvents(record.id);
+    res.json({
+      success: true,
+      data: {
+        record,
+        history,
+        fingerprintGroup,
+        events,
+      },
+    });
+  } catch (error: any) {
+    logger.error('获取 Crash 治理详情失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取 Crash 治理详情失败',
+    });
+  }
+});
+
+router.post('/governance/issues/:id/refresh-coverage', async (req: Request, res: Response) => {
+  try {
+    const record = crashGovernanceService.getById(Number(req.params.id));
+    if (!record) {
+      res.status(404).json({ success: false, error: 'Crash 记录不存在' });
+      return;
+    }
+    if (!record.appVersion) {
+      res.status(400).json({ success: false, error: '当前 Crash 缺少 App 版本，无法重查 dSYM 覆盖' });
+      return;
+    }
+    const history = record.historyId ? historyService.getHistoryById(record.historyId) : undefined;
+    const nextRecord = await crashGovernanceService.refreshCoverageById(
+      record.id,
+      history?.originalLog || history?.symbolicatedLog,
+    );
+    res.json({
+      success: true,
+      data: nextRecord,
+    });
+  } catch (error: any) {
+    logger.error('重查 Crash dSYM 覆盖失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '重查 Crash dSYM 覆盖失败',
+    });
+  }
+});
+
+router.post('/governance/issues/:id/analyze', (req: Request, res: Response) => {
+  try {
+    const record = crashGovernanceService.getById(Number(req.params.id));
+    if (!record) {
+      res.status(404).json({ success: false, error: 'Crash 记录不存在' });
+      return;
+    }
+    if (!record.historyId) {
+      res.status(400).json({ success: false, error: '当前 Crash 未关联符号化历史，无法执行 AI 分析' });
+      return;
+    }
+    const history = historyService.getHistoryById(record.historyId);
+    if (!history?.symbolicatedLog) {
+      res.status(400).json({ success: false, error: '符号化历史不存在或缺少符号化日志' });
+      return;
+    }
+    const apiKey = String(req.body?.apiKey || '');
+    if (!aiAnalysisService.hasConfiguredAPIKey(apiKey)) {
+      res.status(400).json({ success: false, error: '未配置 AI API Key' });
+      return;
+    }
+
+    const pendingRecord = crashGovernanceService.markAnalysisByRecordId(record.id, { status: 'pending' }) || record;
+    setImmediate(async () => {
+      try {
+        const analysis = await aiAnalysisService.analyzeCrashLog(
+          history.symbolicatedLog,
+          apiKey,
+          history.appVersion || record.appVersion,
+        );
+        await historyService.updateAIAnalysis(history.id, analysis);
+        const nextRecord = crashGovernanceService.markAnalysisByRecordId(record.id, {
+          status: 'success',
+          analysis,
+        });
+        if (nextRecord) {
+          await notifyCrashGovernanceRecords([nextRecord]);
+        }
+      } catch (error: any) {
+        crashGovernanceService.markAnalysisByRecordId(record.id, {
+          status: 'failed',
+          error: error.message || 'AI 分析失败',
+        });
+        logger.warn('Crash 治理异步 AI 分析失败', {
+          recordId: record.id,
+          historyId: history.id,
+          error: error.message,
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        record: pendingRecord,
+        message: 'AI 分析已开始',
+      },
+    });
+  } catch (error: any) {
+    logger.error('启动 Crash 治理 AI 分析失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '启动 Crash 治理 AI 分析失败',
+    });
+  }
+});
+
+router.patch('/governance/issues/:id/status', (req: Request, res: Response) => {
+  try {
+    const {
+      governanceStatus,
+      owner,
+      fixedVersion,
+      fixedRemark,
+      ignoreReason,
+    } = req.body || {};
+    const allowedStatuses = new Set(['new', 'analyzing', 'pending_fix', 'fixed', 'regression', 'ignored']);
+    if (!allowedStatuses.has(String(governanceStatus))) {
+      res.status(400).json({ success: false, error: '治理状态无效' });
+      return;
+    }
+    const record = crashGovernanceService.updateGovernanceStatus(Number(req.params.id), {
+      governanceStatus,
+      owner,
+      fixedVersion,
+      fixedRemark,
+      ignoreReason,
+      operator: getRequestOperator(req),
+    });
+    res.json({
+      success: true,
+      data: record,
+    });
+  } catch (error: any) {
+    logger.error('更新 Crash 治理状态失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '更新 Crash 治理状态失败',
+    });
+  }
+});
+
+router.patch('/governance/issues/:id/fingerprint/status', (req: Request, res: Response) => {
+  try {
+    const {
+      governanceStatus,
+      owner,
+      fixedVersion,
+      fixedRemark,
+      ignoreReason,
+    } = req.body || {};
+    const allowedStatuses = new Set(['new', 'analyzing', 'pending_fix', 'fixed', 'regression', 'ignored']);
+    if (!allowedStatuses.has(String(governanceStatus))) {
+      res.status(400).json({ success: false, error: '治理状态无效' });
+      return;
+    }
+    const group = crashGovernanceService.updateFingerprintGroupStatus(Number(req.params.id), {
+      governanceStatus,
+      owner,
+      fixedVersion,
+      fixedRemark,
+      ignoreReason,
+      operator: getRequestOperator(req),
+    });
+    res.json({
+      success: true,
+      data: group,
+    });
+  } catch (error: any) {
+    logger.error('批量更新同类 Crash 治理状态失败', { error: error.message });
+    res.status(500).json({
+      success: false,
+      error: error.message || '批量更新同类 Crash 治理状态失败',
+    });
+  }
+});
+
 router.post('/issues', async (req: Request, res: Response) => {
   try {
+    const defaultSentryIssueQuery = getDefaultSentryIssueQuery();
     const {
       period = '24h',
       limit = 10,
@@ -481,6 +993,7 @@ router.post('/issues', async (req: Request, res: Response) => {
       enrichVersions: Boolean(enrichVersions),
     });
     workflowIntegrationService.syncSentryIssues(issues);
+    issues.forEach((issue) => crashGovernanceService.upsertSentryIssue(issue));
 
     res.json({
       success: true,
@@ -974,6 +1487,16 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         { ...normalizedIssue, eventId: event?.id, appVersion: existingHistory.appVersion || recordAppVersion },
         aiAnalysis,
       );
+      const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+        eventId: event?.id,
+        historyId: existingHistory.id,
+        symbolicationStatus: 'success',
+        analysisStatus: aiAnalysis ? 'success' : (aiError ? 'failed' : 'pending'),
+        analysisError: aiError,
+        analysis: aiAnalysis,
+      });
+      await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
+      await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
 
       res.json({
         success: true,
@@ -1045,6 +1568,16 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       { ...normalizedIssue, eventId: event?.id, appVersion: recordAppVersion },
       aiAnalysis,
     );
+    const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+      eventId: event?.id,
+      historyId: savedRecord.id,
+      symbolicationStatus: 'success',
+      analysisStatus: aiAnalysis ? 'success' : (aiError ? 'failed' : 'pending'),
+      analysisError: aiError,
+      analysis: aiAnalysis,
+    });
+    await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
+    await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
 
     res.json({
       success: true,
@@ -1064,6 +1597,15 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     logger.error('解析 Sentry 问题失败', { error: error.message });
+    if (req.body?.issue?.id) {
+      crashGovernanceService.upsertSentryIssue(
+        sentryIssueService.normalizeIssueSummary(req.body.issue),
+        {
+          symbolicationStatus: error instanceof AppError && error.code === ErrorCode.INVALID_CRASH_LOG ? 'incomplete' : 'failed',
+          symbolicationError: error.message || '解析 Sentry 问题失败',
+        },
+      );
+    }
 
     if (error instanceof AppError) {
       res.status(error.statusCode).json({
@@ -1082,6 +1624,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
 
 router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
   try {
+    const defaultSentryIssueQuery = getDefaultSentryIssueQuery();
     const {
       apiKey = '',
       period = '24h',
@@ -1139,5 +1682,32 @@ router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
     });
   }
 });
+
+const globalCrashGovernanceSync = globalThis as typeof globalThis & {
+  __nnCrashGovernanceSyncStarted?: boolean;
+};
+
+if (
+  process.env.NODE_ENV !== 'test' &&
+  process.env.CRASH_GOVERNANCE_AUTO_SYNC !== 'false' &&
+  !globalCrashGovernanceSync.__nnCrashGovernanceSyncStarted
+) {
+  globalCrashGovernanceSync.__nnCrashGovernanceSyncStarted = true;
+  const intervalMs = Math.max(Number(process.env.CRASH_GOVERNANCE_SYNC_INTERVAL_MS || 10 * 60 * 1000), 60 * 1000);
+  const runBackgroundSync = async () => {
+    try {
+      const result = await syncGovernanceIssues({
+        period: process.env.CRASH_GOVERNANCE_SYNC_PERIOD || '24h',
+        limit: GOVERNANCE_SYNC_LIMIT,
+        query: getDefaultSentryIssueQuery(),
+      });
+      logger.info('Crash 治理后台同步完成', { total: result.total });
+    } catch (error: any) {
+      logger.warn('Crash 治理后台同步失败', { error: error.message });
+    }
+  };
+  setTimeout(runBackgroundSync, Number(process.env.CRASH_GOVERNANCE_SYNC_DELAY_MS || 30 * 1000));
+  setInterval(runBackgroundSync, intervalMs);
+}
 
 export default router;

@@ -27,7 +27,7 @@ import {
   FileSearchOutlined,
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
-import { pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
+import { feedbackLogApi, pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
 import { authUtils } from '../utils/auth';
 import { analyzeBusinessLogLines, BusinessLogAnalysisModal, type BusinessLogAnalysis } from '../components/BusinessLogAnalysisModal';
 
@@ -171,6 +171,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const [devices, setDevices] = useState<RealtimeLogDeviceData[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
+  const [isAnalyzingDownloadedLogs, setIsAnalyzingDownloadedLogs] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [centerSuccessText, setCenterSuccessText] = useState('');
   const [qrModalOpen, setQrModalOpen] = useState(false);
@@ -600,6 +601,25 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     }));
   };
 
+  const analyzeDownloadedLogArchive = async (blob: Blob, fileName: string) => {
+    setIsAnalyzingDownloadedLogs(true);
+    try {
+      const result = await feedbackLogApi.analyzeArchive(blob);
+      if (!result.lines.length) {
+        message.warning('下载的 NN 日志中没有可分析的业务日志');
+        return;
+      }
+      setAnalysisResult(analyzeBusinessLogLines(result.lines, `下载 NN 日志 ${fileName}`));
+      setAnalysisOpen(true);
+      const fileText = result.files.length ? `，文件 ${result.files.length} 个` : '';
+      message.success(`NN 日志分析完成，共 ${result.lineCount} 行${fileText}`);
+    } catch (error: any) {
+      message.warning(error?.message || 'NN 日志已下载，但分析失败');
+    } finally {
+      setIsAnalyzingDownloadedLogs(false);
+    }
+  };
+
   const requestRefreshLogs = (targetSession?: PairingSessionData) => {
     const currentSession = targetSession || sessionRef.current || session;
     if (!currentSession) {
@@ -661,6 +681,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     setIsDownloadingLogs(false);
     setDownloadProgress(100);
     message.success('NN 日志已下载到电脑');
+    void analyzeDownloadedLogArchive(blob, archive.fileName);
   };
 
   const enterDeviceLogStream = (device: RealtimeLogDeviceData) => {
@@ -1094,10 +1115,10 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               <Button
                 size="small"
                 icon={<DownloadOutlined />}
-                loading={isDownloadingLogs}
+                loading={isDownloadingLogs || isAnalyzingDownloadedLogs}
                 onClick={requestNNLogsDownload}
               >
-                {isDownloadingLogs ? `下载中 ${downloadProgress}%` : '下载 NN 日志'}
+                {isDownloadingLogs ? `下载中 ${downloadProgress}%` : isAnalyzingDownloadedLogs ? '分析中' : '下载 NN 日志'}
               </Button>
               <Button
                 size="small"

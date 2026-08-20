@@ -150,6 +150,21 @@ export default function MainLayout() {
       label: '质量中心',
     }] : []),
     {
+      key: '/cicd-group',
+      icon: <RocketOutlined />,
+      label: <span onClick={() => navigate('/cicd')}>CI/CD</span>,
+      children: [
+        { key: '/cicd', label: '发布管理' },
+        ...(canUseQuality ? [{ key: '/cicd/quality', label: '自动质检' }] : []),
+        { key: '/cicd/devices', label: 'iOS设备注册' },
+      ],
+    },
+    {
+      key: '/logs',
+      icon: <FileSearchOutlined />,
+      label: '日志服务',
+    },
+    {
       key: '/symbolicate-group',
       icon: <BugOutlined />,
       label: <span onClick={() => navigate(canAccessCrashTools ? '/sentry-service' : '/history')}>Crash 服务</span>,
@@ -166,21 +181,6 @@ export default function MainLayout() {
       key: '/pods',
       icon: <AppstoreOutlined />,
       label: 'Pods 组件',
-    },
-    {
-      key: '/cicd-group',
-      icon: <RocketOutlined />,
-      label: <span onClick={() => navigate('/cicd')}>CI/CD</span>,
-      children: [
-        { key: '/cicd', label: '发布管理' },
-        ...(canUseQuality ? [{ key: '/cicd/quality', label: '自动质检' }] : []),
-        { key: '/cicd/devices', label: 'iOS设备注册' },
-      ],
-    },
-    {
-      key: '/logs',
-      icon: <FileSearchOutlined />,
-      label: '日志服务',
     },
     {
       key: '/devops',

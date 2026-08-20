@@ -516,7 +516,23 @@ export default function WorkflowPage() {
               </Row>
               <Button type="primary" onClick={addObservation}>记录并评估发布健康度</Button>
             </Form>
-            {releaseHealth && <Alert style={{ marginTop: 16 }} showIcon type={releaseHealth.status === 'healthy' ? 'success' : releaseHealth.status === 'critical' ? 'error' : 'warning'} message={`发布健康度：${releaseHealth.status}`} description={(releaseHealth.recommendations || []).join('；')} />}
+            {releaseHealth && (
+              <Alert
+                style={{ marginTop: 16 }}
+                showIcon
+                type={releaseHealth.status === 'healthy' ? 'success' : releaseHealth.status === 'critical' ? 'error' : 'warning'}
+                message={`发布健康度：${releaseHealth.status}`}
+                description={(
+                  <Space direction="vertical" size={6}>
+                    <span>
+                      观察指标 {releaseHealth.observationCount || 0} 项，异常 {releaseHealth.anomalyCount || 0} 项
+                      {releaseHealth.crashHealth ? `；线上 Crash ${releaseHealth.crashHealth.openCrashCount || 0}，高风险 ${releaseHealth.crashHealth.highRiskCount || 0}，dSYM 缺失 ${releaseHealth.crashHealth.dsymMissingCount || 0}` : ''}
+                    </span>
+                    <span>{(releaseHealth.recommendations || []).join('；')}</span>
+                  </Space>
+                )}
+              />
+            )}
           </Card>
         </Col>
       </Row>

@@ -153,6 +153,234 @@ export interface SentrySymbolicateAnalyzeResult {
   historyId?: number;
 }
 
+export type CrashGovernanceStatus = 'new' | 'analyzing' | 'pending_fix' | 'fixed' | 'regression' | 'ignored';
+export type CrashSymbolicationStatus = 'pending' | 'success' | 'failed' | 'incomplete';
+export type CrashAIAnalysisStatus = 'pending' | 'success' | 'failed' | 'skipped';
+export type CrashSymbolicationFailureCategory =
+  | 'missing_dsym'
+  | 'uuid_mismatch'
+  | 'incomplete_log'
+  | 'missing_system_symbols'
+  | 'tool_failed'
+  | 'unknown';
+
+export interface CrashDSYMCoverageSummary {
+  appVersion: string;
+  mainAppReady: boolean;
+  relatedReady: boolean;
+  total: number;
+  valid: number;
+  missingDwarf: number;
+  modules: Array<{
+    appName: string;
+    uuid: string;
+    version: string;
+    buildNumber?: string;
+    valid: boolean;
+    reason?: string;
+  }>;
+}
+
+export interface CrashGovernanceRecord {
+  id: number;
+  source: 'sentry' | 'quality' | 'manual';
+  sourceIssueId: string;
+  shortId?: string;
+  eventId?: string;
+  permalink?: string;
+  title: string;
+  culprit?: string;
+  level?: string;
+  sentryStatus?: string;
+  appVersion?: string;
+  appVersionRange?: string;
+  firstSeen?: string;
+  lastSeen?: string;
+  eventCount: number;
+  userCount: number;
+  crashType?: string;
+  crashReason?: string;
+  crashModule?: string;
+  crashLocation?: string;
+  fingerprint?: string;
+  symbolicationStatus: CrashSymbolicationStatus;
+  symbolicationError?: string;
+  symbolicationFailureCategory?: CrashSymbolicationFailureCategory;
+  analysisStatus: CrashAIAnalysisStatus;
+  analysisError?: string;
+  governanceStatus: CrashGovernanceStatus;
+  owner?: string;
+  fixedVersion?: string;
+  fixedRemark?: string;
+  ignoreReason?: string;
+  historyId?: number;
+  qualityTaskId?: string;
+  releaseRecordId?: string;
+  dsymCoverageStatus: 'ready' | 'missing' | 'partial' | 'unknown';
+  dsymCoverage?: CrashDSYMCoverageSummary;
+  retryCount: number;
+  lastSyncedAt?: string;
+  lastSyncError?: string;
+  groupedIssueCount?: number;
+  groupedIssueIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrashGovernanceFingerprintGroup {
+  fingerprint?: string;
+  issueCount: number;
+  eventCount: number;
+  userCount: number;
+  versions: string[];
+  lastSeen?: string;
+  records: CrashGovernanceRecord[];
+}
+
+export interface CrashGovernanceEvent {
+  id: number;
+  recordId: number;
+  record?: CrashGovernanceRecord;
+  action: 'status_update';
+  scope: 'single' | 'fingerprint';
+  fromStatus?: CrashGovernanceStatus;
+  toStatus?: CrashGovernanceStatus;
+  operator?: string;
+  note?: string;
+  relatedRecordIds: number[];
+  createdAt: string;
+}
+
+export interface CrashGovernanceDashboard {
+  summary: {
+    totalOpen: number;
+    newToday: number;
+    highRisk: number;
+    regressions: number;
+    symbolicated: number;
+    symbolicationFailed: number;
+    analysisReady: number;
+    analysisFailed: number;
+    dsymReady: number;
+    dsymMissing: number;
+    lastSyncedAt?: string;
+    excludedVersions: string[];
+  };
+  topIssues: CrashGovernanceRecord[];
+  recentIssues: CrashGovernanceRecord[];
+  regressions: CrashGovernanceRecord[];
+  qualityEvidence: CrashGovernanceRecord[];
+  manualEvidence: CrashGovernanceRecord[];
+  symbolicationFailureBreakdown: Array<{
+    category: CrashSymbolicationFailureCategory;
+    count: number;
+    eventCount: number;
+    userCount: number;
+    latestSeen?: string;
+  }>;
+  actionRecommendations: Array<{
+    type: 'symbolication' | 'crash_risk' | 'sync' | 'dsym' | 'owner' | 'identification';
+    priority: 'high' | 'medium' | 'low';
+    title: string;
+    description: string;
+    action: string;
+    relatedCategory?: CrashSymbolicationFailureCategory;
+    targetFilters?: {
+      status?: CrashGovernanceStatus | 'open';
+      source?: 'sentry' | 'quality' | 'manual' | 'all';
+      owner?: string;
+      keyword?: string;
+      symbolicationFailureCategory?: CrashSymbolicationFailureCategory;
+    };
+    count?: number;
+  }>;
+  crashInsightSummary: {
+    identifiedCount: number;
+    unidentifiedCount: number;
+    identificationRate: number;
+    topTypes: Array<{
+      name: string;
+      count: number;
+      eventCount: number;
+      userCount: number;
+    }>;
+    topModules: Array<{
+      name: string;
+      count: number;
+      eventCount: number;
+      userCount: number;
+    }>;
+    topReasons: Array<{
+      name: string;
+      count: number;
+      eventCount: number;
+      userCount: number;
+    }>;
+  };
+  dsymCoverage: Array<{
+    appVersion: string;
+    status: 'ready' | 'missing' | 'partial' | 'unknown';
+    total: number;
+    valid: number;
+    mainAppReady: boolean;
+    relatedReady: boolean;
+  }>;
+  versionHealth: Array<{
+    appVersion: string;
+    status: 'healthy' | 'warning' | 'critical';
+    openCrashCount: number;
+    highRiskCount: number;
+    regressionCount: number;
+    dsymMissingCount: number;
+    symbolicationFailedCount: number;
+    lastSeen?: string;
+  }>;
+  syncHealth: {
+    status: 'healthy' | 'warning' | 'failed' | 'never_synced';
+    lastSyncedAt?: string;
+    staleThresholdHours: number;
+    staleHours?: number;
+    failedCount: number;
+    retryCount: number;
+    neverSyncedCount: number;
+    message: string;
+  };
+  governanceActivity: {
+    recent7dCount: number;
+    singleCount: number;
+    fingerprintCount: number;
+    lastEvent?: CrashGovernanceEvent;
+    topOperators: Array<{
+      operator: string;
+      count: number;
+    }>;
+  };
+  governanceStatusDistribution: Array<{
+    status: CrashGovernanceStatus;
+    count: number;
+    eventCount: number;
+    userCount: number;
+  }>;
+  ownerTodoDistribution: Array<{
+    owner: string;
+    count: number;
+    highRiskCount: number;
+    regressionCount: number;
+    overdueCount: number;
+    oldestOpenAgeDays: number;
+    overdueThresholdDays: number;
+    eventCount: number;
+    userCount: number;
+    latestSeen?: string;
+  }>;
+}
+
+export interface CrashGovernanceConfig {
+  excludedVersions: string[];
+  defaultIssueQuery: string;
+  updatedAt?: string;
+}
+
 export interface HistoryRecord {
   id: number;
   appVersion: string;

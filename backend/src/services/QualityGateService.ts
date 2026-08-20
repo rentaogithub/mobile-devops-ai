@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { workflowService } from './WorkflowService';
+import { crashGovernanceService } from './CrashGovernanceService';
 
 interface GatePolicy {
   requireSuccessfulBuild: boolean;
@@ -10,6 +11,8 @@ interface GatePolicy {
   warnMetricRegressionPercent: number;
   blockMetricRegressionPercent: number;
   maxSuiteAgeHours: number;
+  checkCrashGovernance: boolean;
+  blockCrashGovernanceRisk: boolean;
 }
 
 const DEFAULT_POLICY: GatePolicy = {
@@ -21,6 +24,8 @@ const DEFAULT_POLICY: GatePolicy = {
   warnMetricRegressionPercent: 10,
   blockMetricRegressionPercent: 25,
   maxSuiteAgeHours: Number(process.env.RELEASE_GATE_MAX_SUITE_AGE_HOURS || 72),
+  checkCrashGovernance: true,
+  blockCrashGovernanceRisk: false,
 };
 
 function normalizeTaskStatus(value: unknown) {
@@ -49,6 +54,7 @@ export class QualityGateService {
     };
     const buildNumber = String(input.buildNumber || '').trim();
     if (!buildNumber) throw new Error('buildNumber 不能为空');
+    const releaseVersion = String(input.appVersion || input.releaseVersion || '').trim();
 
     const tasks = Array.isArray(input.tasks)
       ? input.tasks
@@ -146,6 +152,42 @@ export class QualityGateService {
       }
     });
 
+    if (policy.checkCrashGovernance && releaseVersion) {
+      const crashRisks = crashGovernanceService.listOpenRisksByVersion(releaseVersion, 50);
+      const regressions = crashRisks.filter((record) => record.governanceStatus === 'regression');
+      const highRisks = crashRisks.filter((record) =>
+        ['fatal', 'critical', 'error'].includes(String(record.level || '').toLowerCase()) ||
+        record.eventCount >= 20 ||
+        record.userCount >= 5
+      );
+      const dsymMissing = crashRisks.filter((record) => record.dsymCoverageStatus === 'missing');
+      const crashRiskItems = [
+        ...regressions.map((record) => ({
+          code: 'crash_regression',
+          issueId: record.sourceIssueId,
+          message: `版本 ${releaseVersion} 存在疑似回归 Crash：${record.shortId || record.sourceIssueId} ${record.title}`,
+        })),
+        ...highRisks.map((record) => ({
+          code: 'open_high_crash',
+          issueId: record.sourceIssueId,
+          message: `版本 ${releaseVersion} 存在未解决高风险 Crash：${record.shortId || record.sourceIssueId}，事件 ${record.eventCount}，用户 ${record.userCount}`,
+        })),
+        ...dsymMissing.map((record) => ({
+          code: 'crash_dsym_missing',
+          issueId: record.sourceIssueId,
+          message: `版本 ${releaseVersion} 的 Crash ${record.shortId || record.sourceIssueId} 缺少可用 dSYM`,
+        })),
+      ];
+
+      if (crashRiskItems.length === 0) {
+        passed.push({ code: 'crash_governance_clear', message: `版本 ${releaseVersion} 未发现未解决高风险 Crash` });
+      } else if (policy.blockCrashGovernanceRisk) {
+        blockers.push(...crashRiskItems);
+      } else {
+        warnings.push(...crashRiskItems);
+      }
+    }
+
     const score = Math.max(0, Math.min(100, 100 - blockers.length * 25 - warnings.length * 6));
     const status = blockers.length > 0 ? 'blocked' : warnings.length > 0 ? 'warning' : 'passed';
     const result = {
@@ -209,19 +251,28 @@ export class QualityGateService {
     const observations = workflowService.listReleaseObservations(projectId, releaseVersion);
     const anomalies = observations.filter((item: any) => ['warning', 'critical', 'regressed'].includes(String(item.status).toLowerCase()));
     const critical = anomalies.filter((item: any) => String(item.status).toLowerCase() === 'critical');
+    const crashHealth = crashGovernanceService.evaluateReleaseHealth(releaseVersion);
     const recommendations: string[] = [];
-    if (critical.length) recommendations.push('暂停继续放量，并检查 Crash、启动失败和核心链路指标。');
+    if (critical.length || crashHealth.status === 'critical') recommendations.push('暂停继续放量，并检查 Crash、启动失败和核心链路指标。');
     if (anomalies.some((item: any) => /crash/i.test(item.metric))) recommendations.push('关联 Sentry Crash 聚类和本次发布 Commit，确认是否为新增回归。');
     if (anomalies.some((item: any) => /latency|launch|startup|cpu|memory/i.test(item.metric))) recommendations.push('执行对应场景的性能专项任务并下载 xctrace 证据。');
-    if (!recommendations.length) recommendations.push('当前观察指标正常，可按既定灰度节奏继续放量。');
+    recommendations.push(...crashHealth.recommendations);
+    const uniqueRecommendations = Array.from(new Set(recommendations));
+    const status = critical.length || crashHealth.status === 'critical'
+      ? 'critical'
+      : anomalies.length || crashHealth.status === 'warning'
+        ? 'warning'
+        : 'healthy';
+    if (!uniqueRecommendations.length) uniqueRecommendations.push('当前观察指标正常，可按既定灰度节奏继续放量。');
     return {
       projectId,
       releaseVersion,
-      status: critical.length ? 'critical' : anomalies.length ? 'warning' : 'healthy',
+      status,
       observationCount: observations.length,
       anomalyCount: anomalies.length,
       anomalies,
-      recommendations,
+      crashHealth,
+      recommendations: uniqueRecommendations,
       evaluatedAt: new Date().toISOString(),
     };
   }

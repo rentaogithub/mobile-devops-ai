@@ -313,10 +313,20 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   return copied;
 }
 
-function parseBusinessLogLine(line: string): ParsedBusinessLog {
-  const time = line.match(/^\[([^\]]+)\]/)?.[1]
+function extractBusinessLogTime(line: string): string {
+  const bracketTimes = [...line.matchAll(/\[([^\]]+)\]/g)]
+    .map((item) => item[1])
+    .filter((value) =>
+      /^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value) ||
+      /^\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.:]\d+)?$/.test(value)
+    );
+  return bracketTimes[0]
     || line.match(/^(\d{4}[/-]\d{2}[/-]\d{2}\s+\d{2}:\d{2}:\d{2}(?:[.:]\d+)?)/)?.[1]
     || '';
+}
+
+function parseBusinessLogLine(line: string): ParsedBusinessLog {
+  const time = extractBusinessLogTime(line);
   const categoryMatches = [...line.matchAll(/\[([A-Za-z][A-Za-z0-9_+\-.]*)\]/g)].map((item) => item[1]);
   const category = categoryMatches.find((item) => item !== time && !item.includes(':')) || '业务';
   const event = line.match(/\bevent=([A-Za-z0-9_:.+-]+)/)?.[1] || 'raw_log';

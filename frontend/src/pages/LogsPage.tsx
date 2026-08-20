@@ -333,13 +333,29 @@ export default function LogsPage() {
 
     setFeedbackLogLoading(true);
     try {
-      const result = await opUserApi.feedbackLogs(uid, 1, 30);
+      const rawKeyword = String(uid).trim();
+      let resolvedUid = rawKeyword;
+      let result = await opUserApi.feedbackLogs(resolvedUid, 1, 30);
+
+      if (result.records.length === 0) {
+        const userResult = await opUserApi.list(rawKeyword, 1, 10).catch(() => null);
+        const matchedUser = userResult?.records.find((item) => String(item.userId || '').trim()) || null;
+        const matchedUid = matchedUser?.userId ? String(matchedUser.userId) : '';
+        if (matchedUid && matchedUid !== rawKeyword) {
+          resolvedUid = matchedUid;
+          setFeedbackLogUid(matchedUid);
+          result = await opUserApi.feedbackLogs(matchedUid, 1, 30);
+        }
+      }
+
       const records = [...result.records]
         .sort((left, right) => getFeedbackLogTime(right) - getFeedbackLogTime(left))
         .slice(0, 10);
       setFeedbackLogList(records);
       if (result.records.length === 0) {
         message.info('未查询到反馈日志');
+      } else if (resolvedUid !== String(uid).trim()) {
+        message.success(`已按 UID ${resolvedUid} 查询反馈日志`);
       }
     } catch (error: any) {
       message.error(error?.message || error?.error || '查询反馈日志失败');
@@ -352,7 +368,7 @@ export default function LogsPage() {
   const searchFeedbackLogsByUid = (uid = feedbackLogSearchUid) => {
     const keyword = uid.trim();
     if (!keyword) {
-      message.warning('请输入用户 UID');
+      message.warning('请输入用户 UID/NN号/手机号/用户昵称/邮箱');
       return;
     }
 
@@ -854,7 +870,7 @@ export default function LogsPage() {
                             allowClear
                             enterButton="查询"
                             prefix={<SearchOutlined />}
-                            placeholder="输入用户 UID 查询反馈日志"
+                            placeholder="输入用户 UID/NN号/手机号/用户昵称/邮箱 查询反馈日志"
                             value={feedbackLogSearchUid}
                             loading={feedbackLogLoading}
                             onChange={(event) => {

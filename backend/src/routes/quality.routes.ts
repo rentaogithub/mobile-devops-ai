@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowService } from '../services/WorkflowService';
+import { crashGovernanceService } from '../services/CrashGovernanceService';
 
 const router = Router();
 
@@ -542,6 +543,20 @@ function syncTaskToWorkflow(task: any) {
     });
     if (savedIssue) {
       workflowService.addRelation({ fromType: 'task', fromId: task.task_id, relation: 'discovered', toType: 'issue', toId: savedIssue.id });
+    }
+    if (String(issue.type || issue.category || '').toLowerCase() === 'crash') {
+      crashGovernanceService.upsertQualityCrash({
+        sourceRef: `${task.task_id}:${issue.id || issue.fingerprint || issue.title}`,
+        title: issue.title || issue.message || '质检 Crash',
+        appVersion: task.app_version || task.summary?.appVersion,
+        buildNumber: task.build,
+        qualityTaskId: task.task_id,
+        level: issue.severity === 'blocker' ? 'error' : issue.severity,
+        crashType: issue.title,
+        crashReason: issue.message,
+        artifactRefs: issue.artifact_refs || {},
+        lastSeen: task.finished_at || task.created_at,
+      });
     }
   });
   return workflowTask;

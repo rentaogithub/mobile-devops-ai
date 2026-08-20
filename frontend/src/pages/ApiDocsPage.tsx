@@ -3,6 +3,7 @@ import { Alert, AutoComplete, Button, Card, Empty, Input, InputNumber, Menu, Mod
 import axios from 'axios';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { syncCurrentOpAccessToken } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -23,7 +24,7 @@ type Schema = {
 };
 type Parameter = Schema & { name: string; in: string; required?: boolean; schema?: Schema; default?: unknown };
 type Operation = { summary?: string; operationId?: string; tags?: string[]; parameters?: Parameter[]; responses?: Record<string, { description?: string; schema?: Schema }> };
-type SwaggerDoc = { swagger: string; host?: string; basePath?: string; info?: { title?: string; version?: string }; paths: Record<string, Record<string, Operation>>; definitions?: Record<string, Schema>; tags?: { name: string }[]; xFallbackDocument?: boolean };
+type SwaggerDoc = { swagger: string; host?: string; basePath?: string; info?: { title?: string; version?: string }; paths?: Record<string, Record<string, Operation> | undefined>; definitions?: Record<string, Schema>; tags?: { name: string }[]; xFallbackDocument?: boolean };
 type ApiItem = Operation & { path: string; method: string; tag: string };
 type GlobalSearchItem = { service: keyof typeof services; basePath: string; path: string; method: string; summary: string; operationId: string; tag: string; fallbackDocument?: boolean };
 type RequestConfig = { headers: Record<string, unknown>; query: Record<string, unknown>; pathParams: Record<string, unknown>; body?: unknown };
@@ -509,8 +510,8 @@ export default function ApiDocsPage() {
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [keyword, searchMode]);
 
-  const apis = useMemo<ApiItem[]>(() => doc ? Object.entries(doc.paths).flatMap(([path, methods]) =>
-    Object.entries(methods).map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase(), tag: operation.tags?.[0] || '其他' }))) : [], [doc]);
+  const apis = useMemo<ApiItem[]>(() => Object.entries(doc?.paths || {}).flatMap(([path, methods]) =>
+    Object.entries(methods || {}).map(([method, operation]) => ({ ...operation, path, method: method.toUpperCase(), tag: operation.tags?.[0] || '其他' }))), [doc]);
   const filteredApis = useMemo(() => apis.filter((api) => {
     const text = `${joinApiPath(doc?.basePath, api.path)} ${api.path} ${api.summary} ${api.operationId} ${api.tag}`.toLowerCase();
     return text.includes(keyword.trim().toLowerCase());
@@ -568,7 +569,8 @@ export default function ApiDocsPage() {
   const syncAllDocuments = async () => {
     setSyncing(true);
     try {
-      const { data } = await axios.post<{ total: number; succeeded: string[]; failed: { service: string; message: string }[] }>(
+      await syncCurrentOpAccessToken();
+      const { data } = await axios.post<{ total: number; succeeded: string[]; cached?: { service: string; message: string }[]; failed: { service: string; message: string }[] }>(
         '/api/api-docs/sync/all',
         undefined,
         { timeout: 180_000, withCredentials: true },
@@ -576,8 +578,14 @@ export default function ApiDocsPage() {
       const refreshed = await axios.get<SwaggerDoc>(`/api/api-docs/${service}`, { timeout: 45_000 });
       setDoc(refreshed.data);
       setPage(1);
-      if (data.failed.length) message.warning(`同步完成：成功 ${data.succeeded.length} 个，失败 ${data.failed.length} 个`);
-      else message.success(`同步成功，共更新 ${data.total} 个 API 服务`);
+      const cachedCount = data.cached?.length || 0;
+      if (data.failed.length) {
+        message.warning(`同步完成：更新 ${data.succeeded.length} 个，使用缓存 ${cachedCount} 个，失败 ${data.failed.length} 个`);
+      } else if (cachedCount) {
+        message.warning(`同步完成：更新 ${data.succeeded.length} 个，使用缓存 ${cachedCount} 个`);
+      } else {
+        message.success(`同步成功，共更新 ${data.total} 个 API 服务`);
+      }
     } catch (reason) {
       const errorMessage = axios.isAxiosError(reason) ? reason.response?.data?.message || reason.message : '同步失败';
       message.error(errorMessage);

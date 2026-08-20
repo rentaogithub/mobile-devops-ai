@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import { execFile } from 'child_process';
 import fsPromises from 'fs/promises';
 import http from 'http';
@@ -267,6 +267,65 @@ async function extractLogsWithBsdtar(archivePath: string, tempDir: string): Prom
 
   return collectPreviewFiles(await findLogFiles(extractDir));
 }
+
+router.post('/analyze-archive', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '80mb' }), async (req: Request, res: Response) => {
+  try {
+    const archive = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!archive.length) {
+      throw new Error('缺少日志压缩包');
+    }
+
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'feedback-log-'));
+    const archivePath = path.join(tempDir, 'nn-logs.zip');
+    await fsPromises.writeFile(archivePath, archive);
+
+    let files: PreviewLogFile[] = [];
+    let unzipErrorMessage = '';
+    try {
+      files = await extractLogsWithUnzip(archivePath, tempDir);
+    } catch (unzipError) {
+      unzipErrorMessage = unzipError instanceof Error ? unzipError.message : String(unzipError);
+      logger.warn('unzip 解压 NN 日志失败，回退到 bsdtar', { error: unzipErrorMessage });
+      files = await extractLogsWithBsdtar(archivePath, tempDir);
+    }
+
+    if (files.length === 0) {
+      throw new Error(unzipErrorMessage || '压缩包中未找到业务日志文件');
+    }
+
+    const lines: string[] = [];
+    const analyzedFiles: Array<{ name: string; path: string; lineCount: number; size: number }> = [];
+    for (const file of files) {
+      const content = await fsPromises.readFile(file.path, 'utf8');
+      const fileLines = content.split(/\r?\n/).filter((line) => line.trim());
+      lines.push(...fileLines);
+      analyzedFiles.push({
+        name: file.name,
+        path: file.path,
+        lineCount: fileLines.length,
+        size: file.size,
+      });
+    }
+
+    const apiRequestSampleCount = apiRequestSampleService.ingestLogLines(lines, {
+      source: 'feedback_log',
+      sourceRef: analyzedFiles.map((file) => file.name).join(','),
+    });
+
+    res.json({
+      success: true,
+      data: {
+        files: analyzedFiles,
+        lines,
+        lineCount: lines.length,
+        apiRequestSampleCount,
+      },
+    });
+  } catch (error: any) {
+    logger.error(`分析 NN 日志压缩包失败: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message || '分析 NN 日志压缩包失败' });
+  }
+});
 
 router.post('/preview', async (req: Request, res: Response) => {
   try {

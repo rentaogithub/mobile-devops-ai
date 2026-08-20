@@ -12,6 +12,12 @@ import {
   SentryOriginalCrashResult,
   SentrySymbolicateAnalyzeResult,
   SentryIssueSummary,
+  CrashGovernanceDashboard,
+  CrashGovernanceConfig,
+  CrashGovernanceEvent,
+  CrashGovernanceFingerprintGroup,
+  CrashGovernanceRecord,
+  CrashGovernanceStatus,
   HistoryRecord,
 } from '../types';
 import { authUtils } from '../utils/auth';
@@ -25,7 +31,8 @@ const api = axios.create({
   },
 });
 
-const EXCLUDED_SENTRY_APP_VERSIONS = new Set(['10.0.0']);
+const FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS = ['10.0.0'];
+let sentryGovernanceConfigCache: { excludedVersions: string[]; defaultIssueQuery: string; loadedAt: number } | null = null;
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
@@ -401,6 +408,20 @@ export interface FeedbackLogFileContent {
   rows: FeedbackLogLine[];
 }
 
+export interface FeedbackLogArchiveAnalysisFile {
+  name: string;
+  path: string;
+  lineCount: number;
+  size: number;
+}
+
+export interface FeedbackLogArchiveAnalysisResult {
+  files: FeedbackLogArchiveAnalysisFile[];
+  lines: string[];
+  lineCount: number;
+  apiRequestSampleCount?: number;
+}
+
 const parseStoredOpToken = (raw: string | null): string => {
   if (!raw) return '';
   try {
@@ -445,7 +466,7 @@ const getCurrentOpAccessToken = (): string => {
   return '';
 };
 
-const syncCurrentOpAccessToken = async (): Promise<string> => {
+export const syncCurrentOpAccessToken = async (): Promise<string> => {
   const token = getCurrentOpAccessToken();
   if (!token) return '';
   await axios.post('/api/op-auth/sync', { token }, { timeout: 10000 }).catch(() => {});
@@ -678,6 +699,16 @@ export const feedbackLogApi = {
     }
     return response.data.data;
   },
+  analyzeArchive: async (archive: Blob): Promise<FeedbackLogArchiveAnalysisResult> => {
+    const response = await api.post<ApiResponse<FeedbackLogArchiveAnalysisResult>>('/feedback-log/analyze-archive', archive, {
+      headers: { 'Content-Type': 'application/zip' },
+      timeout: 120000,
+    });
+    if (!response.data.data) {
+      throw new Error(response.data.error || '分析 NN 日志失败');
+    }
+    return response.data.data;
+  },
 };
 
 export const userQueryRecordApi = {
@@ -896,9 +927,35 @@ function collectAppVersions(source: any): string[] {
     .filter((version): version is string => Boolean(version));
 }
 
-function buildAppVersionRange(values: string[]) {
+async function getSentryGovernanceConfigForClient() {
+  if (sentryGovernanceConfigCache && Date.now() - sentryGovernanceConfigCache.loadedAt < 5 * 60 * 1000) {
+    return sentryGovernanceConfigCache;
+  }
+  try {
+    const response = await api.get<ApiResponse<CrashGovernanceConfig>>('/sentry-analysis/governance/config');
+    const config = response.data.data;
+    if (response.data.success && config) {
+      sentryGovernanceConfigCache = {
+        excludedVersions: config.excludedVersions || FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
+        defaultIssueQuery: config.defaultIssueQuery || `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+        loadedAt: Date.now(),
+      };
+      return sentryGovernanceConfigCache;
+    }
+  } catch {
+    // 配置读取失败时使用兜底版本，避免影响 Sentry 列表展示。
+  }
+  return {
+    excludedVersions: FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
+    defaultIssueQuery: `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+    loadedAt: Date.now(),
+  };
+}
+
+function buildAppVersionRange(values: string[], excludedVersions: string[] = FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS) {
+  const excludedAppVersions = new Set(excludedVersions);
   const versions = Array.from(new Set(values.filter((version) =>
-    Boolean(version) && !EXCLUDED_SENTRY_APP_VERSIONS.has(version)
+    Boolean(version) && !excludedAppVersions.has(version)
   ))).sort(compareAppVersions);
   const min = versions[0];
   const max = versions[versions.length - 1];
@@ -910,8 +967,8 @@ function buildAppVersionRange(values: string[]) {
   };
 }
 
-function normalizeSentryIssue(issue: any): SentryIssueSummary {
-  const range = buildAppVersionRange(collectAppVersions(issue));
+function normalizeSentryIssue(issue: any, excludedVersions: string[] = FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS): SentryIssueSummary {
+  const range = buildAppVersionRange(collectAppVersions(issue), excludedVersions);
   return {
     id: String(issue.id || ''),
     shortId: issue.shortId || issue.shortID,
@@ -946,6 +1003,7 @@ async function sentryProxyGet<T>(path: string): Promise<T> {
 }
 
 async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise<SentryIssueSummary> {
+  const config = await getSentryGovernanceConfigForClient();
   const versions = [...(issue.appVersions || [])];
   const eventPath = `/api/0/issues/${encodeURIComponent(issue.id)}/events/?limit=20`;
   const latestPath = `/api/0/issues/${encodeURIComponent(issue.id)}/events/latest/`;
@@ -966,7 +1024,7 @@ async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise
 
   if (versions.length === 0) {
     const releaseQuery = new URLSearchParams({
-      query: `${issue.shortId || issue.id} !release:"10.0.0"`,
+      query: `${issue.shortId || issue.id} ${config.excludedVersions.map((version) => `!release:"${version.replace(/"/g, '\\"')}"`).join(' ')}`.trim(),
       field: 'release',
       per_page: '20',
     });
@@ -981,7 +1039,7 @@ async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise
     }
   }
 
-  const range = buildAppVersionRange(versions);
+  const range = buildAppVersionRange(versions, config.excludedVersions);
   if (range.versions.length === 0) {
     return issue;
   }
@@ -1001,9 +1059,10 @@ async function listSentryIssuesFromProxy(params: {
   limit: number;
   query?: string;
 }): Promise<ApiResponse<SentryIssueListResult>> {
+  const config = await getSentryGovernanceConfigForClient();
   const period = params.period || '24h';
   const limit = Math.min(Math.max(params.limit || 5, 1), 20);
-  const query = params.query || 'is:unresolved';
+  const query = params.query || config.defaultIssueQuery || 'is:unresolved';
   const search = new URLSearchParams({
     query,
     sort: 'date',
@@ -1017,7 +1076,7 @@ async function listSentryIssuesFromProxy(params: {
   );
   const rawIssues = Array.isArray(data) ? data : data?.results || [];
   const issues = rawIssues
-    .map(normalizeSentryIssue)
+    .map((issue) => normalizeSentryIssue(issue, config.excludedVersions))
     .filter((issue) => {
       if (period !== '7d') {
         return true;
@@ -1037,6 +1096,213 @@ async function listSentryIssuesFromProxy(params: {
 }
 
 export const sentryAnalysisApi = {
+  governanceDashboard: async (): Promise<ApiResponse<CrashGovernanceDashboard>> => {
+    const response = await api.get<ApiResponse<CrashGovernanceDashboard>>(
+      '/sentry-analysis/governance/dashboard',
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
+  governanceConfig: async (): Promise<ApiResponse<CrashGovernanceConfig>> => {
+    const response = await api.get<ApiResponse<CrashGovernanceConfig>>(
+      '/sentry-analysis/governance/config'
+    );
+    return response.data;
+  },
+
+  updateGovernanceConfig: async (
+    payload: { excludedVersions: string[] }
+  ): Promise<ApiResponse<CrashGovernanceConfig>> => {
+    const response = await api.patch<ApiResponse<CrashGovernanceConfig>>(
+      '/sentry-analysis/governance/config',
+      payload
+    );
+    if (response.data.success && response.data.data) {
+      sentryGovernanceConfigCache = {
+        excludedVersions: response.data.data.excludedVersions || FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
+        defaultIssueQuery: response.data.data.defaultIssueQuery || `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+        loadedAt: Date.now(),
+      };
+    }
+    return response.data;
+  },
+
+  syncGovernance: async (params: {
+    period?: string;
+    limit?: number;
+    query?: string;
+  } = {}): Promise<ApiResponse<{
+    period: string;
+    query: string;
+    total: number;
+    records: CrashGovernanceRecord[];
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      period: string;
+      query: string;
+      total: number;
+      records: CrashGovernanceRecord[];
+    }>>(
+      '/sentry-analysis/governance/sync',
+      params,
+      { timeout: 180000 }
+    );
+    return response.data;
+  },
+
+  updateGovernanceStatus: async (
+    id: number,
+    payload: {
+      governanceStatus: CrashGovernanceStatus;
+      owner?: string;
+      fixedVersion?: string;
+      fixedRemark?: string;
+      ignoreReason?: string;
+    }
+  ): Promise<ApiResponse<CrashGovernanceRecord>> => {
+    const response = await api.patch<ApiResponse<CrashGovernanceRecord>>(
+      `/sentry-analysis/governance/issues/${id}/status`,
+      payload
+    );
+    return response.data;
+  },
+
+  updateGovernanceFingerprintStatus: async (
+    id: number,
+    payload: {
+      governanceStatus: CrashGovernanceStatus;
+      owner?: string;
+      fixedVersion?: string;
+      fixedRemark?: string;
+      ignoreReason?: string;
+    }
+  ): Promise<ApiResponse<CrashGovernanceFingerprintGroup>> => {
+    const response = await api.patch<ApiResponse<CrashGovernanceFingerprintGroup>>(
+      `/sentry-analysis/governance/issues/${id}/fingerprint/status`,
+      payload
+    );
+    return response.data;
+  },
+
+  governanceIssueDetail: async (
+    id: number
+  ): Promise<ApiResponse<{ record: CrashGovernanceRecord; history?: HistoryRecord; fingerprintGroup?: CrashGovernanceFingerprintGroup; events?: CrashGovernanceEvent[] }>> => {
+    const response = await api.get<ApiResponse<{ record: CrashGovernanceRecord; history?: HistoryRecord; fingerprintGroup?: CrashGovernanceFingerprintGroup; events?: CrashGovernanceEvent[] }>>(
+      `/sentry-analysis/governance/issues/${id}`
+    );
+    return response.data;
+  },
+
+  refreshGovernanceCoverage: async (
+    id: number
+  ): Promise<ApiResponse<CrashGovernanceRecord>> => {
+    const response = await api.post<ApiResponse<CrashGovernanceRecord>>(
+      `/sentry-analysis/governance/issues/${id}/refresh-coverage`,
+      {},
+      { timeout: 60000 }
+    );
+    return response.data;
+  },
+
+  refreshGovernanceCoverageByVersion: async (
+    appVersion: string
+  ): Promise<ApiResponse<{
+    appVersion: string;
+    total: number;
+    refreshed: number;
+    skipped: number;
+    records: CrashGovernanceRecord[];
+  }>> => {
+    const response = await api.post<ApiResponse<{
+      appVersion: string;
+      total: number;
+      refreshed: number;
+      skipped: number;
+      records: CrashGovernanceRecord[];
+    }>>(
+      `/sentry-analysis/governance/versions/${encodeURIComponent(appVersion)}/refresh-coverage`,
+      {},
+      { timeout: 120000 }
+    );
+    return response.data;
+  },
+
+  governanceIssues: async (params: {
+    status?: CrashGovernanceStatus | 'open' | 'all';
+    source?: 'sentry' | 'quality' | 'manual' | 'all';
+    appVersion?: string;
+    dsymCoverageStatus?: string;
+    symbolicationStatus?: string;
+    symbolicationFailureCategory?: string;
+    analysisStatus?: string;
+    owner?: string;
+    keyword?: string;
+    limit?: number;
+  } = {}): Promise<ApiResponse<{ issues: CrashGovernanceRecord[] }>> => {
+    const query = Object.fromEntries(
+      Object.entries(params).filter(([, value]) => value !== undefined && value !== '' && value !== 'all')
+    );
+    const response = await api.get<ApiResponse<{ issues: CrashGovernanceRecord[] }>>(
+      '/sentry-analysis/governance/issues',
+      { params: query }
+    );
+    return response.data;
+  },
+
+  governanceEvents: async (params: {
+    scope?: string;
+    toStatus?: string;
+    operator?: string;
+    keyword?: string;
+    limit?: number;
+  } = {}): Promise<ApiResponse<{ events: CrashGovernanceEvent[] }>> => {
+    const query = Object.fromEntries(
+      Object.entries(params).filter(([, value]) => value !== undefined && value !== '' && value !== 'all')
+    );
+    const response = await api.get<ApiResponse<{ events: CrashGovernanceEvent[] }>>(
+      '/sentry-analysis/governance/events',
+      { params: query }
+    );
+    return response.data;
+  },
+
+  exportGovernanceEvents: async (params: {
+    scope?: string;
+    toStatus?: string;
+    operator?: string;
+    keyword?: string;
+    limit?: number;
+  } = {}): Promise<void> => {
+    const query = Object.fromEntries(
+      Object.entries(params).filter(([, value]) => value !== undefined && value !== '' && value !== 'all')
+    );
+    const response = await api.get<Blob>('/sentry-analysis/governance/events/export', {
+      params: query,
+      responseType: 'blob',
+    });
+    const blobUrl = window.URL.createObjectURL(response.data);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `crash-governance-events-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(blobUrl);
+  },
+
+  analyzeGovernanceIssue: async (
+    id: number,
+    apiKey?: string
+  ): Promise<ApiResponse<{ record: CrashGovernanceRecord; message: string }>> => {
+    const response = await api.post<ApiResponse<{ record: CrashGovernanceRecord; message: string }>>(
+      `/sentry-analysis/governance/issues/${id}/analyze`,
+      { apiKey },
+      { timeout: 30000 }
+    );
+    return response.data;
+  },
+
   listIssues: async (params: {
     period: string;
     limit: number;

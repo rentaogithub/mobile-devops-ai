@@ -29,6 +29,9 @@ export interface CrashAnalysis {
   crashThread?: string; // 崩溃线程
   crashModule?: string; // 崩溃模块
   crashStack?: string; // 崩溃堆栈快照
+  crashLocation?: string; // 崩溃位置（类名、方法名）
+  crashFile?: string; // 崩溃文件名
+  crashLine?: number; // 崩溃行号
 }
 
 export interface SymbolicationResult {

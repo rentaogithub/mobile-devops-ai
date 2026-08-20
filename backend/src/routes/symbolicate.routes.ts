@@ -7,6 +7,7 @@ import { AppError, ErrorCode } from '../types';
 import logger from '../utils/logger';
 import { extractCrashInfo } from '../utils/crashLogParser';
 import { convertIPSToCrash } from '../utils/ipsConverter';
+import { crashGovernanceService } from '../services/CrashGovernanceService';
 
 const router = Router();
 
@@ -50,6 +51,29 @@ function hasValidSymbolicationResult(originalLog: string, symbolicatedLog: strin
   }
 
   return symbolicatedLog.includes('(in ') || /^\d+\s+\S+\s+0x[0-9a-f]+\s+(?!<unknown>)/gim.test(symbolicatedLog);
+}
+
+function upsertManualCrashGovernance(input: {
+  historyId?: number;
+  appVersion?: string;
+  crashLog: string;
+  symbolicatedLog: string;
+  usedUuids: string[];
+}) {
+  if (!input.historyId) {
+    return;
+  }
+  const crashInfo = extractCrashInfo(input.crashLog, input.symbolicatedLog);
+  crashGovernanceService.upsertManualCrash({
+    historyId: input.historyId,
+    title: crashInfo.crashReason || crashInfo.crashType || '手动解析 Crash',
+    appVersion: input.appVersion,
+    crashType: crashInfo.crashType,
+    crashReason: crashInfo.crashReason,
+    crashModule: crashInfo.crashModule,
+    crashLocation: crashInfo.crashLocation,
+    usedUuids: input.usedUuids,
+  });
 }
 
 /**
@@ -135,6 +159,13 @@ router.post('/', async (req: Request, res: Response) => {
         hasAIAnalysis: !!historyRecord.aiAnalysis,
         fromHistory: true
       });
+      upsertManualCrashGovernance({
+        historyId: historyRecord.id,
+        appVersion: historyRecord.appVersion,
+        crashLog,
+        symbolicatedLog: historyRecord.symbolicatedLog,
+        usedUuids: targetUUIDs,
+      });
 
       // 直接返回历史记录中的结果
       res.json({
@@ -170,6 +201,13 @@ router.post('/', async (req: Request, res: Response) => {
       const existingHistory = historyService.findDuplicateHistory(crashLog, targetUUIDs);
       
       if (existingHistory) {
+        upsertManualCrashGovernance({
+          historyId: existingHistory.id,
+          appVersion: existingHistory.appVersion,
+          crashLog,
+          symbolicatedLog: existingHistory.symbolicatedLog,
+          usedUuids: targetUUIDs,
+        });
         // 如果已有历史记录，直接返回带 historyId 的结果
         res.json({
           success: true,
@@ -223,6 +261,13 @@ router.post('/', async (req: Request, res: Response) => {
             historyId: savedRecord.id,
             appVersion, 
             uuids: targetUUIDs
+          });
+          upsertManualCrashGovernance({
+            historyId: savedRecord.id,
+            appVersion,
+            crashLog,
+            symbolicatedLog: cached.symbolicatedLog,
+            usedUuids: targetUUIDs,
           });
 
           // 返回带 historyId 的结果
@@ -335,6 +380,13 @@ router.post('/', async (req: Request, res: Response) => {
         lastStackCall: crashInfo.lastStackCall,
         crashModule: crashInfo.crashModule,
         hasAIAnalysis: !!aiAnalysis
+      });
+      upsertManualCrashGovernance({
+        historyId,
+        appVersion,
+        crashLog,
+        symbolicatedLog: result.symbolicatedLog,
+        usedUuids: targetUUIDs,
       });
     } catch (error: any) {
       logger.error('保存符号化历史记录失败', { error: error.message });

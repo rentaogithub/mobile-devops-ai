@@ -10,6 +10,7 @@ import {
   updateSentryCookieJar,
 } from './SentryCookieJar';
 import logger from '../utils/logger';
+import { crashGovernanceService } from './CrashGovernanceService';
 
 type SentryHTTPResponse = {
   statusCode: number;
@@ -58,12 +59,6 @@ export interface SentryOriginalCrashFile {
 
 export class SentryIssueService {
   private readonly target = (process.env.SENTRY_PROXY_TARGET || 'http://172.31.2.239:9000').replace(/\/+$/, '');
-  private readonly excludedAppVersions = new Set(
-    (process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0')
-      .split(',')
-      .map((version) => version.trim())
-      .filter(Boolean)
-  );
   private readonly autoLogin = process.env.SENTRY_AUTO_LOGIN === 'true';
   private readonly username = process.env.SENTRY_LOGIN_USERNAME || '';
   private readonly password = process.env.SENTRY_LOGIN_PASSWORD || '';
@@ -537,7 +532,7 @@ export class SentryIssueService {
       logger.info('过滤 Sentry TestFlight 版本 issue', {
         issueId: issue.id,
         shortId: issue.shortId,
-        excludedVersions: Array.from(this.excludedAppVersions),
+        excludedVersions: Array.from(this.getExcludedAppVersions()),
         rawVersions: Array.from(new Set(rawVersions)),
       });
       return {
@@ -625,8 +620,9 @@ export class SentryIssueService {
   }
 
   private buildVersionRange(values: string[]) {
+    const excludedAppVersions = this.getExcludedAppVersions();
     const versions = Array.from(new Set(values.filter((value) =>
-      Boolean(value) && !this.excludedAppVersions.has(value)
+      Boolean(value) && !excludedAppVersions.has(value)
     ))).sort((a, b) => this.compareVersions(a, b));
     const min = versions[0];
     const max = versions[versions.length - 1];
@@ -639,15 +635,17 @@ export class SentryIssueService {
   }
 
   private isExcludedOnlyVersionSet(values: string[]) {
+    const excludedAppVersions = this.getExcludedAppVersions();
     const versions = Array.from(new Set(values.filter(Boolean)));
-    return versions.length > 0 && versions.every((version) => this.excludedAppVersions.has(version));
+    return versions.length > 0 && versions.every((version) => excludedAppVersions.has(version));
   }
 
   private buildDefaultIssueQuery(): string {
-    const excludedReleaseQuery = Array.from(this.excludedAppVersions)
-      .map((version) => `!release:"${version.replace(/"/g, '\\"')}"`)
-      .join(' ');
-    return ['is:unresolved', excludedReleaseQuery].filter(Boolean).join(' ');
+    return crashGovernanceService.getDefaultIssueQuery();
+  }
+
+  private getExcludedAppVersions(): Set<string> {
+    return new Set(crashGovernanceService.getExcludedVersions());
   }
 
   private compareVersions(a: string, b: string): number {

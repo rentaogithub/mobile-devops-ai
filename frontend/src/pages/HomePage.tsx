@@ -322,6 +322,13 @@ function renderClosureResult(
           <Tag color={healthy ? 'green' : result.status === 'critical' ? 'red' : 'gold'}>{result.status}</Tag>
         </div>
         <Text>观察指标 {result.observationCount || 0} 项，异常 {result.anomalyCount || 0} 项</Text>
+        {result.crashHealth && (
+          <div className="assistant-closure-facts">
+            <span>线上 Crash<strong>{result.crashHealth.openCrashCount || 0}</strong></span>
+            <span>高风险<strong>{result.crashHealth.highRiskCount || 0}</strong></span>
+            <span>dSYM 缺失<strong>{result.crashHealth.dsymMissingCount || 0}</strong></span>
+          </div>
+        )}
         {Array.isArray(result.recommendations) && <ul>{result.recommendations.map((item: string, index: number) => <li key={index}>{item}</li>)}</ul>}
       </div>
     );
