@@ -26,6 +26,13 @@ interface ComponentGroup {
   isInternal: boolean;
 }
 
+interface NewVersionHint {
+  loading?: boolean;
+  hasNew?: boolean;
+  latestVersion?: string;
+  error?: string;
+}
+
 function isReleaseBranch(branch: string) {
   return /^release\/\d+(?:\.\d+){2,}$/.test(branch);
 }
@@ -72,6 +79,31 @@ function compareVersionText(a: string, b: string) {
     if (diff !== 0) return diff;
   }
   return a.localeCompare(b);
+}
+
+function comparePodVersion(a: string, b: string) {
+  const normalize = (version: string) => String(version || '').replace(/^[^\d]*/, '').replace(/(?:_test|-test)$/, '');
+  const tokenize = (version: string) => normalize(version)
+    .split(/[.\-_+]/)
+    .map((part) => {
+      const value = Number.parseInt(part, 10);
+      return Number.isFinite(value) ? value : 0;
+    });
+  const left = tokenize(a);
+  const right = tokenize(b);
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return normalize(a).localeCompare(normalize(b));
+}
+
+function latestVersionOf(versions: string[]) {
+  return versions
+    .map((version) => String(version || '').trim())
+    .filter(Boolean)
+    .sort(comparePodVersion)
+    .at(-1) || '';
 }
 
 function buildNniosBranchOptions(branches: string[]) {
@@ -139,6 +171,7 @@ function isOfficialComponent(component?: PodComponent | null) {
 
 export default function PodsPage() {
   const [components, setComponents] = useState<PodComponent[]>([]);
+  const [newVersionHints, setNewVersionHints] = useState<Record<string, NewVersionHint>>({});
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -197,6 +230,7 @@ export default function PodsPage() {
   } | null>(null);
   const nnrtcHandledTasksRef = useRef<Set<string>>(new Set());
   const nnrtcBuildTriggeredTasksRef = useRef<Set<string>>(new Set());
+  const newVersionCacheRef = useRef<Map<string, NewVersionHint>>(new Map());
   const publishName = Form.useWatch('name', form);
   const nnrtcPackageType = Form.useWatch('nnrtc_package_type', form) || 'release';
   const nnrtcBuildNumber = Form.useWatch('nnrtc_build_number', form);
@@ -507,6 +541,99 @@ export default function PodsPage() {
     if (!selectedName) return null;
     return groups.find((g) => g.name === selectedName) || null;
   }, [groups, selectedName]);
+
+  useEffect(() => {
+    if (groups.length === 0) {
+      setNewVersionHints({});
+      return undefined;
+    }
+
+    let cancelled = false;
+    const cache = newVersionCacheRef.current;
+    const nextHints: Record<string, NewVersionHint> = {};
+    const pendingGroups: ComponentGroup[] = [];
+
+    groups.forEach((group) => {
+      const cacheKey = `${group.name}@${group.latestVersion}`;
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        nextHints[group.name] = cached;
+      } else {
+        nextHints[group.name] = { loading: true };
+        pendingGroups.push(group);
+      }
+    });
+    setNewVersionHints(nextHints);
+
+    const detectNewVersion = async (group: ComponentGroup): Promise<NewVersionHint> => {
+      const currentLatest = latestVersionOf(group.versions.map((item) => item.version));
+      if (!currentLatest) return {};
+
+      if (group.name === 'NNRtc') {
+        const res = await podsApi.listNNRtcJenkinsBuilds();
+        const latestReleaseVersion = latestVersionOf(
+          (res.data || [])
+            .map((build) => getNNRtcReleaseVersion(build.branchName))
+            .filter(Boolean)
+        );
+        return {
+          latestVersion: latestReleaseVersion,
+          hasNew: Boolean(latestReleaseVersion) && comparePodVersion(latestReleaseVersion, currentLatest) > 0,
+        };
+      }
+
+      if (isLeigodIMCrossSDK(group.name)) {
+        const res = await podsApi.listLeigodIMSDKVersions();
+        const latestIMSDKVersion = latestVersionOf((res.data || []).map((item) => item.version));
+        return {
+          latestVersion: latestIMSDKVersion,
+          hasNew: Boolean(latestIMSDKVersion) && comparePodVersion(latestIMSDKVersion, currentLatest) > 0,
+        };
+      }
+
+      if (group.isInternal) return {};
+
+      const res = await podsApi.officialVersions(group.name);
+      const latestOfficialVersion = latestVersionOf(res.data || []);
+      return {
+        latestVersion: latestOfficialVersion,
+        hasNew: Boolean(latestOfficialVersion) && comparePodVersion(latestOfficialVersion, currentLatest) > 0,
+      };
+    };
+
+    const runQueue = async () => {
+      const queue = [...pendingGroups];
+      const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+        while (queue.length > 0 && !cancelled) {
+          const group = queue.shift();
+          if (!group) return;
+          const cacheKey = `${group.name}@${group.latestVersion}`;
+          try {
+            const hint = await detectNewVersion(group);
+            cache.set(cacheKey, hint);
+            if (!cancelled) {
+              setNewVersionHints((prev) => ({ ...prev, [group.name]: hint }));
+            }
+          } catch (error: any) {
+            const hint = {
+              loading: false,
+              error: error?.error || error?.message || '检测失败',
+            };
+            cache.set(cacheKey, hint);
+            if (!cancelled) {
+              setNewVersionHints((prev) => ({ ...prev, [group.name]: hint }));
+            }
+          }
+        }
+      });
+      await Promise.all(workers);
+    };
+
+    runQueue();
+    return () => {
+      cancelled = true;
+    };
+  }, [groups]);
 
   const nnrtcPublishBuilds = useMemo(() => (
     nnrtcBuilds.filter((build) => nnrtcPackageType === 'release'
@@ -1268,6 +1395,16 @@ export default function PodsPage() {
     return <Tag color={c.color} icon={c.icon}>{c.text}</Tag>;
   };
 
+  const renderNewVersionHint = (group: ComponentGroup) => {
+    const hint = newVersionHints[group.name];
+    if (!hint?.hasNew || !hint.latestVersion) return null;
+    return (
+      <Tooltip title={`最新版本：${hint.latestVersion}`}>
+        <Tag color="orange" style={{ margin: 0, fontSize: 12 }}>有新版本</Tag>
+      </Tooltip>
+    );
+  };
+
   const versionColumns: ColumnsType<PodComponent> = [
     {
       title: '版本号',
@@ -1451,6 +1588,7 @@ export default function PodsPage() {
                               <Space size={4}>
                                 <Tag color="blue" style={{ margin: 0, fontSize: 12 }}>{group.latestVersion}</Tag>
                                 <Tag style={{ margin: 0, fontSize: 12 }}>{group.totalVersions} 版本</Tag>
+                                {renderNewVersionHint(group)}
                               </Space>
                               {group.latestStatus === 'failed' && <Badge status="error" />}
                               {group.latestStatus === 'published' && <Badge status="success" />}
@@ -1490,6 +1628,7 @@ export default function PodsPage() {
                               <Space size={4}>
                                 <Tag color="green" style={{ margin: 0, fontSize: 12 }}>{group.latestVersion}</Tag>
                                 <Tag style={{ margin: 0, fontSize: 12 }}>{group.totalVersions} 版本</Tag>
+                                {renderNewVersionHint(group)}
                               </Space>
                               {group.latestStatus === 'failed' && <Badge status="error" />}
                               {group.latestStatus === 'published' && <Badge status="success" />}
