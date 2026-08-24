@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { Alert, Button, Input, message, Modal, Space, Table, Tabs, Tag, Tree, Typography } from 'antd';
+import { Alert, Button, Input, message, Modal, Space, Table, Tabs, Tag, Tooltip, Tree, Typography } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
@@ -325,15 +325,35 @@ function extractBusinessLogTime(line: string): string {
     || '';
 }
 
+function normalizeLogCategory(line: string, categoryMatches: string[], time: string): string {
+  if (/\[IMSDK\]|\[nnimsdk-[^\]]+\]/i.test(line)) return 'IM SDK';
+  if (/\[RTCSDK\]|\[nnrtc-[^\]]+\]/i.test(line)) return 'RTC SDK';
+
+  const candidates = categoryMatches.filter((item) => item !== time && !item.includes(':'));
+  if (candidates.includes('RTC_API') || candidates.includes('RTC')) return 'RTC';
+  const priority = ['API', 'IM', 'Community', 'VoiceRoom', 'WebSocket', 'Login', 'Message', 'Push', 'Web'];
+  const matchedPriority = priority.find((item) => candidates.includes(item));
+  if (matchedPriority) return matchedPriority;
+
+  return candidates.find((item) => !['Warning', 'Error', 'Debug', 'Info'].includes(item)) || candidates[0] || '未分类';
+}
+
 function parseBusinessLogLine(line: string): ParsedBusinessLog {
   const time = extractBusinessLogTime(line);
   const categoryMatches = [...line.matchAll(/\[([A-Za-z][A-Za-z0-9_+\-.]*)\]/g)].map((item) => item[1]);
-  const category = categoryMatches.find((item) => item !== time && !item.includes(':')) || '业务';
+  const category = normalizeLogCategory(line, categoryMatches, time);
   const event = line.match(/\bevent=([A-Za-z0-9_:.+-]+)/)?.[1] || 'raw_log';
   const fieldsText = line.match(/\bfields=\{([\s\S]*)\}\s*$/)?.[1] || '';
   const fields = fieldsText ? parseFields(fieldsText) : {};
   const retCode = fields.retCode;
-  const level = /⚠️|\[Warning\]|error|fail|exception/i.test(line) || (retCode && !['0', '100', '200'].includes(retCode)) ? 'warning' : 'info';
+  const code = fields.code;
+  const success = String(fields.success || '').toLowerCase();
+  const hasExplicitWarning = /⚠️|\[Warning\]|\[Error\]/i.test(line);
+  const hasFailedEvent = /(?:^|[_:.+-])(?:fail|failed|failure|exception)(?:$|[_:.+-])/i.test(event);
+  const hasFailedResult = success === 'false' ||
+    Boolean(retCode && !['0', '100', '200'].includes(retCode)) ||
+    Boolean(code && !['0', '100', '200', '61000'].includes(code));
+  const level = hasExplicitWarning || hasFailedEvent || hasFailedResult ? 'warning' : 'info';
   return { time, category, event, level, fields, line };
 }
 
@@ -366,7 +386,7 @@ function topCounts(values: string[], limit = 12) {
 }
 
 function getLogModuleGroup(log: ParsedBusinessLog): { key: string; label: string } {
-  const label = log.category && log.category !== '业务' ? log.category : '未分类';
+  const label = log.category || '未分类';
   const key = label.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_') || 'unknown';
   return { key, label };
 }
@@ -499,9 +519,9 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     item.logs.push(log);
     groupMap.set(group.key, item);
   });
-  const functionGroups = Array.from(groupMap.values())
+  const moduleGroups = Array.from(groupMap.values())
     .sort((left, right) => {
-      const leadingOrder = ['API', 'Login', 'Community'];
+      const leadingOrder = ['API', 'IM SDK', 'RTC SDK', 'IM', 'RTC', 'Login', 'Community'];
       const trailingOrder = ['未分类', 'Warning', 'Error', 'Debug'];
       const leftLeadingIndex = leadingOrder.indexOf(left.label);
       const rightLeadingIndex = leadingOrder.indexOf(right.label);
@@ -526,6 +546,27 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
       warnings: group.logs.filter((log) => log.level !== 'info').length,
       eventCounts: topCounts(group.logs.map((log) => log.event), 8),
     }));
+  const allLogsGroup = {
+    key: 'all_business_logs',
+    label: '全部业务日志',
+    logs: parsedLogs,
+    warnings: parsedLogs.filter((log) => log.level !== 'info').length,
+    eventCounts: topCounts(parsedLogs.map((log) => log.event), 8),
+  };
+  const warningErrorLogs = parsedLogs.filter((log) => log.level !== 'info');
+  const warningErrorGroup = {
+    key: 'warning_error_logs',
+    label: 'Warning/Error',
+    logs: warningErrorLogs,
+    warnings: warningErrorLogs.length,
+    eventCounts: topCounts(warningErrorLogs.map((log) => log.event), 8),
+  };
+  const functionGroups = [
+    ...moduleGroups.filter((group) => group.label === 'API'),
+    warningErrorGroup,
+    ...moduleGroups.filter((group) => group.label !== 'API'),
+    allLogsGroup,
+  ];
 
   return {
     source,
@@ -573,6 +614,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
   const renderAnalysisSummary = () => {
     if (!analysisResult) return null;
     const group = activeGroup;
+    const isSdkGroup = group?.label === 'IM SDK' || group?.label === 'RTC SDK';
     return (
       <div
         style={{
@@ -592,7 +634,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
             {group?.warnings ? <Tag color="orange">当前异常 {group.warnings}</Tag> : null}
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>时间范围：{analysisResult.timeRange}</Text>
-          {group?.eventCounts?.length ? (
+          {!isSdkGroup && group?.eventCounts?.length ? (
             <Space size={[6, 6]} wrap>
               <Text type="secondary" style={{ fontSize: 12 }}>事件统计：</Text>
               {group.eventCounts.map((item) => (
@@ -628,6 +670,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
   const renderNormalLogTable = (group: BusinessLogAnalysis['functionGroups'][number]) => {
     const filteredLogs = filterLogs(group.logs);
     const keyword = logSearchText.trim();
+    const isSdkGroup = group.label === 'IM SDK' || group.label === 'RTC SDK';
     return (
       <Space direction="vertical" size="small" style={{ width: '100%' }}>
         {keyword ? (
@@ -641,22 +684,31 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
           rowKey={(record: ParsedBusinessLog, index) => `${record.time}-${index}`}
           dataSource={filteredLogs}
           pagination={filteredLogs.length > 30 ? { pageSize: 30, showSizeChanger: false } : false}
-          scroll={{ y: 'calc(100vh - 430px)' }}
+          scroll={{ x: 1000, y: 'calc(100vh - 430px)' }}
           columns={[
             { title: '时间', dataIndex: 'time', width: 160, sorter: (a, b) => parseLogTimeValue(a.time) - parseLogTimeValue(b.time) },
-            {
+            ...(!isSdkGroup ? [{
               title: '事件',
               dataIndex: 'event',
               width: 180,
+              ellipsis: true,
               filters: group.eventCounts.map((item) => ({ text: `${item.event} (${item.count})`, value: item.event })),
-              onFilter: (value, record) => record.event === value,
-              render: (value: string, record) => (
-                <Tag color={record.level === 'info' ? 'default' : 'orange'}>{highlightText(value, keyword)}</Tag>
+              onFilter: (value: boolean | React.Key, record: ParsedBusinessLog) => record.event === value,
+              render: (value: string, record: ParsedBusinessLog) => (
+                <Tooltip title={value}>
+                  <Tag
+                    color={record.level === 'info' ? 'default' : 'orange'}
+                    style={{ maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}
+                  >
+                    {highlightText(value, keyword)}
+                  </Tag>
+                </Tooltip>
               ),
-            },
+            }] : []),
             {
               title: '日志',
               dataIndex: 'line',
+              width: isSdkGroup ? 940 : 760,
               render: (value: string) => (
                 <pre
                   style={{

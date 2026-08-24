@@ -262,12 +262,18 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   };
 
   const openBusinessLogAnalysis = () => {
-    const lines = businessLogs.map((log) => normalizeDisplayLine(log.message || log.raw, 'business'));
+    const lines = logs.map((log) => {
+      const channel = effectiveLogChannel(log);
+      const line = normalizeDisplayLine(log.message || log.raw, channel);
+      if (channel === 'im') return line.includes('[IMSDK]') ? line : `[IMSDK] ${line}`;
+      if (channel === 'rtc') return line.includes('[RTCSDK]') ? line : `[RTCSDK] ${line}`;
+      return line;
+    });
     if (lines.length === 0) {
-      message.warning('当前没有业务日志可分析');
+      message.warning('当前没有日志可分析');
       return;
     }
-    setAnalysisResult(analyzeBusinessLogLines(lines, '实时业务日志'));
+    setAnalysisResult(analyzeBusinessLogLines(lines, '实时日志'));
     setAnalysisOpen(true);
   };
 

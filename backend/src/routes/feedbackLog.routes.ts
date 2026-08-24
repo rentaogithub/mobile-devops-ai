@@ -97,7 +97,10 @@ function downloadFile(targetURL: URL, redirectCount = 0): Promise<Buffer> {
 
 function isLogFile(entryName: string): boolean {
   const filename = path.basename(entryName);
-  return /\.log$/i.test(filename) && !filename.startsWith('.');
+  return (
+    (/\.log$/i.test(filename) || /^(?:im|rtc)_/i.test(filename)) &&
+    !filename.startsWith('.')
+  );
 }
 
 function isBusinessLogFile(entryName: string): boolean {
@@ -113,6 +116,17 @@ function selectPreviewLogEntries(entries: string[]): string[] {
   const logEntries = entries.filter((item) => item && isLogFile(item));
   const businessEntries = logEntries.filter(isBusinessLogFile);
   return businessEntries.length > 0 ? businessEntries : logEntries;
+}
+
+function selectAllLogEntries(entries: string[]): string[] {
+  return entries.filter((item) => item && isLogFile(item));
+}
+
+function safeArchiveEntries(entries: string[]): string[] {
+  return entries.filter((entry) => {
+    const normalized = entry.replace(/\\/g, '/');
+    return normalized && !normalized.startsWith('/') && !normalized.split('/').includes('..');
+  });
 }
 
 function isTargetLogFile(entryName: string): boolean {
@@ -223,37 +237,47 @@ async function findLogFiles(dir: string): Promise<string[]> {
   return results;
 }
 
-async function extractLogsWithUnzip(archivePath: string, tempDir: string): Promise<PreviewLogFile[]> {
+async function extractLogsWithUnzip(
+  archivePath: string,
+  tempDir: string,
+  options: { selectEntries?: (entries: string[]) => string[]; flatten?: boolean } = {}
+): Promise<PreviewLogFile[]> {
   const { stdout } = await execFileAsync('unzip', ['-Z1', archivePath], {
     maxBuffer: 10 * 1024 * 1024,
   });
-  const entries = selectPreviewLogEntries(stdout
+  const entries = safeArchiveEntries((options.selectEntries || selectPreviewLogEntries)(stdout
     .split('\n')
     .map((item) => item.trim())
-    .filter(Boolean));
+    .filter(Boolean)));
 
   if (entries.length === 0) {
     return [];
   }
 
-  await execFileAsync('unzip', ['-qq', '-o', '-j', archivePath, ...entries, '-d', tempDir], {
+  await execFileAsync('unzip', ['-qq', '-o', ...(options.flatten === false ? [] : ['-j']), archivePath, ...entries, '-d', tempDir], {
     maxBuffer: 10 * 1024 * 1024,
   });
 
-  const extractedFiles = (await fsPromises.readdir(tempDir))
-    .filter(isTargetLogFile)
-    .map((filename) => path.join(tempDir, filename));
+  const extractedFiles = options.flatten === false
+    ? await findLogFiles(tempDir)
+    : (await fsPromises.readdir(tempDir))
+      .filter(isTargetLogFile)
+      .map((filename) => path.join(tempDir, filename));
   return collectPreviewFiles(extractedFiles);
 }
 
-async function extractLogsWithBsdtar(archivePath: string, tempDir: string): Promise<PreviewLogFile[]> {
+async function extractLogsWithBsdtar(
+  archivePath: string,
+  tempDir: string,
+  options: { selectEntries?: (entries: string[]) => string[] } = {}
+): Promise<PreviewLogFile[]> {
   const { stdout } = await execFileAsync('bsdtar', ['-tf', archivePath], {
     maxBuffer: 10 * 1024 * 1024,
   });
-  const entries = selectPreviewLogEntries(stdout
+  const entries = safeArchiveEntries((options.selectEntries || selectPreviewLogEntries)(stdout
     .split('\n')
     .map((item) => item.trim())
-    .filter(Boolean));
+    .filter(Boolean)));
 
   if (entries.length === 0) {
     return [];
@@ -265,6 +289,24 @@ async function extractLogsWithBsdtar(archivePath: string, tempDir: string): Prom
     maxBuffer: 10 * 1024 * 1024,
   });
 
+  return collectPreviewFiles(await findLogFiles(extractDir));
+}
+
+async function extractAllLogsWithUnzip(archivePath: string, tempDir: string): Promise<PreviewLogFile[]> {
+  const extractDir = path.join(tempDir, 'all');
+  await fsPromises.mkdir(extractDir, { recursive: true });
+  await execFileAsync('unzip', ['-qq', '-o', archivePath, '-d', extractDir], {
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return collectPreviewFiles(await findLogFiles(extractDir));
+}
+
+async function extractAllLogsWithBsdtar(archivePath: string, tempDir: string): Promise<PreviewLogFile[]> {
+  const extractDir = path.join(tempDir, 'all-tar');
+  await fsPromises.mkdir(extractDir, { recursive: true });
+  await execFileAsync('bsdtar', ['-xf', archivePath, '-C', extractDir], {
+    maxBuffer: 10 * 1024 * 1024,
+  });
   return collectPreviewFiles(await findLogFiles(extractDir));
 }
 
@@ -282,23 +324,29 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
     let files: PreviewLogFile[] = [];
     let unzipErrorMessage = '';
     try {
-      files = await extractLogsWithUnzip(archivePath, tempDir);
+      files = await extractAllLogsWithUnzip(archivePath, tempDir);
     } catch (unzipError) {
       unzipErrorMessage = unzipError instanceof Error ? unzipError.message : String(unzipError);
       logger.warn('unzip 解压 NN 日志失败，回退到 bsdtar', { error: unzipErrorMessage });
-      files = await extractLogsWithBsdtar(archivePath, tempDir);
+      files = await extractAllLogsWithBsdtar(archivePath, tempDir);
     }
 
     if (files.length === 0) {
-      throw new Error(unzipErrorMessage || '压缩包中未找到业务日志文件');
+      throw new Error(unzipErrorMessage || '压缩包中未找到 .log 文件');
     }
 
     const lines: string[] = [];
     const analyzedFiles: Array<{ name: string; path: string; lineCount: number; size: number }> = [];
     for (const file of files) {
       const content = await fsPromises.readFile(file.path, 'utf8');
+      const normalizedName = file.path.replace(/\\/g, '/').toLowerCase();
+      const sdkPrefix = /(?:^|[/_.-])(?:im|imsdk|nnimsdk)(?:[/_.-]|$)/.test(normalizedName)
+        ? '[IMSDK] '
+        : /(?:^|[/_.-])(?:rtc|rtcsdk|nnrtc)(?:[/_.-]|$)/.test(normalizedName)
+          ? '[RTCSDK] '
+          : '';
       const fileLines = content.split(/\r?\n/).filter((line) => line.trim());
-      lines.push(...fileLines);
+      lines.push(...fileLines.map((line) => sdkPrefix && !line.includes('[IMSDK]') && !line.includes('[RTCSDK]') ? `${sdkPrefix}${line}` : line));
       analyzedFiles.push({
         name: file.name,
         path: file.path,
