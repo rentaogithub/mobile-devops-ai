@@ -14,6 +14,7 @@ import { FileHandlerService, StorageService } from '../services';
 import { PodService } from '../services/PodService';
 import symbolicationCache from '../services/SymbolicationCacheService';
 import logger from '../utils/logger';
+import { buildMgitPublishArgs } from '../utils/mgit';
 import { AppError, ErrorCode } from '../types';
 import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
@@ -5899,7 +5900,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
     }
     if (existingRepos.length === publishRepos.length) {
       commands.push({
-        command: `mgit publish ${targetBranch}`,
+        command: `mgit ${buildMgitPublishArgs(targetBranch, baseBranch).join(' ')}`,
         output: `目标分支已存在，跳过重复 publish：${existingRepos.join(', ')}`,
       });
       res.json({
@@ -5937,7 +5938,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
 
     await runMgit(['checkout', baseBranch]);
     await runMgit(['pull', '--ff-only']);
-    await runMgit(['publish', targetBranch]);
+    await runMgit(buildMgitPublishArgs(targetBranch, baseBranch));
 
     res.json({
       success: true,
