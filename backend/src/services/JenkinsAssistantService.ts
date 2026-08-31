@@ -65,6 +65,9 @@ function parseConsoleMetadata(consoleText: string) {
     plain.match(/MARKETING_VERSION:\s*[^→\n]*→\s*([0-9]+(?:\.[0-9]+)+)/)?.[1] ||
     '';
   const commitHash =
+    plain.match(/最终源码Commit[:：]\s*([0-9a-f]{7,40})/i)?.[1] ||
+    plain.match(/"source_synced_commit"\s*:\s*"([0-9a-f]{7,40})"/i)?.[1] ||
+    plain.match(/"source_remote_commit"\s*:\s*"([0-9a-f]{7,40})"/i)?.[1] ||
     plain.match(/Checking out Revision\s+([0-9a-f]{7,40})/i)?.[1] ||
     plain.match(/git checkout -f\s+([0-9a-f]{7,40})/i)?.[1] ||
     plain.match(/git rev-list --no-walk\s+([0-9a-f]{7,40})/i)?.[1] ||

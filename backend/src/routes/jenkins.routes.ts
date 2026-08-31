@@ -3459,6 +3459,9 @@ function parseConsoleMetadata(consoleText: string) {
 
 function parseCheckoutRevision(consoleText: string) {
   return (
+    consoleText.match(/最终源码Commit[:：]\s*([0-9a-f]{7,40})/i)?.[1] ||
+    consoleText.match(/"source_synced_commit"\s*:\s*"([0-9a-f]{7,40})"/i)?.[1] ||
+    consoleText.match(/"source_remote_commit"\s*:\s*"([0-9a-f]{7,40})"/i)?.[1] ||
     consoleText.match(/Checking out Revision\s+([0-9a-f]{7,40})/i)?.[1] ||
     consoleText.match(/git checkout -f\s+([0-9a-f]{7,40})/i)?.[1] ||
     consoleText.match(/git rev-list --no-walk\s+([0-9a-f]{7,40})/i)?.[1] ||
@@ -4382,6 +4385,24 @@ function pgyerConfigStatus() {
   };
 }
 
+function privatePodSyncConfigStatus() {
+  const jenkinsConfigPath = path.join(getJenkinsRepoLocalDir(), 'cicd/jenkins/build_config.sh');
+  const skipRemoteCheck = String(getRuntimeEnv('SKIP_POD_REMOTE_CHECK') || readShellConfigValue(jenkinsConfigPath, 'SKIP_POD_REMOTE_CHECK') || 'false').trim().toLowerCase() === 'true';
+  const ttlRaw = String(getRuntimeEnv('POD_HEAD_CHECK_TTL_SECONDS') || readShellConfigValue(jenkinsConfigPath, 'POD_HEAD_CHECK_TTL_SECONDS') || '0').trim();
+  const ttlSeconds = Number(ttlRaw);
+  const allowDevelopFallback = String(getRuntimeEnv('ALLOW_PRIVATE_POD_DEVELOP_FALLBACK') || readShellConfigValue(jenkinsConfigPath, 'ALLOW_PRIVATE_POD_DEVELOP_FALLBACK') || 'false').trim().toLowerCase() === 'true';
+  const strictBranch = String(getRuntimeEnv('STRICT_PRIVATE_POD_BRANCH') || readShellConfigValue(jenkinsConfigPath, 'STRICT_PRIVATE_POD_BRANCH') || 'false').trim().toLowerCase() === 'true';
+  return {
+    configured: true,
+    skipRemoteCheck,
+    ttlSeconds: Number.isFinite(ttlSeconds) ? ttlSeconds : 0,
+    ttlRaw,
+    allowDevelopFallback,
+    strictBranch,
+    jenkinsConfigPath,
+  };
+}
+
 async function buildReleasePreflight(input: {
   branch: string;
   deployTarget: string;
@@ -4407,6 +4428,22 @@ async function buildReleasePreflight(input: {
     '发布渠道',
     DEPLOY_TARGETS.has(deployTarget) ? 'passed' : 'blocked',
     DEPLOY_TARGETS.has(deployTarget) ? `发布渠道：${deployTarget}` : '发布渠道无效',
+  ));
+
+  const privatePodSync = privatePodSyncConfigStatus();
+  const privatePodSyncBlocked = privatePodSync.skipRemoteCheck && deployTarget !== 'Pgyer';
+  checks.push(buildReleasePreflightCheck(
+    'private_pod_sync',
+    '私有组件同步',
+    privatePodSyncBlocked ? 'blocked' : (privatePodSync.skipRemoteCheck || privatePodSync.ttlSeconds > 0 ? 'warning' : 'passed'),
+    privatePodSyncBlocked
+      ? '发布渠道禁止跳过私有 Pod 远端 HEAD 检查，否则可能复用旧组件'
+      : (privatePodSync.skipRemoteCheck
+        ? '已跳过私有 Pod 远端 HEAD 检查，可能复用旧组件'
+        : (privatePodSync.ttlSeconds > 0
+          ? `私有 Pod HEAD 使用 ${privatePodSync.ttlSeconds} 秒 TTL 缓存，短时间内可能无法感知组件新提交`
+          : '每次发布都会检查私有 Pod 远端 HEAD，并校验最终安装 Commit')),
+    privatePodSync,
   ));
 
   if (deployTarget !== 'Pgyer') {
@@ -5742,6 +5779,19 @@ router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: 
     '质检设备池',
     Array.isArray(qualityPools) && qualityPools.length > 0 ? 'passed' : 'warning',
     Array.isArray(qualityPools) && qualityPools.length > 0 ? `已配置 ${qualityPools.length} 个设备池` : '未配置质检设备池',
+  ));
+
+  const privatePodSync = privatePodSyncConfigStatus();
+  checks.push(buildReleasePreflightCheck(
+    'private_pod_sync',
+    '私有组件同步',
+    privatePodSync.skipRemoteCheck ? 'blocked' : (privatePodSync.ttlSeconds > 0 ? 'warning' : 'passed'),
+    privatePodSync.skipRemoteCheck
+      ? 'SKIP_POD_REMOTE_CHECK=true，会跳过私有组件远端 HEAD 检查，发布包可能复用旧组件'
+      : (privatePodSync.ttlSeconds > 0
+        ? `POD_HEAD_CHECK_TTL_SECONDS=${privatePodSync.ttlSeconds}，短时间内可能无法感知组件新提交`
+        : '每次构建都会检查私有组件远端 HEAD'),
+    privatePodSync,
   ));
 
   const blockers = checks.filter((check) => check.status === 'blocked');
