@@ -106,6 +106,10 @@ function latestVersionOf(versions: string[]) {
     .at(-1) || '';
 }
 
+function isStableExternalPodVersion(version: string) {
+  return Boolean(String(version || '').trim()) && !String(version).includes('-');
+}
+
 function buildNniosBranchOptions(branches: string[]) {
   const releaseBranches = branches.filter(isReleaseBranch);
   const latestRelease = releaseBranches.sort(compareReleaseBranches)[releaseBranches.length - 1];
@@ -554,7 +558,7 @@ export default function PodsPage() {
     const pendingGroups: ComponentGroup[] = [];
 
     groups.forEach((group) => {
-      const cacheKey = `${group.name}@${group.latestVersion}`;
+      const cacheKey = `stable-external-v1:${group.name}@${group.latestVersion}`;
       const cached = cache.get(cacheKey);
       if (cached) {
         nextHints[group.name] = cached;
@@ -594,7 +598,7 @@ export default function PodsPage() {
       if (group.isInternal) return {};
 
       const res = await podsApi.officialVersions(group.name);
-      const latestOfficialVersion = latestVersionOf(res.data || []);
+      const latestOfficialVersion = latestVersionOf((res.data || []).filter(isStableExternalPodVersion));
       return {
         latestVersion: latestOfficialVersion,
         hasNew: Boolean(latestOfficialVersion) && comparePodVersion(latestOfficialVersion, currentLatest) > 0,
@@ -607,7 +611,7 @@ export default function PodsPage() {
         while (queue.length > 0 && !cancelled) {
           const group = queue.shift();
           if (!group) return;
-          const cacheKey = `${group.name}@${group.latestVersion}`;
+          const cacheKey = `stable-external-v1:${group.name}@${group.latestVersion}`;
           try {
             const hint = await detectNewVersion(group);
             cache.set(cacheKey, hint);

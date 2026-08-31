@@ -85,6 +85,10 @@ function isNNRtcTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
+function isPrivateNniosComponent(name: string) {
+  return ['NNRtc', 'leigod_im_cross_sdk'].includes(String(name || '').trim());
+}
+
 function arrayify<T = any>(value: T | T[] | undefined | null): T[] {
   if (value === undefined || value === null) return [];
   return Array.isArray(value) ? value : [value];
@@ -583,30 +587,69 @@ ${sourceLine}
   private updatePodVersionInRuby(content: string, name: string, version: string): { content: string; changed: boolean } {
     const escapedName = escapeRegExp(name);
     let changed = false;
+    const shouldUsePrivateSource = isPrivateNniosComponent(name);
+
+    const normalizeSource = (line: string) => {
+      const withoutPrivateSource = line
+        .replace(/\s*,\s*:source\s*=>\s*private_source/g, '')
+        .replace(/\s*,\s*source:\s*private_source/g, '');
+      if (!shouldUsePrivateSource) return withoutPrivateSource;
+      return `${withoutPrivateSource}, :source => private_source`;
+    };
 
     const withVersionPattern = new RegExp(
-      `(^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*)['"][^'"]+['"]`,
+      `(^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*)['"][^'"]+['"]([^\\n]*)`,
       'm'
     );
-    if (withVersionPattern.test(content)) {
-      return {
-        content: content.replace(withVersionPattern, (_match, prefix) => {
+    const dedupe = (text: string) => {
+      let seen = false;
+      return text
+        .split('\n')
+        .filter((line) => {
+          if (!new RegExp(`^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]`).test(line)) return true;
+          if (!seen) {
+            seen = true;
+            return true;
+          }
           changed = true;
-          return `${prefix}'${version}'`;
-        }),
-        changed,
-      };
+          return false;
+        })
+        .join('\n');
+    };
+
+    const placeExternalPodInExternalSection = (text: string) => {
+      if (shouldUsePrivateSource) return text;
+      const lines = text.split('\n');
+      const podLinePattern = new RegExp(`^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]`);
+      const podIndex = lines.findIndex((line) => podLinePattern.test(line));
+      let externalIndex = lines.findIndex((line) => /^\s*#\s*外部组件\s*$/.test(line));
+      if (podIndex < 0 || externalIndex < 0 || podIndex === externalIndex + 1) return text;
+      const [podLine] = lines.splice(podIndex, 1);
+      externalIndex = lines.findIndex((line) => /^\s*#\s*外部组件\s*$/.test(line));
+      const insertIndex = lines.findIndex((line, index) => index > externalIndex && /^\s*(?:#|end\s*$)/.test(line));
+      lines.splice(insertIndex >= 0 ? insertIndex : externalIndex + 1, 0, podLine);
+      changed = true;
+      return lines.join('\n');
+    };
+
+    if (withVersionPattern.test(content)) {
+      const replaced = content.replace(withVersionPattern, (match, prefix, suffix) => {
+          const nextLine = normalizeSource(`${prefix}'${version}'${suffix || ''}`);
+          changed = nextLine !== match;
+          return nextLine;
+      });
+      return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
     }
 
-    const noVersionPattern = new RegExp(`(^\\s*pod\\s+['"]${escapedName}['"])(\\s*(?:,|$))`, 'm');
+    const noVersionPattern = new RegExp(`(^\\s*pod\\s+['"]${escapedName}['"])([^\\n]*)`, 'm');
     if (noVersionPattern.test(content)) {
-      return {
-        content: content.replace(noVersionPattern, (_match, prefix, suffix) => {
-          changed = true;
-          return `${prefix}, '${version}'${suffix === ',' ? ',' : suffix}`;
-        }),
-        changed,
-      };
+      const replaced = content.replace(noVersionPattern, (match, prefix, suffix) => {
+          const cleanSuffix = String(suffix || '').replace(/^\s*,?\s*/, '');
+          const nextLine = normalizeSource(`${prefix}, '${version}'${cleanSuffix ? `, ${cleanSuffix}` : ''}`);
+          changed = nextLine !== match;
+          return nextLine;
+      });
+      return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
     }
 
     return { content, changed: false };
@@ -621,9 +664,11 @@ ${sourceLine}
 
     const last = matches[matches.length - 1];
     const insertAt = last.index ?? content.length;
-    const line = `    pod   '${name}', '${version}', :source => private_source\n`;
+    const privateSource = isPrivateNniosComponent(name) ? ', :source => private_source' : '';
+    const sectionTitle = isPrivateNniosComponent(name) ? '内部组件' : '外部组件';
+    const line = `    pod   '${name}', '${version}'${privateSource}\n`;
     return {
-      content: `${content.slice(0, insertAt)}\n    # 内部组件\n${line}${content.slice(insertAt)}`,
+      content: `${content.slice(0, insertAt)}\n    # ${sectionTitle}\n${line}${content.slice(insertAt)}`,
       changed: true,
     };
   }
@@ -2441,6 +2486,45 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     return JSON.parse(out);
   }
 
+  private getCocoaPodsCdnShard(podName: string): string {
+    return crypto.createHash('md5').update(podName).digest('hex').slice(0, 3).split('').join('/');
+  }
+
+  private fetchOfficialPodspecFromCdn(podName: string, version: string): any | null {
+    const shard = this.getCocoaPodsCdnShard(podName);
+    const url = `https://cdn.cocoapods.org/Specs/${shard}/${encodeURIComponent(podName)}/${encodeURIComponent(version)}/${encodeURIComponent(podName)}.podspec.json`;
+    try {
+      const result = execSync(`curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 60 ${shellQuote(url)}`, {
+        encoding: 'utf-8',
+        timeout: 70000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      return JSON.parse(result);
+    } catch (error: any) {
+      logger.warn('CocoaPods CDN 获取 podspec 失败', { podName, version, url, error: error.message });
+      return null;
+    }
+  }
+
+  private listVersionsFromCocoaPodsCdn(podName: string): string[] {
+    const shard = this.getCocoaPodsCdnShard(podName);
+    const url = `https://cdn.cocoapods.org/all_pods_versions_${shard.replace(/\//g, '_')}.txt`;
+    try {
+      const result = execSync(`curl -fsSL --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 60 ${shellQuote(url)}`, {
+        encoding: 'utf-8',
+        timeout: 70000,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+      const line = result
+        .split('\n')
+        .find((item) => item.startsWith(`${podName}/`));
+      return line ? line.split('/').slice(1).filter(Boolean) : [];
+    } catch (error: any) {
+      logger.warn('CocoaPods CDN 获取版本列表失败', { podName, url, error: error.message });
+      return [];
+    }
+  }
+
   /**
    * 查询官方组件的 podspec
    * 先扫本地 spec repos（含 aliyun-specs / nnspec / trunk），命中则用 pod ipc spec 转 JSON；
@@ -2463,7 +2547,14 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       }
     }
 
-    // 2. 退回 pod spec cat（trunk 上的 pod 通常有 .podspec.json）
+    // 2. 优先走 CocoaPods CDN：部分 pod/version（如 libwebp@1.6.0）在 pod spec cat 查不到，但 CDN 上存在。
+    if (version) {
+      const spec = this.fetchOfficialPodspecFromCdn(podName, version);
+      if (spec) return spec;
+    }
+
+    // 3. 退回 pod spec cat（trunk 上的 pod 通常有 .podspec.json）
+    let specCatError = '';
     try {
       const escapedName = podName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const versionFlag = version ? ` --version=${version}` : '';
@@ -2471,8 +2562,11 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
       return JSON.parse(result);
     } catch (error: any) {
-      throw new Error(`获取官方 podspec 失败: ${error.message}`);
+      specCatError = error.message;
+      logger.warn('pod spec cat 获取官方 podspec 失败', { podName, version, error: error.message });
     }
+
+    throw new Error(`获取官方 podspec 失败: ${specCatError || `${podName}${version ? `@${version}` : ''} 不存在`}`);
   }
 
   /**
@@ -2603,11 +2697,15 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     const trunk = this.listVersionsFromPodTrunkInfo(podName);
     trunk.forEach((version) => versions.add(version));
 
+    // 3. 合并 CocoaPods CDN 索引，pod spec cat/trunk info 找不到的 pod 也能补齐版本
+    const cdn = this.listVersionsFromCocoaPodsCdn(podName);
+    cdn.forEach((version) => versions.add(version));
+
     if (versions.size > 0) {
       return this.sortVersionsDesc([...versions]);
     }
 
-    // 3. 最后兜底：pod spec cat 至少能拿到当前最新版本
+    // 4. 最后兜底：pod spec cat 至少能拿到当前最新版本
     try {
       const spec = await this.fetchOfficialPodspec(podName);
       if (spec?.version) return [spec.version];
@@ -3788,17 +3886,17 @@ end
     }
 
     // dependencies（包含从 subspec 合并的依赖）
-    // 如果用户指定了依赖版本（depVersionOverrides），使用用户选择的版本
+    // depVersionOverrides 仅用于临时 Podfile 编译解析；生成内部 podspec 时保留官方依赖约束，
+    // 避免把 `~> 1.0`、`> 1.0` 这类兼容范围收窄成某个内部已发布版本。
     if (mergedSpec.dependencies && Object.keys(mergedSpec.dependencies).length > 0) {
       for (const [depName, depVersions] of Object.entries(mergedSpec.dependencies)) {
-        const override = depVersionOverrides?.[depName];
-        if (override) {
-          // 用户指定了版本，使用精确版本
-          podspec += `  s.dependency '${depName}', '${override}'\n`;
+        const versions = Array.isArray(depVersions) ? depVersions : [];
+        if (versions.length > 0) {
+          podspec += `  s.dependency '${depName}', ${(versions as string[]).map((v: string) => `'${v}'`).join(', ')}\n`;
         } else {
-          const versions = Array.isArray(depVersions) ? depVersions : [];
-          if (versions.length > 0) {
-            podspec += `  s.dependency '${depName}', ${(versions as string[]).map((v: string) => `'${v}'`).join(', ')}\n`;
+          const override = depVersionOverrides?.[depName];
+          if (override) {
+            podspec += `  s.dependency '${depName}', '${override}'\n`;
           } else {
             podspec += `  s.dependency '${depName}'\n`;
           }
