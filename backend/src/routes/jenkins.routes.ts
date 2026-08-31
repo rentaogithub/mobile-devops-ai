@@ -1628,6 +1628,95 @@ async function fetchAppStoreVersionsByVersion(appId: string, appVersion: string)
   return Array.isArray(response?.data) ? response.data : [];
 }
 
+function selectAppStoreVersionForRelease(versions: any[], appVersion: string) {
+  const exactVersions = (Array.isArray(versions) ? versions : [])
+    .filter((item: any) => String(item?.attributes?.versionString || '') === appVersion);
+  const preferredStates = [
+    'PREPARE_FOR_SUBMISSION',
+    'DEVELOPER_REJECTED',
+    'REJECTED',
+    'METADATA_REJECTED',
+    'DEVELOPER_ACTION_NEEDED',
+  ];
+  return exactVersions
+    .sort((a: any, b: any) => {
+      const aState = String(a?.attributes?.appStoreState || a?.attributes?.appVersionState || '');
+      const bState = String(b?.attributes?.appStoreState || b?.attributes?.appVersionState || '');
+      const aIndex = preferredStates.indexOf(aState);
+      const bIndex = preferredStates.indexOf(bState);
+      return (aIndex < 0 ? 999 : aIndex) - (bIndex < 0 ? 999 : bIndex);
+    })[0] || null;
+}
+
+async function attachBuildToAppStoreVersion(appStoreVersionId: string, buildId: string) {
+  return requestAppStoreConnect<any>('PATCH', `${ASC_API_BASE}/appStoreVersions/${encodeURIComponent(appStoreVersionId)}`, {
+    data: {
+      type: 'appStoreVersions',
+      id: appStoreVersionId,
+      relationships: {
+        build: {
+          data: {
+            type: 'builds',
+            id: buildId,
+          },
+        },
+      },
+    },
+  });
+}
+
+function appStoreConnectErrorMessage(error: any, fallback: string) {
+  const errors = Array.isArray(error?.response?.data?.errors) ? error.response.data.errors : [];
+  const detail = errors
+    .map((item: any) => String(item?.detail || item?.title || item?.code || '').trim())
+    .filter(Boolean)
+    .join('；');
+  return detail || error?.message || fallback;
+}
+
+async function resolveAppStoreVersionForBuild(appId: string, appVersion: string, appStoreBuild: any) {
+  const buildId = String(appStoreBuild?.id || '');
+  let appStoreVersion = buildId ? await fetchBuildAppStoreVersion(buildId) : null;
+  if (appStoreVersion?.id) {
+    return { appStoreVersion, appStoreVersionId: String(appStoreVersion.id), attachedBuild: false, manualReason: '' };
+  }
+
+  const versions = await fetchAppStoreVersionsByVersion(appId, appVersion);
+  appStoreVersion = selectAppStoreVersionForRelease(versions, appVersion);
+  const appStoreVersionId = String(appStoreVersion?.id || '');
+  if (!appStoreVersionId) {
+    return {
+      appStoreVersion: null,
+      appStoreVersionId: '',
+      attachedBuild: false,
+      manualReason: `ASC 中不存在 ${appVersion} 的 App Store 版本，需要先创建版本信息后才能自动选择构建包`,
+    };
+  }
+
+  const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
+  if (!['PREPARE_FOR_SUBMISSION', 'DEVELOPER_REJECTED', 'REJECTED', 'METADATA_REJECTED'].includes(appStoreState)) {
+    return { appStoreVersion, appStoreVersionId, attachedBuild: false, manualReason: '' };
+  }
+
+  try {
+    await attachBuildToAppStoreVersion(appStoreVersionId, buildId);
+    const relatedVersion = await fetchBuildAppStoreVersion(buildId).catch(() => null);
+    return {
+      appStoreVersion: relatedVersion?.id ? relatedVersion : appStoreVersion,
+      appStoreVersionId,
+      attachedBuild: true,
+      manualReason: '',
+    };
+  } catch (error: any) {
+    return {
+      appStoreVersion,
+      appStoreVersionId,
+      attachedBuild: false,
+      manualReason: `自动选择 App Store 构建包失败：${appStoreConnectErrorMessage(error, 'App Store Connect 返回错误')}`,
+    };
+  }
+}
+
 async function fetchRecentAppStoreVersions(appId: string) {
   const params = new URLSearchParams({
     'filter[platform]': 'IOS',
@@ -1993,11 +2082,6 @@ async function addBuildToBetaGroup(buildId: string, groupId: string) {
   }
 }
 
-function appStoreConnectErrorMessage(error: any, fallback: string) {
-  const appleError = error?.response?.data?.errors?.[0];
-  return appleError?.detail || appleError?.title || error?.message || fallback;
-}
-
 function scheduleTestFlightDistribution(build: any, options: { attempt?: number } = {}) {
   const buildNumber = Number(build?.number);
   if (!Number.isFinite(buildNumber) || buildNumber <= 0) return;
@@ -2189,12 +2273,20 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
       const appStoreBuild = await findAppStoreBuild(appId, appVersion, channelBuildNumber);
       if (!appStoreBuild?.id) {
         saveAppStoreRelease(buildNumber, {
-          status: 'uploaded',
+          status: attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS ? 'waiting_processing' : 'developer_action_needed',
           appVersion,
           buildNumber: channelBuildNumber,
           branchName,
-          message: 'Jenkins 已成功上传到 App Store Connect，暂未匹配到正式包构建',
+          message: attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS
+            ? 'Jenkins 已成功上传到 App Store Connect，等待 ASC 构建可见'
+            : 'Jenkins 已成功上传到 App Store Connect，但长时间未匹配到正式包构建，请在 ASC 确认构建处理状态',
+          failureReason: attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS
+            ? ''
+            : 'ASC 长时间未返回对应构建，可能是构建处理失败、版本/构建号不一致或 ASC 延迟异常',
         });
+        if (attempt + 1 < TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS) {
+          setTimeout(() => scheduleAppStoreRelease(build, { attempt: attempt + 1 }), TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS);
+        }
         return;
       }
       const processingState = String(appStoreBuild?.attributes?.processingState || '');
@@ -2215,7 +2307,24 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
         return;
       }
 
-      const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+      const resolvedVersion = await resolveAppStoreVersionForBuild(appId, appVersion, appStoreBuild);
+      if (resolvedVersion.manualReason) {
+        saveAppStoreRelease(buildNumber, {
+          status: 'developer_action_needed',
+          appVersion,
+          buildNumber: channelBuildNumber,
+          branchName,
+          appStoreBuildId: appStoreBuild.id,
+          appStoreVersionId: resolvedVersion.appStoreVersionId,
+          processingState,
+          appStoreState: String(resolvedVersion.appStoreVersion?.attributes?.appStoreState || resolvedVersion.appStoreVersion?.attributes?.appVersionState || ''),
+          releaseNotes,
+          message: resolvedVersion.manualReason,
+          failureReason: resolvedVersion.manualReason,
+        });
+        return;
+      }
+      const appStoreVersion = resolvedVersion.appStoreVersion;
       const appStoreVersionId = String(appStoreVersion?.id || '');
       const appStoreState = String(appStoreVersion?.attributes?.appStoreState || appStoreVersion?.attributes?.appVersionState || '');
       const appStoreReleaseType = String(appStoreVersion?.attributes?.releaseType || '');
@@ -2238,7 +2347,7 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
           appStoreState: latestState,
           releaseNotes,
           releaseType: 'AFTER_APPROVAL',
-          message: latestStatus.message,
+          message: resolvedVersion.attachedBuild ? `已自动选择构建包并提交审核：${latestStatus.message}` : latestStatus.message,
           failureReason: ['rejected', 'developer_action_needed', 'pending_agreement', 'failed'].includes(String(latestStatus.status)) ? latestStatus.message : '',
         });
         return;
@@ -5002,7 +5111,14 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
     const appVersion = String(buildMetadata.appVersion || '').trim();
     const channelBuildNumber = String(buildMetadata.buildNumber || '').trim();
     const branchName = normalizeBranchName(String(buildParameters.branchName || ''));
-    const releaseNotes = normalizeTestFlightWhatsNew(buildParameters.testFlightWhatsNew);
+    const releaseOrder = getReleaseOrderForBuild(buildNumber);
+    const archivedReleaseRequest = getArchivedReleaseRequestForBuild(buildNumber);
+    const releaseNotes = normalizeTestFlightWhatsNew(
+      buildParameters.testFlightWhatsNew ||
+      archivedReleaseRequest?.releaseNotes ||
+      releaseOrder?.releaseNotes ||
+      '',
+    );
     if (!appId || !appVersion || !channelBuildNumber) {
       res.status(400).json({
         success: false,
@@ -5019,7 +5135,29 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
       });
       return;
     }
-    const appStoreVersion = await fetchBuildAppStoreVersion(appStoreBuild.id);
+    const resolvedVersion = await resolveAppStoreVersionForBuild(appId, appVersion, appStoreBuild);
+    if (resolvedVersion.manualReason) {
+      const release = saveAppStoreRelease(buildNumber, {
+        status: 'developer_action_needed',
+        appVersion,
+        buildNumber: channelBuildNumber,
+        branchName,
+        appStoreBuildId: appStoreBuild.id,
+        appStoreVersionId: resolvedVersion.appStoreVersionId,
+        processingState: String(appStoreBuild?.attributes?.processingState || ''),
+        appStoreState: String(resolvedVersion.appStoreVersion?.attributes?.appStoreState || resolvedVersion.appStoreVersion?.attributes?.appVersionState || ''),
+        releaseNotes,
+        message: resolvedVersion.manualReason,
+        failureReason: resolvedVersion.manualReason,
+      });
+      res.status(409).json({
+        success: false,
+        data: release,
+        error: resolvedVersion.manualReason,
+      });
+      return;
+    }
+    const appStoreVersion = resolvedVersion.appStoreVersion;
     const appStoreVersionId = String(appStoreVersion?.id || '');
     if (!appStoreVersionId) {
       res.status(404).json({
@@ -5076,7 +5214,7 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
     res.json({
       success: true,
       data: release,
-      message: '已提交 App Store 审核',
+      message: resolvedVersion.attachedBuild ? '已自动选择构建包并提交 App Store 审核' : '已提交 App Store 审核',
     });
   } catch (error: any) {
     res.status(error.response?.status || 500).json({
