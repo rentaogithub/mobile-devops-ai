@@ -19,14 +19,41 @@ LOCAL_INSTALL_MODE="${COCOAPODS_PODX_LOCAL_INSTALL:-0}"
 PLUGIN_DIR="$SCRIPT_DIR/cocoapods-podx"
 GEMSPEC_PATH="$PLUGIN_DIR/cocoapods-podx.gemspec"
 
+detect_ruby_bin() {
+  if [ -n "${COCOAPODS_PODX_RUBY_BIN:-}" ]; then
+    printf '%s\n' "$COCOAPODS_PODX_RUBY_BIN"
+    return 0
+  fi
+
+  if [ -n "$POD_BIN" ] && [ -f "$POD_BIN" ]; then
+    pod_shebang="$(sed -n '1s/^#!//p' "$POD_BIN")"
+    case "$pod_shebang" in
+      */ruby)
+        if [ -x "$pod_shebang" ]; then
+          printf '%s\n' "$pod_shebang"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
+  command -v ruby
+}
+
+RUBY_BIN="$(detect_ruby_bin)"
+GEM_BIN="${COCOAPODS_PODX_GEM_BIN:-$(dirname "$RUBY_BIN")/gem}"
+if [ ! -x "$GEM_BIN" ]; then
+  GEM_BIN="$(command -v gem)"
+fi
+
 if [ -z "$POD_BIN" ]; then
   PUBLISH_ONLY_MODE=1
 fi
 
 if [ "$PUBLISH_ONLY_MODE" = "1" ]; then
-  COCOAPODS_GEM_HOME="${COCOAPODS_GEM_HOME:-$(ruby -e 'require "rubygems"; puts Gem.user_dir')}"
+  COCOAPODS_GEM_HOME="${COCOAPODS_GEM_HOME:-$("$RUBY_BIN" -e 'require "rubygems"; puts Gem.user_dir')}"
 else
-  COCOAPODS_GEM_HOME="${COCOAPODS_GEM_HOME:-$(ruby -e '
+  COCOAPODS_GEM_HOME="${COCOAPODS_GEM_HOME:-$("$RUBY_BIN" -e '
 pod_bin = ARGV[0]
 
 paths = [pod_bin]
@@ -57,11 +84,11 @@ GEM_SPEC_CACHE_DIR="${GEM_SPEC_CACHE:-$COCOAPODS_GEM_HOME/specs}"
 mkdir -p "$GEM_SPEC_CACHE_DIR"
 
 repair_ffi_extensions() {
-  if GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" ruby -e 'require "rubygems"; exit Gem::Specification.find_all_by_name("ffi", "= 1.17.0").empty? ? 1 : 0' >/dev/null 2>&1; then
+  if GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" "$RUBY_BIN" -e 'require "rubygems"; exit Gem::Specification.find_all_by_name("ffi", "= 1.17.0").empty? ? 1 : 0' >/dev/null 2>&1; then
     GEM_HOME="$COCOAPODS_GEM_HOME" \
     GEM_PATH="$COCOAPODS_GEM_HOME" \
     GEM_SPEC_CACHE="$GEM_SPEC_CACHE_DIR" \
-    gem pristine ffi --version 1.17.0 --extensions >/dev/null 2>&1 || true
+    "$GEM_BIN" pristine ffi --version 1.17.0 --extensions >/dev/null 2>&1 || true
   fi
 }
 
@@ -82,24 +109,77 @@ generate_build_shims() {
 }
 
 install_command_shims() {
+  shim_dirs=""
+  preferred_shim_dir="${COCOAPODS_PODX_BIN_DIR:-$HOME/.local/bin}"
   if [ "$PUBLISH_ONLY_MODE" = "1" ]; then
-    pod_dir="${COCOAPODS_PODX_BIN_DIR:-$HOME/.local/bin}"
-    mkdir -p "$pod_dir"
-    export PATH="$pod_dir:$PATH"
+    add_command_shim_dir "$preferred_shim_dir" create
   else
-    pod_dir="$(dirname "$POD_BIN")"
+    add_command_shim_dir "$(dirname "$POD_BIN")"
   fi
 
-  if [ ! -w "$pod_dir" ]; then
-    echo "Warning: unable to write command shims into $pod_dir" >&2
-    return
+  add_command_shim_dir "$COCOAPODS_GEM_HOME/bin" create
+
+  current_podx="$(command -v podx 2>/dev/null || true)"
+  if [ -n "$current_podx" ]; then
+    add_command_shim_dir "$(dirname "$current_podx")"
   fi
 
-  write_podx_shim "$pod_dir/podx"
-  chmod +x "$pod_dir/podx"
-  write_mgit_shim "$pod_dir/mgit"
-  chmod +x "$pod_dir/mgit"
-  rm -f "$pod_dir/pox"
+  current_mgit="$(command -v mgit 2>/dev/null || true)"
+  if [ -n "$current_mgit" ]; then
+    add_command_shim_dir "$(dirname "$current_mgit")"
+  fi
+
+  add_command_shim_dir "$preferred_shim_dir" create
+
+  installed_count=0
+  for pod_dir in $shim_dirs; do
+    if [ ! -w "$pod_dir" ]; then
+      echo "Warning: unable to write command shims into $pod_dir" >&2
+      continue
+    fi
+
+    write_podx_shim "$pod_dir/podx"
+    chmod +x "$pod_dir/podx"
+    write_mgit_shim "$pod_dir/mgit"
+    chmod +x "$pod_dir/mgit"
+    rm -f "$pod_dir/pox"
+    installed_count=$((installed_count + 1))
+  done
+
+  if [ "$installed_count" -eq 0 ]; then
+    echo "Warning: no writable command shim directory found" >&2
+  fi
+
+  case "$PATH:" in
+    "$preferred_shim_dir:"*)
+      ;;
+    *)
+      export PATH="$preferred_shim_dir:$PATH"
+      ;;
+  esac
+}
+
+add_command_shim_dir() {
+  candidate="$1"
+  create="${2:-}"
+  [ -n "$candidate" ] || return 0
+
+  if [ "$create" = "create" ]; then
+    if ! mkdir -p "$candidate" 2>/dev/null; then
+      echo "Warning: unable to create command shim directory $candidate" >&2
+      return 0
+    fi
+  fi
+
+  [ -d "$candidate" ] || return 0
+
+  case " $shim_dirs " in
+    *" $candidate "*)
+      ;;
+    *)
+      shim_dirs="${shim_dirs}${shim_dirs:+ }$candidate"
+      ;;
+  esac
 }
 
 install_generated_shim() {
@@ -110,14 +190,16 @@ install_generated_shim() {
   mv -f "$tmp_path" "$destination"
 }
 
-ensure_publish_only_path() {
-  [ "$PUBLISH_ONLY_MODE" = "1" ] || return 0
-
+ensure_command_shim_path() {
   pod_dir="${COCOAPODS_PODX_BIN_DIR:-$HOME/.local/bin}"
   export_line="export PATH=\"$pod_dir:\$PATH\""
 
-  case ":$PATH:" in
-    *":$pod_dir:"*)
+  if [ ! -d "$pod_dir" ] || [ ! -w "$pod_dir" ]; then
+    return 0
+  fi
+
+  case "$PATH:" in
+    "$pod_dir:"*)
       ;;
     *)
       export PATH="$pod_dir:$PATH"
@@ -156,13 +238,13 @@ update_shell_profile() {
     return
   fi
 
-  if grep -F "$pod_dir" "$profile_path" >/dev/null 2>&1; then
+  if grep -F "$export_line" "$profile_path" >/dev/null 2>&1; then
     return
   fi
 
   {
     printf '\n'
-    printf '# cocoapods-podx publish-only\n'
+    printf '# cocoapods-podx\n'
     printf '%s\n' "$export_line"
   } >> "$profile_path"
   echo "PATH [updated] $profile_path"
@@ -187,7 +269,7 @@ copy_command_shim() {
     source_path="$SCRIPT_DIR/cocoapods-podx/lib/cocoapods_podx/shims/$name"
   fi
   if [ ! -f "$source_path" ]; then
-    source_path="$(GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" ruby -e 'require "rubygems"; spec = Gem::Specification.find_by_name("cocoapods-podx"); puts File.join(spec.full_gem_path, "bin", ARGV[0])' "$name" 2>/dev/null || true)"
+    source_path="$(GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" "$RUBY_BIN" -e 'require "rubygems"; spec = Gem::Specification.find_by_name("cocoapods-podx"); puts File.join(spec.full_gem_path, "bin", ARGV[0])' "$name" 2>/dev/null || true)"
   fi
   if [ ! -f "$source_path" ]; then
     echo "Missing command shim template: $source_path" >&2
@@ -205,11 +287,31 @@ copy_command_shim() {
   fi
 }
 
+verify_installed_commands() {
+  podx_path="$(command -v podx 2>/dev/null || true)"
+  if [ -z "$podx_path" ]; then
+    echo "Warning: podx command not found after install. Please add ${COCOAPODS_PODX_BIN_DIR:-$HOME/.local/bin} to PATH." >&2
+    return 0
+  fi
+
+  actual_version="$(podx version 2>/dev/null | sed -n 's/^cocoapods-podx //p' | tail -n 1 || true)"
+  if [ "$actual_version" != "$VERSION" ]; then
+    echo "Warning: podx version mismatch after install: expected $VERSION, got ${actual_version:-unknown}" >&2
+    echo "Warning: current podx path: $podx_path" >&2
+    echo "Warning: please run: hash -r && podx version" >&2
+  fi
+
+  mgit_path="$(command -v mgit 2>/dev/null || true)"
+  if [ -z "$mgit_path" ]; then
+    echo "Warning: mgit command not found after install. Please add ${COCOAPODS_PODX_BIN_DIR:-$HOME/.local/bin} to PATH." >&2
+  fi
+}
+
 if [ "$LOCAL_INSTALL_MODE" != "1" ] && [ -z "$VERSION" ]; then
   VERSION="$(NEXUS_SEARCH_API="$NEXUS_SEARCH_API" \
     NEXUS_USER="$NEXUS_USER" \
     NEXUS_PASSWORD="$NEXUS_PASSWORD" \
-    ruby -e '
+    "$RUBY_BIN" -e '
 require "json"
 require "net/http"
 require "uri"
@@ -267,7 +369,7 @@ if [ "$LOCAL_INSTALL_MODE" = "1" ]; then
     exit 1
   fi
 
-  VERSION="$(ruby -e "spec = Gem::Specification.load(ARGV[0]); abort('Failed to load gemspec') unless spec; puts spec.version" "$GEMSPEC_PATH")"
+  VERSION="$("$RUBY_BIN" -e "spec = Gem::Specification.load(ARGV[0]); abort('Failed to load gemspec') unless spec; puts spec.version" "$GEMSPEC_PATH")"
   echo "Installing cocoapods-podx $VERSION from local source..."
   echo "Source: $PLUGIN_DIR"
 else
@@ -285,7 +387,7 @@ fi
 
 if [ "$LOCAL_INSTALL_MODE" = "1" ]; then
   generate_build_shims
-  (cd "$PLUGIN_DIR" && gem build cocoapods-podx.gemspec >/dev/null)
+  (cd "$PLUGIN_DIR" && "$GEM_BIN" build cocoapods-podx.gemspec >/dev/null)
   GEM_FILE="$PLUGIN_DIR/cocoapods-podx-$VERSION.gem"
   if [ ! -f "$GEM_FILE" ]; then
     echo "Missing gem file after build: $GEM_FILE" >&2
@@ -301,21 +403,22 @@ else
 fi
 
 for gem_name in cocoapods-podx cocoapods-overlay; do
-  if GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" GEM_SPEC_CACHE="$GEM_SPEC_CACHE_DIR" gem list -i "$gem_name" >/dev/null 2>&1; then
+  if GEM_HOME="$COCOAPODS_GEM_HOME" GEM_PATH="$COCOAPODS_GEM_HOME" GEM_SPEC_CACHE="$GEM_SPEC_CACHE_DIR" "$GEM_BIN" list -i "$gem_name" >/dev/null 2>&1; then
     GEM_HOME="$COCOAPODS_GEM_HOME" \
     GEM_PATH="$COCOAPODS_GEM_HOME" \
     GEM_SPEC_CACHE="$GEM_SPEC_CACHE_DIR" \
-    gem uninstall "$gem_name" --all --executables --ignore-dependencies >/dev/null 2>&1 || true
+    "$GEM_BIN" uninstall "$gem_name" --all --executables --ignore-dependencies >/dev/null 2>&1 || true
   fi
 done
 
 GEM_HOME="$COCOAPODS_GEM_HOME" \
 GEM_PATH="$COCOAPODS_GEM_HOME" \
 GEM_SPEC_CACHE="$GEM_SPEC_CACHE_DIR" \
-gem install --local --ignore-dependencies --force --no-document "$GEM_FILE"
+"$GEM_BIN" install --local --ignore-dependencies --force --no-document "$GEM_FILE"
 
 install_command_shims
-ensure_publish_only_path
+ensure_command_shim_path
+verify_installed_commands
 
 echo "cocoapods-podx [installed] $VERSION"
 if [ "$PUBLISH_ONLY_MODE" = "1" ]; then
