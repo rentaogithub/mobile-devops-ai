@@ -22,7 +22,7 @@ fi
 
 # 检查后端 API 是否响应
 for i in $(seq 1 $MAX_RETRIES); do
-    if curl -s -f "$BACKEND_URL/api/health" > /dev/null 2>&1; then
+    if curl -s -f "$BACKEND_URL/health" > /dev/null 2>&1; then
         echo "✅ 后端服务已就绪 (尝试 $i 次)"
         exit 0
     fi

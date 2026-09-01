@@ -33,6 +33,9 @@ const api = axios.create({
 
 const FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS = ['10.0.0'];
 let sentryGovernanceConfigCache: { excludedVersions: string[]; defaultIssueQuery: string; loadedAt: number } | null = null;
+export const BACKEND_UNAVAILABLE_CODE = 'BACKEND_UNAVAILABLE';
+export const BACKEND_UNAVAILABLE_MESSAGE = '平台后端服务不可达，请确认 3000 端口服务已启动';
+export const BACKEND_UNAVAILABLE_HINT = '可在 nn-ios-platform 目录执行 ./start-platform.sh，或查看 backend-dev.log。';
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
@@ -75,7 +78,12 @@ api.interceptors.response.use(
       return Promise.reject(error.response.data);
     } else if (error.request) {
       // 请求发送但没有收到响应
-      return Promise.reject({ error: '网络错误，请检查连接' });
+      const isTimeout = error.code === 'ECONNABORTED';
+      return Promise.reject({
+        error: isTimeout ? '平台服务请求超时，请稍后重试' : BACKEND_UNAVAILABLE_MESSAGE,
+        code: isTimeout ? 'REQUEST_TIMEOUT' : BACKEND_UNAVAILABLE_CODE,
+        hint: isTimeout ? '如果持续超时，请查看 backend-dev.log 确认后端是否卡住。' : BACKEND_UNAVAILABLE_HINT,
+      });
     } else {
       // 其他错误
       return Promise.reject({ error: error.message });

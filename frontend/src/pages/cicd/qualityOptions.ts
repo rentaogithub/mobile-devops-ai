@@ -1,4 +1,9 @@
-import { JenkinsBuild, JenkinsQualityBuild, JenkinsQualitySuite } from '../../services/api';
+import {
+  BACKEND_UNAVAILABLE_CODE,
+  JenkinsBuild,
+  JenkinsQualityBuild,
+  JenkinsQualitySuite,
+} from '../../services/api';
 
 export type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
 export type QualityReportKind = 'monkey' | 'stutter' | 'business_flow' | 'generic';
@@ -158,6 +163,9 @@ export function qualitySuiteName(suite?: string) {
 
 export function normalizeQualityError(err: any) {
   const message = String(err?.error || err?.message || '');
+  if (err?.code === BACKEND_UNAVAILABLE_CODE) {
+    return err?.hint ? `${message}。${err.hint}` : message;
+  }
   if (err?.status === 404 || /Not Found|page does not exist|Oops! Not Found/i.test(message)) {
     return QUALITY_JOB_MISSING_MESSAGE;
   }

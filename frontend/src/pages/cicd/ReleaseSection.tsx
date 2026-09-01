@@ -1,7 +1,7 @@
 import { Alert } from 'antd';
 import { ReactNode } from 'react';
 
-import { JenkinsBuild, JenkinsBuildListResult } from '../../services/api';
+import { BACKEND_UNAVAILABLE_CODE, JenkinsBuild, JenkinsBuildListResult } from '../../services/api';
 import { DeployTarget } from './qualityOptions';
 import { StatsCards } from './StatsCards';
 import { ReleaseBuildTable } from './ReleaseBuildTable';
@@ -9,6 +9,8 @@ import { buildReleaseStatsCards } from './cicdStats';
 
 interface ReleaseSectionProps {
   error?: string;
+  errorCode?: string;
+  errorHint?: string;
   data?: JenkinsBuildListResult | null;
   stats: JenkinsBuildListResult['stats'];
   loading?: boolean;
@@ -42,6 +44,8 @@ interface ReleaseSectionProps {
 
 export function ReleaseSection({
   error,
+  errorCode,
+  errorHint,
   data,
   stats,
   loading,
@@ -72,14 +76,16 @@ export function ReleaseSection({
   onStopBuild,
   onQrPreview,
 }: ReleaseSectionProps) {
+  const isBackendUnavailable = errorCode === BACKEND_UNAVAILABLE_CODE;
+
   return (
     <>
       {error && (
         <Alert
           type="error"
           showIcon
-          message="Jenkins 操作失败"
-          description={error}
+          message={isBackendUnavailable ? '平台服务不可达' : 'Jenkins 操作失败'}
+          description={errorHint ? `${error}。${errorHint}` : error}
           style={{ marginBottom: 16 }}
         />
       )}

@@ -21,6 +21,8 @@ export function useReleaseBuilds({
   const [data, setData] = useState<JenkinsBuildListResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
+  const [errorHint, setErrorHint] = useState('');
   const [stoppingBuild, setStoppingBuild] = useState<number | null>(null);
   const [cancelingAppStoreReview, setCancelingAppStoreReview] = useState<number | null>(null);
 
@@ -33,12 +35,16 @@ export function useReleaseBuilds({
       setLoading(true);
     }
     setError('');
+    setErrorCode('');
+    setErrorHint('');
     try {
       const response = await jenkinsApi.listNNBuilds({ deployTarget: target, branch });
       setData(response.data || null);
       return response.data || null;
     } catch (err: any) {
       setError(err?.error || err?.message || '加载 Jenkins 构建列表失败');
+      setErrorCode(err?.code || '');
+      setErrorHint(err?.hint || '');
       return null;
     } finally {
       if (!options?.silent) {
@@ -109,6 +115,8 @@ export function useReleaseBuilds({
     data,
     loading,
     error,
+    errorCode,
+    errorHint,
     stoppingBuild,
     cancelingAppStoreReview,
     loadBuilds,

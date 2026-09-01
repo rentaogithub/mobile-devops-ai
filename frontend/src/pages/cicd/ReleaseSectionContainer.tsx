@@ -30,6 +30,8 @@ export function ReleaseSectionContainer({
   return (
     <ReleaseSection
       error={releaseBuilds.error}
+      errorCode={releaseBuilds.errorCode}
+      errorHint={releaseBuilds.errorHint}
       data={releaseBuilds.data}
       stats={derivedOptions.stats}
       loading={releaseBuilds.loading}

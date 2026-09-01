@@ -503,14 +503,48 @@ const allToolCommands = toolSections.flatMap((section) => (
   }))
 ));
 
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 局域网 HTTP 页面不属于安全上下文，回退到兼容复制方案。
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'true');
+  textArea.style.position = 'fixed';
+  textArea.style.top = '0';
+  textArea.style.left = '-9999px';
+  textArea.style.opacity = '0';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textArea);
+  }
+}
+
 export default function DevOpsPage() {
   const installScriptUrl = `${window.location.origin}${INSTALL_SCRIPT_PATH}`;
   const installCommand = `/bin/bash -c "$(curl -fsSL ${installScriptUrl})"`;
   const upgradeCommand = 'podx upgrade';
 
   const copyCommand = async (command: string) => {
-    await navigator.clipboard.writeText(command);
-    message.success('命令已复制');
+    const copied = await copyTextToClipboard(command);
+    if (copied) message.success('命令已复制');
+    else message.error('复制失败，请手动选中命令复制');
   };
 
   const renderCommandList = (items: CommandItem[]) => (
