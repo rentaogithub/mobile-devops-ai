@@ -587,15 +587,6 @@ ${sourceLine}
   private updatePodVersionInRuby(content: string, name: string, version: string): { content: string; changed: boolean } {
     const escapedName = escapeRegExp(name);
     let changed = false;
-    const shouldUsePrivateSource = isPrivateNniosComponent(name);
-
-    const normalizeSource = (line: string) => {
-      const withoutPrivateSource = line
-        .replace(/\s*,\s*:source\s*=>\s*private_source/g, '')
-        .replace(/\s*,\s*source:\s*private_source/g, '');
-      if (!shouldUsePrivateSource) return withoutPrivateSource;
-      return `${withoutPrivateSource}, :source => private_source`;
-    };
 
     const withVersionPattern = new RegExp(
       `(^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*)['"][^'"]+['"]([^\\n]*)`,
@@ -618,7 +609,6 @@ ${sourceLine}
     };
 
     const placeExternalPodInExternalSection = (text: string) => {
-      if (shouldUsePrivateSource) return text;
       const lines = text.split('\n');
       const podLinePattern = new RegExp(`^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]`);
       const podIndex = lines.findIndex((line) => podLinePattern.test(line));
@@ -634,9 +624,9 @@ ${sourceLine}
 
     if (withVersionPattern.test(content)) {
       const replaced = content.replace(withVersionPattern, (match, prefix, suffix) => {
-          const nextLine = normalizeSource(`${prefix}'${version}'${suffix || ''}`);
-          changed = nextLine !== match;
-          return nextLine;
+        const nextLine = `${prefix}'${version}'${suffix || ''}`;
+        changed = nextLine !== match;
+        return nextLine;
       });
       return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
     }
@@ -644,10 +634,10 @@ ${sourceLine}
     const noVersionPattern = new RegExp(`(^\\s*pod\\s+['"]${escapedName}['"])([^\\n]*)`, 'm');
     if (noVersionPattern.test(content)) {
       const replaced = content.replace(noVersionPattern, (match, prefix, suffix) => {
-          const cleanSuffix = String(suffix || '').replace(/^\s*,?\s*/, '');
-          const nextLine = normalizeSource(`${prefix}, '${version}'${cleanSuffix ? `, ${cleanSuffix}` : ''}`);
-          changed = nextLine !== match;
-          return nextLine;
+        const cleanSuffix = String(suffix || '').replace(/^\s*,?\s*/, '');
+        const nextLine = `${prefix}, '${version}'${cleanSuffix ? `, ${cleanSuffix}` : ''}`;
+        changed = nextLine !== match;
+        return nextLine;
       });
       return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
     }
@@ -664,9 +654,8 @@ ${sourceLine}
 
     const last = matches[matches.length - 1];
     const insertAt = last.index ?? content.length;
-    const privateSource = isPrivateNniosComponent(name) ? ', :source => private_source' : '';
     const sectionTitle = isPrivateNniosComponent(name) ? '内部组件' : '外部组件';
-    const line = `    pod   '${name}', '${version}'${privateSource}\n`;
+    const line = `    pod   '${name}', '${version}'\n`;
     return {
       content: `${content.slice(0, insertAt)}\n    # ${sectionTitle}\n${line}${content.slice(insertAt)}`,
       changed: true,
