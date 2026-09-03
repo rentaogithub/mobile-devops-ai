@@ -7,9 +7,10 @@ interface APIKeyInputProps {
   value: string;
   onChange: (key: string) => void;
   onValidate?: (isValid: boolean) => void;
+  serverConfigured?: boolean;
 }
 
-const APIKeyInput: React.FC<APIKeyInputProps> = ({ value, onChange, onValidate }) => {
+const APIKeyInput: React.FC<APIKeyInputProps> = ({ value, onChange, onValidate, serverConfigured = false }) => {
   const [visible, setVisible] = useState(false);
   const isAdmin = authUtils.isAdmin();
 
@@ -64,10 +65,12 @@ const APIKeyInput: React.FC<APIKeyInputProps> = ({ value, onChange, onValidate }
         type={visible ? 'text' : 'password'}
         value={value}
         onChange={handleChange}
-        placeholder={isAdmin ? "输入 OpenAI API Key（可选，用于 AI 智能分析）" : "API Key 未配置（请联系管理员）"}
+        placeholder={isAdmin
+          ? (serverConfigured ? '平台统一 API Key 已配置；可输入临时备用 Key' : '输入 OpenAI API Key（可选，用于 AI 智能分析）')
+          : (serverConfigured ? '平台统一 API Key 已配置' : 'API Key 未配置（请联系管理员）')}
         disabled={!isAdmin && !value}
         prefix={
-          <Tooltip title={isAdmin ? "OpenAI API Key 用于智能分析崩溃日志。保存在浏览器本地。" : "仅管理员可以配置 API Key"}>
+          <Tooltip title={isAdmin ? "临时备用 API Key 仅保存在当前浏览器；统一 Key 请到角色权限管理配置。" : "仅管理员可以配置平台统一 API Key"}>
             {isAdmin ? <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} /> : <LockOutlined style={{ color: 'rgba(0,0,0,.45)' }} />}
           </Tooltip>
         }

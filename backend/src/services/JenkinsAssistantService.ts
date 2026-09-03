@@ -5,6 +5,7 @@ import aiAnalysisService from './AIAnalysisService';
 import { qualityGateService } from './QualityGateService';
 import { workflowIntegrationService } from './WorkflowIntegrationService';
 import { workflowService } from './WorkflowService';
+import { platformConfigService } from './PlatformConfigService';
 
 function encodeJobPath(jobName: string) {
   return jobName.split('/').filter(Boolean).map((part) => `job/${encodeURIComponent(part)}`).join('/');
@@ -507,7 +508,8 @@ export class JenkinsAssistantService {
     if (input.deployTarget !== 'Pgyer' && !isReleaseBranch(branch)) {
       throw new JenkinsReleaseError('TestFlight / AppStore 仅允许 release/x.x.x 分支', 400);
     }
-    if (input.deployTarget !== 'Pgyer' && !String(input.verificationPassword || '').trim()) {
+    const verificationPassword = String(input.verificationPassword || '').trim() || platformConfigService.get('RELEASE_VERIFY_PASSWORD');
+    if (input.deployTarget !== 'Pgyer' && !verificationPassword) {
       throw new JenkinsReleaseError('TestFlight / AppStore 发布需要验证密码', 400);
     }
     const releaseNotes = normalizeReleaseNotes(input.testFlightWhatsNew);
@@ -566,7 +568,7 @@ export class JenkinsAssistantService {
       branch: toJenkinsBranch(branch),
       DEPLOY_TARGET: input.deployTarget,
       APP_VERSION: appVersion,
-      VERIFICATION_PASSWORD: String(input.verificationPassword || ''),
+      VERIFICATION_PASSWORD: verificationPassword,
       NOTIFY_WECHAT_ON_SUCCESS: 'true',
       FORCE_PRIVATE_POD_UPDATE: 'false',
       RELEASE_GATE_ID: String(releaseGate?.id || ''),

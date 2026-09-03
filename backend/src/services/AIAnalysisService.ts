@@ -1,6 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { extractCrashInfo } from '../utils/crashLogParser';
+import { platformConfigService } from './PlatformConfigService';
 
 export interface CrashAnalysis {
   summary: string;
@@ -795,7 +796,7 @@ ${compactCrashLog}
   }
 
   private getEffectiveAPIKey(apiKey?: string): string {
-    return process.env.OPENAI_API_KEY || apiKey || '';
+    return platformConfigService.get('OPENAI_API_KEY') || apiKey || '';
   }
 
   hasConfiguredAPIKey(apiKey?: string): boolean {
@@ -804,7 +805,7 @@ ${compactCrashLog}
 
   private getCandidateAPIKeys(apiKey?: string): string[] {
     return [
-      process.env.OPENAI_API_KEY,
+      platformConfigService.get('OPENAI_API_KEY'),
       apiKey,
     ]
       .map((key) => (key || '').trim())

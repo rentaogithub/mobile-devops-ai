@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getDatabase, getDatabasePath } from '../database';
+import { platformConfigService } from './PlatformConfigService';
 import { StorageService } from './StorageService';
 import logger from '../utils/logger';
 
@@ -181,8 +182,8 @@ export class PlatformOperationsService {
     dependencies.openai = {
       name: 'openai',
       required: true,
-      configured: Boolean(process.env.OPENAI_API_KEY),
-      status: process.env.OPENAI_API_KEY ? 'configured' : 'unconfigured',
+      configured: platformConfigService.status().aiApiKeyConfigured,
+      status: platformConfigService.status().aiApiKeyConfigured ? 'configured' : 'unconfigured',
     };
     dependencies.xcuiTestRunner = {
       name: 'xcuiTestRunner',

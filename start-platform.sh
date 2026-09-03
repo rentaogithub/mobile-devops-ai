@@ -45,8 +45,13 @@ screen_exists() {
 
 stop_screen_session() {
   local session="$1"
-  if screen_exists "$session"; then
-    screen -S "$session" -X quit >/dev/null 2>&1 || true
+  local sessions
+  sessions="$(screen -ls 2>/dev/null | awk -v name="$session" '$1 ~ "[.]" name "$" { print $1 }' || true)"
+  if [ -n "$sessions" ]; then
+    while IFS= read -r screen_id; do
+      [ -n "$screen_id" ] || continue
+      screen -S "$screen_id" -X quit >/dev/null 2>&1 || true
+    done <<< "$sessions"
     sleep 1
   fi
 }
@@ -132,7 +137,7 @@ start_frontend() {
 
 if ! command -v screen >/dev/null 2>&1; then
   echo "未找到 screen，无法后台启动平台服务。"
-  echo "可先安装 screen，或继续使用 scripts/start-dev.sh 前台启动。"
+  echo "请先安装 screen 后再执行 ./start-platform.sh start。"
   exit 1
 fi
 
@@ -141,7 +146,7 @@ if [ ! -d "$BACKEND_DIR/node_modules" ] || [ ! -d "$FRONTEND_DIR/node_modules" ]
   (cd "$PROJECT_ROOT" && npm install)
 fi
 
-(cd "$PROJECT_ROOT" && npm run ensure:native >/dev/null)
+(cd "$PROJECT_ROOT" && node scripts/run-with-supported-node.mjs ensure:native >/dev/null)
 
 case "${1:-start}" in
   start)

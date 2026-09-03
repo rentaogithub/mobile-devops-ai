@@ -20,6 +20,7 @@ import { getJenkinsBaseUrl } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
+import { platformConfigService } from '../services/PlatformConfigService';
 import { requireAnyRole, requireRole } from '../middleware/auth';
 
 const router = Router();
@@ -5993,7 +5994,7 @@ router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, r
       branch,
       deployTarget,
       appVersion: String(req.body?.appVersion || '').trim(),
-      verificationPassword: String(req.body?.verificationPassword || ''),
+      verificationPassword: String(req.body?.verificationPassword || '').trim(),
       gateBuildNumber: hasReleaseGate ? Number(gateBuildNumberValue) : undefined,
       releaseGateOverrideReason: String(req.body?.releaseGateOverrideReason || '').trim(),
       testFlightWhatsNew: String(req.body?.testFlightWhatsNew || '').trim(),

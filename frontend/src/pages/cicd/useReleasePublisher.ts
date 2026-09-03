@@ -80,10 +80,6 @@ export function useReleasePublisher({
       message.warning('苹果商店包发布需要产品运营或管理员权限');
       return;
     }
-    if (deployTarget !== 'Pgyer' && !verificationPassword.trim()) {
-      message.warning('TestFlight / 苹果商店发布需要填写验证密码');
-      return;
-    }
     if (deployTarget !== 'Pgyer' && releaseNotesLength(releaseNotes) <= 4) {
       message.warning('TestFlight / 苹果商店发布文案必填，且必须超过 4 个字');
       return;

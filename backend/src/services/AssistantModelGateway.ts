@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { AssistantTool } from './AssistantToolRegistry';
+import { platformConfigService } from './PlatformConfigService';
 
 export interface AssistantInputMessage {
   role: 'user' | 'assistant';
@@ -56,7 +57,7 @@ export class AssistantModelGateway {
   }
 
   private apiKey() {
-    const key = String(process.env.OPENAI_API_KEY || '').trim();
+    const key = platformConfigService.get('OPENAI_API_KEY');
     if (!key) throw new Error('服务端未配置 OPENAI_API_KEY');
     return key;
   }

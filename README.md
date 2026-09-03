@@ -69,10 +69,10 @@ PORT=3001
 
 ```bash
 # 一键启动开发环境（自动处理启动顺序和端口冲突）
-./scripts/start-dev.sh
+./start-platform.sh restart
 
 # 停止开发环境
-./scripts/stop-dev.sh
+./start-platform.sh stop
 ```
 
 启动脚本会：
@@ -198,7 +198,7 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 
 ```bash
 # 下载 iOS 系统符号（需要 Xcode）
-./download-ios18-symbols.sh
+./scripts/download-symbols.sh
 ```
 
 详见：[系统符号设置指南](docs/SYSTEM_SYMBOLS_SETUP.md)
@@ -238,8 +238,6 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
-
 
 
 

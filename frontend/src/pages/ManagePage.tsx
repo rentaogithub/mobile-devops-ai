@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List, Modal, Select } from 'antd';
 import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { authApi, dsymApi, moduleApi, PlatformRegistrationRequest, PlatformRole, PlatformUser } from '../services/api';
+import { authApi, dsymApi, moduleApi, PlatformConfigStatus, PlatformRegistrationRequest, PlatformRole, PlatformUser } from '../services/api';
 import { DSYMInfo } from '../types';
 import { formatFileSize, formatDateTime } from '../utils/helpers';
 import { authUtils } from '../utils/auth';
@@ -37,6 +37,16 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     role: 'guest' as PlatformRole,
     active: true,
   });
+  const [platformConfig, setPlatformConfig] = useState<PlatformConfigStatus | null>(null);
+  const [platformConfigLoading, setPlatformConfigLoading] = useState(false);
+  const [platformConfigSaving, setPlatformConfigSaving] = useState(false);
+  const [platformConfigForm, setPlatformConfigForm] = useState({
+    currentPassword: '',
+    newAdminPassword: '',
+    releaseVerificationPassword: '',
+    aiApiKey: '',
+  });
+  const [platformConfigChanged, setPlatformConfigChanged] = useState({ release: false, ai: false });
   
   // 检查是否是管理员
   const isAdmin = authUtils.isAdmin();
@@ -101,6 +111,64 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     }
   };
 
+  const loadPlatformConfig = async () => {
+    if (!isAdmin) return;
+    setPlatformConfigLoading(true);
+    try {
+      const response = await authApi.getPlatformConfig();
+      setPlatformConfig(response.data || null);
+      if (response.data) {
+        setPlatformConfigForm((current) => ({
+          ...current,
+          currentPassword: response.data?.adminPassword || current.currentPassword,
+          releaseVerificationPassword: response.data?.releaseVerificationPassword || '',
+          aiApiKey: response.data?.aiApiKey || '',
+        }));
+      }
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '获取平台配置失败');
+    } finally {
+      setPlatformConfigLoading(false);
+    }
+  };
+
+  const savePlatformConfig = async () => {
+    const { currentPassword, newAdminPassword, releaseVerificationPassword, aiApiKey } = platformConfigForm;
+    if (newAdminPassword && !currentPassword) {
+      message.warning('修改管理员密码需要先输入当前密码');
+      return;
+    }
+    if (newAdminPassword && newAdminPassword.length < 8) {
+      message.warning('管理员新密码至少 8 位');
+      return;
+    }
+    if (!newAdminPassword && !platformConfigChanged.release && !platformConfigChanged.ai) {
+      message.info('没有需要保存的配置');
+      return;
+    }
+    setPlatformConfigSaving(true);
+    try {
+      const response = await authApi.updatePlatformConfig({
+        ...(newAdminPassword ? { currentPassword, newAdminPassword } : {}),
+        ...(platformConfigChanged.release ? { releaseVerificationPassword } : {}),
+        ...(platformConfigChanged.ai ? { aiApiKey } : {}),
+      });
+      setPlatformConfig(response.data || null);
+      setPlatformConfigForm((current) => ({
+        currentPassword: newAdminPassword || current.currentPassword,
+        newAdminPassword: '',
+        releaseVerificationPassword: platformConfigChanged.release ? releaseVerificationPassword : current.releaseVerificationPassword,
+        aiApiKey: platformConfigChanged.ai ? aiApiKey : current.aiApiKey,
+      }));
+      setPlatformConfigChanged({ release: false, ai: false });
+      message.success('平台配置已保存');
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '保存平台配置失败');
+    } finally {
+      setPlatformConfigSaving(false);
+    }
+  };
+
   const openCreateUserModal = () => {
     setEditingUser(null);
     setUserForm({ username: '', password: '', role: 'guest', active: true });
@@ -155,6 +223,23 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       await loadPlatformUsers();
     } catch (error: any) {
       message.error(error?.error || error?.message || '保存用户失败');
+    } finally {
+      setUserSaving(false);
+    }
+  };
+
+  const deletePlatformUser = async (user: PlatformUser) => {
+    if (authUtils.getUser()?.id === user.id) {
+      message.warning('不能删除当前登录账号');
+      return;
+    }
+    setUserSaving(true);
+    try {
+      await authApi.deleteUser(user.id);
+      message.success('用户已删除');
+      await loadPlatformUsers();
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '删除用户失败');
     } finally {
       setUserSaving(false);
     }
@@ -281,6 +366,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     }
     loadPlatformUsers();
     loadRegistrationRequests();
+    loadPlatformConfig();
   }, []);
 
   const filteredDsyms = dsyms.filter(
@@ -512,11 +598,31 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
           {
             title: '操作',
             key: 'actions',
-            width: 140,
+            width: 180,
             render: (_, record) => (
-              <Button size="small" icon={<EditOutlined />} onClick={() => openEditUserModal(record)}>
-                编辑
-              </Button>
+              <Space size="small">
+                <Button size="small" icon={<EditOutlined />} onClick={() => openEditUserModal(record)}>
+                  编辑
+                </Button>
+                <Popconfirm
+                  title={`确定删除用户“${record.username}”吗？`}
+                  description="删除后账号及其登录会话将被永久移除。"
+                  okText="删除"
+                  cancelText="取消"
+                  okButtonProps={{ danger: true, loading: userSaving }}
+                  onConfirm={() => deletePlatformUser(record)}
+                  disabled={authUtils.getUser()?.id === record.id}
+                >
+                  <Button
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    disabled={authUtils.getUser()?.id === record.id}
+                  >
+                    删除
+                  </Button>
+                </Popconfirm>
+              </Space>
             ),
           },
         ]}
@@ -542,8 +648,87 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
           ),
           children: renderRegistrationRequests(),
         },
+        {
+          key: 'config',
+          label: '平台统一配置',
+          children: renderPlatformConfig(),
+        },
       ]}
     />
+  );
+
+  const renderPlatformConfig = () => (
+    <Card
+      title="平台统一配置"
+      extra={<Button icon={<ReloadOutlined />} onClick={loadPlatformConfig} loading={platformConfigLoading}>刷新</Button>}
+    >
+      <Alert
+        type="warning"
+        showIcon
+        message="敏感配置仅管理员可管理"
+        description="配置保存于平台后端，AI API Key 和发布确认密码不会显示明文，也不会进入 AI 对话或操作审计。"
+        style={{ marginBottom: 16 }}
+      />
+      <Space direction="vertical" size={14} style={{ width: '100%' }}>
+        <div>
+          <Text strong>修改当前管理员密码</Text>
+          <Alert
+            type="info"
+            showIcon
+            message={platformConfig?.adminPassword ? '当前管理员密码已加载，可点击右侧眼睛查看' : '当前管理员密码尚未建立可显示副本'}
+            description={platformConfig?.adminPassword
+              ? '密码以加密形式保存，仅管理员可查看。'
+              : '已有密码此前仅以不可逆哈希保存，无法还原；成功修改一次后即可显示。'}
+            style={{ marginTop: 6, marginBottom: 6 }}
+          />
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 4 }}>当前密码</Text>
+          <Input.Password
+            value={platformConfigForm.currentPassword}
+            onChange={(event) => setPlatformConfigForm((current) => ({ ...current, currentPassword: event.target.value }))}
+            placeholder="当前密码"
+            style={{ marginTop: 6 }}
+          />
+          <Text type="secondary" style={{ display: 'block', fontSize: 12, marginTop: 8, marginBottom: 4 }}>新密码</Text>
+          <Input.Password
+            value={platformConfigForm.newAdminPassword}
+            onChange={(event) => setPlatformConfigForm((current) => ({ ...current, newAdminPassword: event.target.value }))}
+            placeholder="新密码（至少 8 位）"
+            style={{ marginTop: 6 }}
+          />
+        </div>
+        <div>
+          <Space>
+            <Text strong>TestFlight / 苹果商店发布确认密码</Text>
+            {platformConfig?.releaseVerificationPasswordConfigured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+          </Space>
+          <Input.Password
+            value={platformConfigForm.releaseVerificationPassword}
+            onChange={(event) => {
+              setPlatformConfigChanged((current) => ({ ...current, release: true }));
+              setPlatformConfigForm((current) => ({ ...current, releaseVerificationPassword: event.target.value }));
+            }}
+            placeholder="输入新密码；留空并保存可清除"
+            style={{ marginTop: 6 }}
+          />
+        </div>
+        <div>
+          <Space>
+            <Text strong>AI OpenAI API Key</Text>
+            {platformConfig?.aiApiKeyConfigured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+          </Space>
+          <Input.Password
+            value={platformConfigForm.aiApiKey}
+            onChange={(event) => {
+              setPlatformConfigChanged((current) => ({ ...current, ai: true }));
+              setPlatformConfigForm((current) => ({ ...current, aiApiKey: event.target.value }));
+            }}
+            placeholder="输入新的 API Key；留空并保存可清除"
+            style={{ marginTop: 6 }}
+          />
+        </div>
+        <Button type="primary" onClick={savePlatformConfig} loading={platformConfigSaving}>保存统一配置</Button>
+      </Space>
+    </Card>
   );
 
   return (

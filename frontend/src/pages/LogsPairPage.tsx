@@ -25,6 +25,7 @@ import {
   DeleteOutlined,
   DownloadOutlined,
   FileSearchOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import { QRCodeSVG } from 'qrcode.react';
 import { feedbackLogApi, pairingApi, PairingSessionData, PairingStatusData, RealtimeLogDeviceData } from '../services/api';
@@ -95,6 +96,36 @@ function base64ToUint8Array(base64: string): Uint8Array {
     bytes[index] = binary.charCodeAt(index);
   }
   return bytes;
+}
+
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 回退到 textarea 复制。
+  }
+
+  const textArea = document.createElement('textarea');
+  textArea.value = text;
+  textArea.setAttribute('readonly', 'true');
+  textArea.style.position = 'fixed';
+  textArea.style.left = '-9999px';
+  textArea.style.top = '0';
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  textArea.setSelectionRange(0, text.length);
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textArea);
+  }
+  return copied;
 }
 
 function shortDeviceId(deviceInfo?: PairingDeviceInfo): string {
@@ -801,6 +832,17 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const visibleLogs = normalizedLogSearchText
     ? activeLogs.filter((log) => `${log.message}\n${log.raw}`.toLowerCase().includes(normalizedLogSearchText))
     : activeLogs;
+  const copyVisibleLogs = async () => {
+    const text = visibleLogs
+      .map((log) => normalizeDisplayLine(log.message || log.raw, effectiveLogChannel(log)))
+      .join('\n');
+    const copied = await copyTextToClipboard(text);
+    if (copied) {
+      message.success(`已复制 ${visibleLogs.length} 条${logChannelLabel(activeLogChannel)}日志`);
+    } else {
+      message.warning('当前没有可复制的日志');
+    }
+  };
 
   return (
     <div>
@@ -1132,6 +1174,13 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                 onClick={openBusinessLogAnalysis}
               >
                 分析业务日志
+              </Button>
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={copyVisibleLogs}
+              >
+                复制
               </Button>
               <Button
                 size="small"

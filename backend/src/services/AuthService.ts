@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import { Request, Response } from 'express';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
+import { platformConfigService } from './PlatformConfigService';
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
@@ -348,6 +349,40 @@ export class AuthService {
     if (input.active !== undefined) { fields.push('active = @active'); params.active = input.active ? 1 : 0; }
     getDatabase().prepare(`UPDATE platform_users SET ${fields.join(', ')} WHERE id = @id`).run(params);
     return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
+  }
+
+  changePassword(id: string, currentPassword: string, newPassword: string) {
+    const row = getDatabase().prepare('SELECT password_hash FROM platform_users WHERE id = ? AND active = 1').get(id) as { password_hash?: string } | undefined;
+    if (!row) throw new Error('用户不存在');
+    if (!this.verifyPassword(currentPassword, String(row.password_hash || ''))) throw new Error('当前密码不正确');
+    validatePassword(newPassword);
+    getDatabase().prepare('UPDATE platform_users SET password_hash = ?, updated_at = ? WHERE id = ?').run(this.hashPassword(newPassword), now(), id);
+    platformConfigService.setEncrypted('ADMIN_PASSWORD', newPassword, id);
+    return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
+  }
+
+  getPasswordForDisplay(id: string) {
+    const row = getDatabase().prepare('SELECT password_hash FROM platform_users WHERE id = ? AND active = 1').get(id) as { password_hash?: string } | undefined;
+    if (!row) return '';
+    const saved = platformConfigService.getEncrypted('ADMIN_PASSWORD');
+    if (saved && this.verifyPassword(saved, String(row.password_hash || ''))) return saved;
+    const envPassword = String(process.env.ADMIN_PASSWORD || '').trim();
+    return envPassword && this.verifyPassword(envPassword, String(row.password_hash || '')) ? envPassword : '';
+  }
+
+  deleteUser(id: string, actorId?: string) {
+    const db = getDatabase();
+    const user = db.prepare('SELECT id, role FROM platform_users WHERE id = ?').get(id) as { id: string; role: PlatformRole } | undefined;
+    if (!user) throw new Error('用户不存在');
+    if (actorId && user.id === actorId) throw new Error('不能删除当前登录账号');
+
+    const remove = db.transaction(() => {
+      // 显式删除会话，避免依赖 SQLite 外键开关状态。
+      db.prepare('DELETE FROM platform_sessions WHERE user_id = ?').run(id);
+      const result = db.prepare('DELETE FROM platform_users WHERE id = ?').run(id);
+      if (result.changes === 0) throw new Error('用户不存在');
+    });
+    remove();
   }
 }
 

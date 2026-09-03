@@ -24,7 +24,7 @@ import {
   ShareAltOutlined,
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
-import { symbolicateApi, dsymApi } from '../services/api';
+import { symbolicateApi, dsymApi, authApi } from '../services/api';
 import { DSYMInfo, CrashAnalysis } from '../types';
 import APIKeyInput from '../components/APIKeyInput';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -46,6 +46,7 @@ export default function SymbolicatePage() {
     // 从 localStorage 读取保存的 API Key；Sentry 自动分析优先使用后端配置的 OpenAI Key。
     return localStorage.getItem('openai_api_key') || '';
   });
+  const [serverAIKeyConfigured, setServerAIKeyConfigured] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [result, setResult] = useState<{
     original: string;
@@ -76,6 +77,9 @@ export default function SymbolicatePage() {
       }
     };
     loadDsyms();
+    authApi.getRuntimeConfigStatus()
+      .then((response) => setServerAIKeyConfigured(Boolean(response.data?.aiApiKeyConfigured)))
+      .catch(() => setServerAIKeyConfigured(false));
   }, []);
 
   useEffect(() => {
@@ -435,7 +439,7 @@ export default function SymbolicatePage() {
       return;
     }
 
-    if (!apiKey || apiKey.trim().length === 0) {
+    if ((!apiKey || apiKey.trim().length === 0) && !serverAIKeyConfigured) {
       message.warning('请输入 OpenAI API Key，或在后端配置默认 Key');
       return;
     }
@@ -466,7 +470,7 @@ export default function SymbolicatePage() {
   // 处理标签页切换
   const handleTabChange = (activeKey: string) => {
     // 如果切换到 AI 分析标签页，且还没有分析过，自动触发分析
-    if (activeKey === 'analysis' && result && !result.analysis && !isAnalyzing && apiKey) {
+    if (activeKey === 'analysis' && result && !result.analysis && !isAnalyzing && (apiKey || serverAIKeyConfigured)) {
       handleAIAnalysis();
     }
   };
@@ -970,9 +974,11 @@ Binary Images:
                 <RobotOutlined />
                 <Text strong>AI 智能分析（可选）：</Text>
               </Space>
-              <APIKeyInput value={apiKey} onChange={setApiKey} />
+              <APIKeyInput value={apiKey} onChange={setApiKey} serverConfigured={serverAIKeyConfigured} />
               <Text type="secondary" style={{ fontSize: '12px', marginTop: '4px', display: 'block' }}>
-                提供 OpenAI API Key 可获得智能崩溃分析。API Key 保存在浏览器本地；Sentry 自动解析可使用后端默认配置。
+                {serverAIKeyConfigured
+                  ? '平台已配置统一 AI API Key；此处可选填临时备用 Key。'
+                  : '提供 OpenAI API Key 可获得智能崩溃分析；也可由管理员在统一配置中设置。'}
               </Text>
             </div>
           )}
@@ -995,7 +1001,7 @@ Binary Images:
                 icon={<RobotOutlined />}
                 onClick={handleAIAnalysis}
                 loading={isAnalyzing}
-                disabled={!canAnalyze || !apiKey || (result !== null && result.analysis !== undefined)}
+                disabled={!canAnalyze || (!apiKey && !serverAIKeyConfigured) || (result !== null && result.analysis !== undefined)}
                 size="large"
                 style={{ flex: 1 }}
               >

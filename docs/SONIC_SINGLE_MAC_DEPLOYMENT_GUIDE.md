@@ -360,7 +360,7 @@ npm start
 停止开发环境时：
 
 ```bash
-sh scripts/stop-dev.sh
+./start-platform.sh stop
 ```
 
 如果 Agent 是由平台启动的，会一起停止。

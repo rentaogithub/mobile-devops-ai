@@ -13,6 +13,7 @@ import { workflowService } from './WorkflowService';
 import { assistantInsightService } from './AssistantInsightService';
 import { apiRouteSearchService } from './ApiRouteSearchService';
 import { operationalLogService } from './OperationalLogService';
+import { platformConfigService } from './PlatformConfigService';
 
 export type AssistantRiskLevel = 'read' | 'confirm' | 'high';
 
@@ -421,7 +422,7 @@ const tools: AssistantTool[] = [
       }
       return '发布渠道无效';
     },
-    secretInputs: (args) => args.deployTarget === 'Pgyer' ? [] : [{
+    secretInputs: (args) => args.deployTarget === 'Pgyer' || platformConfigService.get('RELEASE_VERIFY_PASSWORD') ? [] : [{
       name: 'verificationPassword',
       label: 'Apple 发布验证密码',
       description: '仅随最终审批直接提交到执行服务，不发送给模型，也不写入审计。',

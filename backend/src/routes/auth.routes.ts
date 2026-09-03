@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireRole, sessionAuthMiddleware, verifyPassword } from '../middleware/auth';
 import { authService } from '../services/AuthService';
+import { platformConfigService } from '../services/PlatformConfigService';
 
 const router = Router();
 
@@ -53,6 +54,35 @@ router.get('/users', sessionAuthMiddleware, requireRole('admin'), (_req, res) =>
   res.json({ success: true, data: authService.listUsers() });
 });
 
+router.get('/platform-config', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
+  const actor = (_req as any).authUser;
+  res.json({ success: true, data: { ...platformConfigService.adminView(), adminPassword: authService.getPasswordForDisplay(actor.id) || undefined } });
+});
+
+router.get('/runtime-config-status', sessionAuthMiddleware, (_req, res) => {
+  res.json({ success: true, data: platformConfigService.status() });
+});
+
+router.put('/platform-config', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const actor = (req as any).authUser;
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newAdminPassword = String(req.body?.newAdminPassword || '');
+    if (newAdminPassword) {
+      authService.changePassword(actor.id, currentPassword, newAdminPassword);
+    }
+    if (req.body?.releaseVerificationPassword !== undefined) {
+      platformConfigService.set('RELEASE_VERIFY_PASSWORD', String(req.body.releaseVerificationPassword || ''), actor.id);
+    }
+    if (req.body?.aiApiKey !== undefined) {
+      platformConfigService.set('OPENAI_API_KEY', String(req.body.aiApiKey || ''), actor.id);
+    }
+    res.json({ success: true, data: platformConfigService.status(), message: '平台配置已保存' });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '平台配置保存失败' });
+  }
+});
+
 router.get('/registration-requests', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
   res.json({ success: true, data: authService.listRegistrationRequests() });
 });
@@ -93,6 +123,17 @@ router.patch('/users/:id', sessionAuthMiddleware, requireRole('admin'), (req, re
     res.json({ success: true, data: updated });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error?.message || '更新用户失败' });
+  }
+});
+
+router.delete('/users/:id', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    authService.deleteUser(req.params.id, (req as any).authUser?.id);
+    res.json({ success: true });
+  } catch (error: any) {
+    const message = error?.message || '删除用户失败';
+    const status = message === '用户不存在' ? 404 : 400;
+    res.status(status).json({ success: false, error: message });
   }
 });
 

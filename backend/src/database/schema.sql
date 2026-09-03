@@ -333,6 +333,14 @@ CREATE TABLE IF NOT EXISTS platform_user_registration_requests (
 CREATE INDEX IF NOT EXISTS idx_platform_user_registration_requests_status ON platform_user_registration_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_platform_user_registration_requests_username ON platform_user_registration_requests(username, status);
 
+-- 平台管理员统一敏感配置（值仅由管理员接口读取，不返回明文）
+CREATE TABLE IF NOT EXISTS platform_config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  updated_by TEXT
+);
+
 -- AI 会话只持久化实际工具调用与审批，不保存普通聊天正文
 CREATE TABLE IF NOT EXISTS assistant_action_audits (
   id TEXT PRIMARY KEY,

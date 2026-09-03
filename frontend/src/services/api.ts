@@ -63,6 +63,14 @@ export interface PlatformRegistrationRequest {
   reviewedAt?: string;
 }
 
+export interface PlatformConfigStatus {
+  aiApiKeyConfigured: boolean;
+  releaseVerificationPasswordConfigured: boolean;
+  aiApiKey?: string;
+  releaseVerificationPassword?: string;
+  adminPassword?: string;
+}
+
 // 响应拦截器
 api.interceptors.response.use(
   (response) => {
@@ -107,6 +115,26 @@ export const authApi = {
     return response.data;
   },
 
+  getPlatformConfig: async (): Promise<ApiResponse<PlatformConfigStatus>> => {
+    const response = await api.get<ApiResponse<PlatformConfigStatus>>('/auth/platform-config');
+    return response.data;
+  },
+
+  getRuntimeConfigStatus: async (): Promise<ApiResponse<PlatformConfigStatus>> => {
+    const response = await api.get<ApiResponse<PlatformConfigStatus>>('/auth/runtime-config-status');
+    return response.data;
+  },
+
+  updatePlatformConfig: async (payload: {
+    currentPassword?: string;
+    newAdminPassword?: string;
+    releaseVerificationPassword?: string;
+    aiApiKey?: string;
+  }): Promise<ApiResponse<PlatformConfigStatus>> => {
+    const response = await api.put<ApiResponse<PlatformConfigStatus>>('/auth/platform-config', payload);
+    return response.data;
+  },
+
   listRegistrationRequests: async (): Promise<ApiResponse<PlatformRegistrationRequest[]>> => {
     const response = await api.get<ApiResponse<PlatformRegistrationRequest[]>>('/auth/registration-requests');
     return response.data;
@@ -148,6 +176,11 @@ export const authApi = {
     active?: boolean;
   }): Promise<ApiResponse<PlatformUser>> => {
     const response = await api.patch<ApiResponse<PlatformUser>>(`/auth/users/${id}`, payload);
+    return response.data;
+  },
+
+  deleteUser: async (id: string): Promise<ApiResponse> => {
+    const response = await api.delete<ApiResponse>(`/auth/users/${encodeURIComponent(id)}`);
     return response.data;
   },
 };

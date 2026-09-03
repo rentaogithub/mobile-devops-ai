@@ -250,7 +250,7 @@ export function ReleasePublishModal({
         />
         {deployTarget !== 'Pgyer' && (
           <Input.Password
-            placeholder="请输入验证密码"
+            placeholder="请输入验证密码（留空时使用管理员配置）"
             value={verificationPassword}
             onChange={(event) => onVerificationPasswordChange(event.target.value)}
           />

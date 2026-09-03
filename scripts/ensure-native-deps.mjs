@@ -27,7 +27,10 @@ function rebuild(moduleName) {
   };
   const result = spawnSync("npm", ["rebuild", moduleName], {
     stdio: "inherit",
-    env
+    env: {
+      ...env,
+      npm_config_build_from_source: "true"
+    }
   });
   if (result.status !== 0) {
     process.exit(result.status || 1);
