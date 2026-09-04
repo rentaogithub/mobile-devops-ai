@@ -16,12 +16,14 @@ import symbolicationCache from '../services/SymbolicationCacheService';
 import logger from '../utils/logger';
 import { buildMgitPublishArgs } from '../utils/mgit';
 import { AppError, ErrorCode } from '../types';
-import { getJenkinsBaseUrl } from '../config/externalServices';
+import { getJenkinsBaseUrl, getJenkinsConfig, getProductLineConfig } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
 import { platformConfigService } from '../services/PlatformConfigService';
 import { requireAnyRole, requireRole } from '../middleware/auth';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { PRODUCT_LINE_CONFIG_KEYS } from '../services/ProductLineConfigService';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -42,10 +44,26 @@ const adminOnlyAppleReleaseMiddleware = (req: Request, res: Response, next: () =
   return cicdTestReleaseMiddleware(req, res, next);
 };
 
-const JENKINS_BASE_URL = getJenkinsBaseUrl();
-const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
-const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
-const DEFAULT_REPO_URL = process.env.JENKINS_NN_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
+function jenkinsBaseUrl() {
+  const value = getJenkinsBaseUrl();
+  if (!value) throw new JenkinsReleaseError(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 服务地址`, 400);
+  return value;
+}
+function defaultJobName() {
+  const value = getJenkinsConfig().jobName;
+  if (!value) throw new JenkinsReleaseError(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 构建 Job`, 400);
+  return value;
+}
+function defaultQaJobName() {
+  const value = getJenkinsConfig().qualityJobName;
+  if (!value) throw new JenkinsReleaseError(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 自动质检 Job`, 400);
+  return value;
+}
+function defaultRepoUrl() {
+  const value = getJenkinsConfig().repoUrl;
+  if (!value) throw new JenkinsReleaseError(`当前产品线 ${currentProductLineId()} 未配置 iOS Git 仓库地址`, 400);
+  return value;
+}
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'business_flow', 'full']);
 const QA_STUTTER_SCENARIOS = new Set(['community', 'im', 'voice_room']);
@@ -123,6 +141,15 @@ function readEnvFileValue(key: string): string {
 }
 
 function getRuntimeEnv(key: string): string {
+  if ((PRODUCT_LINE_CONFIG_KEYS as readonly string[]).includes(key)) {
+    const configured = getProductLineConfig(key as any);
+    if (configured || currentProductLineId() !== 'nn') return configured;
+  }
+  if (currentProductLineId() !== 'nn' && (
+    /^(JENKINS_|PGYER_|APP_STORE_CONNECT_|TESTFLIGHT_)/.test(key)
+    || key === 'ASC_APP_ID'
+    || key === 'WECHAT_WEBHOOK_URL'
+  )) return '';
   return process.env[key] || readEnvFileValue(key);
 }
 
@@ -386,7 +413,7 @@ function getMgitPublishRepos(repoDir: string) {
 }
 
 function repoUrlForMgitRepo(repo: string) {
-  const base = DEFAULT_REPO_URL.replace(/\/nnios\.git$/i, '');
+  const base = defaultRepoUrl().replace(/\/nnios\.git$/i, '');
   return `${base}/${repo}.git`;
 }
 
@@ -553,14 +580,14 @@ function isRecentlyActiveQualityBuild(buildNumber: number, buildDir: string, xml
   if (readXmlTag(xml, 'result')) return false;
 
   const buildTimestamp = Number(readXmlTag(xml, 'timestamp')) || (fs.existsSync(buildDir) ? fs.statSync(buildDir).mtimeMs : 0);
-  const summaryFile = findLatestQualityFile(DEFAULT_QA_JOB_NAME, 'summary.json', buildTimestamp, buildNumber);
+  const summaryFile = findLatestQualityFile(defaultQaJobName(), 'summary.json', buildTimestamp, buildNumber);
   const summary = summaryFile ? readJsonFile(summaryFile) : null;
   const summaryStatus = String(summary?.status || '').toLowerCase();
   if (['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(summaryStatus)) {
     return false;
   }
 
-  const progressFile = findLatestQualityFile(DEFAULT_QA_JOB_NAME, 'quality-progress.json', 0, buildNumber);
+  const progressFile = findLatestQualityFile(defaultQaJobName(), 'quality-progress.json', 0, buildNumber);
   const progress = progressFile ? readJsonFile(progressFile) : null;
   if (isTerminalQualityProgress(progress)) return false;
   const progressUpdatedAt = Number(progress?.updatedAt || 0);
@@ -614,7 +641,7 @@ function reconcileQualityProgress(build: any, summary: any, progress?: any | nul
 
 function findActiveQualityBuildOnDevice(deviceKey: string) {
   if (!deviceKey) return null;
-  const buildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
+  const buildsDir = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds');
   if (!fs.existsSync(buildsDir)) return null;
   const buildNumbers = fs.readdirSync(buildsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
@@ -759,9 +786,9 @@ async function syncQualityJenkinsJobConfig() {
     throw new Error(`未找到 Jenkins 质检 Job 配置模板：${configPath}`);
   }
   const configXml = fs.readFileSync(configPath, 'utf-8');
-  const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+  const jobPath = encodeJobPath(defaultQaJobName());
   const crumb = await getCrumb();
-  const jobUrl = `${JENKINS_BASE_URL}/${jobPath}`;
+  const jobUrl = `${jenkinsBaseUrl()}/${jobPath}`;
   const existsResponse = await axios.get(`${jobUrl}/api/json`, {
     timeout: 10000,
     validateStatus: () => true,
@@ -769,7 +796,7 @@ async function syncQualityJenkinsJobConfig() {
   });
   const targetUrl = existsResponse.status === 200
     ? `${jobUrl}/config.xml`
-    : `${JENKINS_BASE_URL}/createItem?name=${encodeURIComponent(DEFAULT_QA_JOB_NAME)}`;
+    : `${jenkinsBaseUrl()}/createItem?name=${encodeURIComponent(defaultQaJobName())}`;
   const response = await axios.post(targetUrl, configXml, {
     timeout: 30000,
     headers: {
@@ -780,7 +807,7 @@ async function syncQualityJenkinsJobConfig() {
     ...buildAuthConfig(),
   });
   return {
-    jobName: DEFAULT_QA_JOB_NAME,
+    jobName: defaultQaJobName(),
     jobUrl: `${jobUrl}/`,
     configPath,
     status: response.status,
@@ -796,8 +823,8 @@ const REQUIRED_QUALITY_JOB_CONFIG_MARKERS = [
 ];
 
 async function ensureQualityJenkinsJobConfigFresh() {
-  const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
-  const configUrl = `${JENKINS_BASE_URL}/${jobPath}/config.xml`;
+  const jobPath = encodeJobPath(defaultQaJobName());
+  const configUrl = `${jenkinsBaseUrl()}/${jobPath}/config.xml`;
   let configXml = '';
   try {
     const response = await axios.get(configUrl, {
@@ -832,8 +859,7 @@ function saveQualityDevicePools(pools: QualityDevicePool[]) {
 }
 
 function buildAuthConfig() {
-  const username = process.env.JENKINS_USER || '';
-  const token = process.env.JENKINS_TOKEN || '';
+  const { username, token } = getJenkinsConfig();
   if (!username || !token) {
     return {};
   }
@@ -847,7 +873,7 @@ function buildAuthConfig() {
 
 async function getCrumb() {
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/crumbIssuer/api/json`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/crumbIssuer/api/json`, {
       timeout: 10000,
       ...buildAuthConfig(),
     });
@@ -873,7 +899,7 @@ function normalizeJenkinsUrl(url?: string) {
   if (!url) return url;
   try {
     const parsed = new URL(url);
-    const base = new URL(JENKINS_BASE_URL);
+    const base = new URL(jenkinsBaseUrl());
     parsed.protocol = base.protocol;
     parsed.host = base.host;
     return parsed.toString();
@@ -886,8 +912,8 @@ function getPublicJenkinsBaseUrl(req: Request) {
   const configured = String(process.env.JENKINS_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
   if (configured) return configured;
   try {
-    const base = new URL(JENKINS_BASE_URL);
-    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return JENKINS_BASE_URL;
+    const base = new URL(jenkinsBaseUrl());
+    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return jenkinsBaseUrl();
     const origin = String(req.get('origin') || '').trim();
     const originHost = origin ? new URL(origin).hostname : '';
     const requestHost = String(req.get('host') || '').split(':')[0];
@@ -897,7 +923,7 @@ function getPublicJenkinsBaseUrl(req: Request) {
     }
     return base.toString().replace(/\/$/, '');
   } catch {
-    return JENKINS_BASE_URL;
+    return jenkinsBaseUrl();
   }
 }
 
@@ -905,8 +931,8 @@ function publicJenkinsUrl(req: Request, url?: string) {
   if (!url) return url;
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
   try {
-    const parsed = new URL(url, JENKINS_BASE_URL);
-    const base = new URL(JENKINS_BASE_URL);
+    const parsed = new URL(url, jenkinsBaseUrl());
+    const base = new URL(jenkinsBaseUrl());
     const sameJenkinsPort = (parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === (base.port || (base.protocol === 'https:' ? '443' : '80'));
     const isLocalJenkinsHost = ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
     const isConfiguredJenkinsHost = parsed.hostname === base.hostname;
@@ -934,7 +960,7 @@ function internalJenkinsUrl(req: Request, url: string) {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
   try {
     const parsed = new URL(url);
-    const base = new URL(JENKINS_BASE_URL);
+    const base = new URL(jenkinsBaseUrl());
     const publicBase = new URL(getPublicJenkinsBaseUrl(req));
     if (parsed.origin === publicBase.origin) {
       parsed.protocol = base.protocol;
@@ -952,7 +978,7 @@ function buildJenkinsArtifactUrl(jobPath: string, buildNumber: number, relativeP
     .filter(Boolean)
     .map((part) => encodeURIComponent(part))
     .join('/');
-  return `${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/artifact/${encodedPath}`;
+  return `${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/artifact/${encodedPath}`;
 }
 
 function buildLocalQualityArtifactUrl(filePath: string) {
@@ -2529,10 +2555,10 @@ async function syncAppStoreBuildDsyms(buildNumber: number, options: { force?: bo
   });
 
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const [buildResponse, logResponse] = await Promise.all([
       fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url'),
-      axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+      axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
         timeout: 30000,
         responseType: 'text',
         ...buildAuthConfig(),
@@ -2731,7 +2757,7 @@ async function resolveSourceArchivePath(summary: any) {
   if (directArchivePath && fs.existsSync(directArchivePath)) return directArchivePath;
   const sourceBuildNumber = Number(summary?.sourceBuildNumber || summary?.buildNumber || 0);
   if (!Number.isFinite(sourceBuildNumber) || sourceBuildNumber <= 0) return '';
-  const metadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), sourceBuildNumber);
+  const metadata = await fetchBuildConsoleMetadata(encodeJobPath(defaultJobName()), sourceBuildNumber);
   return metadata.xcarchivePath && fs.existsSync(metadata.xcarchivePath) ? metadata.xcarchivePath : '';
 }
 
@@ -2853,8 +2879,8 @@ function isPathInside(parentDir: string, candidatePath: string) {
 }
 
 function isAllowedLocalQualityArtifact(filePath: string) {
-  const workspaceResultsDirs = localJenkinsWorkspaceDirs(DEFAULT_QA_JOB_NAME).map((workspaceDir) => path.join(workspaceDir, 'quality-results'));
-  const jobBuildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
+  const workspaceResultsDirs = localJenkinsWorkspaceDirs(defaultQaJobName()).map((workspaceDir) => path.join(workspaceDir, 'quality-results'));
+  const jobBuildsDir = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds');
   return workspaceResultsDirs.some((workspaceResultsDir) => isPathInside(workspaceResultsDir, filePath)) || isPathInside(jobBuildsDir, filePath);
 }
 
@@ -2959,7 +2985,7 @@ function readLocalQualityBuilds(jobName: string, limit = 20) {
         timestamp,
         duration: Number(readXmlTag(xml, 'duration')) || 0,
         building: !result,
-        url: `${JENKINS_BASE_URL}/${encodeJobPath(jobName)}/${buildNumber}/`,
+        url: `${jenkinsBaseUrl()}/${encodeJobPath(jobName)}/${buildNumber}/`,
         description: readXmlTag(xml, 'description'),
         artifacts: listLocalSummaryArtifacts(path.join(buildDir, 'archive')),
       };
@@ -3208,7 +3234,7 @@ async function enrichQualitySummaryWithSourceBuild(summary: any) {
   if (!Number.isFinite(sourceBuildNumber) || sourceBuildNumber <= 0) return summary;
   if (summary.publishChannel) return summary;
   try {
-    const metadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), sourceBuildNumber);
+    const metadata = await fetchBuildConsoleMetadata(encodeJobPath(defaultJobName()), sourceBuildNumber);
     return {
       ...summary,
       publishChannel: metadata.publishChannel || summary.publishChannel || '',
@@ -3275,7 +3301,7 @@ async function buildInterruptedOverride(jobName: string, build: any) {
 async function stopJenkinsBuild(jobName: string, buildNumber: number) {
   const jobPath = encodeJobPath(jobName);
   const crumb = await getCrumb();
-  await axios.post(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/stop`, null, {
+  await axios.post(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/stop`, null, {
     timeout: 30000,
     headers: {
       ...crumb.headers,
@@ -3473,7 +3499,7 @@ function resolveSourceBuildArtifactPath(value?: string) {
   if (!text) return '';
   if (/^https?:\/\//i.test(text) || text.startsWith('file://') || path.isAbsolute(text)) return text;
   if (/\.ipa(?:$|[?#])/i.test(text)) {
-    return path.join(localJenkinsWorkspaceDir(DEFAULT_JOB_NAME), text);
+    return path.join(localJenkinsWorkspaceDir(defaultJobName()), text);
   }
   return text;
 }
@@ -3781,14 +3807,14 @@ function buildPackageSizeComparison(current: any, baseline: any | null) {
 
 async function fetchBuildConsoleText(jobPath: string, buildNumber: number) {
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
       timeout: 30000,
       responseType: 'text',
       ...buildAuthConfig(),
     });
     return String(response.data || '');
   } catch {
-    const localLogPath = path.join(localJenkinsJobDir(DEFAULT_JOB_NAME), 'builds', String(buildNumber), 'log');
+    const localLogPath = path.join(localJenkinsJobDir(defaultJobName()), 'builds', String(buildNumber), 'log');
     if (fs.existsSync(localLogPath)) {
       return fs.readFileSync(localLogPath, 'utf-8');
     }
@@ -3905,7 +3931,7 @@ async function analyzeAndSavePackageSize(jobPath: string, buildNumber: number, o
   }
 
   const result = {
-    jobName: DEFAULT_JOB_NAME,
+    jobName: defaultJobName(),
     buildNumber,
     appVersion: context.appVersion,
     publishChannel: context.publishChannel,
@@ -3925,7 +3951,7 @@ async function analyzeAndSavePackageSize(jobPath: string, buildNumber: number, o
 
 async function fetchBuildConsoleMetadata(jobPath: string, buildNumber: number) {
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
       timeout: JENKINS_BUILD_METADATA_TIMEOUT_MS,
       ...buildAuthConfig(),
     });
@@ -4010,7 +4036,7 @@ function parseQualityConsoleSummary(consoleText: string) {
 }
 
 async function fetchQualityConsoleSummary(jobPath: string, buildNumber: number) {
-  const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+  const response = await axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
     timeout: 10000,
     responseType: 'text',
     ...buildAuthConfig(),
@@ -4340,7 +4366,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
 
 async function fetchBuildParameters(jobPath: string, buildNumber: number) {
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/api/json`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/api/json`, {
       timeout: JENKINS_BUILD_METADATA_TIMEOUT_MS,
       params: {
         tree: 'actions[parameters[name,value]]',
@@ -4380,7 +4406,7 @@ async function resolveChannelBuildNumber(
 }
 
 async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
-  const url = `${JENKINS_BASE_URL}/${jobPath}/api/json`;
+  const url = `${jenkinsBaseUrl()}/${jobPath}/api/json`;
   if (tree) {
     try {
       return await axios.get(url, {
@@ -4407,7 +4433,7 @@ async function fetchJenkinsJobJson(jobPath: string, tree?: string) {
 async function findLatestSuccessfulTestFlightBuild(branch: string) {
   const normalizedBranch = normalizeBranchName(branch);
   if (!normalizedBranch) return null;
-  const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+  const jobPath = encodeJobPath(defaultJobName());
   const response = await fetchJenkinsJobJson(jobPath, `builds[number,result,building,description]{0,${RELEASE_BRANCH_BUILD_SCAN_LIMIT}}`);
   const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
   const candidates: any[] = [];
@@ -4708,7 +4734,7 @@ async function syncRecentReleaseBuilds(reason = 'timer') {
   RELEASE_SYNC_RUNNING = true;
   const startedAt = Date.now();
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const tree = `builds[number,result,timestamp,duration,building,url,description]{0,${RELEASE_SYNC_SCAN_LIMIT}}`;
     const response = await fetchJenkinsJobJson(jobPath, tree);
     const rawBuilds = Array.isArray(response.data?.builds) ? response.data.builds : [];
@@ -4788,7 +4814,7 @@ router.get('/nn/branches', async (_req: Request, res: Response) => {
   let buildBranches: string[] = [];
 
   try {
-    const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', DEFAULT_REPO_URL], {
+    const { stdout } = await execFileAsync('git', ['ls-remote', '--heads', defaultRepoUrl()], {
       timeout: 15000,
       maxBuffer: 1024 * 1024,
     });
@@ -4805,7 +4831,7 @@ router.get('/nn/branches', async (_req: Request, res: Response) => {
   }
 
   try {
-    buildBranches = await fetchRecentJenkinsBuildBranches(encodeJobPath(DEFAULT_JOB_NAME));
+    buildBranches = await fetchRecentJenkinsBuildBranches(encodeJobPath(defaultJobName()));
   } catch (error: any) {
     const message = error.message || 'Jenkins 历史构建分支查询失败';
     warnings.push(message);
@@ -4832,7 +4858,7 @@ router.get('/nn/branches', async (_req: Request, res: Response) => {
 
 router.get('/nn/builds', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const deployTargetFilter = normalizeDeployTarget(String(req.query.deployTarget || ''));
     const branchFilter = normalizeBranchName(String(req.query.branch || ''));
     const buildListLimit = branchFilter ? RELEASE_BRANCH_BUILD_SCAN_LIMIT : RELEASE_BUILD_LIST_LIMIT;
@@ -4910,9 +4936,9 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 
     const responseData = {
         job: {
-          name: job.displayName || DEFAULT_JOB_NAME,
-          fullName: job.fullName || DEFAULT_JOB_NAME,
-          url: normalizeJenkinsUrl(job.url) || `${JENKINS_BASE_URL}/${jobPath}/`,
+          name: job.displayName || defaultJobName(),
+          fullName: job.fullName || defaultJobName(),
+          url: normalizeJenkinsUrl(job.url) || `${jenkinsBaseUrl()}/${jobPath}/`,
           buildable: job.buildable !== false,
           color: job.color,
           lastBuild,
@@ -4940,7 +4966,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
 
 router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
       res.status(400).json({
@@ -4950,7 +4976,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
       return;
     }
 
-    const response = await axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
       timeout: 30000,
       responseType: 'text',
       ...buildAuthConfig(),
@@ -4996,7 +5022,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 	    res.json({
 	      success: true,
 	      data: {
-	        jobName: DEFAULT_JOB_NAME,
+	        jobName: defaultJobName(),
 	        buildNumber,
 	        log,
 	        failureAnalysis: savedFailureAnalysis?.analysis,
@@ -5024,7 +5050,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
 
 router.get('/nn/builds/:number/package-size', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
       res.status(400).json({
@@ -5103,7 +5129,7 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
       return;
     }
 
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const [buildMetadata, buildParameters] = await Promise.all([
       fetchBuildConsoleMetadata(jobPath, buildNumber),
       fetchBuildParameters(jobPath, buildNumber),
@@ -5236,7 +5262,7 @@ router.post('/nn/builds/:number/cancel-app-store-review', cicdProductReleaseMidd
       return;
     }
 
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const [buildMetadata, buildParameters] = await Promise.all([
       fetchBuildConsoleMetadata(jobPath, buildNumber),
       fetchBuildParameters(jobPath, buildNumber),
@@ -5325,7 +5351,7 @@ router.post('/nn/builds/:number/cancel-app-store-review', cicdProductReleaseMidd
 
 router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_JOB_NAME);
+    const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
       res.status(400).json({
@@ -5337,7 +5363,7 @@ router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Resp
 
     const [buildResponse, logResponse] = await Promise.all([
       fetchJenkinsJobJson(`${jobPath}/${buildNumber}`, 'number,result,building,description,url'),
-      axios.get(`${JENKINS_BASE_URL}/${jobPath}/${buildNumber}/consoleText`, {
+      axios.get(`${jenkinsBaseUrl()}/${jobPath}/${buildNumber}/consoleText`, {
         timeout: 30000,
         responseType: 'text',
         ...buildAuthConfig(),
@@ -5365,7 +5391,7 @@ router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Resp
       res.json({
         success: true,
         data: {
-          jobName: DEFAULT_JOB_NAME,
+          jobName: defaultJobName(),
           buildNumber,
           analysis: saved.analysis,
           updatedAt: saved.updatedAt,
@@ -5404,7 +5430,7 @@ router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Resp
     res.json({
       success: true,
       data: {
-        jobName: DEFAULT_JOB_NAME,
+        jobName: defaultJobName(),
         buildNumber,
         analysis,
         updatedAt: savedAnalysis.updatedAt,
@@ -5447,7 +5473,7 @@ router.get('/nn/quality/artifact-preview', cicdTestReleaseMiddleware, async (req
     }
     const fetchUrl = internalJenkinsUrl(req, artifactUrl);
     const parsedUrl = new URL(fetchUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
-    const jenkinsUrl = new URL(JENKINS_BASE_URL);
+    const jenkinsUrl = new URL(jenkinsBaseUrl());
     const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
     if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
       res.status(400).json({ success: false, error: '只允许预览当前 Jenkins 的 artifact 文件' });
@@ -5501,7 +5527,7 @@ router.get('/nn/quality/performance-samples', cicdTestReleaseMiddleware, async (
     }
     const fetchUrl = internalJenkinsUrl(req, artifactUrl);
     const parsedUrl = new URL(fetchUrl, `http://local${LOCAL_QUALITY_ARTIFACT_ROUTE}`);
-    const jenkinsUrl = new URL(JENKINS_BASE_URL);
+    const jenkinsUrl = new URL(jenkinsBaseUrl());
     const isLocalQualityArtifact = parsedUrl.pathname === LOCAL_QUALITY_ARTIFACT_ROUTE;
     if (!isLocalQualityArtifact && (parsedUrl.origin !== jenkinsUrl.origin || !parsedUrl.pathname.includes('/artifact/'))) {
       res.status(400).json({ success: false, error: '只允许读取当前 Jenkins 的 artifact 文件' });
@@ -5532,7 +5558,7 @@ router.get('/nn/quality/performance-samples', cicdTestReleaseMiddleware, async (
 
 router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+    const jobPath = encodeJobPath(defaultQaJobName());
     const tree = [
       'displayName',
       'fullName',
@@ -5547,12 +5573,12 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
       const response = await fetchJenkinsJobJson(jobPath, tree);
       job = response.data || {};
     } catch (error) {
-      const localBuilds = readLocalQualityBuilds(DEFAULT_QA_JOB_NAME);
+      const localBuilds = readLocalQualityBuilds(defaultQaJobName());
       if (localBuilds.length === 0) throw error;
       job = {
-        displayName: DEFAULT_QA_JOB_NAME,
-        fullName: DEFAULT_QA_JOB_NAME,
-        url: `${JENKINS_BASE_URL}/${jobPath}/`,
+        displayName: defaultQaJobName(),
+        fullName: defaultQaJobName(),
+        url: `${jenkinsBaseUrl()}/${jobPath}/`,
         buildable: true,
         color: 'notbuilt',
         lastBuild: localBuilds[0],
@@ -5561,15 +5587,15 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
       };
     }
     const builds = await Promise.all((Array.isArray(job.builds) ? job.builds : []).map(async (build: any) => {
-      const localSummaryResult = readLocalQualitySummaryWithPath(DEFAULT_QA_JOB_NAME, build);
+      const localSummaryResult = readLocalQualitySummaryWithPath(defaultQaJobName(), build);
       const localSummary = localSummaryResult?.summary || null;
       const localArtifactLinks = localSummaryResult?.filePath
         ? buildLocalQualityArtifactLinks(localSummaryResult.filePath, localSummary)
         : {};
-      const localProgress = readLocalQualityProgress(DEFAULT_QA_JOB_NAME, build);
-      const localMetadata = readLocalQualityMetadata(DEFAULT_QA_JOB_NAME, build);
-      const completedOverride = await buildCompletedOverride(DEFAULT_QA_JOB_NAME, build, localSummary, localProgress);
-      const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(DEFAULT_QA_JOB_NAME, build);
+      const localProgress = readLocalQualityProgress(defaultQaJobName(), build);
+      const localMetadata = readLocalQualityMetadata(defaultQaJobName(), build);
+      const completedOverride = await buildCompletedOverride(defaultQaJobName(), build, localSummary, localProgress);
+      const interruptedOverride = completedOverride ? null : await buildInterruptedOverride(defaultQaJobName(), build);
       const stateOverride = completedOverride || interruptedOverride;
       const normalizedBuild = stateOverride ? { ...build, ...stateOverride } : build;
       const qualitySummary = job.localFallback ? {
@@ -5629,9 +5655,9 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
 
 	    const responseData = {
         job: {
-          name: job.displayName || DEFAULT_QA_JOB_NAME,
-          fullName: job.fullName || DEFAULT_QA_JOB_NAME,
-          url: normalizeJenkinsUrl(job.url) || `${JENKINS_BASE_URL}/${jobPath}/`,
+          name: job.displayName || defaultQaJobName(),
+          fullName: job.fullName || defaultQaJobName(),
+          url: normalizeJenkinsUrl(job.url) || `${jenkinsBaseUrl()}/${jobPath}/`,
           buildable: job.buildable !== false,
           color: job.color,
         },
@@ -5651,7 +5677,7 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
     if (error.response?.status === 404) {
       res.status(404).json({
         success: false,
-        error: `未找到 Jenkins 自动质检 Job：${DEFAULT_QA_JOB_NAME}，请先在 Jenkins 中创建或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称`,
+        error: `未找到 Jenkins 自动质检 Job：${defaultQaJobName()}，请先在 Jenkins 中创建或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称`,
         status: 404,
       });
       return;
@@ -5877,7 +5903,7 @@ router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: 
   const checks: any[] = [];
   const startedAt = Date.now();
   try {
-    await fetchJenkinsJobJson(encodeJobPath(DEFAULT_JOB_NAME), 'displayName,buildable,color');
+    await fetchJenkinsJobJson(encodeJobPath(defaultJobName()), 'displayName,buildable,color');
     checks.push(buildReleasePreflightCheck('jenkins', 'Jenkins', 'passed', 'Jenkins 主 Job 可访问'));
   } catch (error: any) {
     checks.push(buildReleasePreflightCheck('jenkins', 'Jenkins', 'blocked', extractErrorMessage(error, 'Jenkins 主 Job 不可访问')));
@@ -6157,12 +6183,12 @@ router.post('/nn/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Re
       return;
     }
 
-    await stopJenkinsBuild(DEFAULT_JOB_NAME, buildNumber);
+    await stopJenkinsBuild(defaultJobName(), buildNumber);
 
     res.json({
       success: true,
       data: {
-        jobName: DEFAULT_JOB_NAME,
+        jobName: defaultJobName(),
         buildNumber,
       },
     });
@@ -6186,13 +6212,13 @@ router.post('/nn/quality/builds/:number/stop', cicdTestReleaseMiddleware, async 
       return;
     }
 
-    await stopJenkinsBuild(DEFAULT_QA_JOB_NAME, buildNumber);
+    await stopJenkinsBuild(defaultQaJobName(), buildNumber);
     await cleanupLocalQualityProcesses(String(req.body?.deviceUdid || req.body?.device_udid || '').trim());
 
     res.json({
       success: true,
       data: {
-        jobName: DEFAULT_QA_JOB_NAME,
+        jobName: defaultQaJobName(),
         buildNumber,
       },
     });
@@ -6226,7 +6252,7 @@ router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Re
 
 router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
-    const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+    const jobPath = encodeJobPath(defaultQaJobName());
     const sonicConfig = getSonicConfig();
     const buildNumber = String(req.body?.buildNumber || '').trim();
     let branch = normalizeBranchName(String(req.body?.branch || ''));
@@ -6271,7 +6297,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       return;
     }
     if (!appVersion || !rawPackageUrl || !xcarchivePath || !archiveUrl || !publishChannel || !commitHash) {
-      const sourceMetadata = await fetchBuildConsoleMetadata(encodeJobPath(DEFAULT_JOB_NAME), Number(buildNumber));
+      const sourceMetadata = await fetchBuildConsoleMetadata(encodeJobPath(defaultJobName()), Number(buildNumber));
       appVersion = appVersion || sourceMetadata.appVersion || '';
       publishChannel = publishChannel || sourceMetadata.publishChannel || '';
       commitHash = commitHash || sourceMetadata.commitHash || '';
@@ -6358,7 +6384,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     const monkeyBusinessMapPath = getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH')
       || path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json');
     const params = new URLSearchParams({
-      SOURCE_JOB: DEFAULT_JOB_NAME,
+      SOURCE_JOB: defaultJobName(),
       SOURCE_BUILD_NUMBER: buildNumber,
       BRANCH: branch,
       COMMIT_HASH: commitHash,
@@ -6388,7 +6414,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       WDA_START_TIMEOUT_SECONDS: getRuntimeEnv('QA_WDA_START_TIMEOUT_SECONDS') || '300',
       WDA_DEVELOPMENT_TEAM: getRuntimeEnv('QA_WDA_DEVELOPMENT_TEAM') || '',
       WDA_BUNDLE_ID: getRuntimeEnv('QA_WDA_BUNDLE_ID') || '',
-      WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(DEFAULT_QA_JOB_NAME), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
+      WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(defaultQaJobName()), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
       WDA_XCODEBUILD_EXTRA_ARGS: getRuntimeEnv('QA_WDA_XCODEBUILD_EXTRA_ARGS') || '',
       MONKEY_EVENT_COUNT: getRuntimeEnv('QA_MONKEY_EVENT_COUNT') || '30',
       MONKEY_DURATION_SECONDS: monkeyDurationSeconds,
@@ -6448,7 +6474,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       SONIC_TEST_PLAN_ID: sonicConfig.testPlanId,
     });
 
-    const queueResponse = await axios.post(`${JENKINS_BASE_URL}/${jobPath}/buildWithParameters`, params.toString(), {
+    const queueResponse = await axios.post(`${jenkinsBaseUrl()}/${jobPath}/buildWithParameters`, params.toString(), {
       timeout: 30000,
       headers: {
         ...crumb.headers,
@@ -6475,12 +6501,12 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     res.json({
       success: true,
       data: publicJenkinsUrlsInValue(req, {
-        jobName: DEFAULT_QA_JOB_NAME,
+        jobName: defaultQaJobName(),
         sourceBuildNumber: buildNumber,
         testSuite,
         devicePool,
         platformTaskId: queuedTask?.id,
-        url: `${JENKINS_BASE_URL}/${jobPath}/`,
+        url: `${jenkinsBaseUrl()}/${jobPath}/`,
       }),
     });
   } catch (error: any) {

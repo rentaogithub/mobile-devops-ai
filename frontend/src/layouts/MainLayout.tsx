@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge } from 'antd';
+import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge, Select } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   HomeOutlined,
@@ -30,7 +30,8 @@ export default function MainLayout() {
   const [pendingRegistrationCount, setPendingRegistrationCount] = useState(0);
   const isAuthenticated = authUtils.isAuthenticated();
   const currentUser = authUtils.getUser();
-  const currentRole = currentUser?.role || 'guest';
+  const activeProductLine = authUtils.getActiveProductLine();
+  const currentRole = authUtils.getActiveRole() || 'guest';
   const isAdmin = isAuthenticated && currentRole === 'admin';
   const canUseQuality = isAuthenticated && ['tester', 'developer', 'admin'].includes(currentRole);
   const canAccessCrashTools = isAuthenticated && ['developer', 'admin'].includes(currentRole);
@@ -275,15 +276,27 @@ export default function MainLayout() {
         </div>
 
         {isAuthenticated ? (
-          <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
-            <Space style={{ cursor: 'pointer', paddingLeft: 12, whiteSpace: 'nowrap' }}>
+          <Space size={10} style={{ paddingLeft: 12, whiteSpace: 'nowrap' }}>
+            <Select
+              value={activeProductLine?.id}
+              onChange={(value) => authUtils.setActiveProductLine(value)}
+              options={(currentUser?.productLines || []).map((item) => ({
+                value: item.id,
+                label: item.name,
+              }))}
+              style={{ minWidth: 120 }}
+              popupMatchSelectWidth={false}
+            />
+            <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
+              <Space style={{ cursor: 'pointer' }}>
               <Avatar
                 icon={isAdmin ? <CrownOutlined /> : <UserOutlined />}
                 style={{ backgroundColor: isAdmin ? '#faad14' : '#1677ff' }}
               />
               <span style={{ color: 'white' }}>{roleLabel}・{currentUser?.username}</span>
-            </Space>
-          </Dropdown>
+              </Space>
+            </Dropdown>
+          </Space>
         ) : (
           <Button
             type="primary"
@@ -304,7 +317,7 @@ export default function MainLayout() {
             minWidth: 0,
           }}
         >
-          <Outlet />
+          <Outlet key={activeProductLine?.id || 'public-nn'} />
         </div>
       </Content>
     </Layout>

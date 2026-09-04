@@ -1,7 +1,6 @@
 import { randomUUID, createHash } from 'crypto';
 import { getDatabase } from '../database';
-
-const DEFAULT_PROJECT_ID = 'nn-ios';
+import { currentProjectId } from './ProductLineContext';
 
 type JsonObject = Record<string, any>;
 
@@ -146,7 +145,7 @@ export class WorkflowService {
         updated_at = excluded.updated_at
     `).run({
       id: artifactId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       artifactType: normalizeText(input.artifactType, 80) || 'unknown',
       name: normalizeText(input.name, 240) || artifactId,
       version: normalizeText(input.version, 120) || null,
@@ -176,12 +175,12 @@ export class WorkflowService {
   }
 
   getArtifact(artifactId: string) {
-    return artifactFromRow(getDatabase().prepare('SELECT * FROM workflow_artifacts WHERE id = ?').get(artifactId));
+    return artifactFromRow(getDatabase().prepare('SELECT * FROM workflow_artifacts WHERE id = ? AND project_id = ?').get(artifactId, currentProjectId()));
   }
 
   listArtifacts(filters: JsonObject = {}) {
     const clauses = ['project_id = @projectId'];
-    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || DEFAULT_PROJECT_ID };
+    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || currentProjectId() };
     if (filters.buildNumber) {
       clauses.push('build_number = @buildNumber');
       params.buildNumber = normalizeText(filters.buildNumber, 120);
@@ -239,7 +238,7 @@ export class WorkflowService {
         updated_at = excluded.updated_at
     `).run({
       id: taskId,
-      projectId: normalizeText(input.projectId, 120) || previous?.project_id || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || previous?.project_id || currentProjectId(),
       taskType: normalizeText(input.taskType, 100) || previous?.task_type || 'ios_quality',
       suite: normalizeText(input.suite, 80) || previous?.suite || null,
       status,
@@ -280,12 +279,12 @@ export class WorkflowService {
   }
 
   getTask(taskId: string) {
-    return taskFromRow(getDatabase().prepare('SELECT * FROM workflow_tasks WHERE id = ?').get(taskId));
+    return taskFromRow(getDatabase().prepare('SELECT * FROM workflow_tasks WHERE id = ? AND project_id = ?').get(taskId, currentProjectId()));
   }
 
   listTasks(filters: JsonObject = {}) {
     const clauses = ['project_id = @projectId'];
-    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || DEFAULT_PROJECT_ID };
+    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || currentProjectId() };
     for (const [field, column, max] of [
       ['status', 'status', 60],
       ['suite', 'suite', 80],
@@ -307,7 +306,7 @@ export class WorkflowService {
   upsertIssue(input: JsonObject) {
     const db = getDatabase();
     const timestamp = normalizeText(input.lastSeen, 80) || now();
-    const projectId = normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID;
+    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
     const fingerprintSource = normalizeText(input.fingerprint, 300) || [
       input.source,
       input.category,
@@ -413,12 +412,12 @@ export class WorkflowService {
   }
 
   getIssue(issueId: string) {
-    return issueFromRow(getDatabase().prepare('SELECT * FROM workflow_issues WHERE id = ?').get(issueId));
+    return issueFromRow(getDatabase().prepare('SELECT * FROM workflow_issues WHERE id = ? AND project_id = ?').get(issueId, currentProjectId()));
   }
 
   listIssues(filters: JsonObject = {}) {
     const clauses = ['project_id = @projectId'];
-    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || DEFAULT_PROJECT_ID };
+    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || currentProjectId() };
     for (const [field, column, max] of [
       ['status', 'status', 50],
       ['severity', 'severity', 30],
@@ -480,7 +479,7 @@ export class WorkflowService {
   }
 
   addRelation(input: JsonObject) {
-    const projectId = normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID;
+    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
     const createdAt = now();
     getDatabase().prepare(`
       INSERT INTO workflow_relations (
@@ -506,7 +505,7 @@ export class WorkflowService {
       SELECT * FROM workflow_relations
       WHERE project_id = ? AND ((from_type = ? AND from_id = ?) OR (to_type = ? AND to_id = ?))
       ORDER BY created_at DESC
-    `).all(DEFAULT_PROJECT_ID, entityType, entityId, entityType, entityId) as any[]).map((row) => ({
+    `).all(currentProjectId(), entityType, entityId, entityType, entityId) as any[]).map((row) => ({
       id: row.id,
       projectId: row.project_id,
       fromType: row.from_type,
@@ -528,7 +527,7 @@ export class WorkflowService {
       ) VALUES (@id, @projectId, @eventType, @entityType, @entityId, @payloadJson, @occurredAt, @createdAt)
     `).run({
       id: eventId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       eventType: normalizeText(input.eventType, 120) || 'unknown',
       entityType: normalizeText(input.entityType, 80) || 'unknown',
       entityId: normalizeText(input.entityId, 240) || 'unknown',
@@ -541,7 +540,7 @@ export class WorkflowService {
 
   listEvents(filters: JsonObject = {}) {
     const clauses = ['project_id = @projectId'];
-    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || DEFAULT_PROJECT_ID };
+    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || currentProjectId() };
     if (filters.entityType) {
       clauses.push('entity_type = @entityType');
       params.entityType = normalizeText(filters.entityType, 80);
@@ -571,7 +570,7 @@ export class WorkflowService {
 
   upsertBaseline(input: JsonObject) {
     const timestamp = now();
-    const projectId = normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID;
+    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
     const metric = normalizeText(input.metric, 120);
     const scope = normalizeText(input.scope, 160) || 'app';
     const branch = normalizeText(input.branch, 240) || '*';
@@ -614,7 +613,7 @@ export class WorkflowService {
     return this.getBaseline(metric, scope, branch, projectId);
   }
 
-  getBaseline(metric: string, scope = 'app', branch = '*', projectId = DEFAULT_PROJECT_ID) {
+  getBaseline(metric: string, scope = 'app', branch = '*', projectId = currentProjectId()) {
     const row = getDatabase().prepare(`
       SELECT * FROM workflow_quality_baselines
       WHERE project_id = ? AND metric = ? AND scope = ? AND branch IN (?, '*')
@@ -637,7 +636,7 @@ export class WorkflowService {
     };
   }
 
-  listBaselines(projectId = DEFAULT_PROJECT_ID) {
+  listBaselines(projectId = currentProjectId()) {
     return (getDatabase().prepare(`
       SELECT * FROM workflow_quality_baselines WHERE project_id = ? ORDER BY metric, scope, branch
     `).all(projectId) as any[]).map((row) => this.getBaseline(row.metric, row.scope, row.branch, projectId));
@@ -657,7 +656,7 @@ export class WorkflowService {
         result_json = excluded.result_json
     `).run({
       id: gateId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       buildNumber: normalizeText(input.buildNumber, 120),
       commitHash: normalizeText(input.commitHash, 120) || null,
       branch: normalizeText(input.branch, 240) || null,
@@ -674,7 +673,7 @@ export class WorkflowService {
   }
 
   getReleaseGate(gateId: string) {
-    const row = getDatabase().prepare('SELECT * FROM workflow_release_gates WHERE id = ?').get(gateId) as any;
+    const row = getDatabase().prepare('SELECT * FROM workflow_release_gates WHERE id = ? AND project_id = ?').get(gateId, currentProjectId()) as any;
     if (!row) return null;
     return {
       id: row.id,
@@ -690,7 +689,7 @@ export class WorkflowService {
     };
   }
 
-  listReleaseGates(projectId = DEFAULT_PROJECT_ID, limit = 50) {
+  listReleaseGates(projectId = currentProjectId(), limit = 50) {
     return (getDatabase().prepare(`
       SELECT id FROM workflow_release_gates WHERE project_id = ? ORDER BY created_at DESC LIMIT ?
     `).all(projectId, Math.min(Math.max(limit, 1), 200)) as any[]).map((row) => this.getReleaseGate(row.id));
@@ -711,7 +710,7 @@ export class WorkflowService {
       )
     `).run({
       id: candidateId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       issueId: normalizeText(input.issueId, 180) || null,
       sourceTaskId: normalizeText(input.sourceTaskId, 180) || null,
       title: normalizeText(input.title, 500) || 'Monkey 回归候选',
@@ -733,7 +732,7 @@ export class WorkflowService {
   }
 
   getRegressionCandidate(candidateId: string) {
-    const row = getDatabase().prepare('SELECT * FROM workflow_regression_candidates WHERE id = ?').get(candidateId) as any;
+    const row = getDatabase().prepare('SELECT * FROM workflow_regression_candidates WHERE id = ? AND project_id = ?').get(candidateId, currentProjectId()) as any;
     if (!row) return null;
     return {
       id: row.id,
@@ -787,7 +786,7 @@ export class WorkflowService {
     return this.getRegressionCandidate(candidateId);
   }
 
-  listRegressionCandidates(projectId = DEFAULT_PROJECT_ID) {
+  listRegressionCandidates(projectId = currentProjectId()) {
     return (getDatabase().prepare(`
       SELECT id FROM workflow_regression_candidates WHERE project_id = ? ORDER BY updated_at DESC
     `).all(projectId) as any[]).map((row) => this.getRegressionCandidate(row.id));
@@ -806,7 +805,7 @@ export class WorkflowService {
       )
     `).run({
       id: entryId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       kind: normalizeText(input.kind, 100) || 'engineering_note',
       fingerprint: normalizeText(input.fingerprint, 160) || null,
       title: normalizeText(input.title, 500),
@@ -844,7 +843,7 @@ export class WorkflowService {
 
   listKnowledge(filters: JsonObject = {}) {
     const clauses = ['project_id = @projectId'];
-    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || DEFAULT_PROJECT_ID };
+    const params: JsonObject = { projectId: normalizeText(filters.projectId, 120) || currentProjectId() };
     if (filters.kind) {
       clauses.push('kind = @kind');
       params.kind = normalizeText(filters.kind, 100);
@@ -870,7 +869,7 @@ export class WorkflowService {
       )
     `).run({
       id: evaluationId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       capability: normalizeText(input.capability, 120),
       model: normalizeText(input.model, 120) || null,
       promptVersion: normalizeText(input.promptVersion, 120) || null,
@@ -887,7 +886,7 @@ export class WorkflowService {
     return { id: evaluationId };
   }
 
-  listAIEvaluations(projectId = DEFAULT_PROJECT_ID) {
+  listAIEvaluations(projectId = currentProjectId()) {
     return (getDatabase().prepare(`
       SELECT * FROM workflow_ai_evaluations WHERE project_id = ? ORDER BY created_at DESC LIMIT 200
     `).all(projectId) as any[]).map((row) => ({
@@ -937,7 +936,7 @@ export class WorkflowService {
       )
     `).run({
       id: observationId,
-      projectId: normalizeText(input.projectId, 120) || DEFAULT_PROJECT_ID,
+      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
       releaseVersion: normalizeText(input.releaseVersion, 120),
       buildNumber: normalizeText(input.buildNumber, 120) || null,
       channel: normalizeText(input.channel, 80) || null,
@@ -952,7 +951,7 @@ export class WorkflowService {
     return { id: observationId };
   }
 
-  listReleaseObservations(projectId = DEFAULT_PROJECT_ID, releaseVersion?: string) {
+  listReleaseObservations(projectId = currentProjectId(), releaseVersion?: string) {
     const rows = releaseVersion
       ? getDatabase().prepare(`SELECT * FROM workflow_release_observations WHERE project_id = ? AND release_version = ? ORDER BY observed_at DESC LIMIT 500`).all(projectId, releaseVersion)
       : getDatabase().prepare(`SELECT * FROM workflow_release_observations WHERE project_id = ? ORDER BY observed_at DESC LIMIT 500`).all(projectId);
@@ -970,7 +969,7 @@ export class WorkflowService {
     }));
   }
 
-  overview(projectId = DEFAULT_PROJECT_ID) {
+  overview(projectId = currentProjectId()) {
     const db = getDatabase();
     const scalar = (sql: string, params: any[] = []) => Number((db.prepare(sql).get(...params) as any)?.count || 0);
     const tasksByStatus = db.prepare(`

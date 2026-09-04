@@ -7,8 +7,22 @@ import { xcuiTestWorkflowService } from '../services/XCUITestWorkflowService';
 import { platformOperationsService } from '../services/PlatformOperationsService';
 import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
+import { currentProjectId } from '../services/ProductLineContext';
 
 const router = Router();
+
+router.use((req, _res, next) => {
+  const projectId = currentProjectId();
+  req.query.projectId = projectId;
+  if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
+    req.body.projectId = projectId;
+  }
+  next();
+});
+
+function belongsToCurrentProduct(entity: any): boolean {
+  return !entity || !entity.projectId || entity.projectId === currentProjectId();
+}
 
 function ok(res: Response, data: unknown) {
   res.json({ success: true, data });
@@ -113,7 +127,7 @@ router.post('/tasks', (req, res) => {
 router.get('/tasks/:taskId', (req, res) => {
   try {
     const task = workflowService.getTask(req.params.taskId);
-    if (!task) return res.status(404).json({ success: false, error: '任务不存在' });
+    if (!task || !belongsToCurrentProduct(task)) return res.status(404).json({ success: false, error: '任务不存在' });
     ok(res, { task, relations: workflowService.listRelations('task', task.id), events: workflowService.listEvents({ entityType: 'task', entityId: task.id }) });
   } catch (error) {
     fail(res, error, '加载任务详情失败');
@@ -138,6 +152,8 @@ router.post('/issues', (req, res) => {
 
 router.patch('/issues/:issueId', (req, res) => {
   try {
+    const existing = workflowService.getIssue(req.params.issueId);
+    if (!existing || !belongsToCurrentProduct(existing)) return res.status(404).json({ success: false, error: 'Issue 不存在' });
     const issue = workflowService.updateIssue(req.params.issueId, req.body || {});
     if (!issue) return res.status(404).json({ success: false, error: 'Issue 不存在' });
     ok(res, issue);
@@ -149,7 +165,7 @@ router.patch('/issues/:issueId', (req, res) => {
 router.get('/issues/:issueId', (req, res) => {
   try {
     const issue = workflowService.getIssue(req.params.issueId);
-    if (!issue) return res.status(404).json({ success: false, error: 'Issue 不存在' });
+    if (!issue || !belongsToCurrentProduct(issue)) return res.status(404).json({ success: false, error: 'Issue 不存在' });
     ok(res, {
       issue,
       relations: workflowService.listRelations('issue', issue.id),

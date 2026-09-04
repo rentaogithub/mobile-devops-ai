@@ -1,7 +1,7 @@
 -- dSYM 信息表
 CREATE TABLE IF NOT EXISTS dsym_info (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  uuid TEXT UNIQUE NOT NULL,
+  uuid TEXT NOT NULL,
   app_name TEXT NOT NULL,
   version TEXT NOT NULL,
   build_number TEXT,
@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS dsym_info (
   file_size INTEGER NOT NULL,
   notes TEXT,
   related_app_version TEXT,  -- 关联的主应用版本（用于组件库）
+  product_line_id TEXT NOT NULL DEFAULT 'nn',
   upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS symbolication_history (
   is_fixed INTEGER DEFAULT 0,  -- 是否已修复（0: 未修复, 1: 已修复）
   fixed_version TEXT,  -- 修复版本号
   fixed_remark TEXT,  -- 修复备注
+  product_line_id TEXT NOT NULL DEFAULT 'nn',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -373,6 +375,45 @@ CREATE TABLE IF NOT EXISTS platform_users (
   updated_at TEXT NOT NULL
 );
 
+-- iOS 产品线。key 用于稳定标识，project_id 对应 Workflow 数据隔离键。
+CREATE TABLE IF NOT EXISTS platform_product_lines (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  project_id TEXT NOT NULL UNIQUE,
+  bundle_id TEXT,
+  jenkins_base_url TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- 同一用户可在不同产品线拥有不同角色；平台管理员仍由 platform_users.role = admin 表示。
+CREATE TABLE IF NOT EXISTS platform_product_line_memberships (
+  product_line_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'guest',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (product_line_id, user_id),
+  FOREIGN KEY (product_line_id) REFERENCES platform_product_lines(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES platform_users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_product_line_memberships_user
+  ON platform_product_line_memberships(user_id, product_line_id);
+
+CREATE TABLE IF NOT EXISTS platform_product_line_configs (
+  product_line_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL DEFAULT '',
+  encrypted INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  updated_by TEXT,
+  PRIMARY KEY (product_line_id, key),
+  FOREIGN KEY (product_line_id) REFERENCES platform_product_lines(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS platform_sessions (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL,
@@ -394,6 +435,7 @@ CREATE TABLE IF NOT EXISTS platform_user_registration_requests (
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   requested_role TEXT NOT NULL,
+  product_line_id TEXT NOT NULL DEFAULT 'nn',
   status TEXT NOT NULL DEFAULT 'pending',
   reviewer_user_id TEXT,
   reviewer_username TEXT,

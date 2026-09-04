@@ -6,6 +6,7 @@ import * as tar from 'tar';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { AppError, ErrorCode } from '../types';
+import { currentProductLineId } from './ProductLineContext';
 
 const execAsync = promisify(exec);
 
@@ -192,7 +193,9 @@ export class FileHandlerService {
    * 移动 dSYM 到永久存储
    */
   async moveToPermanentStorage(dsymPath: string, uuid: string): Promise<string> {
-    const targetDir = path.join(this.dsymDir, uuid);
+    const productLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const productDsymDir = productLineId === 'nn' ? this.dsymDir : path.join(this.dsymDir, productLineId);
+    const targetDir = path.join(productDsymDir, uuid);
     const dsymName = path.basename(dsymPath);
     const targetPath = path.join(targetDir, dsymName);
 

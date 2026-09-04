@@ -12,6 +12,7 @@ import { workflowAIService } from './WorkflowAIService';
 import { workflowService } from './WorkflowService';
 import { assistantInsightService } from './AssistantInsightService';
 import { apiRouteSearchService } from './ApiRouteSearchService';
+import { currentProjectId } from './ProductLineContext';
 import { operationalLogService } from './OperationalLogService';
 import { platformConfigService } from './PlatformConfigService';
 
@@ -167,7 +168,7 @@ const tools: AssistantTool[] = [
     name: 'workflow_overview', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
     description: '获取移动研发质量中心概览、最新任务和最新问题。',
     parameters: objectSchema({ projectId: { type: 'string', description: '项目 ID，默认 nn-ios' } }),
-    execute: (args) => workflowService.overview(args.projectId || 'nn-ios'),
+    execute: () => workflowService.overview(currentProjectId()),
   },
   {
     name: 'workflow_list_issues', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
@@ -227,13 +228,13 @@ const tools: AssistantTool[] = [
     parameters: objectSchema({
       buildNumber: { type: 'string' }, buildStatus: { type: 'string' }, branch: { type: 'string' }, commitHash: { type: 'string' }, appVersion: { type: 'string' },
     }, ['buildNumber']),
-    execute: (args) => qualityGateService.preview({ projectId: 'nn-ios', ...args }),
+    execute: (args) => qualityGateService.preview({ ...args, projectId: currentProjectId() }),
   },
   {
     name: 'workflow_verify_release_health', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
     description: '发布后验证指定版本的 Crash、性能和质量观察指标，给出是否健康及后续建议。',
     parameters: objectSchema({ releaseVersion: { type: 'string' } }, ['releaseVersion']),
-    execute: (args) => ({ kind: 'release_health_verification', ...qualityGateService.evaluateReleaseHealth('nn-ios', args.releaseVersion) }),
+    execute: (args) => ({ kind: 'release_health_verification', ...qualityGateService.evaluateReleaseHealth(currentProjectId(), args.releaseVersion) }),
   },
   {
     name: 'task_track', domain: 'workflow', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 60_000,

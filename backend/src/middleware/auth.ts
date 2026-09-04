@@ -1,11 +1,54 @@
 import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { authService, PlatformRole, PlatformUser } from '../services/AuthService';
+import { runWithProductLine } from '../services/ProductLineContext';
 
 // 简单的密码认证中间件
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || AUTH_PASSWORD; // 管理员密码，默认与普通密码相同
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
+
+function resolveProductLine(req: Request, user: PlatformUser | null) {
+  const requested = String(req.headers['x-product-line-id'] || '').trim();
+  const available = user?.productLines || [];
+  if (user?.role === 'admin') {
+    const productLine = authService.findProductLine(requested || available[0]?.id || 'nn');
+    if (!productLine || !productLine.active) return null;
+    return { ...productLine, role: 'admin' as PlatformRole };
+  }
+  if (!user) {
+    const productLine = authService.findProductLine(requested || 'nn');
+    if (!productLine || productLine.id !== 'nn' || !productLine.active) return null;
+    return { ...productLine, role: 'guest' as PlatformRole };
+  }
+  return available.find((item) => item.id === requested || item.key === requested || item.projectId === requested)
+    || (!requested ? available.find((item) => item.id === 'nn') || available[0] : undefined)
+    || null;
+}
+
+export const productLineContextMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const user = authService.getSessionUser(req);
+  const productLine = resolveProductLine(req, user);
+  if (!productLine) {
+    res.status(user ? 403 : 401).json({
+      success: false,
+      error: user ? '无权访问该产品线' : '请登录后访问该产品线',
+      code: user ? 'PRODUCT_LINE_FORBIDDEN' : 'SESSION_REQUIRED',
+    });
+    return;
+  }
+  if (user) (req as any).authUser = user;
+  (req as any).productLine = productLine;
+  (req as any).effectiveRole = productLine.role;
+  (req as any).isAdmin = user?.role === 'admin';
+  runWithProductLine({
+    id: productLine.id,
+    key: productLine.key,
+    name: productLine.name,
+    projectId: productLine.projectId,
+    role: productLine.role,
+  }, next);
+};
 
 export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   const sessionUser = authService.getSessionUser(req);
@@ -132,7 +175,10 @@ export function requireRole(role: PlatformRole) {
       next();
       return;
     }
-    if (!user || !canSatisfyRole(user.role, role)) {
+    const effectiveRole = role === 'admin'
+      ? user?.role
+      : ((req as any).effectiveRole || resolveProductLine(req, user)?.role || user?.role);
+    if (!user || !effectiveRole || !canSatisfyRole(effectiveRole, role)) {
       res.status(403).json({ success: false, error: `需要 ${roleLabel(role)} 权限`, code: 'FORBIDDEN' });
       return;
     }
@@ -149,7 +195,10 @@ export function requireAnyRole(roles: PlatformRole[]) {
       next();
       return;
     }
-    if (!user || !roles.includes(user.role)) {
+    const effectiveRole = user?.role === 'admin'
+      ? 'admin'
+      : ((req as any).effectiveRole || resolveProductLine(req, user)?.role || user?.role);
+    if (!user || !effectiveRole || !roles.includes(effectiveRole)) {
       res.status(403).json({
         success: false,
         error: `需要 ${roles.map(roleLabel).join('、')} 权限`,

@@ -3,6 +3,7 @@ import { operationalLogService } from './OperationalLogService';
 import sentryIssueService from './SentryIssueService';
 import { StorageService } from './StorageService';
 import { workflowService } from './WorkflowService';
+import { currentProjectId } from './ProductLineContext';
 import { getDatabase } from '../database';
 
 function escapeQuery(value: string) {
@@ -246,7 +247,7 @@ export class AssistantInsightService {
     const workflowIssues = buildNumber > 0
       ? workflowService.listIssues({ buildNumber: String(buildNumber), limit: 20 })
       : appVersion ? workflowService.listIssues({ query: appVersion, limit: 20 }) : [];
-    const releaseGates = workflowService.listReleaseGates('nn-ios', 20).filter((gate: any) => !buildNumber || String(gate.buildNumber) === String(buildNumber));
+    const releaseGates = workflowService.listReleaseGates(currentProjectId(), 20).filter((gate: any) => !buildNumber || String(gate.buildNumber) === String(buildNumber));
     const possibleCauses: Array<{ rank: number; cause: string; evidence: string }> = [];
     if (build && /FAILURE|UNSTABLE|ABORTED/i.test(String(build.result || ''))) possibleCauses.push({ rank: 1, cause: '构建或发布链路失败', evidence: `Jenkins #${build.number} 状态为 ${build.result}` });
     if (crashes.length > 0) possibleCauses.push({ rank: possibleCauses.length + 1, cause: '线上 Crash 回归', evidence: `Sentry 命中 ${crashes.length} 个问题，共 ${crashes.reduce((sum: number, issue: any) => sum + issueCount(issue), 0)} 次事件` });

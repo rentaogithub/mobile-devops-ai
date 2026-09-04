@@ -1,11 +1,12 @@
 import axios from 'axios';
 import { randomUUID } from 'crypto';
-import { getJenkinsBaseUrl } from '../config/externalServices';
+import { getJenkinsBaseUrl, getJenkinsConfig } from '../config/externalServices';
 import aiAnalysisService from './AIAnalysisService';
 import { qualityGateService } from './QualityGateService';
 import { workflowIntegrationService } from './WorkflowIntegrationService';
 import { workflowService } from './WorkflowService';
 import { platformConfigService } from './PlatformConfigService';
+import { currentProjectId } from './ProductLineContext';
 
 function encodeJobPath(jobName: string) {
   return jobName.split('/').filter(Boolean).map((part) => `job/${encodeURIComponent(part)}`).join('/');
@@ -90,13 +91,14 @@ export class JenkinsReleaseError extends Error {
 }
 
 export class JenkinsAssistantService {
-  private readonly baseUrl = getJenkinsBaseUrl().replace(/\/$/, '');
-  private readonly jobName = process.env.JENKINS_NN_JOB || 'nn';
-  private readonly qualityJobName = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
+  private get baseUrl() {
+    return getJenkinsBaseUrl().replace(/\/$/, '');
+  }
+  private get jobName() { return getJenkinsConfig().jobName; }
+  private get qualityJobName() { return getJenkinsConfig().qualityJobName; }
 
   private authConfig() {
-    const username = process.env.JENKINS_USER || '';
-    const token = process.env.JENKINS_TOKEN || '';
+    const { username, token } = getJenkinsConfig();
     return username && token ? { auth: { username, password: token } } : {};
   }
 
@@ -470,7 +472,7 @@ export class JenkinsAssistantService {
     const build = await this.loadReleaseGateBuild(Number(input.gateBuildNumber));
     workflowIntegrationService.syncJenkinsBuild(build);
     const releaseGate = qualityGateService.preview({
-      projectId: 'nn-ios',
+      projectId: currentProjectId(),
       buildNumber: String(input.gateBuildNumber),
       buildStatus: build.result,
       branch: branch || build.branchName,
@@ -537,7 +539,7 @@ export class JenkinsAssistantService {
         throw new JenkinsReleaseError(`源构建 #${gateBuildNumber} 尚未成功完成，不允许发布`);
       }
       releaseGate = qualityGateService.evaluate({
-        projectId: 'nn-ios',
+        projectId: currentProjectId(),
         buildNumber: String(gateBuildNumber),
         buildStatus: gateBuild.result,
         branch,

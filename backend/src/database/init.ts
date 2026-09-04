@@ -23,6 +23,26 @@ function migrateDatabase(): void {
   const db = getDatabase();
 
   try {
+    const timestamp = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO platform_product_lines (
+        id, key, name, project_id, bundle_id, active, created_at, updated_at
+      ) VALUES ('nn', 'nn', 'NN', 'nn-ios', NULL, 1, ?, ?)
+    `).run(timestamp, timestamp);
+    const productLineColumns = db.prepare('PRAGMA table_info(platform_product_lines)').all() as any[];
+    if (!productLineColumns.some((col: any) => col.name === 'jenkins_base_url')) {
+      console.log('Adding jenkins_base_url column to platform_product_lines...');
+      db.exec('ALTER TABLE platform_product_lines ADD COLUMN jenkins_base_url TEXT');
+    }
+    const legacyJenkinsBaseUrl = String(process.env.JENKINS_BASE_URL || '').trim().replace(/\/+$/, '');
+    if (legacyJenkinsBaseUrl) {
+      db.prepare(`
+        UPDATE platform_product_lines
+        SET jenkins_base_url = COALESCE(NULLIF(jenkins_base_url, ''), ?), updated_at = ?
+        WHERE id = 'nn'
+      `).run(legacyJenkinsBaseUrl, timestamp);
+    }
+
     // 检查 related_app_version 列是否存在
     const tableInfo = db.prepare("PRAGMA table_info(dsym_info)").all() as any[];
     const hasRelatedAppVersion = tableInfo.some((col: any) => col.name === 'related_app_version');
@@ -32,6 +52,46 @@ function migrateDatabase(): void {
       db.exec('ALTER TABLE dsym_info ADD COLUMN related_app_version TEXT');
       console.log('Migration completed: added related_app_version column');
     }
+
+    if (!tableInfo.some((col: any) => col.name === 'product_line_id')) {
+      console.log('Adding product_line_id column to dsym_info...');
+      db.exec("ALTER TABLE dsym_info ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    }
+    const legacyDsymIndexes = db.prepare('PRAGMA index_list(dsym_info)').all() as any[];
+    if (legacyDsymIndexes.some((index: any) => index.origin === 'u' && index.unique === 1)) {
+      console.log('Migrating dSYM UUID uniqueness to product-line scope...');
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE dsym_info_product_scoped (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            uuid TEXT NOT NULL,
+            app_name TEXT NOT NULL,
+            version TEXT NOT NULL,
+            build_number TEXT,
+            architecture TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            notes TEXT,
+            related_app_version TEXT,
+            product_line_id TEXT NOT NULL DEFAULT 'nn',
+            upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          INSERT INTO dsym_info_product_scoped (
+            id, uuid, app_name, version, build_number, architecture, file_path, file_size,
+            notes, related_app_version, product_line_id, upload_time
+          )
+          SELECT id, uuid, app_name, version, build_number, architecture, file_path, file_size,
+            notes, related_app_version, product_line_id, upload_time
+          FROM dsym_info;
+          DROP TABLE dsym_info;
+          ALTER TABLE dsym_info_product_scoped RENAME TO dsym_info;
+        `);
+      })();
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_uuid ON dsym_info(uuid)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_upload_time ON dsym_info(upload_time DESC)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_dsym_product_line ON dsym_info(product_line_id, upload_time DESC)');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_dsym_product_uuid ON dsym_info(product_line_id, uuid)');
 
     // 检查 symbolication_history 表是否存在
     const historyTableExists = db
@@ -71,6 +131,7 @@ function migrateDatabase(): void {
     const hasVersionDetected = historyTableInfo.some((col: any) => col.name === 'version_detected');
     const hasUid = historyTableInfo.some((col: any) => col.name === 'uid');
     const hasDeviceId = historyTableInfo.some((col: any) => col.name === 'device_id');
+    const hasHistoryProductLineId = historyTableInfo.some((col: any) => col.name === 'product_line_id');
 
     if (!hasLastStackCall) {
       console.log('Adding last_stack_call column to symbolication_history...');
@@ -125,6 +186,30 @@ function migrateDatabase(): void {
       db.exec('ALTER TABLE symbolication_history ADD COLUMN device_id TEXT');
       console.log('Migration completed: added device_id column');
     }
+
+
+    if (!hasHistoryProductLineId) {
+      console.log('Adding product_line_id column to symbolication_history...');
+      db.exec("ALTER TABLE symbolication_history ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_history_product_line ON symbolication_history(product_line_id, created_at DESC)');
+
+    const registrationColumns = db.prepare('PRAGMA table_info(platform_user_registration_requests)').all() as any[];
+    if (!registrationColumns.some((col: any) => col.name === 'product_line_id')) {
+      console.log('Adding product_line_id column to platform_user_registration_requests...');
+      db.exec("ALTER TABLE platform_user_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    }
+
+    db.prepare(`
+      INSERT OR IGNORE INTO platform_product_line_memberships (
+        product_line_id, user_id, role, created_at, updated_at
+      )
+      SELECT 'nn', id,
+        CASE WHEN role IN ('guest', 'tester', 'developer', 'product') THEN role ELSE 'guest' END,
+        ?, ?
+      FROM platform_users
+      WHERE role <> 'admin'
+    `).run(timestamp, timestamp);
 
     const assistantAuditForeignKeys = db.prepare('PRAGMA foreign_key_list(assistant_action_audits)').all() as any[];
     if (assistantAuditForeignKeys.some((foreignKey) => foreignKey.table === 'platform_users')) {

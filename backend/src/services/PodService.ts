@@ -120,7 +120,9 @@ function compareVersionNameDesc(a: string, b: string): number {
 }
 
 export class PodService {
-  private db = getDatabase();
+  private get db() {
+    return getDatabase();
+  }
   private fileHandler = new FileHandlerService();
   private storage = new StorageService();
 

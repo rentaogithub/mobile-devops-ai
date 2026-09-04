@@ -1,14 +1,53 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List, Modal, Select } from 'antd';
-import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
+import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Collapse, Badge, Tabs, List, Modal, Select, Spin, Upload } from 'antd';
+import { DeleteOutlined, ReloadOutlined, SearchOutlined, DownloadOutlined, AppstoreOutlined, UnorderedListOutlined, PlusOutlined, SettingOutlined, EditOutlined, CheckOutlined, CloseOutlined, UploadOutlined, SyncOutlined, LinkOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { authApi, dsymApi, moduleApi, PlatformConfigStatus, PlatformRegistrationRequest, PlatformRole, PlatformUser } from '../services/api';
+import { authApi, dsymApi, moduleApi, PlatformConfigStatus, PlatformProductLine, PlatformRegistrationRequest, PlatformRole, PlatformUser, ProductLineServiceConfig, ProductLineServiceUpdate } from '../services/api';
 import { DSYMInfo } from '../types';
 import { formatFileSize, formatDateTime } from '../utils/helpers';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
+
+type ProductLineSecretKey = 'JENKINS_TOKEN' | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'WECHAT_WEBHOOK_URL';
+type ProductLineTextConfigKey = Exclude<keyof ProductLineServiceConfig, `${string}Configured`>;
+
+const emptyProductLineServices = (): ProductLineServiceConfig => ({
+  JENKINS_USER: '',
+  JENKINS_TOKENConfigured: false,
+  JENKINS_NN_JOB: '',
+  JENKINS_NN_QA_JOB: '',
+  JENKINS_NN_REPO_URL: '',
+  PGYER_API_KEYConfigured: false,
+  PGYER_APP_KEYConfigured: false,
+  PGYER_SHORTCUT_URL: '',
+  APP_STORE_CONNECT_API_KEY_ID: '',
+  APP_STORE_CONNECT_API_ISSUER_ID: '',
+  APP_STORE_CONNECT_API_PRIVATE_KEYConfigured: false,
+  APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE: '',
+  APP_STORE_CONNECT_APP_ID: '',
+  APP_STORE_CONNECT_TESTFLIGHT_GROUPS: '',
+  WECHAT_WEBHOOK_URLConfigured: false,
+  WECHAT_WEBHOOK_URL: '',
+  WECHAT_WEBHOOK_URL_SOURCE: '',
+});
+
+const emptyProductLineSecrets = (): Record<ProductLineSecretKey, string> => ({
+  JENKINS_TOKEN: '',
+  PGYER_API_KEY: '',
+  PGYER_APP_KEY: '',
+  APP_STORE_CONNECT_API_PRIVATE_KEY: '',
+  WECHAT_WEBHOOK_URL: '',
+});
+
+const emptySecretChanges = (): Record<ProductLineSecretKey, boolean> => ({
+  JENKINS_TOKEN: false,
+  PGYER_API_KEY: false,
+  PGYER_APP_KEY: false,
+  APP_STORE_CONNECT_API_PRIVATE_KEY: false,
+  WECHAT_WEBHOOK_URL: false,
+});
 
 export default function ManagePage({ roleManagementOnly = false }: { roleManagementOnly?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -25,6 +64,18 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
   const [moduleLoading, setModuleLoading] = useState(false);
   const [newModuleName, setNewModuleName] = useState('');
   const [platformUsers, setPlatformUsers] = useState<PlatformUser[]>([]);
+  const [productLines, setProductLines] = useState<PlatformProductLine[]>([]);
+  const [editingProductLine, setEditingProductLine] = useState<PlatformProductLine | null>(null);
+  const [productLineModalOpen, setProductLineModalOpen] = useState(false);
+  const [productLineSaving, setProductLineSaving] = useState(false);
+  const [productLineServicesLoading, setProductLineServicesLoading] = useState(false);
+  const [productLineForm, setProductLineForm] = useState({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
+  const [productLineServices, setProductLineServices] = useState<ProductLineServiceConfig>(emptyProductLineServices);
+  const [productLineSecrets, setProductLineSecrets] = useState<Record<ProductLineSecretKey, string>>(emptyProductLineSecrets);
+  const [productLineSecretChanges, setProductLineSecretChanges] = useState<Record<ProductLineSecretKey, boolean>>(emptySecretChanges);
+  const [appStorePrivateKeyFileName, setAppStorePrivateKeyFileName] = useState('');
+  const [appStorePrivateKeySyncing, setAppStorePrivateKeySyncing] = useState(false);
+  const [weChatWebhookSyncing, setWeChatWebhookSyncing] = useState(false);
   const [registrationRequests, setRegistrationRequests] = useState<PlatformRegistrationRequest[]>([]);
   const [userLoading, setUserLoading] = useState(false);
   const [registrationLoading, setRegistrationLoading] = useState(false);
@@ -36,6 +87,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     password: '',
     role: 'guest' as PlatformRole,
     active: true,
+    productLines: [{ productLineId: 'nn', role: 'guest' as PlatformRole }],
   });
   const [platformConfig, setPlatformConfig] = useState<PlatformConfigStatus | null>(null);
   const [platformConfigLoading, setPlatformConfigLoading] = useState(false);
@@ -94,6 +146,16 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       message.error(error?.error || error?.message || '获取平台用户失败');
     } finally {
       setUserLoading(false);
+    }
+  };
+
+  const loadProductLines = async () => {
+    if (!isAdmin) return;
+    try {
+      const response = await authApi.listProductLines();
+      setProductLines(response.data || []);
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '获取产品线失败');
     }
   };
 
@@ -171,7 +233,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const openCreateUserModal = () => {
     setEditingUser(null);
-    setUserForm({ username: '', password: '', role: 'guest', active: true });
+    setUserForm({ username: '', password: '', role: 'guest', active: true, productLines: [{ productLineId: 'nn', role: 'guest' }] });
     setUserModalOpen(true);
   };
 
@@ -182,6 +244,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       password: '',
       role: user.role,
       active: user.active,
+      productLines: user.productLines.map((item) => ({ productLineId: item.id, role: item.role })),
     });
     setUserModalOpen(true);
   };
@@ -207,6 +270,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
         await authApi.updateUser(editingUser.id, {
           role: userForm.role,
           active: userForm.active,
+          productLines: userForm.role === 'admin' ? [] : userForm.productLines,
           ...(userForm.password ? { password: userForm.password } : {}),
         });
         message.success('用户角色已更新');
@@ -216,6 +280,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
           displayName: username,
           password: userForm.password,
           role: userForm.role,
+          productLines: userForm.role === 'admin' ? [] : userForm.productLines,
         });
         message.success('用户已创建');
       }
@@ -225,6 +290,203 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       message.error(error?.error || error?.message || '保存用户失败');
     } finally {
       setUserSaving(false);
+    }
+  };
+
+  const openCreateProductLine = () => {
+    setEditingProductLine(null);
+    setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
+    setProductLineServices(emptyProductLineServices());
+    setProductLineSecrets(emptyProductLineSecrets());
+    setProductLineSecretChanges(emptySecretChanges());
+    setAppStorePrivateKeyFileName('');
+    setProductLineModalOpen(true);
+  };
+
+  const openEditProductLine = async (productLine: PlatformProductLine) => {
+    setEditingProductLine(productLine);
+    setProductLineForm({
+      key: productLine.key,
+      name: productLine.name,
+      projectId: productLine.projectId,
+      bundleId: productLine.bundleId || '',
+      jenkinsBaseUrl: productLine.jenkinsBaseUrl || '',
+    });
+    setProductLineServices(emptyProductLineServices());
+    setProductLineSecrets(emptyProductLineSecrets());
+    setProductLineSecretChanges(emptySecretChanges());
+    setAppStorePrivateKeyFileName('');
+    setProductLineModalOpen(true);
+    setProductLineServicesLoading(true);
+    try {
+      const response = await authApi.getProductLineServices(productLine.id);
+      if (response.data) setProductLineServices(response.data);
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '获取产品线服务配置失败');
+    } finally {
+      setProductLineServicesLoading(false);
+    }
+  };
+
+  const updateProductLineService = (key: ProductLineTextConfigKey, value: string) => {
+    setProductLineServices((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateProductLineSecret = (key: ProductLineSecretKey, value: string) => {
+    setProductLineSecrets((current) => ({ ...current, [key]: value }));
+    setProductLineSecretChanges((current) => ({ ...current, [key]: true }));
+  };
+
+  const loadAppStorePrivateKeyFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.p8')) {
+      message.warning('请选择 .p8 私钥文件');
+      return;
+    }
+    if (file.size > 64 * 1024) {
+      message.warning('.p8 私钥文件不能超过 64 KB');
+      return;
+    }
+    try {
+      const content = (await file.text()).trim();
+      if (!content.includes('-----BEGIN PRIVATE KEY-----') || !content.includes('-----END PRIVATE KEY-----')) {
+        message.error('所选文件不是有效的 App Store Connect .p8 私钥');
+        return;
+      }
+      updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', content);
+      setAppStorePrivateKeyFileName(file.name);
+      message.success(`已读取 ${file.name}，保存产品线后生效`);
+    } catch {
+      message.error('读取 .p8 私钥文件失败');
+    }
+  };
+
+  const syncAppStorePrivateKey = async () => {
+    if (!editingProductLine) return;
+    setAppStorePrivateKeySyncing(true);
+    try {
+      const response = await authApi.getProductLineServices(editingProductLine.id);
+      const latest = response.data;
+      if (!latest) throw new Error('未读取到私钥配置状态');
+      setProductLineServices((current) => ({
+        ...current,
+        APP_STORE_CONNECT_API_PRIVATE_KEYConfigured: latest.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured,
+        APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE: latest.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE,
+      }));
+      setProductLineSecrets((current) => ({ ...current, APP_STORE_CONNECT_API_PRIVATE_KEY: '' }));
+      setProductLineSecretChanges((current) => ({ ...current, APP_STORE_CONNECT_API_PRIVATE_KEY: false }));
+      setAppStorePrivateKeyFileName('');
+      message.success(latest.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured
+        ? `已同步当前私钥配置：${latest.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE || '已安全配置'}`
+        : '同步完成，当前未配置 App Store Connect 私钥');
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '同步 App Store Connect 私钥失败');
+    } finally {
+      setAppStorePrivateKeySyncing(false);
+    }
+  };
+
+  const syncWeChatWebhook = async () => {
+    if (!editingProductLine) return;
+    setWeChatWebhookSyncing(true);
+    try {
+      const response = await authApi.getProductLineServices(editingProductLine.id);
+      const latest = response.data;
+      if (!latest) throw new Error('未读取到 Webhook 配置状态');
+      setProductLineServices((current) => ({
+        ...current,
+        WECHAT_WEBHOOK_URLConfigured: latest.WECHAT_WEBHOOK_URLConfigured,
+        WECHAT_WEBHOOK_URL: latest.WECHAT_WEBHOOK_URL,
+        WECHAT_WEBHOOK_URL_SOURCE: latest.WECHAT_WEBHOOK_URL_SOURCE,
+      }));
+      setProductLineSecrets((current) => ({ ...current, WECHAT_WEBHOOK_URL: '' }));
+      setProductLineSecretChanges((current) => ({ ...current, WECHAT_WEBHOOK_URL: false }));
+      message.success(latest.WECHAT_WEBHOOK_URLConfigured
+        ? '已刷新企业微信机器人 Webhook 状态'
+        : '刷新完成，当前未配置企业微信机器人 Webhook');
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '刷新企业微信机器人 Webhook 失败');
+    } finally {
+      setWeChatWebhookSyncing(false);
+    }
+  };
+
+  const productLineServicePayload = (): ProductLineServiceUpdate => ({
+    JENKINS_USER: productLineServices.JENKINS_USER,
+    JENKINS_NN_JOB: productLineServices.JENKINS_NN_JOB,
+    JENKINS_NN_QA_JOB: productLineServices.JENKINS_NN_QA_JOB,
+    JENKINS_NN_REPO_URL: productLineServices.JENKINS_NN_REPO_URL,
+    PGYER_SHORTCUT_URL: productLineServices.PGYER_SHORTCUT_URL,
+    APP_STORE_CONNECT_API_KEY_ID: productLineServices.APP_STORE_CONNECT_API_KEY_ID,
+    APP_STORE_CONNECT_API_ISSUER_ID: productLineServices.APP_STORE_CONNECT_API_ISSUER_ID,
+    APP_STORE_CONNECT_APP_ID: productLineServices.APP_STORE_CONNECT_APP_ID,
+    APP_STORE_CONNECT_TESTFLIGHT_GROUPS: productLineServices.APP_STORE_CONNECT_TESTFLIGHT_GROUPS,
+    ...Object.fromEntries((Object.keys(productLineSecretChanges) as ProductLineSecretKey[])
+      .filter((key) => productLineSecretChanges[key])
+      .map((key) => [key, productLineSecrets[key]])),
+  });
+
+  const renderServiceSecret = (
+    key: ProductLineSecretKey,
+    label: string,
+    configured: boolean,
+    placeholder: string
+  ) => {
+    const changed = productLineSecretChanges[key];
+    const pendingValue = productLineSecrets[key];
+    return (
+      <div>
+        <Space size={6} style={{ marginBottom: 6 }}>
+          <Text strong>{label}</Text>
+          {changed
+            ? <Tag color={pendingValue ? 'blue' : 'red'}>{pendingValue ? '待更新' : '待清除'}</Tag>
+            : configured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+        </Space>
+        <Space.Compact style={{ width: '100%' }}>
+          <Input.Password
+            value={pendingValue}
+            onChange={(event) => updateProductLineSecret(key, event.target.value)}
+            placeholder={configured ? `${placeholder}；不填写则保留现有值` : placeholder}
+          />
+          <Button onClick={() => updateProductLineSecret(key, '')} disabled={!configured && !pendingValue}>清除</Button>
+        </Space.Compact>
+      </div>
+    );
+  };
+
+  const saveProductLine = async () => {
+    if (!productLineForm.name.trim()) {
+      message.warning('请输入产品线名称');
+      return;
+    }
+    setProductLineSaving(true);
+    try {
+      let targetProductLineId = editingProductLine?.id || '';
+      if (editingProductLine) {
+        await authApi.updateProductLine(editingProductLine.id, {
+          name: productLineForm.name,
+          projectId: productLineForm.projectId,
+          bundleId: productLineForm.bundleId,
+          jenkinsBaseUrl: productLineForm.jenkinsBaseUrl,
+        });
+      } else {
+        const created = await authApi.createProductLine(productLineForm);
+        targetProductLineId = created.data?.id || '';
+        if (!targetProductLineId) throw new Error('产品线已创建，但未返回产品线 ID');
+      }
+      await authApi.updateProductLineServices(targetProductLineId, productLineServicePayload());
+      message.success(editingProductLine ? '产品线配置已保存' : '产品线已创建');
+      setProductLineModalOpen(false);
+      setEditingProductLine(null);
+      setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
+      setProductLineServices(emptyProductLineServices());
+      setProductLineSecrets(emptyProductLineSecrets());
+      setProductLineSecretChanges(emptySecretChanges());
+      setAppStorePrivateKeyFileName('');
+      await Promise.all([loadProductLines(), loadPlatformUsers(), authUtils.refreshUser()]);
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '创建产品线失败');
+    } finally {
+      setProductLineSaving(false);
     }
   };
 
@@ -365,6 +627,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       loadModules();
     }
     loadPlatformUsers();
+    loadProductLines();
     loadRegistrationRequests();
     loadPlatformConfig();
   }, []);
@@ -494,6 +757,13 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             render: (role: PlatformRole) => roleTag(role),
           },
           {
+            title: '产品线',
+            dataIndex: 'productLineName',
+            key: 'productLineName',
+            width: 140,
+            render: (value: string | undefined, record) => value || record.productLineId,
+          },
+          {
             title: '状态',
             dataIndex: 'status',
             key: 'status',
@@ -582,11 +852,12 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             render: (value: string) => <Text strong>{value}</Text>,
           },
           {
-            title: '角色',
-            dataIndex: 'role',
-            key: 'role',
-            width: 120,
-            render: (role: PlatformRole) => roleTag(role),
+            title: '产品线权限',
+            dataIndex: 'productLines',
+            key: 'productLines',
+            render: (_: PlatformUser['productLines'], record) => record.role === 'admin'
+              ? <Tag color="gold">全平台管理员</Tag>
+              : <Space size={[4, 4]} wrap>{record.productLines.map((item) => <Tag key={item.id}>{item.name} · {{ guest: '游客', tester: '测试', developer: '研发', product: '产品运营', admin: '管理员' }[item.role]}</Tag>)}</Space>,
           },
           {
             title: '状态',
@@ -630,10 +901,44 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     </Card>
   );
 
+  const renderProductLines = () => (
+    <Card
+      title="iOS 产品线"
+      extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreateProductLine}>新增产品线</Button>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        message="产品线是权限与研发数据的隔离边界"
+        description="用户可在不同产品线分别拥有游客、测试、研发或产品运营角色；Workflow 项目标识用于隔离任务、问题与质量门禁数据。"
+        style={{ marginBottom: 16 }}
+      />
+      <Table<PlatformProductLine>
+        rowKey="id"
+        dataSource={productLines}
+        pagination={false}
+        columns={[
+          { title: '名称', dataIndex: 'name', key: 'name' },
+          { title: '标识', dataIndex: 'key', key: 'key', render: (value: string) => <Text code>{value}</Text> },
+          { title: 'Workflow 项目', dataIndex: 'projectId', key: 'projectId', render: (value: string) => <Text code>{value}</Text> },
+          { title: 'Bundle ID', dataIndex: 'bundleId', key: 'bundleId', render: (value?: string) => value || '-' },
+          { title: 'Jenkins 服务', dataIndex: 'jenkinsBaseUrl', key: 'jenkinsBaseUrl', render: (value?: string) => value ? <Text copyable>{value}</Text> : <Tag color="orange">未配置</Tag> },
+          { title: '状态', dataIndex: 'active', key: 'active', render: (active: boolean) => active ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
+          { title: '操作', key: 'actions', render: (_, record) => <Button size="small" icon={<SettingOutlined />} onClick={() => openEditProductLine(record)}>配置</Button> },
+        ]}
+      />
+    </Card>
+  );
+
   const renderPlatformUsers = () => (
     <Tabs
       defaultActiveKey="users"
       items={[
+        {
+          key: 'product-lines',
+          label: '产品线',
+          children: renderProductLines(),
+        },
         {
           key: 'users',
           label: '用户角色',
@@ -922,10 +1227,16 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             />
           </div>
           <div>
-            <Text strong>角色</Text>
+            <Text strong>账号默认角色</Text>
             <Select
               value={userForm.role}
-              onChange={(role) => setUserForm((current) => ({ ...current, role }))}
+              onChange={(role: PlatformRole) => setUserForm((current) => ({
+                ...current,
+                role,
+                productLines: role === 'admin'
+                  ? current.productLines
+                  : current.productLines.map((item, index) => index === 0 ? { ...item, role } : item),
+              }))}
               style={{ width: '100%', marginTop: 6 }}
               options={[
                 { label: '游客：普通用户，常用服务查看', value: 'guest' },
@@ -936,6 +1247,47 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
               ]}
             />
           </div>
+          {userForm.role !== 'admin' && (
+            <div>
+              <Text strong>产品线归属与角色</Text>
+              <Select
+                mode="multiple"
+                value={userForm.productLines.map((item) => item.productLineId)}
+                onChange={(ids: string[]) => setUserForm((current) => ({
+                  ...current,
+                  productLines: ids.map((id) => current.productLines.find((item) => item.productLineId === id) || {
+                    productLineId: id,
+                    role: 'guest' as PlatformRole,
+                  }),
+                }))}
+                options={productLines.filter((item) => item.active).map((item) => ({ label: item.name, value: item.id }))}
+                placeholder="选择该用户可访问的产品线"
+                style={{ width: '100%', marginTop: 6 }}
+              />
+              <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
+                {userForm.productLines.map((membership) => (
+                  <Space key={membership.productLineId} style={{ width: '100%', justifyContent: 'space-between' }}>
+                    <Text>{productLines.find((item) => item.id === membership.productLineId)?.name || membership.productLineId}</Text>
+                    <Select
+                      value={membership.role}
+                      onChange={(role: PlatformRole) => setUserForm((current) => ({
+                        ...current,
+                        role: current.productLines[0]?.productLineId === membership.productLineId ? role : current.role,
+                        productLines: current.productLines.map((item) => item.productLineId === membership.productLineId ? { ...item, role } : item),
+                      }))}
+                      style={{ width: 150 }}
+                      options={[
+                        { label: '游客', value: 'guest' },
+                        { label: '测试', value: 'tester' },
+                        { label: '研发', value: 'developer' },
+                        { label: '产品运营', value: 'product' },
+                      ]}
+                    />
+                  </Space>
+                ))}
+              </Space>
+            </div>
+          )}
           <div>
             <Text strong>{editingUser ? '重置密码' : '登录密码'}</Text>
             {editingUser && (
@@ -977,6 +1329,217 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             </div>
           )}
         </Space>
+      </Modal>
+
+      <Modal
+        title={editingProductLine ? `配置产品线 - ${editingProductLine.name}` : '新增 iOS 产品线'}
+        open={productLineModalOpen}
+        onCancel={() => setProductLineModalOpen(false)}
+        onOk={saveProductLine}
+        confirmLoading={productLineSaving}
+        okText={editingProductLine ? '保存' : '创建'}
+        width={860}
+        destroyOnHidden
+      >
+        <Spin spinning={productLineServicesLoading} tip="正在读取服务配置...">
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="产品线专属服务地址与凭据相互隔离"
+              description="远程 Jenkins 可填写任意能由平台后端访问的 HTTP/HTTPS IP、域名和端口。Sentry 是平台公共服务，不在产品线中重复配置。"
+            />
+            <Collapse
+              defaultActiveKey={['basic', 'jenkins']}
+              items={[
+                {
+                  key: 'basic',
+                  label: '基础信息',
+                  children: (
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      <div><Text strong>产品线名称</Text><Input style={{ marginTop: 6 }} value={productLineForm.name} onChange={(event) => setProductLineForm((current) => ({ ...current, name: event.target.value }))} placeholder="如：雷神加速器" /></div>
+                      <div><Text strong>Bundle ID</Text><Input style={{ marginTop: 6 }} value={productLineForm.bundleId} onChange={(event) => setProductLineForm((current) => ({ ...current, bundleId: event.target.value }))} placeholder="如：com.example.app（可选）" /></div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'jenkins',
+                  label: 'Jenkins 与代码仓库',
+                  children: (
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      <div><Text strong>Jenkins 服务地址</Text><Input style={{ marginTop: 6 }} value={productLineForm.jenkinsBaseUrl} onChange={(event) => setProductLineForm((current) => ({ ...current, jenkinsBaseUrl: event.target.value }))} placeholder="如：https://jenkins.example.com:8080" /></div>
+                      <div><Text strong>Jenkins 用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_USER} onChange={(event) => updateProductLineService('JENKINS_USER', event.target.value)} placeholder="用于调用 Jenkins API" /></div>
+                      {productLineServices.JENKINS_USER === 'anonymous' && !productLineServices.JENKINS_TOKENConfigured ? (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>Jenkins API Token</Text>
+                            <Tag color="green">匿名访问，无需配置</Tag>
+                          </Space>
+                          <Input.Password
+                            value={productLineSecrets.JENKINS_TOKEN}
+                            onChange={(event) => updateProductLineSecret('JENKINS_TOKEN', event.target.value)}
+                            placeholder="当前 Jenkins 允许匿名访问；启用账号认证后再填写 Token"
+                          />
+                        </div>
+                      ) : renderServiceSecret('JENKINS_TOKEN', 'Jenkins API Token', productLineServices.JENKINS_TOKENConfigured, '输入 API Token')}
+                      <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
+                      <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_QA_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_QA_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
+                      <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'release',
+                  label: '蒲公英与 App Store Connect',
+                  children: (
+                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                      {renderServiceSecret('PGYER_API_KEY', '蒲公英 API Key', productLineServices.PGYER_API_KEYConfigured, '输入蒲公英 API Key')}
+                      {!productLineServices.PGYER_APP_KEYConfigured && productLineServices.PGYER_API_KEYConfigured && productLineServices.PGYER_SHORTCUT_URL ? (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>蒲公英 App Key</Text>
+                            <Tag color="green">短链模式，无需配置</Tag>
+                          </Space>
+                          <Input.Password
+                            value={productLineSecrets.PGYER_APP_KEY}
+                            onChange={(event) => updateProductLineSecret('PGYER_APP_KEY', event.target.value)}
+                            placeholder="当前通过蒲公英短链查询；如需改用 App Key 可在此填写"
+                          />
+                        </div>
+                      ) : renderServiceSecret('PGYER_APP_KEY', '蒲公英 App Key', productLineServices.PGYER_APP_KEYConfigured, '输入蒲公英 App Key')}
+                      <div><Text strong>蒲公英短链</Text><Input style={{ marginTop: 6 }} value={productLineServices.PGYER_SHORTCUT_URL} onChange={(event) => updateProductLineService('PGYER_SHORTCUT_URL', event.target.value)} placeholder="如：https://www.pgyer.com/xxxx" /></div>
+                      <div><Text strong>App Store Connect Key ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_API_KEY_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_API_KEY_ID', event.target.value)} placeholder="API Key ID" /></div>
+                      <div><Text strong>Issuer ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_API_ISSUER_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_API_ISSUER_ID', event.target.value)} placeholder="Issuer ID" /></div>
+                      <div>
+                        {productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY && (
+                          <Alert
+                            type="success"
+                            showIcon
+                            style={{ marginBottom: 10 }}
+                            message={`已加载 App Store Connect 私钥：${productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE || '已安全配置'}`}
+                            description="私钥内容属于敏感信息，不会通过管理接口返回或在页面明文显示；直接保存会继续使用当前私钥。"
+                          />
+                        )}
+                        <Space size={6} style={{ marginBottom: 6 }}>
+                          <Text strong>{productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '更新私钥（可选）' : 'App Store Connect 私钥'}</Text>
+                          {productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY
+                            ? <Tag color={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? 'blue' : 'red'}>{productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? '待更新' : '待清除'}</Tag>
+                            : productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+                        </Space>
+                        <Input.TextArea
+                          value={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
+                          onChange={(event) => {
+                            updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', event.target.value);
+                            setAppStorePrivateKeyFileName('');
+                          }}
+                          placeholder={productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '当前私钥已加载；仅在需要替换时粘贴新的 .p8 完整内容' : '粘贴 .p8 私钥完整内容'}
+                          autoSize={{ minRows: 3, maxRows: 8 }}
+                          style={{ fontFamily: 'monospace' }}
+                        />
+                        {appStorePrivateKeyFileName && (
+                          <Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+                            待更新文件：{appStorePrivateKeyFileName}
+                          </Text>
+                        )}
+                        <Space size={8} wrap style={{ marginTop: 8 }}>
+                          <Upload
+                            accept=".p8"
+                            maxCount={1}
+                            showUploadList={false}
+                            beforeUpload={(file) => {
+                              void loadAppStorePrivateKeyFile(file);
+                              return false;
+                            }}
+                          >
+                            <Button size="small" type="primary" icon={<UploadOutlined />}>选择 .p8 更新</Button>
+                          </Upload>
+                          {editingProductLine && (
+                            <Button size="small" icon={<SyncOutlined />} loading={appStorePrivateKeySyncing} onClick={syncAppStorePrivateKey}>
+                              刷新私钥状态
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            icon={<LinkOutlined />}
+                            href="https://appstoreconnect.apple.com/access/integrations/api"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            打开 App Store Connect API 密钥
+                          </Button>
+                          <Popconfirm
+                            title="确定清除当前产品线的 App Store Connect 私钥吗？"
+                            description="保存产品线后生效。"
+                            okText="清除"
+                            cancelText="取消"
+                            onConfirm={() => {
+                              updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', '');
+                              setAppStorePrivateKeyFileName('');
+                            }}
+                            disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
+                          >
+                            <Button size="small" danger disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}>清除私钥</Button>
+                          </Popconfirm>
+                        </Space>
+                      </div>
+                      <div><Text strong>App ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_APP_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_APP_ID', event.target.value)} placeholder="App Store Connect 数字 App ID" /></div>
+                      <div><Text strong>TestFlight 测试组</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_TESTFLIGHT_GROUPS} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_TESTFLIGHT_GROUPS', event.target.value)} placeholder="多个组用逗号分隔" /></div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'notification',
+                  label: '通知服务',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="企业微信机器人用于当前产品线的构建、发布和审核结果通知"
+                        description="在目标企业微信群中添加群机器人后复制完整 Webhook 地址。当前完整地址仅在管理员产品线配置页显示。"
+                      />
+                      {productLineServices.WECHAT_WEBHOOK_URLConfigured && !productLineSecretChanges.WECHAT_WEBHOOK_URL && (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>当前 Webhook</Text>
+                            <Tag color="green">已配置</Tag>
+                          </Space>
+                          <Input
+                            readOnly
+                            value={productLineServices.WECHAT_WEBHOOK_URL || ''}
+                            addonAfter={`来源：${productLineServices.WECHAT_WEBHOOK_URL_SOURCE || '已安全加载'}`}
+                          />
+                        </div>
+                      )}
+                      {renderServiceSecret(
+                        'WECHAT_WEBHOOK_URL',
+                        productLineServices.WECHAT_WEBHOOK_URLConfigured ? '更新 Webhook（可选）' : '企业微信机器人 Webhook',
+                        productLineServices.WECHAT_WEBHOOK_URLConfigured,
+                        '输入完整 Webhook URL，如：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'
+                      )}
+                      <Space size={8} wrap>
+                        {editingProductLine && (
+                          <Button size="small" icon={<SyncOutlined />} loading={weChatWebhookSyncing} onClick={syncWeChatWebhook}>
+                            刷新 Webhook 状态
+                          </Button>
+                        )}
+                        <Button
+                          size="small"
+                          icon={<LinkOutlined />}
+                          href="https://developer.work.weixin.qq.com/document/path/91770"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          查看企业微信机器人配置说明
+                        </Button>
+                      </Space>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+          </Space>
+        </Spin>
       </Modal>
 
       <Modal

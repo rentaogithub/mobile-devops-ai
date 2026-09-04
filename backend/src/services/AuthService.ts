@@ -6,12 +6,27 @@ import { platformConfigService } from './PlatformConfigService';
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
+export interface PlatformProductLine {
+  id: string;
+  key: string;
+  name: string;
+  projectId: string;
+  bundleId?: string;
+  jenkinsBaseUrl?: string;
+  active: boolean;
+}
+
+export interface ProductLineMembership extends PlatformProductLine {
+  role: PlatformRole;
+}
+
 export interface PlatformUser {
   id: string;
   username: string;
   displayName: string;
   role: PlatformRole;
   active: boolean;
+  productLines?: ProductLineMembership[];
 }
 
 export type PlatformRegistrationStatus = 'pending' | 'approved' | 'rejected';
@@ -21,6 +36,8 @@ export interface PlatformRegistrationRequest {
   username: string;
   displayName: string;
   requestedRole: PlatformRole;
+  productLineId: string;
+  productLineName?: string;
   status: PlatformRegistrationStatus;
   reviewerUserId?: string;
   reviewerUsername?: string;
@@ -64,7 +81,20 @@ function sessionCookieHeader(token: string, maxAgeSeconds = Math.floor(SESSION_T
   ].filter(Boolean).join('; ');
 }
 
-function userFromRow(row: any): PlatformUser | null {
+function productLineFromRow(row: any): PlatformProductLine | null {
+  if (!row) return null;
+  return {
+    id: String(row.id || row.product_line_id),
+    key: String(row.key || row.product_line_key),
+    name: String(row.name || row.product_line_name),
+    projectId: String(row.project_id),
+    bundleId: row.bundle_id ? String(row.bundle_id) : undefined,
+    jenkinsBaseUrl: row.jenkins_base_url ? String(row.jenkins_base_url) : undefined,
+    active: Boolean(row.active ?? row.product_line_active),
+  };
+}
+
+function userFromRow(row: any, productLines: ProductLineMembership[] = []): PlatformUser | null {
   if (!row) return null;
   const rawRole = String(row.role || '');
   const role = rawRole === 'viewer' ? 'guest' : (rawRole === 'operator' ? 'tester' : rawRole);
@@ -74,6 +104,7 @@ function userFromRow(row: any): PlatformUser | null {
     displayName: String(row.display_name),
     role: (['guest', 'tester', 'developer', 'product', 'admin'].includes(role) ? role : 'guest') as PlatformRole,
     active: Boolean(row.active),
+    productLines,
   };
 }
 
@@ -88,6 +119,8 @@ function registrationRequestFromRow(row: any): PlatformRegistrationRequest | nul
     username: String(row.username),
     displayName: String(row.display_name),
     requestedRole: role,
+    productLineId: String(row.product_line_id || 'nn'),
+    productLineName: row.product_line_name ? String(row.product_line_name) : undefined,
     status,
     reviewerUserId: row.reviewer_user_id ? String(row.reviewer_user_id) : undefined,
     reviewerUsername: row.reviewer_username ? String(row.reviewer_username) : undefined,
@@ -121,6 +154,150 @@ function validateRole(role: PlatformRole, roles = VALID_ROLES) {
 }
 
 export class AuthService {
+  private membershipsForUser(userId: string, platformRole?: PlatformRole): ProductLineMembership[] {
+    const db = getDatabase();
+    const rows = platformRole === 'admin'
+      ? db.prepare(`
+          SELECT p.*, 'admin' AS membership_role
+          FROM platform_product_lines p
+          WHERE p.active = 1
+          ORDER BY p.name COLLATE NOCASE
+        `).all() as any[]
+      : db.prepare(`
+          SELECT p.*, m.role AS membership_role
+          FROM platform_product_line_memberships m
+          JOIN platform_product_lines p ON p.id = m.product_line_id
+          WHERE m.user_id = ? AND p.active = 1
+          ORDER BY p.name COLLATE NOCASE
+        `).all(userId) as any[];
+
+    return rows.map((row) => ({
+      ...productLineFromRow(row)!,
+      role: (VALID_ROLES.includes(row.membership_role as PlatformRole) ? row.membership_role : 'guest') as PlatformRole,
+    }));
+  }
+
+  private hydrateUser(row: any): PlatformUser | null {
+    if (!row) return null;
+    const rawRole = String(row.role || 'guest');
+    const normalizedRole = (rawRole === 'viewer' ? 'guest' : rawRole === 'operator' ? 'tester' : rawRole) as PlatformRole;
+    return userFromRow(row, this.membershipsForUser(String(row.id), normalizedRole));
+  }
+
+  listProductLines(options: { includeInactive?: boolean } = {}): PlatformProductLine[] {
+    const rows = getDatabase().prepare(`
+      SELECT * FROM platform_product_lines
+      ${options.includeInactive ? '' : 'WHERE active = 1'}
+      ORDER BY name COLLATE NOCASE
+    `).all() as any[];
+    return rows.map(productLineFromRow).filter((item): item is PlatformProductLine => Boolean(item));
+  }
+
+  findProductLine(value: string): PlatformProductLine | null {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+    return productLineFromRow(getDatabase().prepare(`
+      SELECT * FROM platform_product_lines WHERE id = ? OR key = ? OR project_id = ? LIMIT 1
+    `).get(normalized, normalized, normalized));
+  }
+
+  createProductLine(input: { key?: string; name: string; projectId?: string; bundleId?: string; jenkinsBaseUrl?: string }) {
+    const name = String(input.name || '').trim().slice(0, 80);
+    if (!name) throw new Error('请输入产品线名称');
+    const requestedKey = String(input.key || '').trim().toLowerCase();
+    if (requestedKey && !/^[a-z0-9][a-z0-9_-]{1,39}$/.test(requestedKey)) {
+      throw new Error('产品线标识需为 2-40 位小写字母、数字、下划线或连字符');
+    }
+    let key = requestedKey || `pl-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    while (getDatabase().prepare('SELECT 1 FROM platform_product_lines WHERE key = ? LIMIT 1').get(key)) {
+      key = `pl-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+    }
+    const projectId = String(input.projectId || `${key}-ios`).trim().slice(0, 120);
+    const jenkinsBaseUrl = this.normalizeServiceUrl(input.jenkinsBaseUrl, 'Jenkins 服务地址');
+    const timestamp = now();
+    const id = randomUUID();
+    getDatabase().prepare(`
+      INSERT INTO platform_product_lines (id, key, name, project_id, bundle_id, jenkins_base_url, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(id, key, name, projectId, String(input.bundleId || '').trim() || null, jenkinsBaseUrl || null, timestamp, timestamp);
+    return this.findProductLine(id);
+  }
+
+  updateProductLine(id: string, input: { name?: string; projectId?: string; bundleId?: string; jenkinsBaseUrl?: string; active?: boolean }) {
+    const fields = ['updated_at = @updatedAt'];
+    const params: Record<string, unknown> = { id, updatedAt: now() };
+    if (input.name !== undefined) {
+      const name = String(input.name || '').trim().slice(0, 80);
+      if (!name) throw new Error('产品线名称不能为空');
+      fields.push('name = @name');
+      params.name = name;
+    }
+    if (input.projectId !== undefined) {
+      const projectId = String(input.projectId || '').trim().slice(0, 120);
+      if (!projectId) throw new Error('Workflow 项目标识不能为空');
+      fields.push('project_id = @projectId');
+      params.projectId = projectId;
+    }
+    if (input.bundleId !== undefined) {
+      fields.push('bundle_id = @bundleId');
+      params.bundleId = String(input.bundleId || '').trim() || null;
+    }
+    if (input.jenkinsBaseUrl !== undefined) {
+      fields.push('jenkins_base_url = @jenkinsBaseUrl');
+      params.jenkinsBaseUrl = this.normalizeServiceUrl(input.jenkinsBaseUrl, 'Jenkins 服务地址') || null;
+    }
+    if (input.active !== undefined) {
+      if (id === 'nn' && input.active === false) throw new Error('默认 NN 产品线不能停用');
+      fields.push('active = @active');
+      params.active = input.active ? 1 : 0;
+    }
+    const result = getDatabase().prepare(`UPDATE platform_product_lines SET ${fields.join(', ')} WHERE id = @id`).run(params);
+    return result.changes ? this.findProductLine(id) : null;
+  }
+
+  private normalizeServiceUrl(value: unknown, label: string): string {
+    const normalized = String(value || '').trim().replace(/\/+$/, '');
+    if (!normalized) return '';
+    try {
+      const parsed = new URL(normalized);
+      if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('invalid protocol');
+      return parsed.toString().replace(/\/+$/, '');
+    } catch {
+      throw new Error(`${label}必须是有效的 HTTP/HTTPS 地址`);
+    }
+  }
+
+  setUserProductLines(userId: string, memberships: Array<{ productLineId: string; role: PlatformRole }>) {
+    const db = getDatabase();
+    const user = db.prepare('SELECT * FROM platform_users WHERE id = ?').get(userId) as any;
+    if (!user) throw new Error('用户不存在');
+    if (user.role === 'admin') return this.hydrateUser(user);
+
+    const normalized = Array.from(new Map((memberships || []).map((item) => {
+      const productLineId = String(item.productLineId || '').trim();
+      return [productLineId, { ...item, productLineId }];
+    })).values())
+      .filter((item) => item.productLineId);
+    normalized.forEach((item) => {
+      validateRole(item.role, SELF_REGISTER_ROLES);
+      const productLine = this.findProductLine(item.productLineId);
+      if (!productLine || !productLine.active) throw new Error(`产品线 ${item.productLineId} 不存在或已停用`);
+    });
+
+    const timestamp = now();
+    db.transaction(() => {
+      db.prepare('DELETE FROM platform_product_line_memberships WHERE user_id = ?').run(userId);
+      const insert = db.prepare(`
+        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      normalized.forEach((item) => insert.run(item.productLineId, userId, item.role, timestamp, timestamp));
+      const legacyRole = normalized[0]?.role || 'guest';
+      db.prepare('UPDATE platform_users SET role = ?, updated_at = ? WHERE id = ?').run(legacyRole, timestamp, userId);
+    })();
+    return this.hydrateUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(userId));
+  }
+
   initializeBootstrapUser() {
     const db = getDatabase();
     const existing = db.prepare('SELECT COUNT(*) AS count FROM platform_users').get() as { count: number };
@@ -158,7 +335,7 @@ export class AuthService {
   authenticate(username: string, password: string): PlatformUser | null {
     const row = getDatabase().prepare('SELECT * FROM platform_users WHERE username = ? AND active = 1').get(normalizeUsername(username)) as any;
     if (!row || !this.verifyPassword(password, row.password_hash)) return null;
-    return userFromRow(row);
+    return this.hydrateUser(row);
   }
 
   createSession(user: PlatformUser, req: Request, res: Response) {
@@ -190,7 +367,7 @@ export class AuthService {
     `).get(hashToken(token), now()) as any;
     if (!row) return null;
     getDatabase().prepare('UPDATE platform_sessions SET last_seen_at = ? WHERE id = ?').run(now(), row.session_id);
-    return userFromRow(row);
+    return this.hydrateUser(row);
   }
 
   refreshSession(req: Request, res: Response): PlatformUser | null {
@@ -207,38 +384,63 @@ export class AuthService {
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
     getDatabase().prepare('UPDATE platform_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?').run(timestamp, expiresAt, row.session_id);
     res.setHeader('Set-Cookie', sessionCookieHeader(token));
-    return userFromRow(row);
+    return this.hydrateUser(row);
   }
 
   findUserByUsername(username: string) {
-    return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE username = ? AND active = 1').get(normalizeUsername(username)));
+    return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE username = ? AND active = 1').get(normalizeUsername(username)));
   }
 
   listUsers() {
     return (getDatabase().prepare('SELECT * FROM platform_users ORDER BY created_at ASC').all() as any[])
-      .map(userFromRow).filter((item): item is PlatformUser => Boolean(item));
+      .map((row) => this.hydrateUser(row)).filter((item): item is PlatformUser => Boolean(item));
   }
 
-  createUser(input: { username: string; displayName: string; password: string; role: PlatformRole }) {
+  createUser(input: {
+    username: string;
+    displayName: string;
+    password: string;
+    role: PlatformRole;
+    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+  }) {
     const username = normalizeUsername(input.username);
     validateUsername(username);
     validatePassword(input.password);
     validateRole(input.role);
+    if (input.role !== 'admin') {
+      const memberships = input.productLines?.length ? input.productLines : [{ productLineId: 'nn', role: input.role }];
+      memberships.forEach((membership) => {
+        validateRole(membership.role, SELF_REGISTER_ROLES);
+        const productLine = this.findProductLine(membership.productLineId);
+        if (!productLine || !productLine.active) throw new Error(`产品线 ${membership.productLineId} 不存在或已停用`);
+      });
+    }
     const timestamp = now();
     const id = randomUUID();
     getDatabase().prepare(`
       INSERT INTO platform_users (id, username, display_name, password_hash, role, active, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `).run(id, username, String(input.displayName || username).trim().slice(0, 120), this.hashPassword(input.password), input.role, timestamp, timestamp);
-    return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
+    if (input.role !== 'admin') {
+      this.setUserProductLines(id, input.productLines?.length ? input.productLines : [{ productLineId: 'nn', role: input.role }]);
+    }
+    return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
   }
 
-  createRegistrationRequest(input: { username: string; displayName?: string; password: string; requestedRole: PlatformRole }) {
+  createRegistrationRequest(input: {
+    username: string;
+    displayName?: string;
+    password: string;
+    requestedRole: PlatformRole;
+    productLineId?: string;
+  }) {
     const db = getDatabase();
     const username = normalizeUsername(input.username);
     validateUsername(username);
     validateRegistrationPassword(username, input.password);
     validateRole(input.requestedRole, SELF_REGISTER_ROLES);
+    const productLine = this.findProductLine(input.productLineId || 'nn');
+    if (!productLine || !productLine.active) throw new Error('申请的产品线不存在或已停用');
 
     const existingUser = db.prepare('SELECT id FROM platform_users WHERE username = ?').get(username);
     if (existingUser) throw new Error('该用户名已存在');
@@ -253,15 +455,16 @@ export class AuthService {
     const id = randomUUID();
     db.prepare(`
       INSERT INTO platform_user_registration_requests (
-        id, username, display_name, password_hash, requested_role, status, created_at, updated_at
+        id, username, display_name, password_hash, requested_role, product_line_id, status, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
     `).run(
       id,
       username,
       String(input.displayName || username).trim().slice(0, 120),
       this.hashPassword(input.password),
       input.requestedRole,
+      productLine.id,
       timestamp,
       timestamp,
     );
@@ -271,10 +474,12 @@ export class AuthService {
 
   listRegistrationRequests() {
     return (getDatabase().prepare(`
-      SELECT * FROM platform_user_registration_requests
+      SELECT r.*, p.name AS product_line_name
+      FROM platform_user_registration_requests r
+      LEFT JOIN platform_product_lines p ON p.id = r.product_line_id
       ORDER BY
-        CASE status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END,
-        created_at DESC
+        CASE r.status WHEN 'pending' THEN 0 WHEN 'rejected' THEN 1 ELSE 2 END,
+        r.created_at DESC
     `).all() as any[])
       .map(registrationRequestFromRow)
       .filter((item): item is PlatformRegistrationRequest => Boolean(item));
@@ -291,10 +496,17 @@ export class AuthService {
 
       const timestamp = now();
       const userId = randomUUID();
+      const productLine = this.findProductLine(row.product_line_id || 'nn');
+      if (!productLine || !productLine.active) throw new Error('申请的产品线不存在或已停用');
       db.prepare(`
         INSERT INTO platform_users (id, username, display_name, password_hash, role, active, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, 1, ?, ?)
       `).run(userId, row.username, row.display_name, row.password_hash, row.requested_role, timestamp, timestamp);
+
+      db.prepare(`
+        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(productLine.id, userId, row.requested_role, timestamp, timestamp);
 
       db.prepare(`
         UPDATE platform_user_registration_requests
@@ -309,7 +521,7 @@ export class AuthService {
 
       return {
         request: registrationRequestFromRow(db.prepare('SELECT * FROM platform_user_registration_requests WHERE id = ?').get(id)),
-        user: userFromRow(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(userId)),
+        user: this.hydrateUser(db.prepare('SELECT * FROM platform_users WHERE id = ?').get(userId)),
       };
     });
     return approve();
@@ -334,7 +546,13 @@ export class AuthService {
     return registrationRequestFromRow(db.prepare('SELECT * FROM platform_user_registration_requests WHERE id = ?').get(id));
   }
 
-  updateUser(id: string, input: { displayName?: string; password?: string; role?: PlatformRole; active?: boolean }) {
+  updateUser(id: string, input: {
+    displayName?: string;
+    password?: string;
+    role?: PlatformRole;
+    active?: boolean;
+    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+  }) {
     const fields = ['updated_at = @updatedAt'];
     const params: Record<string, unknown> = { id, updatedAt: now() };
     if (input.displayName !== undefined) { fields.push('display_name = @displayName'); params.displayName = input.displayName.trim().slice(0, 120); }
@@ -348,7 +566,8 @@ export class AuthService {
     }
     if (input.active !== undefined) { fields.push('active = @active'); params.active = input.active ? 1 : 0; }
     getDatabase().prepare(`UPDATE platform_users SET ${fields.join(', ')} WHERE id = @id`).run(params);
-    return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
+    if (input.productLines) this.setUserProductLines(id, input.productLines);
+    return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
   }
 
   changePassword(id: string, currentPassword: string, newPassword: string) {
@@ -358,7 +577,7 @@ export class AuthService {
     validatePassword(newPassword);
     getDatabase().prepare('UPDATE platform_users SET password_hash = ?, updated_at = ? WHERE id = ?').run(this.hashPassword(newPassword), now(), id);
     platformConfigService.setEncrypted('ADMIN_PASSWORD', newPassword, id);
-    return userFromRow(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
+    return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
   }
 
   getPasswordForDisplay(id: string) {

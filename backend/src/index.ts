@@ -32,7 +32,7 @@ import workflowRoutes from './routes/workflow.routes';
 import appleDeviceRoutes from './routes/appleDevice.routes';
 import assistantRoutes from './routes/assistant.routes';
 import deviceControlRoutes from './routes/deviceControl.routes';
-import { authMiddleware } from './middleware/auth';
+import { authMiddleware, productLineContextMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
 import { browserLogWebSocketService } from './services/BrowserLogWebSocketService';
@@ -211,26 +211,26 @@ app.get('/logs/view', (req, res) => {
 
 // API Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/dsym', dsymRoutes);
-app.use('/api/symbolicate', symbolicateRoutes);
-app.use('/api/history', historyRoutes);
-app.use('/api/cleanup', authMiddleware, cleanupRoutes);
-app.use('/api/config', moduleRoutes);
-app.use('/api/wechat', wechatRoutes);
-app.use('/api/pods', podsRoutes);
-app.use('/api/git', gitRoutes);
-app.use('/api/jenkins', jenkinsRoutes);
-app.use('/api/quality', qualityRoutes);
-app.use('/api/pairing', pairingRoutes);
-app.use('/api/watermark', authMiddleware, watermarkRoutes);
-app.use('/api/sentry-analysis', sentryAnalysisRoutes);
-app.use('/api/user-query-records', userQueryRecordsRoutes);
-app.use('/api/feedback-log', feedbackLogRoutes);
-app.use('/api/access-stats', accessStatsRoutes);
-app.use('/api/api-docs', apiDocsRoutes);
-app.use('/api/workflow', workflowRoutes);
-app.use('/api/assistant', assistantRoutes);
-app.use('/api/device-control', deviceControlRoutes);
+app.use('/api/dsym', productLineContextMiddleware, dsymRoutes);
+app.use('/api/symbolicate', productLineContextMiddleware, symbolicateRoutes);
+app.use('/api/history', productLineContextMiddleware, historyRoutes);
+app.use('/api/cleanup', productLineContextMiddleware, authMiddleware, cleanupRoutes);
+app.use('/api/config', productLineContextMiddleware, moduleRoutes);
+app.use('/api/wechat', productLineContextMiddleware, wechatRoutes);
+app.use('/api/pods', productLineContextMiddleware, podsRoutes);
+app.use('/api/git', productLineContextMiddleware, gitRoutes);
+app.use('/api/jenkins', productLineContextMiddleware, jenkinsRoutes);
+app.use('/api/quality', productLineContextMiddleware, qualityRoutes);
+app.use('/api/pairing', productLineContextMiddleware, pairingRoutes);
+app.use('/api/watermark', productLineContextMiddleware, authMiddleware, watermarkRoutes);
+app.use('/api/sentry-analysis', productLineContextMiddleware, sentryAnalysisRoutes);
+app.use('/api/user-query-records', productLineContextMiddleware, userQueryRecordsRoutes);
+app.use('/api/feedback-log', productLineContextMiddleware, feedbackLogRoutes);
+app.use('/api/access-stats', productLineContextMiddleware, accessStatsRoutes);
+app.use('/api/api-docs', productLineContextMiddleware, apiDocsRoutes);
+app.use('/api/workflow', productLineContextMiddleware, workflowRoutes);
+app.use('/api/assistant', productLineContextMiddleware, assistantRoutes);
+app.use('/api/device-control', productLineContextMiddleware, deviceControlRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

@@ -9,6 +9,7 @@ export interface DSYMInfo {
   fileSize: number;
   notes?: string;
   relatedAppVersions?: string[];  // 关联的主应用版本列表（用于组件库）
+  productLineId?: string;
   uploadTime: string;
 }
 

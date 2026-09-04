@@ -1,8 +1,10 @@
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
+import { currentProductLineId } from './ProductLineContext';
 
 export interface SymbolicationHistoryRecord {
   id: number;
+  productLineId: string;
   appVersion: string;
   versionDetected: boolean;
   crashType?: string;
@@ -65,12 +67,12 @@ export class HistoryService {
       // 查找最近24小时内的记录，避免全表扫描
       const stmt = db.prepare(`
         SELECT * FROM symbolication_history 
-        WHERE datetime(created_at) > datetime('now', '-24 hours')
+        WHERE product_line_id = ? AND datetime(created_at) > datetime('now', '-24 hours')
         ORDER BY created_at DESC
         LIMIT 100
       `);
 
-      const rows = stmt.all() as any[];
+      const rows = stmt.all(currentProductLineId()) as any[];
       
       // 在内存中比较原始日志和UUID
       for (const row of rows) {
@@ -109,15 +111,16 @@ export class HistoryService {
       const rows = appVersion
         ? db.prepare(`
             SELECT * FROM symbolication_history
-            WHERE app_version = ?
+            WHERE product_line_id = ? AND app_version = ?
             ORDER BY created_at DESC
             LIMIT 500
-          `).all(appVersion) as any[]
+          `).all(currentProductLineId(), appVersion) as any[]
         : db.prepare(`
             SELECT * FROM symbolication_history
+            WHERE product_line_id = ?
             ORDER BY created_at DESC
             LIMIT 1000
-          `).all() as any[];
+          `).all(currentProductLineId()) as any[];
 
       const row = rows.find((record) => record.original_log === originalLog);
       if (!row) {
@@ -162,7 +165,7 @@ export class HistoryService {
                 symbolicated_log = ?,
                 used_uuids = ?,
                 ai_analysis = ?
-            WHERE id = ?
+            WHERE id = ? AND product_line_id = ?
           `);
 
           updateStmt.run(
@@ -178,7 +181,8 @@ export class HistoryService {
             normalizedParams.symbolicatedLog,
             JSON.stringify(normalizedParams.usedUuids),
             normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
-            duplicate.id
+            duplicate.id,
+            currentProductLineId()
           );
 
           logger.info('刷新重复历史记录的符号化结果', {
@@ -198,8 +202,8 @@ export class HistoryService {
       const stmt = db.prepare(`
         INSERT INTO symbolication_history (
           app_version, version_detected, crash_type, crash_reason, last_stack_call, crash_module, crash_location,
-          uid, device_id, original_log, symbolicated_log, used_uuids, ai_analysis
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          uid, device_id, original_log, symbolicated_log, used_uuids, ai_analysis, product_line_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       const result = stmt.run(
@@ -215,7 +219,8 @@ export class HistoryService {
         normalizedParams.originalLog,
         normalizedParams.symbolicatedLog,
         JSON.stringify(normalizedParams.usedUuids),
-        normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null
+        normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
+        currentProductLineId()
       );
 
       logger.info('符号化历史记录已保存', {
@@ -280,10 +285,10 @@ export class HistoryService {
       const dsym = getDatabase().prepare(`
         SELECT app_name
         FROM dsym_info
-        WHERE uuid = ?
+        WHERE uuid = ? AND product_line_id = ?
         ORDER BY upload_time DESC
         LIMIT 1
-      `).get(uuid) as { app_name?: string } | undefined;
+      `).get(uuid, currentProductLineId()) as { app_name?: string } | undefined;
 
       const appName = dsym?.app_name?.trim();
       if (!appName) {
@@ -349,7 +354,7 @@ export class HistoryService {
             symbolicated_log = ?,
             used_uuids = ?,
             ai_analysis = ?
-        WHERE id = ?
+        WHERE id = ? AND product_line_id = ?
       `);
 
       stmt.run(
@@ -365,7 +370,8 @@ export class HistoryService {
         normalizedParams.symbolicatedLog,
         JSON.stringify(normalizedParams.usedUuids),
         normalizedParams.aiAnalysis ? JSON.stringify(normalizedParams.aiAnalysis) : null,
-        id
+        id,
+        currentProductLineId()
       );
 
       logger.info('历史记录符号化结果已刷新', {
@@ -388,10 +394,10 @@ export class HistoryService {
     const db = getDatabase();
 
     const stmt = db.prepare(`
-      SELECT * FROM symbolication_history WHERE id = ?
+      SELECT * FROM symbolication_history WHERE id = ? AND product_line_id = ?
     `);
 
-    const row = stmt.get(id) as any;
+    const row = stmt.get(id, currentProductLineId()) as any;
 
     if (!row) {
       throw new Error(`History record ${id} not found`);
@@ -408,10 +414,11 @@ export class HistoryService {
 
     const stmt = db.prepare(`
       SELECT * FROM symbolication_history 
+      WHERE product_line_id = ?
       ORDER BY created_at DESC
     `);
 
-    const rows = stmt.all() as any[];
+    const rows = stmt.all(currentProductLineId()) as any[];
     const records = rows.map((row) => this.mapRowToRecord(row));
 
     // 按主应用版本分组
@@ -434,11 +441,11 @@ export class HistoryService {
 
     const stmt = db.prepare(`
       SELECT * FROM symbolication_history 
-      WHERE app_version = ?
+      WHERE product_line_id = ? AND app_version = ?
       ORDER BY created_at DESC
     `);
 
-    const rows = stmt.all(appVersion) as any[];
+    const rows = stmt.all(currentProductLineId(), appVersion) as any[];
     return rows.map((row) => this.mapRowToRecord(row));
   }
 
@@ -449,7 +456,7 @@ export class HistoryService {
     const db = getDatabase();
 
     try {
-      const current = db.prepare('SELECT crash_module FROM symbolication_history WHERE id = ?').get(id) as { crash_module?: string } | undefined;
+      const current = db.prepare('SELECT crash_module FROM symbolication_history WHERE id = ? AND product_line_id = ?').get(id, currentProductLineId()) as { crash_module?: string } | undefined;
       // 如果 AI 分析中包含崩溃模块，同时更新崩溃模块字段
       let updateQuery = `
         UPDATE symbolication_history 
@@ -462,8 +469,8 @@ export class HistoryService {
         params.push(aiAnalysis.crashModule);
       }
       
-      updateQuery += ` WHERE id = ?`;
-      params.push(id);
+      updateQuery += ` WHERE id = ? AND product_line_id = ?`;
+      params.push(id, currentProductLineId());
 
       const stmt = db.prepare(updateQuery);
       stmt.run(...params);
@@ -500,8 +507,8 @@ export class HistoryService {
         UPDATE symbolication_history
         SET uid = COALESCE(NULLIF(?, ''), uid),
             device_id = COALESCE(NULLIF(?, ''), device_id)
-        WHERE id = ?
-      `).run(uid || '', deviceId || '', id);
+        WHERE id = ? AND product_line_id = ?
+      `).run(uid || '', deviceId || '', id, currentProductLineId());
     } catch (error: any) {
       logger.warn('更新历史记录用户标识失败', { id, error: error.message });
     }
@@ -534,10 +541,10 @@ export class HistoryService {
     const db = getDatabase();
 
     const stmt = db.prepare(`
-      DELETE FROM symbolication_history WHERE id = ?
+      DELETE FROM symbolication_history WHERE id = ? AND product_line_id = ?
     `);
 
-    stmt.run(id);
+    stmt.run(id, currentProductLineId());
 
     logger.info('符号化历史记录已删除', { id });
   }
@@ -548,7 +555,7 @@ export class HistoryService {
   clearAllHistory(): void {
     const db = getDatabase();
 
-    db.prepare('DELETE FROM symbolication_history').run();
+    db.prepare('DELETE FROM symbolication_history WHERE product_line_id = ?').run(currentProductLineId());
 
     logger.info('所有符号化历史记录已清空');
   }
@@ -564,16 +571,17 @@ export class HistoryService {
     const db = getDatabase();
 
     // 总记录数
-    const totalResult = db.prepare('SELECT COUNT(*) as count FROM symbolication_history').get() as any;
+    const totalResult = db.prepare('SELECT COUNT(*) as count FROM symbolication_history WHERE product_line_id = ?').get(currentProductLineId()) as any;
     const totalRecords = totalResult.count;
 
     // 按版本统计
     const versionStats = db.prepare(`
       SELECT app_version as version, COUNT(*) as count 
       FROM symbolication_history 
+      WHERE product_line_id = ?
       GROUP BY app_version 
       ORDER BY count DESC
-    `).all() as any[];
+    `).all(currentProductLineId()) as any[];
 
     return {
       totalRecords,
@@ -617,10 +625,10 @@ export class HistoryService {
       const stmt = db.prepare(`
         UPDATE symbolication_history 
         SET is_fixed = ?, fixed_version = ?, fixed_remark = ?
-        WHERE id = ?
+        WHERE id = ? AND product_line_id = ?
       `);
 
-      stmt.run(isFixed ? 1 : 0, isFixed ? fixedVersion || null : null, isFixed ? normalizedRemark || null : null, id);
+      stmt.run(isFixed ? 1 : 0, isFixed ? fixedVersion || null : null, isFixed ? normalizedRemark || null : null, id, currentProductLineId());
 
       logger.info('历史记录修复状态已更新', { id, isFixed, fixedVersion, hasFixedRemark: Boolean(normalizedRemark) });
     } catch (error: any) {
@@ -642,6 +650,7 @@ export class HistoryService {
 
     return {
       id: row.id,
+      productLineId: row.product_line_id || 'nn',
       appVersion: row.app_version,
       versionDetected: row.version_detected === 1,
       crashType: row.crash_type,

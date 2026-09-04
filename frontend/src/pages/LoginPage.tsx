@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Card, Input, Button, message, Typography, Space, Segmented, Select } from 'antd';
 import { LockOutlined, UserAddOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { AuthUser } from '../utils/auth';
-import { authApi, PlatformRole } from '../services/api';
+import { authApi, PlatformProductLine, PlatformRole } from '../services/api';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -16,10 +16,20 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [requestedRole, setRequestedRole] = useState<PlatformRole | undefined>(undefined);
+  const [productLines, setProductLines] = useState<PlatformProductLine[]>([]);
+  const [productLineId, setProductLineId] = useState('nn');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const registrationPassword = username.trim() ? `${username.trim()}123` : '';
+
+  useEffect(() => {
+    void authApi.listPublicProductLines().then((response) => {
+      const lines = response.data || [];
+      setProductLines(lines);
+      if (!lines.some((item) => item.id === productLineId) && lines[0]) setProductLineId(lines[0].id);
+    }).catch(() => undefined);
+  }, []);
 
   const redirectPath = (() => {
     const value = new URLSearchParams(location.search).get('redirect') || '/';
@@ -79,6 +89,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         username: nextUsername,
         password: initialPassword,
         requestedRole,
+        productLineId,
       });
       if (!response.success) throw new Error(response.error || '提交注册申请失败');
       message.success('注册申请已提交，等待管理员审核');
@@ -155,6 +166,13 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
           {mode === 'register' && (
             <Space direction="vertical" size={6} style={{ width: '100%' }}>
+              <Select
+                size="large"
+                value={productLineId}
+                onChange={setProductLineId}
+                options={productLines.map((item) => ({ label: item.name, value: item.id }))}
+                placeholder="请选择产品线"
+              />
               <Space.Compact style={{ width: '100%' }}>
                 <div
                   style={{

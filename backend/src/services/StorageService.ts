@@ -2,17 +2,20 @@ import { getDatabase } from '../database';
 import { DSYMInfo } from '../types';
 import fs from 'fs';
 import path from 'path';
+import { currentProductLineId } from './ProductLineContext';
 
 export class StorageService {
-  private db = getDatabase();
+  private get db() {
+    return getDatabase();
+  }
 
   /**
    * 保存 dSYM 信息到数据库
    */
   async saveDSYMInfo(info: Omit<DSYMInfo, 'id' | 'uploadTime'>): Promise<DSYMInfo> {
     const stmt = this.db.prepare(`
-      INSERT INTO dsym_info (uuid, app_name, version, build_number, architecture, file_path, file_size, notes, related_app_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO dsym_info (uuid, app_name, version, build_number, architecture, file_path, file_size, notes, related_app_version, product_line_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -24,7 +27,8 @@ export class StorageService {
       info.filePath,
       info.fileSize,
       info.notes || null,
-      info.relatedAppVersions ? JSON.stringify(info.relatedAppVersions) : null
+      info.relatedAppVersions ? JSON.stringify(info.relatedAppVersions) : null,
+      currentProductLineId()
     );
 
     // 获取插入的记录
@@ -41,6 +45,7 @@ export class StorageService {
       file_size: number;
       notes: string | null;
       related_app_version: string | null;
+      product_line_id: string;
       upload_time: string;
     };
 
@@ -76,12 +81,12 @@ export class StorageService {
       throw new Error('没有要更新的字段');
     }
 
-    values.push(uuid);
+    values.push(uuid, currentProductLineId());
 
     const stmt = this.db.prepare(`
       UPDATE dsym_info 
       SET ${fields.join(', ')}
-      WHERE uuid = ?
+      WHERE uuid = ? AND product_line_id = ?
     `);
 
     stmt.run(...values);
@@ -98,8 +103,8 @@ export class StorageService {
    * 根据 UUID 查找 dSYM
    */
   async findByUUID(uuid: string): Promise<DSYMInfo | null> {
-    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE uuid = ?');
-    const result = stmt.get(uuid) as {
+    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE uuid = ? AND product_line_id = ?');
+    const result = stmt.get(uuid, currentProductLineId()) as {
       id: number;
       uuid: string;
       app_name: string;
@@ -110,6 +115,7 @@ export class StorageService {
       file_size: number;
       notes: string | null;
       related_app_version: string | null;
+      product_line_id: string;
       upload_time: string;
     } | undefined;
 
@@ -120,8 +126,8 @@ export class StorageService {
    * 根据应用名和版本查找 dSYM。用于同版本覆盖上传。
    */
   async findByAppNameAndVersion(appName: string, version: string): Promise<DSYMInfo[]> {
-    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE app_name = ? AND version = ?');
-    const results = stmt.all(appName, version) as {
+    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE app_name = ? AND version = ? AND product_line_id = ?');
+    const results = stmt.all(appName, version, currentProductLineId()) as {
       id: number;
       uuid: string;
       app_name: string;
@@ -132,6 +138,7 @@ export class StorageService {
       file_size: number;
       notes: string | null;
       related_app_version: string | null;
+      product_line_id: string;
       upload_time: string;
     }[];
 
@@ -142,8 +149,8 @@ export class StorageService {
    * 获取所有 dSYM
    */
   async getAllDSYMs(): Promise<DSYMInfo[]> {
-    const stmt = this.db.prepare('SELECT * FROM dsym_info ORDER BY upload_time DESC');
-    const results = stmt.all() as {
+    const stmt = this.db.prepare('SELECT * FROM dsym_info WHERE product_line_id = ? ORDER BY upload_time DESC');
+    const results = stmt.all(currentProductLineId()) as {
       id: number;
       uuid: string;
       app_name: string;
@@ -154,6 +161,7 @@ export class StorageService {
       file_size: number;
       notes: string | null;
       related_app_version: string | null;
+      product_line_id: string;
       upload_time: string;
     }[];
 
@@ -171,8 +179,8 @@ export class StorageService {
     }
 
     // 删除数据库记录
-    const stmt = this.db.prepare('DELETE FROM dsym_info WHERE uuid = ?');
-    stmt.run(uuid);
+    const stmt = this.db.prepare('DELETE FROM dsym_info WHERE uuid = ? AND product_line_id = ?');
+    stmt.run(uuid, currentProductLineId());
 
     // 删除文件系统中的文件
     const dsymDir = path.dirname(dsym.filePath);
@@ -204,6 +212,7 @@ export class StorageService {
     upload_time: string;
     notes?: string | null;
     related_app_version?: string | null;
+    product_line_id?: string;
   }): DSYMInfo {
     let relatedAppVersions: string[] | undefined = undefined;
     if (row.related_app_version) {
@@ -227,6 +236,7 @@ export class StorageService {
       uploadTime: row.upload_time,
       notes: row.notes || undefined,
       relatedAppVersions,
+      productLineId: row.product_line_id || 'nn',
     };
   }
 }

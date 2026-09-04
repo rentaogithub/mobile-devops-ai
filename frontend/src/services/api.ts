@@ -31,6 +31,12 @@ const api = axios.create({
   },
 });
 
+api.interceptors.request.use((config) => {
+  const productLine = authUtils.getActiveProductLine();
+  if (productLine) config.headers.set('X-Product-Line-Id', productLine.id);
+  return config;
+});
+
 const FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS = ['10.0.0'];
 let sentryGovernanceConfigCache: { excludedVersions: string[]; defaultIssueQuery: string; loadedAt: number } | null = null;
 export const BACKEND_UNAVAILABLE_CODE = 'BACKEND_UNAVAILABLE';
@@ -39,12 +45,27 @@ export const BACKEND_UNAVAILABLE_HINT = '可在 nn-ios-platform 目录执行 ./s
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
+export interface PlatformProductLine {
+  id: string;
+  key: string;
+  name: string;
+  projectId: string;
+  bundleId?: string;
+  jenkinsBaseUrl?: string;
+  active: boolean;
+}
+
+export interface ProductLineMembership extends PlatformProductLine {
+  role: PlatformRole;
+}
+
 export interface PlatformUser {
   id: string;
   username: string;
   displayName: string;
   role: PlatformRole;
   active: boolean;
+  productLines: ProductLineMembership[];
 }
 
 export type PlatformRegistrationStatus = 'pending' | 'approved' | 'rejected';
@@ -54,6 +75,8 @@ export interface PlatformRegistrationRequest {
   username: string;
   displayName: string;
   requestedRole: PlatformRole;
+  productLineId: string;
+  productLineName?: string;
   status: PlatformRegistrationStatus;
   reviewerUserId?: string;
   reviewerUsername?: string;
@@ -70,6 +93,34 @@ export interface PlatformConfigStatus {
   releaseVerificationPassword?: string;
   adminPassword?: string;
 }
+
+export interface ProductLineServiceConfig {
+  JENKINS_USER: string;
+  JENKINS_TOKENConfigured: boolean;
+  JENKINS_NN_JOB: string;
+  JENKINS_NN_QA_JOB: string;
+  JENKINS_NN_REPO_URL: string;
+  PGYER_API_KEYConfigured: boolean;
+  PGYER_APP_KEYConfigured: boolean;
+  PGYER_SHORTCUT_URL: string;
+  APP_STORE_CONNECT_API_KEY_ID: string;
+  APP_STORE_CONNECT_API_ISSUER_ID: string;
+  APP_STORE_CONNECT_API_PRIVATE_KEYConfigured: boolean;
+  APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE?: string;
+  APP_STORE_CONNECT_APP_ID: string;
+  APP_STORE_CONNECT_TESTFLIGHT_GROUPS: string;
+  WECHAT_WEBHOOK_URLConfigured: boolean;
+  WECHAT_WEBHOOK_URL?: string;
+  WECHAT_WEBHOOK_URL_SOURCE?: string;
+}
+
+export type ProductLineServiceUpdate = Partial<Record<
+  | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_NN_JOB' | 'JENKINS_NN_QA_JOB' | 'JENKINS_NN_REPO_URL'
+  | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'PGYER_SHORTCUT_URL'
+  | 'APP_STORE_CONNECT_API_KEY_ID' | 'APP_STORE_CONNECT_API_ISSUER_ID' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'APP_STORE_CONNECT_APP_ID' | 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS'
+  | 'WECHAT_WEBHOOK_URL',
+  string
+>>;
 
 // 响应拦截器
 api.interceptors.response.use(
@@ -105,6 +156,7 @@ export const authApi = {
     displayName?: string;
     password: string;
     requestedRole: PlatformRole;
+    productLineId?: string;
   }): Promise<ApiResponse<PlatformRegistrationRequest>> => {
     const response = await api.post<ApiResponse<PlatformRegistrationRequest>>('/auth/register', payload);
     return response.data;
@@ -112,6 +164,48 @@ export const authApi = {
 
   listUsers: async (): Promise<ApiResponse<PlatformUser[]>> => {
     const response = await api.get<ApiResponse<PlatformUser[]>>('/auth/users');
+    return response.data;
+  },
+
+  listPublicProductLines: async (): Promise<ApiResponse<PlatformProductLine[]>> => {
+    const response = await api.get<ApiResponse<PlatformProductLine[]>>('/auth/product-lines/public');
+    return response.data;
+  },
+
+  listProductLines: async (): Promise<ApiResponse<PlatformProductLine[]>> => {
+    const response = await api.get<ApiResponse<PlatformProductLine[]>>('/auth/product-lines');
+    return response.data;
+  },
+
+  createProductLine: async (payload: {
+    key?: string;
+    name: string;
+    projectId?: string;
+    bundleId?: string;
+    jenkinsBaseUrl?: string;
+  }): Promise<ApiResponse<PlatformProductLine>> => {
+    const response = await api.post<ApiResponse<PlatformProductLine>>('/auth/product-lines', payload);
+    return response.data;
+  },
+
+  updateProductLine: async (id: string, payload: {
+    name?: string;
+    projectId?: string;
+    bundleId?: string;
+    jenkinsBaseUrl?: string;
+    active?: boolean;
+  }): Promise<ApiResponse<PlatformProductLine>> => {
+    const response = await api.patch<ApiResponse<PlatformProductLine>>(`/auth/product-lines/${encodeURIComponent(id)}`, payload);
+    return response.data;
+  },
+
+  getProductLineServices: async (id: string): Promise<ApiResponse<ProductLineServiceConfig>> => {
+    const response = await api.get<ApiResponse<ProductLineServiceConfig>>(`/auth/product-lines/${encodeURIComponent(id)}/services`);
+    return response.data;
+  },
+
+  updateProductLineServices: async (id: string, payload: ProductLineServiceUpdate): Promise<ApiResponse<ProductLineServiceConfig>> => {
+    const response = await api.put<ApiResponse<ProductLineServiceConfig>>(`/auth/product-lines/${encodeURIComponent(id)}/services`, payload);
     return response.data;
   },
 
@@ -164,6 +258,7 @@ export const authApi = {
     displayName?: string;
     password: string;
     role: PlatformRole;
+    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
   }): Promise<ApiResponse<PlatformUser>> => {
     const response = await api.post<ApiResponse<PlatformUser>>('/auth/users', payload);
     return response.data;
@@ -174,6 +269,7 @@ export const authApi = {
     password?: string;
     role?: PlatformRole;
     active?: boolean;
+    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
   }): Promise<ApiResponse<PlatformUser>> => {
     const response = await api.patch<ApiResponse<PlatformUser>>(`/auth/users/${id}`, payload);
     return response.data;
@@ -801,7 +897,7 @@ export const accessStatsApi = {
       isAdmin: authUtils.isAdmin(),
       username: currentUser?.username,
       displayName: currentUser?.displayName,
-      role: currentUser?.role,
+      role: authUtils.getActiveRole() || currentUser?.role,
       accessHost: window.location.hostname,
     }).catch(() => {});
   },

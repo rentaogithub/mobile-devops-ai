@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { workflowService } from './WorkflowService';
+import { currentProjectId } from './ProductLineContext';
 import { crashGovernanceService } from './CrashGovernanceService';
 
 interface GatePolicy {
@@ -208,7 +209,7 @@ export class QualityGateService {
     };
 
     const gateSignature = createHash('sha1').update(JSON.stringify({
-      projectId: input.projectId || 'nn-ios',
+      projectId: input.projectId || currentProjectId(),
       buildNumber,
       commitHash: input.commitHash || '',
       branch: input.branch || '',
@@ -221,7 +222,7 @@ export class QualityGateService {
     if (!persist) {
       return {
         id: `gate_preview_${gateSignature}`,
-        projectId: input.projectId || 'nn-ios',
+        projectId: input.projectId || currentProjectId(),
         buildNumber,
         commitHash: input.commitHash || null,
         branch: input.branch || null,

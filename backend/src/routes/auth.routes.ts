@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireRole, sessionAuthMiddleware, verifyPassword } from '../middleware/auth';
 import { authService } from '../services/AuthService';
 import { platformConfigService } from '../services/PlatformConfigService';
+import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
 
@@ -48,6 +49,50 @@ router.get('/me', (req, res) => {
     return;
   }
   res.json({ success: true, data: { user } });
+});
+
+router.get('/product-lines/public', (_req, res) => {
+  res.json({ success: true, data: authService.listProductLines() });
+});
+
+router.get('/product-lines', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
+  res.json({ success: true, data: authService.listProductLines({ includeInactive: true }) });
+});
+
+router.post('/product-lines', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    res.json({ success: true, data: authService.createProductLine(req.body || {}) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '创建产品线失败' });
+  }
+});
+
+router.patch('/product-lines/:id', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const updated = authService.updateProductLine(req.params.id, req.body || {});
+    if (!updated) return res.status(404).json({ success: false, error: '产品线不存在' });
+    res.json({ success: true, data: updated });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '更新产品线失败' });
+  }
+});
+
+router.get('/product-lines/:id/services', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    if (!authService.findProductLine(req.params.id)) return res.status(404).json({ success: false, error: '产品线不存在' });
+    res.json({ success: true, data: productLineConfigService.adminView(req.params.id) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '读取产品线服务配置失败' });
+  }
+});
+
+router.put('/product-lines/:id/services', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const actor = (req as any).authUser;
+    res.json({ success: true, data: productLineConfigService.setMany(req.params.id, req.body || {}, actor?.id) });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '保存产品线服务配置失败' });
+  }
 });
 
 router.get('/users', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {

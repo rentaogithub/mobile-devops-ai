@@ -810,7 +810,7 @@ export default function HomePage() {
   const [secretValues, setSecretValues] = useState<Record<string, Record<string, string>>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
   const buildTrackingTimers = useRef<Map<string, number>>(new Map());
-  const currentRole = authUtils.getUser()?.role || 'guest';
+  const currentRole = authUtils.getActiveRole() || 'guest';
   const visibleSuggestions = suggestions.filter((suggestion) => !suggestion.roles || suggestion.roles.includes(currentRole));
 
   useEffect(() => {

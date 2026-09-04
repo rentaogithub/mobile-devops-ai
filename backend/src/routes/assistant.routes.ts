@@ -43,12 +43,16 @@ function anonymousAssistantUser(req: Request, res: Response): PlatformUser {
     displayName: '匿名访客',
     role: 'guest',
     active: true,
+    productLines: [],
   };
 }
 
 router.use((req, _res, next) => {
   const sessionUser = authService.getSessionUser(req);
-  const assistantUser = sessionUser || anonymousAssistantUser(req, _res);
+  const effectiveRole = (req as any).effectiveRole;
+  const assistantUser = sessionUser
+    ? { ...sessionUser, role: sessionUser.role === 'admin' ? 'admin' : (effectiveRole || sessionUser.role) }
+    : anonymousAssistantUser(req, _res);
   (req as any).authUser = assistantUser;
   (req as any).isAdmin = assistantUser.role === 'admin';
   next();

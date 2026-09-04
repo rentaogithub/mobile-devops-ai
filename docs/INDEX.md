@@ -34,6 +34,7 @@
 ## 🔐 权限与集成
 
 - [用户认证设置](AUTH_SETUP_GUIDE.md) - 用户登录认证配置
+- [iOS 多产品线与权限隔离](MULTI_PRODUCT_LINES_GUIDE.md) - 产品线、成员角色、请求上下文和数据隔离
 - [企业微信设置](WECHAT_SETUP_GUIDE.md) - 企业微信集成配置
 - [企业微信分享](WECHAT_SHARE_GUIDE.md) - 分享到企业微信
 

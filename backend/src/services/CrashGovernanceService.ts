@@ -824,7 +824,9 @@ function buildDefaultIssueQuery(excludedVersions: string[]): string {
 }
 
 export class CrashGovernanceService {
-  private db = getDatabase();
+  private get db() {
+    return getDatabase();
+  }
 
   ensureTable(): void {
     this.db.exec(`

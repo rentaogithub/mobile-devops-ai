@@ -1,4 +1,7 @@
 import os from 'os';
+import { getDatabase } from '../database';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { productLineConfigService, ProductLineConfigKey } from '../services/ProductLineConfigService';
 
 const DEFAULT_SERVICE_HOST = '10.1.2.175';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -71,8 +74,35 @@ export function encodeJenkinsJobPath(jobName: string) {
     .join('/');
 }
 
-export function getJenkinsBaseUrl() {
+export function getJenkinsBaseUrl(productLineId = currentProductLineId()) {
+  try {
+    const row = getDatabase().prepare(`
+      SELECT jenkins_base_url FROM platform_product_lines WHERE id = ? AND active = 1
+    `).get(productLineId) as { jenkins_base_url?: string } | undefined;
+    const configured = String(row?.jenkins_base_url || '').trim();
+    // 产品线显式配置可能指向另一台机器，必须原样使用其域名/IP，不能改写为平台本机地址。
+    if (configured) return trimTrailingSlash(configured);
+  } catch {
+    // 数据库尚未初始化时继续使用环境变量，兼容启动早期调用。
+  }
+  if (productLineId !== 'nn') return '';
   return resolveServiceUrl(envValue('JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`));
+}
+
+export function getProductLineConfig(key: ProductLineConfigKey, productLineId = currentProductLineId()) {
+  return productLineConfigService.get(key, productLineId);
+}
+
+export function getJenkinsConfig(productLineId = currentProductLineId()) {
+  const isLegacyProductLine = productLineId === 'nn';
+  return {
+    baseUrl: getJenkinsBaseUrl(productLineId),
+    username: getProductLineConfig('JENKINS_USER', productLineId),
+    token: getProductLineConfig('JENKINS_TOKEN', productLineId),
+    jobName: getProductLineConfig('JENKINS_NN_JOB', productLineId) || (isLegacyProductLine ? 'nn' : ''),
+    qualityJobName: getProductLineConfig('JENKINS_NN_QA_JOB', productLineId) || (isLegacyProductLine ? 'nn-auto-quality' : ''),
+    repoUrl: getProductLineConfig('JENKINS_NN_REPO_URL', productLineId) || (isLegacyProductLine ? 'http://git.leigod.top/nn_ios/nnios.git' : ''),
+  };
 }
 
 export function getNNRtcJenkinsConfig() {

@@ -3,15 +3,28 @@ import { Router, Request, Response } from 'express';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
-import { getJenkinsBaseUrl } from '../config/externalServices';
+import { getJenkinsBaseUrl, getJenkinsConfig } from '../config/externalServices';
 import { workflowService } from '../services/WorkflowService';
+import { currentProductLineId, currentProjectId } from '../services/ProductLineContext';
 import { crashGovernanceService } from '../services/CrashGovernanceService';
 
 const router = Router();
 
-const JENKINS_BASE_URL = getJenkinsBaseUrl();
-const DEFAULT_JOB_NAME = process.env.JENKINS_NN_JOB || 'nn';
-const DEFAULT_QA_JOB_NAME = process.env.JENKINS_NN_QA_JOB || 'nn-auto-quality';
+function jenkinsBaseUrl() {
+  const value = getJenkinsBaseUrl();
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 服务地址`);
+  return value;
+}
+function defaultJobName() {
+  const value = getJenkinsConfig().jobName;
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 构建 Job`);
+  return value;
+}
+function defaultQaJobName() {
+  const value = getJenkinsConfig().qualityJobName;
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 自动质检 Job`);
+  return value;
+}
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
 const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
@@ -30,8 +43,7 @@ function encodeJobPath(jobName: string) {
 }
 
 function buildAuthConfig() {
-  const username = process.env.JENKINS_USER || '';
-  const token = process.env.JENKINS_TOKEN || '';
+  const { username, token } = getJenkinsConfig();
   return username && token ? { auth: { username, password: token } } : {};
 }
 
@@ -39,8 +51,8 @@ function getPublicJenkinsBaseUrl(req: Request) {
   const configured = String(process.env.JENKINS_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
   if (configured) return configured;
   try {
-    const base = new URL(JENKINS_BASE_URL);
-    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return JENKINS_BASE_URL;
+    const base = new URL(jenkinsBaseUrl());
+    if (!['127.0.0.1', 'localhost', '::1'].includes(base.hostname)) return jenkinsBaseUrl();
     const origin = String(req.get('origin') || '').trim();
     const originHost = origin ? new URL(origin).hostname : '';
     const requestHost = String(req.get('host') || '').split(':')[0];
@@ -50,7 +62,7 @@ function getPublicJenkinsBaseUrl(req: Request) {
     }
     return base.toString().replace(/\/$/, '');
   } catch {
-    return JENKINS_BASE_URL;
+    return jenkinsBaseUrl();
   }
 }
 
@@ -59,7 +71,7 @@ function publicJenkinsUrl(req: Request, url?: string) {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) return url;
   try {
     const parsed = new URL(url);
-    const base = new URL(JENKINS_BASE_URL);
+    const base = new URL(jenkinsBaseUrl());
     const sameJenkinsPort = (parsed.port || (parsed.protocol === 'https:' ? '443' : '80')) === (base.port || (base.protocol === 'https:' ? '443' : '80'));
     const isLocalJenkinsHost = ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname);
     const isConfiguredJenkinsHost = parsed.hostname === base.hostname;
@@ -76,7 +88,7 @@ function publicJenkinsUrl(req: Request, url?: string) {
 
 async function getCrumb() {
   try {
-    const response = await axios.get(`${JENKINS_BASE_URL}/crumbIssuer/api/json`, {
+    const response = await axios.get(`${jenkinsBaseUrl()}/crumbIssuer/api/json`, {
       timeout: 10000,
       ...buildAuthConfig(),
     });
@@ -188,8 +200,8 @@ function isPathInside(parentDir: string, candidatePath: string) {
 }
 
 function isAllowedArtifact(filePath: string) {
-  return localJenkinsWorkspaceDirs(DEFAULT_QA_JOB_NAME).some((workspaceDir) => isPathInside(path.join(workspaceDir, 'quality-results'), filePath)) ||
-    isPathInside(path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds'), filePath);
+  return localJenkinsWorkspaceDirs(defaultQaJobName()).some((workspaceDir) => isPathInside(path.join(workspaceDir, 'quality-results'), filePath)) ||
+    isPathInside(path.join(localJenkinsJobDir(defaultQaJobName()), 'builds'), filePath);
 }
 
 function localArtifactUrl(filePath: string) {
@@ -248,8 +260,8 @@ function normalizeTaskId(value: string) {
 }
 
 function findBuildQualityFile(buildNumber: number, fileName: string) {
-  const buildArchiveDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds', String(buildNumber), 'archive', 'quality-results');
-  const workspaceResultsDirs = localJenkinsWorkspaceDirs(DEFAULT_QA_JOB_NAME).map((workspaceDir) => path.join(workspaceDir, 'quality-results'));
+  const buildArchiveDir = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds', String(buildNumber), 'archive', 'quality-results');
+  const workspaceResultsDirs = localJenkinsWorkspaceDirs(defaultQaJobName()).map((workspaceDir) => path.join(workspaceDir, 'quality-results'));
   const candidates: string[] = [];
   for (const root of [buildArchiveDir, ...workspaceResultsDirs]) {
     if (!fs.existsSync(root)) continue;
@@ -275,7 +287,7 @@ function parseResultDirName(filePath: string) {
 }
 
 function readBuildLog(buildNumber: number) {
-  const logPath = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds', String(buildNumber), 'log');
+  const logPath = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds', String(buildNumber), 'log');
   return fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf-8') : '';
 }
 
@@ -341,7 +353,7 @@ function summarizeIssues(summary: any) {
 }
 
 function mapBuildToTask(buildNumber: number) {
-  const buildDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds', String(buildNumber));
+  const buildDir = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds', String(buildNumber));
   const buildXml = fs.existsSync(path.join(buildDir, 'build.xml'))
     ? fs.readFileSync(path.join(buildDir, 'build.xml'), 'utf-8')
     : '';
@@ -381,13 +393,13 @@ function mapBuildToTask(buildNumber: number) {
     parseLogField(buildLog, /WDA 当前不可访问:\s*([^\s\n\r]+)/);
   const platformTaskId = readXmlParameter(buildXml, 'PLATFORM_TASK_ID') || summary?.platformTaskId;
   const task = {
-    task_id: platformTaskId || `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`,
-    external_task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`,
+    task_id: platformTaskId || `jenkins:${defaultQaJobName()}:${buildNumber}`,
+    external_task_id: `jenkins:${defaultQaJobName()}:${buildNumber}`,
     task_type: requestedSuite === 'monkey' ? 'ios_monkey' : `ios_${requestedSuite || 'quality'}`,
     status,
     progress: progress?.progressPercent ?? (status === 'running' ? 0 : 100),
     progress_updated_at: progress?.updatedAt,
-    project_id: 'nn-ios',
+    project_id: currentProjectId(),
     app_name: 'NNIM',
     app_version: summary?.appVersion || readXmlParameter(buildXml, 'APP_VERSION'),
     build: sourceBuild,
@@ -423,7 +435,7 @@ function mapBuildToTask(buildNumber: number) {
 }
 
 function listAllLocalQualityTasks() {
-  const buildsDir = path.join(localJenkinsJobDir(DEFAULT_QA_JOB_NAME), 'builds');
+  const buildsDir = path.join(localJenkinsJobDir(defaultQaJobName()), 'builds');
   if (!fs.existsSync(buildsDir)) return [];
   return fs.readdirSync(buildsDir, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
@@ -501,7 +513,7 @@ function syncTaskToWorkflow(task: any) {
   }
   const workflowTask = workflowService.upsertTask({
     id: task.task_id,
-    projectId: task.project_id || 'nn-ios',
+    projectId: task.project_id || currentProjectId(),
     taskType: task.task_type,
     suite,
     status: task.status,
@@ -592,10 +604,10 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     progress: 0,
     config: { ...payload, suite, devicePool, wdaUrl },
   });
-  const jobPath = encodeJobPath(DEFAULT_QA_JOB_NAME);
+  const jobPath = encodeJobPath(defaultQaJobName());
   const crumb = await getCrumb();
   const params = new URLSearchParams({
-    SOURCE_JOB: DEFAULT_JOB_NAME,
+    SOURCE_JOB: defaultJobName(),
     SOURCE_BUILD_NUMBER: sourceBuild,
     BRANCH: String(payload.branch || app.branch || ''),
     COMMIT_HASH: String(payload.commitHash || app.commit_hash || ''),
@@ -624,7 +636,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     WDA_START_TIMEOUT_SECONDS: String(process.env.QA_WDA_START_TIMEOUT_SECONDS || '300'),
     WDA_DEVELOPMENT_TEAM: String(process.env.QA_WDA_DEVELOPMENT_TEAM || ''),
     WDA_BUNDLE_ID: String(process.env.QA_WDA_BUNDLE_ID || ''),
-    WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(DEFAULT_QA_JOB_NAME), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
+    WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(defaultQaJobName()), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
     WDA_XCODEBUILD_EXTRA_ARGS: String(process.env.QA_WDA_XCODEBUILD_EXTRA_ARGS || ''),
     MONKEY_DURATION_SECONDS: String(durationSeconds),
     MONKEY_EVENT_COUNT: String(monkey.max_actions || process.env.QA_MONKEY_EVENT_COUNT || '30'),
@@ -641,7 +653,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
   });
 
-  const response = await axios.post(`${JENKINS_BASE_URL}/${jobPath}/buildWithParameters`, params.toString(), {
+  const response = await axios.post(`${jenkinsBaseUrl()}/${jobPath}/buildWithParameters`, params.toString(), {
     timeout: 30000,
     headers: { ...crumb.headers, 'Content-Type': 'application/x-www-form-urlencoded' },
     validateStatus: (status) => status >= 200 && status < 400,
@@ -665,10 +677,10 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   });
 
   return {
-    task_id: workflowTask?.id || `jenkins:${DEFAULT_QA_JOB_NAME}:queued:${Date.now()}`,
+    task_id: workflowTask?.id || `jenkins:${defaultQaJobName()}:queued:${Date.now()}`,
     status: 'queued',
     queue_url: publicJenkinsUrl(req, response.headers.location || ''),
-    job_url: publicJenkinsUrl(req, `${JENKINS_BASE_URL}/${jobPath}/`),
+    job_url: publicJenkinsUrl(req, `${jenkinsBaseUrl()}/${jobPath}/`),
   };
 }
 
@@ -748,7 +760,7 @@ router.post('/tasks/:taskId/cancel', async (req: Request, res: Response) => {
     const buildNumber = normalizeTaskId(req.params.taskId);
     if (!buildNumber) throw new Error('任务不存在');
     const crumb = await getCrumb();
-    await axios.post(`${JENKINS_BASE_URL}/${encodeJobPath(DEFAULT_QA_JOB_NAME)}/${buildNumber}/stop`, null, {
+    await axios.post(`${jenkinsBaseUrl()}/${encodeJobPath(defaultQaJobName())}/${buildNumber}/stop`, null, {
       timeout: 30000,
       headers: crumb.headers,
       ...buildAuthConfig(),
@@ -757,7 +769,7 @@ router.post('/tasks/:taskId/cancel', async (req: Request, res: Response) => {
     if (workflowTask) {
       workflowService.upsertTask({ ...workflowTask, id: workflowTask.id, status: 'canceled', progress: workflowTask.progress });
     }
-    res.json({ success: true, data: { task_id: `jenkins:${DEFAULT_QA_JOB_NAME}:${buildNumber}`, status: 'canceled' } });
+    res.json({ success: true, data: { task_id: `jenkins:${defaultQaJobName()}:${buildNumber}`, status: 'canceled' } });
   } catch (error: any) {
     res.status(502).json({ success: false, error: error.message || '终止 Monkey 任务失败' });
   }
