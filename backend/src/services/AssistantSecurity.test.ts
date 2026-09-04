@@ -21,6 +21,7 @@ describe('assistant identity, permissions and audit', () => {
   let admin: PlatformUser;
 
   beforeAll(() => {
+    closeDatabase();
     process.env.DB_PATH = path.join(tempDir, 'assistant.sqlite');
     initializeDatabase();
     guest = auth.createUser({ username: 'guest.one', displayName: '只读用户', password: 'guest-password', role: 'guest' })!;

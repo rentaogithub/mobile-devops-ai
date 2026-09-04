@@ -19,6 +19,9 @@ import AccessStatsPage from './pages/AccessStatsPage';
 import ApiDocsPage from './pages/ApiDocsPage';
 import CrossPlatformPage from './pages/CrossPlatformPage';
 import WorkflowPage from './pages/WorkflowPage';
+import DeviceConsolePage from './pages/DeviceConsolePage';
+import ReplayCenterPage from './pages/ReplayCenterPage';
+import ReplayFlowEditorPage from './pages/ReplayFlowEditorPage';
 import { authUtils } from './utils/auth';
 import type { AuthUser } from './utils/auth';
 import { accessStatsApi } from './services/api';
@@ -73,7 +76,11 @@ function App() {
             {/* CI/CD 管理 */}
             <Route path="cicd" element={<CICDPage />} />
             <Route path="cicd/quality" element={<CICDPage />} />
+            <Route path="cicd/replay" element={<ReplayCenterPage />} />
+            <Route path="cicd/replay/new" element={<DeviceConsolePage mode="replay-create" />} />
+            <Route path="cicd/replay/:assetId/edit" element={<ReplayFlowEditorPage />} />
             <Route path="cicd/devices" element={<CICDPage />} />
+            <Route path="cicd/device-control" element={<DeviceConsolePage />} />
             {/* 日志服务 */}
             <Route path="logs" element={<LogsPage />} />
             <Route path="logs/pair" element={<LogsPairPage />} />

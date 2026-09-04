@@ -1,0 +1,321 @@
+.replay-flow-loading {
+  display: flex;
+  min-height: 70vh;
+  align-items: center;
+  justify-content: center;
+}
+
+.replay-flow-designer {
+  display: grid;
+  height: calc(100vh - 132px);
+  min-height: 680px;
+  grid-template-columns: 210px minmax(620px, 1fr) 340px;
+  overflow: hidden;
+  border: 1px solid #d9d9d9;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.replay-flow-designer.has-workspace-header {
+  height: calc(100vh - 220px);
+  min-height: 620px;
+}
+
+.replay-flow-workspace-header {
+  margin-bottom: 16px;
+  padding: 4px 12px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.replay-flow-palette,
+.replay-flow-inspector {
+  padding: 16px;
+  overflow: auto;
+  background: #fff;
+}
+
+.replay-flow-palette {
+  border-right: 1px solid #f0f0f0;
+}
+
+.replay-flow-inspector {
+  border-left: 1px solid #f0f0f0;
+}
+
+.replay-flow-palette-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-left: 4px solid #1677ff;
+  border-radius: 8px;
+  background: #fff;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.replay-flow-palette-item:hover {
+  border-color: #91caff;
+  box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.replay-flow-palette-item:active {
+  cursor: grabbing;
+}
+
+.replay-flow-palette-item.is-dragging {
+  border-color: #1677ff;
+  opacity: 0.58;
+}
+
+.replay-flow-palette-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.replay-flow-palette-drag-preview {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  min-width: 150px;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid #91caff;
+  border-left: 4px solid #1677ff;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+  color: #1f2937;
+  pointer-events: none;
+}
+
+.replay-flow-validation {
+  margin-top: 12px;
+}
+
+.replay-flow-canvas {
+  position: relative;
+  overflow: auto;
+  background-color: #f7f9fc;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.13) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.13) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.replay-flow-canvas.is-connecting {
+  cursor: crosshair;
+}
+
+.replay-flow-canvas-surface {
+  position: relative;
+  width: 1800px;
+  height: 1200px;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.replay-flow-edges {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.replay-flow-edges path {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 2;
+}
+
+.replay-flow-edges path.is-draft {
+  stroke: #1677ff;
+  stroke-dasharray: 7 5;
+}
+
+.replay-flow-edges text {
+  fill: #64748b;
+  font-size: 11px;
+  text-anchor: middle;
+}
+
+.replay-flow-node {
+  position: absolute;
+  z-index: 2;
+  width: 220px;
+  min-height: 112px;
+  border: 1px solid #d9d9d9;
+  border-top: 4px solid #1677ff;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.09);
+  cursor: default;
+  transition: border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.replay-flow-node.is-selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.16), 0 12px 30px rgba(15, 23, 42, 0.14);
+}
+
+.replay-flow-node.is-running {
+  animation: replay-flow-running 1.1s ease-in-out infinite;
+}
+
+.replay-flow-node.is-failed,
+.replay-flow-node.is-cancelled {
+  border-color: #ff4d4f;
+}
+
+.replay-flow-node.is-succeeded {
+  border-color: #52c41a;
+}
+
+@keyframes replay-flow-running {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.14), 0 8px 24px rgba(15, 23, 42, 0.09); }
+  50% { box-shadow: 0 0 0 7px rgba(22, 119, 255, 0.22), 0 12px 32px rgba(22, 119, 255, 0.18); }
+}
+
+.replay-flow-node-header {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.replay-flow-node-header:active {
+  cursor: grabbing;
+}
+
+.replay-flow-node-header > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.replay-flow-node-header .ant-typography {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay-flow-node-icon {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: #fff;
+}
+
+.replay-flow-node-header .is-success {
+  color: #52c41a;
+}
+
+.replay-flow-node-header .is-error {
+  color: #ff4d4f;
+}
+
+.replay-flow-node-body {
+  min-height: 54px;
+  padding: 10px 12px 16px;
+  overflow: hidden;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  word-break: break-word;
+}
+
+.replay-flow-target-port {
+  position: absolute;
+  top: 58px;
+  left: -6px;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #64748b;
+  box-shadow: 0 0 0 1px #94a3b8;
+}
+
+.replay-flow-output-ports {
+  position: absolute;
+  top: 48px;
+  right: -3px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replay-flow-output-port {
+  display: flex;
+  height: 16px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  cursor: crosshair;
+  font-size: 10px;
+}
+
+.replay-flow-output-port i {
+  display: block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #1677ff;
+  box-shadow: 0 0 0 1px #1677ff;
+}
+
+.replay-flow-output-port:hover {
+  color: #1677ff;
+}
+
+.replay-flow-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.replay-flow-evidence-grid .ant-image,
+.replay-flow-evidence-grid img {
+  width: 100%;
+  max-height: 210px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+.replay-flow-evidence-grid .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px;
+}
+
+@media (max-width: 1300px) {
+  .replay-flow-designer {
+    grid-template-columns: 190px minmax(540px, 1fr) 310px;
+  }
+}

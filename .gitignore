@@ -24,6 +24,7 @@ backend-dev.log
 frontend-dev.log
 sonic-dev.log
 sonic-agent.log
+sonic-agent-error.log
 
 # ===== 临时文件 =====
 tmp/
@@ -44,3 +45,17 @@ Thumbs.db
 # ===== 测试 =====
 coverage/
 .nyc_output/
+playwright-report/
+test-results/
+blob-report/
+
+# ===== 本地代码分析缓存 =====
+.code-review-graph/
+
+# ===== 本机进程管理配置 =====
+deploy/launchd/com.nn.ios.sonic-agent.plist
+scripts/sonic/run-agent-foreground.sh
+scripts/start-dev.sh
+
+# ===== 文档视觉验收中间产物 =====
+docs/visualizations/*.visual-check.*

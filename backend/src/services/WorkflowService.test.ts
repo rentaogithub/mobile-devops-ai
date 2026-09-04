@@ -11,6 +11,7 @@ describe('mobile workflow foundation', () => {
   const gateService = new QualityGateService();
 
   beforeAll(() => {
+    closeDatabase();
     process.env.DB_PATH = path.join(tempDir, 'workflow.sqlite');
     initializeDatabase();
   });

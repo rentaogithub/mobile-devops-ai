@@ -31,6 +31,7 @@ import apiDocsRoutes from './routes/apiDocs.routes';
 import workflowRoutes from './routes/workflow.routes';
 import appleDeviceRoutes from './routes/appleDevice.routes';
 import assistantRoutes from './routes/assistant.routes';
+import deviceControlRoutes from './routes/deviceControl.routes';
 import { authMiddleware } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
@@ -229,6 +230,7 @@ app.use('/api/access-stats', accessStatsRoutes);
 app.use('/api/api-docs', apiDocsRoutes);
 app.use('/api/workflow', workflowRoutes);
 app.use('/api/assistant', assistantRoutes);
+app.use('/api/device-control', deviceControlRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

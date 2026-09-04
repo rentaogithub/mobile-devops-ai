@@ -166,6 +166,29 @@ function migrateDatabase(): void {
     }
 
     db.prepare("DELETE FROM platform_users WHERE id = 'assistant-guest' AND username = '__assistant_guest__'").run();
+
+    const replayFlowAssetColumns = db.prepare('PRAGMA table_info(replay_flow_assets)').all() as any[];
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'creation_completed')) {
+      console.log('Adding replay flow creation lifecycle columns...');
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN creation_completed INTEGER NOT NULL DEFAULT 1');
+      console.log('Migration completed: replay flow creation state added');
+    }
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'completed_at')) {
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN completed_at TEXT');
+      console.log('Migration completed: replay flow completion time added');
+    }
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'pre_flow_asset_id')) {
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN pre_flow_asset_id TEXT');
+      console.log('Migration completed: replay flow pre-flow reference added');
+    }
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'post_flow_asset_id')) {
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN post_flow_asset_id TEXT');
+      console.log('Migration completed: replay flow post-flow reference added');
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_pre_flow ON replay_flow_assets(pre_flow_asset_id);
+      CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_post_flow ON replay_flow_assets(post_flow_asset_id);
+    `);
   } catch (error) {
     console.error('Migration error:', error);
   }

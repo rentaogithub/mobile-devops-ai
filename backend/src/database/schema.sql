@@ -288,6 +288,79 @@ CREATE TABLE IF NOT EXISTS workflow_release_observations (
 
 CREATE INDEX IF NOT EXISTS idx_workflow_release_observations_release ON workflow_release_observations(project_id, release_version, observed_at DESC);
 
+-- iOS 黑盒自动化：回放流程资产
+CREATE TABLE IF NOT EXISTS replay_flow_assets (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  name TEXT NOT NULL,
+  description TEXT,
+  owner TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft',
+  source_recording_id TEXT,
+  source_fingerprint TEXT NOT NULL,
+  current_draft_id TEXT,
+  latest_version_id TEXT,
+  pre_flow_asset_id TEXT,
+  post_flow_asset_id TEXT,
+  creation_completed INTEGER NOT NULL DEFAULT 1,
+  completed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  archived_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_status ON replay_flow_assets(project_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_owner ON replay_flow_assets(project_id, owner, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_recording ON replay_flow_assets(source_recording_id, created_at DESC);
+
+-- 回放流程草稿：一个资产当前维护一份可持续编辑的草稿
+CREATE TABLE IF NOT EXISTS replay_flow_drafts (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL UNIQUE,
+  revision INTEGER NOT NULL DEFAULT 1,
+  dsl_json TEXT NOT NULL,
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  source_recording_id TEXT,
+  source_fingerprint TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (asset_id) REFERENCES replay_flow_assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_replay_flow_drafts_updated ON replay_flow_drafts(updated_at DESC);
+
+-- 发布版本表先建立数据边界；正式发布能力在后续节点启用
+CREATE TABLE IF NOT EXISTS replay_flow_versions (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL,
+  version_number INTEGER NOT NULL,
+  dsl_json TEXT NOT NULL,
+  compiled_json TEXT NOT NULL,
+  source_recording_id TEXT,
+  source_fingerprint TEXT NOT NULL,
+  release_notes TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(asset_id, version_number),
+  FOREIGN KEY (asset_id) REFERENCES replay_flow_assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_replay_flow_versions_asset ON replay_flow_versions(asset_id, version_number DESC);
+
+CREATE TABLE IF NOT EXISTS replay_flow_audit_events (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (asset_id) REFERENCES replay_flow_assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_replay_flow_audit_asset ON replay_flow_audit_events(asset_id, created_at DESC);
+
 -- 本地实名账号与服务端会话
 CREATE TABLE IF NOT EXISTS platform_users (
   id TEXT PRIMARY KEY,

@@ -3365,6 +3365,682 @@ export const appleDeviceApi = {
   },
 };
 
+export interface DeviceControlDevice {
+  udid: string;
+  name: string;
+  productType?: string;
+  osVersion?: string;
+  connectionType?: string;
+  connected: boolean;
+}
+
+export interface DeviceControlStatus {
+  phase: 'idle' | 'starting' | 'connected' | 'error';
+  device?: DeviceControlDevice;
+  owner?: string;
+  sessionId?: string;
+  wdaUrl?: string;
+  windowSize?: {
+    width: number;
+    height: number;
+  };
+  streamAvailable?: boolean;
+  startedAt?: string;
+  lastError?: string;
+}
+
+export interface DeviceRecordingSnapshot {
+  id: string;
+  createdAt: string;
+  screenshotUrl: string;
+  sourceUrl: string;
+  screenshotBytes: number;
+  sourceBytes: number;
+  screenshotHash: string;
+  sourceHash: string;
+}
+
+export interface DeviceRecordingLocatorCandidate {
+  strategy: 'accessibilityId' | 'predicate' | 'classChain' | 'hierarchy' | 'coordinate';
+  value: string;
+  score: number;
+}
+
+export interface DeviceRecordingActionTarget {
+  type: string;
+  name?: string;
+  label?: string;
+  value?: string;
+  placeholder?: string;
+  contextLabels?: string[];
+  rect: { x: number; y: number; width: number; height: number };
+  relativePoint: { x: number; y: number };
+  depth: number;
+  locators: DeviceRecordingLocatorCandidate[];
+}
+
+export interface DeviceRecordingAction {
+  type: string;
+  params: Record<string, unknown>;
+  screenSize?: { width: number; height: number };
+  normalizedPoint?: { x: number; y: number };
+  normalizedStart?: { x: number; y: number };
+  normalizedEnd?: { x: number; y: number };
+  target?: DeviceRecordingActionTarget;
+  startTarget?: DeviceRecordingActionTarget;
+  endTarget?: DeviceRecordingActionTarget;
+}
+
+export interface DeviceRecordingStep {
+  id: string;
+  index: number;
+  origin: 'platform' | 'annotated';
+  status: 'pending' | 'ready' | 'failed';
+  included: boolean;
+  noiseLikely: boolean;
+  summary: string;
+  createdAt: string;
+  action: DeviceRecordingAction;
+  beforeSnapshot?: DeviceRecordingSnapshot;
+  afterSnapshot?: DeviceRecordingSnapshot;
+  sourceDiff?: {
+    addedCount: number;
+    removedCount: number;
+    addedLabels: string[];
+    removedLabels: string[];
+  };
+  error?: string;
+}
+
+export interface DeviceRecordingObservation {
+  id: string;
+  index: number;
+  kind: 'external_change';
+  status: 'pending' | 'ready' | 'failed';
+  included: boolean;
+  promotedStepId?: string;
+  noiseLikely: boolean;
+  summary: string;
+  createdAt: string;
+  beforeSnapshot?: DeviceRecordingSnapshot;
+  afterSnapshot?: DeviceRecordingSnapshot;
+  sourceDiff?: DeviceRecordingStep['sourceDiff'];
+  suggestedAction?: 'tap' | 'input' | 'ignore';
+  suggestionReason?: string;
+  logicalGroupId?: string;
+  collapsedIntoObservationId?: string;
+  collapsedObservationCount?: number;
+  error?: string;
+}
+
+export interface DeviceRecording {
+  id: string;
+  title: string;
+  owner: string;
+  status: 'recording' | 'stopped';
+  createdAt: string;
+  stoppedAt?: string;
+  device?: DeviceControlDevice;
+  initialSnapshot?: DeviceRecordingSnapshot;
+  steps: DeviceRecordingStep[];
+  observations: DeviceRecordingObservation[];
+  selectedCount: number;
+  candidateSelectedCount: number;
+}
+
+export type DeviceReplayFlowNodeType = 'start' | 'tap' | 'swipe' | 'input' | 'keyboard' | 'wait' | 'condition' | 'assertion' | 'end';
+
+export interface DeviceReplayFlowTarget {
+  accessibilityId?: string;
+  name?: string;
+  label?: string;
+  text?: string;
+  placeholder?: string;
+  type?: string;
+  contextLabels?: string[];
+  coordinate?: { x: number; y: number };
+  relativePoint?: { x: number; y: number };
+}
+
+export type DeviceReplayFlowCondition =
+  | { all: DeviceReplayFlowCondition[] }
+  | { any: DeviceReplayFlowCondition[] }
+  | { not: DeviceReplayFlowCondition }
+  | { kind: 'element'; operator: 'exists' | 'not_exists' | 'visible' | 'not_visible' | 'enabled' | 'disabled'; target: DeviceReplayFlowTarget }
+  | { kind: 'text'; operator: 'equals' | 'contains' | 'not_contains'; target: DeviceReplayFlowTarget; value: string }
+  | { kind: 'keyboard'; operator: 'visible' | 'hidden' }
+  | { kind: 'app'; operator: 'foreground' | 'background' }
+  | { kind: 'delay'; durationMs: number }
+  | { kind: 'page_stable'; durationMs?: number }
+  | { kind: 'snapshot_similarity'; snapshotId: string; threshold?: number };
+
+export interface DeviceReplayFlowNode {
+  id: string;
+  type: DeviceReplayFlowNodeType;
+  name?: string;
+  description?: string;
+  timeoutMs?: number;
+  retry?: { maxAttempts: number; intervalMs?: number; backoff?: 'fixed' | 'linear' };
+  evidence?: { beforeSnapshotId?: string; afterSnapshotId?: string; recordingStepId?: string };
+  precondition?: DeviceReplayFlowCondition;
+  postcondition?: DeviceReplayFlowCondition;
+  next?: string;
+  onFailure?: string;
+  target?: DeviceReplayFlowTarget;
+  start?: { x: number; y: number };
+  end?: { x: number; y: number };
+  durationMs?: number;
+  startTarget?: DeviceReplayFlowTarget;
+  endTarget?: DeviceReplayFlowTarget;
+  value?: string;
+  key?: 'Search' | 'Return' | 'Done' | 'Dismiss';
+  condition?: DeviceReplayFlowCondition;
+  onSuccess?: string;
+  onTimeout?: string;
+  onError?: string;
+  onTrue?: string;
+  onFalse?: string;
+  onPassed?: string;
+  onFailed?: string;
+  result?: 'success' | 'failure';
+  message?: string;
+}
+
+export interface DeviceReplayFlowDsl {
+  schemaVersion: '1.0';
+  id: string;
+  name: string;
+  description?: string;
+  source?: { type: 'recording'; recordingId: string };
+  inputs?: Record<string, { type: 'string'; required?: boolean; default?: string; description?: string }>;
+  nodes: DeviceReplayFlowNode[];
+}
+
+export interface DeviceReplayFlowDiagnostic {
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+  path?: string;
+  nodeId?: string;
+}
+
+export interface DeviceReplayFlowValidation {
+  valid: boolean;
+  errors: DeviceReplayFlowDiagnostic[];
+  warnings: DeviceReplayFlowDiagnostic[];
+}
+
+export interface DeviceReplayFlowRunEvidence {
+  id: string;
+  phase: 'before' | 'after';
+  createdAt: string;
+  sourceUrl?: string;
+  screenshotUrl?: string;
+  captureError?: string;
+}
+
+export interface DeviceReplayFlowNodeRun {
+  sequence: number;
+  nodeId: string;
+  nodeType: DeviceReplayFlowNodeType;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  attempts: number;
+  outcome?: string;
+  nextNodeId?: string;
+  errorCode?: string;
+  error?: string;
+  locator?: {
+    strategy: 'semantic' | 'coordinate' | 'coordinate-fallback';
+    resolvedPoint: { x: number; y: number };
+    matchedName?: string;
+    matchedLabel?: string;
+    semanticScore?: number;
+  };
+  condition?: { matched: boolean; kind: string; actual?: string | number | boolean; expected?: string | number | boolean; elapsedMs: number };
+  evidence: DeviceReplayFlowRunEvidence[];
+}
+
+export interface DeviceReplayFlowRun {
+  id: string;
+  flowId: string;
+  flowName: string;
+  owner: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  inputNames: string[];
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  currentNodeId?: string;
+  result?: 'success' | 'failure';
+  errorCode?: string;
+  error?: string;
+  device?: { udid: string; name: string; osVersion?: string };
+  nodes: DeviceReplayFlowNodeRun[];
+}
+
+export type ReplayFlowAssetStatus = 'draft' | 'published' | 'archived';
+
+export interface ReplayFlowAssetSummary {
+  id: string;
+  projectId: string;
+  name: string;
+  description?: string;
+  owner: string;
+  status: ReplayFlowAssetStatus;
+  sourceRecordingId?: string;
+  sourceFingerprint: string;
+  currentDraftId?: string;
+  latestVersionId?: string;
+  preFlowAssetId?: string;
+  preFlowAssetName?: string;
+  postFlowAssetId?: string;
+  postFlowAssetName?: string;
+  creationCompleted: boolean;
+  completedAt?: string;
+  revision: number;
+  nodeCount: number;
+  versionCount: number;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt?: string;
+}
+
+export interface ReplayFlowDraft {
+  id: string;
+  assetId: string;
+  revision: number;
+  flow: DeviceReplayFlowDsl;
+  validation: DeviceReplayFlowValidation;
+  sourceRecordingId?: string;
+  sourceFingerprint: string;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReplayFlowAsset extends ReplayFlowAssetSummary {
+  draft: ReplayFlowDraft;
+  versions: Array<{
+    id: string;
+    versionNumber: number;
+    createdBy: string;
+    createdAt: string;
+    releaseNotes?: string;
+  }>;
+}
+
+export interface ReplayFlowSourcePreview {
+  recording: {
+    id: string;
+    title: string;
+    status: DeviceRecording['status'];
+    owner: string;
+    createdAt: string;
+    stoppedAt?: string;
+    device?: DeviceControlDevice;
+    selectedCount: number;
+  };
+  selectedSteps: Array<{
+    id: string;
+    index: number;
+    origin: string;
+    actionType: string;
+    summary: string;
+    targetSummary?: string;
+  }>;
+  sourceFingerprint: string;
+  storedSourceFingerprint?: string;
+  sourceChanged: boolean;
+  flow: DeviceReplayFlowDsl;
+  validation: DeviceReplayFlowValidation;
+}
+
+export type ReplayFlowChainPhase = 'pre' | 'main' | 'post';
+export type ReplayFlowChainPhaseStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
+export type ReplayFlowChainRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface ReplayFlowChainPhaseRun {
+  phase: ReplayFlowChainPhase;
+  assetId: string;
+  assetName: string;
+  status: ReplayFlowChainPhaseStatus;
+  replayRunId?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  errorCode?: string;
+  error?: string;
+}
+
+export interface ReplayFlowChainRun {
+  id: string;
+  mainAssetId: string;
+  mainAssetName: string;
+  owner: string;
+  status: ReplayFlowChainRunStatus;
+  inputNames: string[];
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+  stopRequestedAt?: string;
+  currentPhase?: ReplayFlowChainPhase;
+  result?: 'success' | 'failure';
+  errorCode?: string;
+  error?: string;
+  device?: { udid: string; name: string; osVersion?: string };
+  phases: ReplayFlowChainPhaseRun[];
+}
+
+export const deviceControlApi = {
+  listDevices: async (): Promise<ApiResponse<{ devices: DeviceControlDevice[] }>> => {
+    const response = await api.get<ApiResponse<{ devices: DeviceControlDevice[] }>>('/device-control/devices');
+    return response.data;
+  },
+
+  status: async (): Promise<ApiResponse<DeviceControlStatus>> => {
+    const response = await api.get<ApiResponse<DeviceControlStatus>>('/device-control/status');
+    return response.data;
+  },
+
+  connect: async (udid: string): Promise<ApiResponse<DeviceControlStatus>> => {
+    const response = await api.post<ApiResponse<DeviceControlStatus>>('/device-control/connect', { udid }, {
+      timeout: 360000,
+    });
+    return response.data;
+  },
+
+  disconnect: async (): Promise<ApiResponse<DeviceControlStatus>> => {
+    const response = await api.post<ApiResponse<DeviceControlStatus>>('/device-control/disconnect');
+    return response.data;
+  },
+
+  source: async (): Promise<ApiResponse<{ source: string }>> => {
+    const response = await api.get<ApiResponse<{ source: string }>>('/device-control/source', { timeout: 30000 });
+    return response.data;
+  },
+
+  tap: async (x: number, y: number): Promise<ApiResponse<{ point: { x: number; y: number } }>> => {
+    const response = await api.post<ApiResponse<{ point: { x: number; y: number } }>>('/device-control/tap', { x, y });
+    return response.data;
+  },
+
+  swipe: async (payload: {
+    startX: number;
+    startY: number;
+    endX: number;
+    endY: number;
+    durationMs: number;
+  }): Promise<ApiResponse<{
+    start: { x: number; y: number };
+    end: { x: number; y: number };
+    durationMs: number;
+  }>> => {
+    const response = await api.post('/device-control/swipe', payload);
+    return response.data;
+  },
+
+  input: async (text: string): Promise<ApiResponse<{ length: number }>> => {
+    const response = await api.post<ApiResponse<{ length: number }>>('/device-control/input', { text });
+    return response.data;
+  },
+
+  startRecording: async (title?: string): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.post<ApiResponse<DeviceRecording>>('/device-control/recordings', { title }, { timeout: 60000 });
+    return response.data;
+  },
+
+  currentRecording: async (): Promise<ApiResponse<{ recording: DeviceRecording | null }>> => {
+    const response = await api.get<ApiResponse<{ recording: DeviceRecording | null }>>('/device-control/recordings/current');
+    return response.data;
+  },
+
+  latestRecording: async (): Promise<ApiResponse<{ recording: DeviceRecording | null }>> => {
+    const response = await api.get<ApiResponse<{ recording: DeviceRecording | null }>>('/device-control/recordings/latest');
+    return response.data;
+  },
+
+  observeRecordingChange: async (): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.post<ApiResponse<DeviceRecording>>('/device-control/recordings/current/observe');
+    return response.data;
+  },
+
+  stopRecording: async (): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.post<ApiResponse<DeviceRecording>>('/device-control/recordings/current/stop', {}, { timeout: 60000 });
+    return response.data;
+  },
+
+  getRecording: async (recordingId: string): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.get<ApiResponse<DeviceRecording>>(`/device-control/recordings/${encodeURIComponent(recordingId)}`);
+    return response.data;
+  },
+
+  updateRecordingStep: async (recordingId: string, stepId: string, included: boolean): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.patch<ApiResponse<DeviceRecording>>(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/steps/${encodeURIComponent(stepId)}`,
+      { included },
+    );
+    return response.data;
+  },
+
+  updateRecordingObservation: async (recordingId: string, observationId: string, included: boolean): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.patch<ApiResponse<DeviceRecording>>(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/observations/${encodeURIComponent(observationId)}`,
+      { included },
+    );
+    return response.data;
+  },
+
+  promoteRecordingObservation: async (
+    recordingId: string,
+    observationId: string,
+    annotation: {
+      type: 'tap' | 'swipe' | 'input';
+      point?: { x: number; y: number };
+      start?: { x: number; y: number };
+      end?: { x: number; y: number };
+      durationMs?: number;
+    },
+  ): Promise<ApiResponse<DeviceRecording>> => {
+    const response = await api.post<ApiResponse<DeviceRecording>>(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/observations/${encodeURIComponent(observationId)}/promote`,
+      annotation,
+    );
+    return response.data;
+  },
+
+  replayRecording: async (recordingId: string, inputValue?: string): Promise<ApiResponse<{
+    recordingId: string;
+    selectedCount: number;
+    executedCount: number;
+    skippedCount: number;
+    skipped: Array<{ stepId: string; index: number; type: string; summary: string; reason: string }>;
+    results: Array<{ stepId: string; index: number; type: string; summary: string }>;
+  }>> => {
+    const response = await api.post(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/replay`,
+      { inputValue: inputValue || '' },
+      { timeout: 300000 },
+    );
+    return response.data;
+  },
+
+  replayFlowTemplate: async (recordingId: string, includeUnselected = false): Promise<ApiResponse<{
+    flow: DeviceReplayFlowDsl;
+    validation: DeviceReplayFlowValidation;
+    compiled: unknown;
+  }>> => {
+    const response = await api.get(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/replay-flow-template`,
+      { params: { includeUnselected } },
+    );
+    return response.data;
+  },
+
+  recordingOrchestrationPreview: async (recordingId: string): Promise<ApiResponse<{
+    preview: ReplayFlowSourcePreview;
+  }>> => {
+    const response = await api.get<ApiResponse<{ preview: ReplayFlowSourcePreview }>>(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/orchestration-preview`,
+    );
+    return response.data;
+  },
+
+  listReplayFlowAssets: async (params: {
+    search?: string;
+    status?: ReplayFlowAssetStatus | 'all';
+    limit?: number;
+  } = {}): Promise<ApiResponse<{ assets: ReplayFlowAssetSummary[] }>> => {
+    const response = await api.get<ApiResponse<{ assets: ReplayFlowAssetSummary[] }>>('/device-control/replay-flow-assets', { params });
+    return response.data;
+  },
+
+  getReplayFlowAsset: async (assetId: string): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.get<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}`,
+    );
+    return response.data;
+  },
+
+  getReplayFlowSourcePreview: async (assetId: string): Promise<ApiResponse<{
+    preview: ReplayFlowSourcePreview;
+  }>> => {
+    const response = await api.get<ApiResponse<{ preview: ReplayFlowSourcePreview }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/source-preview`,
+    );
+    return response.data;
+  },
+
+  resetReplayFlowFromRecording: async (
+    assetId: string,
+    expectedRevision: number,
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset; preview: ReplayFlowSourcePreview }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset; preview: ReplayFlowSourcePreview }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/reset-from-recording`,
+      { expectedRevision },
+    );
+    return response.data;
+  },
+
+  createReplayFlowAsset: async (
+    recordingId: string,
+    payload: { name: string; description?: string; creationMode?: boolean },
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/recordings/${encodeURIComponent(recordingId)}/replay-flow-assets`,
+      payload,
+    );
+    return response.data;
+  },
+
+  completeReplayFlowCreation: async (assetId: string): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/complete-creation`,
+    );
+    return response.data;
+  },
+
+  saveReplayFlowDraft: async (
+    assetId: string,
+    payload: { expectedRevision: number; flow?: DeviceReplayFlowDsl; name?: string; description?: string },
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.put<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/draft`,
+      payload,
+    );
+    return response.data;
+  },
+
+  copyReplayFlowAsset: async (assetId: string, name?: string): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/copy`,
+      { name },
+    );
+    return response.data;
+  },
+
+  setReplayFlowAssetArchived: async (assetId: string, archived: boolean): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/${archived ? 'archive' : 'restore'}`,
+    );
+    return response.data;
+  },
+
+  updateReplayFlowExecutionChain: async (
+    assetId: string,
+    payload: { preFlowAssetId?: string | null; postFlowAssetId?: string | null },
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.put<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/execution-chain`,
+      payload,
+    );
+    return response.data;
+  },
+
+  startReplayFlowAssetRun: async (
+    assetId: string,
+    inputs: Record<string, string>,
+  ): Promise<ApiResponse<{ run: ReplayFlowChainRun }>> => {
+    const response = await api.post<ApiResponse<{ run: ReplayFlowChainRun }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/runs`,
+      { inputs },
+    );
+    return response.data;
+  },
+
+  listReplayFlowChainRuns: async (params: {
+    status?: ReplayFlowChainRunStatus | 'all';
+    limit?: number;
+  } = {}): Promise<ApiResponse<{ runs: ReplayFlowChainRun[] }>> => {
+    const response = await api.get<ApiResponse<{ runs: ReplayFlowChainRun[] }>>(
+      '/device-control/replay-flow-chain-runs',
+      { params },
+    );
+    return response.data;
+  },
+
+  getReplayFlowChainRun: async (runId: string): Promise<ApiResponse<{ run: ReplayFlowChainRun }>> => {
+    const response = await api.get<ApiResponse<{ run: ReplayFlowChainRun }>>(
+      `/device-control/replay-flow-chain-runs/${encodeURIComponent(runId)}`,
+    );
+    return response.data;
+  },
+
+  stopReplayFlowChainRun: async (runId: string): Promise<ApiResponse<{ run: ReplayFlowChainRun }>> => {
+    const response = await api.post<ApiResponse<{ run: ReplayFlowChainRun }>>(
+      `/device-control/replay-flow-chain-runs/${encodeURIComponent(runId)}/stop`,
+    );
+    return response.data;
+  },
+
+  validateReplayFlow: async (flow: DeviceReplayFlowDsl): Promise<ApiResponse<{
+    validation: DeviceReplayFlowValidation;
+    compiled: unknown;
+  }>> => {
+    const response = await api.post('/device-control/replay-flows/validate', { flow });
+    return response.data;
+  },
+
+  startReplayFlow: async (flow: DeviceReplayFlowDsl, inputs: Record<string, string>): Promise<ApiResponse<{
+    run: DeviceReplayFlowRun;
+  }>> => {
+    const response = await api.post('/device-control/replay-flows/runs', { flow, inputs });
+    return response.data;
+  },
+
+  getReplayFlowRun: async (runId: string): Promise<ApiResponse<{ run: DeviceReplayFlowRun }>> => {
+    const response = await api.get(`/device-control/replay-flows/runs/${encodeURIComponent(runId)}`);
+    return response.data;
+  },
+
+  stopReplayFlowRun: async (runId: string): Promise<ApiResponse<{ run: DeviceReplayFlowRun }>> => {
+    const response = await api.post(`/device-control/replay-flows/runs/${encodeURIComponent(runId)}/stop`);
+    return response.data;
+  },
+};
+
 export const qualityApi = {
   createTask: async (payload: {
     task_type: QualityTaskType;
