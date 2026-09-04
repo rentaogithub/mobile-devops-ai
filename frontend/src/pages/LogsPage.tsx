@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Typography, Card, Input, Button, Space, Upload, Alert, Descriptions, Switch, Tabs, Spin, Table, Modal, message } from 'antd';
 import {
   ApiOutlined,
@@ -147,6 +147,7 @@ export default function LogsPage() {
   const [feedbackLogSearchText, setFeedbackLogSearchText] = useState('');
   const [feedbackAnalysisOpen, setFeedbackAnalysisOpen] = useState(false);
   const [feedbackAnalysisResult, setFeedbackAnalysisResult] = useState<BusinessLogAnalysis | null>(null);
+  const closeFeedbackAnalysis = useCallback(() => setFeedbackAnalysisOpen(false), []);
   const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
   const [feedbackFrameLoading, setFeedbackFrameLoading] = useState(true);
 
@@ -1103,7 +1104,7 @@ export default function LogsPage() {
       <BusinessLogAnalysisModal
         open={feedbackAnalysisOpen}
         analysisResult={feedbackAnalysisResult}
-        onCancel={() => setFeedbackAnalysisOpen(false)}
+        onCancel={closeFeedbackAnalysis}
       />
     </div>
   );

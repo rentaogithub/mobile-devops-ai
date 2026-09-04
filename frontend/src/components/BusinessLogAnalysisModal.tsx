@@ -1,8 +1,9 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 import { Alert, Button, Input, message, Modal, Space, Table, Tabs, Tag, Tooltip, Tree, Typography } from 'antd';
 import { CopyOutlined } from '@ant-design/icons';
 
 const { Text } = Typography;
+const MAX_SEMANTIC_ITEMS = 200;
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -1954,7 +1955,7 @@ interface BusinessLogAnalysisModalProps {
   onCancel: () => void;
 }
 
-export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: BusinessLogAnalysisModalProps) {
+function BusinessLogAnalysisModalComponent({ open, analysisResult, onCancel }: BusinessLogAnalysisModalProps) {
   const [apiResponseJsonSearchText, setApiResponseJsonSearchText] = useState('');
   const [apiSearchText, setApiSearchText] = useState('');
   const [logSearchText, setLogSearchText] = useState('');
@@ -2026,8 +2027,9 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
     ].join('\n').toLowerCase().includes(keyword));
   };
 
-  const renderSemanticPanel = (items: SemanticLogItem[]) => {
+  const renderSemanticPanel = (items: SemanticLogItem[], totalCount = items.length) => {
     const visibleItems = filterSemanticItems(items);
+    const displayedItems = visibleItems.slice(0, MAX_SEMANTIC_ITEMS);
     return (
       <div
         style={{
@@ -2042,11 +2044,19 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
         <div style={{ padding: '9px 12px', borderBottom: '1px solid #f0f0f0', background: '#fff' }}>
           <Space>
             <Text strong>语义分析</Text>
-            <Tag>{visibleItems.length}</Tag>
+            <Tag>{totalCount}</Tag>
           </Space>
         </div>
         <div style={{ maxHeight: 'calc(100vh - 430px)', overflowY: 'auto', padding: 10 }}>
-          {visibleItems.length ? visibleItems.map((item) => (
+          {totalCount > MAX_SEMANTIC_ITEMS ? (
+            <Alert
+              type="info"
+              showIcon
+              message={`日志较多，当前展示前 ${MAX_SEMANTIC_ITEMS} 条语义结果`}
+              style={{ marginBottom: 8 }}
+            />
+          ) : null}
+          {displayedItems.length ? displayedItems.map((item) => (
           <div
             key={item.key}
             style={{
@@ -2092,7 +2102,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
     const filteredLogs = filterLogs(group.logs);
     const keyword = logSearchText.trim();
     const isSdkGroup = group.label === 'IM SDK' || group.label === 'RTC SDK';
-    const semanticItems = filteredLogs.map(explainBusinessLog);
+    const semanticItems = filteredLogs.slice(0, MAX_SEMANTIC_ITEMS).map(explainBusinessLog);
     return (
       <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
         <Space direction="vertical" size="small" style={{ flex: 1, minWidth: 0 }}>
@@ -2151,7 +2161,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
             ]}
           />
         </Space>
-        {renderSemanticPanel(semanticItems)}
+        {renderSemanticPanel(semanticItems, filteredLogs.length)}
       </div>
     );
   };
@@ -2175,7 +2185,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
         record.trackId,
       ].join('\n').toLowerCase().includes(normalizedApiSearchText))
       : dataSource;
-    const semanticItems = filteredDataSource.map(explainApiRow);
+    const semanticItems = filteredDataSource.slice(0, MAX_SEMANTIC_ITEMS).map(explainApiRow);
 
     return (
       <div style={{ display: 'flex', gap: 12, alignItems: 'stretch' }}>
@@ -2324,7 +2334,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
           ]}
           />
         </Space>
-        {renderSemanticPanel(semanticItems)}
+        {renderSemanticPanel(semanticItems, filteredDataSource.length)}
       </div>
     );
   };
@@ -2338,7 +2348,7 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
       width="88vw"
       destroyOnHidden
     >
-      {analysisResult ? (
+      {open && analysisResult ? (
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           {renderAnalysisSummary()}
           <Space>
@@ -2363,10 +2373,13 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
           <Tabs
             activeKey={currentActiveKey}
             onChange={setActiveTabKey}
+            destroyInactiveTabPane
             items={analysisResult.functionGroups.map((group) => ({
               key: group.key,
               label: `${group.label} (${group.label === 'API' ? analysisResult.apiTimeline.length : group.logs.length})`,
-              children: group.label === 'API' ? renderApiTimelineTable(analysisResult.apiTimeline) : renderNormalLogTable(group),
+              children: group.key === currentActiveKey
+                ? (group.label === 'API' ? renderApiTimelineTable(analysisResult.apiTimeline) : renderNormalLogTable(group))
+                : null,
             }))}
           />
         </Space>
@@ -2374,3 +2387,5 @@ export function BusinessLogAnalysisModal({ open, analysisResult, onCancel }: Bus
     </Modal>
   );
 }
+
+export const BusinessLogAnalysisModal = memo(BusinessLogAnalysisModalComponent);

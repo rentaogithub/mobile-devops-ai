@@ -208,6 +208,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<BusinessLogAnalysis | null>(null);
+  const closeBusinessLogAnalysis = useCallback(() => setAnalysisOpen(false), []);
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionRef = useRef<PairingSessionData | null>(null);
@@ -1277,7 +1278,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       <BusinessLogAnalysisModal
         open={analysisOpen}
         analysisResult={analysisResult}
-        onCancel={() => setAnalysisOpen(false)}
+        onCancel={closeBusinessLogAnalysis}
       />
 
       {/* 错误 */}
