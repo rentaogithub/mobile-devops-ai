@@ -6,12 +6,31 @@ import { currentProductLineId } from './ProductLineContext';
 
 export const PRODUCT_LINE_CONFIG_KEYS = [
   'JENKINS_USER', 'JENKINS_TOKEN', 'JENKINS_NN_JOB', 'JENKINS_NN_QA_JOB', 'JENKINS_NN_REPO_URL',
+  'PODX_TARGET_NAME', 'PODX_PRIVATE_SOURCE', 'PODX_GIT_BASE_URL', 'PODX_OVERLAY_FILE',
+  'PODX_PUBLISH_REPOS', 'PODX_PUBLISH_MAIN_REPO', 'PODX_PUBLISH_WORK_DIR', 'PODX_PUBLISH_BASE_BRANCH',
   'PGYER_API_KEY', 'PGYER_APP_KEY', 'PGYER_SHORTCUT_URL',
   'APP_STORE_CONNECT_API_KEY_ID', 'APP_STORE_CONNECT_API_ISSUER_ID', 'APP_STORE_CONNECT_API_PRIVATE_KEY', 'APP_STORE_CONNECT_APP_ID', 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS',
   'WECHAT_WEBHOOK_URL',
 ] as const;
 
 export type ProductLineConfigKey = typeof PRODUCT_LINE_CONFIG_KEYS[number];
+
+export interface ProductLinePodxConfig {
+  productLineId: string;
+  targetName: string;
+  privateSource: string;
+  gitBaseUrl: string;
+  overlayFile: string;
+  publishRepos: string[];
+  publishRepoUrls: string[];
+  publishMainRepo: string;
+  publishWorkDir: string;
+  publishBaseBranch: string;
+  jenkinsBaseUrl: string;
+  jenkinsJob: string;
+  jenkinsQualityJob: string;
+  jenkinsRepoUrl: string;
+}
 
 const SECRET_KEYS = new Set<ProductLineConfigKey>([
   'JENKINS_TOKEN', 'PGYER_API_KEY', 'PGYER_APP_KEY',
@@ -111,6 +130,26 @@ function weChatWebhookSource(productLineId: string) {
     : '';
 }
 
+function trimTrailingSlash(value: string) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function splitList(value: string) {
+  return String(value || '')
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function repoNameFromUrl(url: string) {
+  const text = trimTrailingSlash(url);
+  return path.basename(text).replace(/\.git$/i, '');
+}
+
+function isGitUrl(value: string) {
+  return /^(?:https?:\/\/|git@|ssh:\/\/)/i.test(String(value || '').trim());
+}
+
 class ProductLineConfigService {
   private encryptionKey() {
     return createHash('sha256')
@@ -203,6 +242,101 @@ class ProductLineConfigService {
       values.WECHAT_WEBHOOK_URL_SOURCE = weChatWebhookSource(productLineId) || '已安全加载';
     }
     return values;
+  }
+
+  podxConfig(productLineId = currentProductLineId()): ProductLinePodxConfig {
+    const productLine = this.findProductLine(productLineId);
+    const jenkinsRepoUrl = this.get('JENKINS_NN_REPO_URL', productLineId)
+      || (productLineId === 'nn' ? 'http://git.leigod.top/nn_ios/nnios.git' : '');
+    const targetName = this.get('PODX_TARGET_NAME', productLineId)
+      || (productLineId === 'nn' ? 'nn_ios' : productLine?.key || productLineId);
+    const gitBaseUrl = this.get('PODX_GIT_BASE_URL', productLineId)
+      || this.gitBaseUrlFromRepoUrl(jenkinsRepoUrl, targetName)
+      || (productLineId === 'nn' ? 'http://git.leigod.top' : '');
+    const privateSource = this.get('PODX_PRIVATE_SOURCE', productLineId)
+      || (gitBaseUrl && targetName ? `${trimTrailingSlash(gitBaseUrl)}/${targetName}/nnspec.git` : '');
+    const publishRepos = splitList(this.get('PODX_PUBLISH_REPOS', productLineId));
+    const publishMainRepo = this.get('PODX_PUBLISH_MAIN_REPO', productLineId)
+      || (jenkinsRepoUrl ? repoNameFromUrl(jenkinsRepoUrl) : '');
+    const publishRepoUrls = this.publishRepoUrlsFromConfig(publishRepos, gitBaseUrl, targetName);
+
+    return {
+      productLineId,
+      targetName,
+      privateSource,
+      gitBaseUrl,
+      overlayFile: this.get('PODX_OVERLAY_FILE', productLineId) || 'Podfile.overlay',
+      publishRepos,
+      publishRepoUrls,
+      publishMainRepo,
+      publishWorkDir: this.get('PODX_PUBLISH_WORK_DIR', productLineId) || `.mgit-publish/${productLine?.key || productLineId}`,
+      publishBaseBranch: this.get('PODX_PUBLISH_BASE_BRANCH', productLineId) || 'develop',
+      jenkinsBaseUrl: productLine?.jenkins_base_url || '',
+      jenkinsJob: this.get('JENKINS_NN_JOB', productLineId) || (productLineId === 'nn' ? 'nn' : ''),
+      jenkinsQualityJob: this.get('JENKINS_NN_QA_JOB', productLineId) || (productLineId === 'nn' ? 'nn-auto-quality' : ''),
+      jenkinsRepoUrl,
+    };
+  }
+
+  podxEnvironment(productLineId = currentProductLineId()): Record<string, string> {
+    const config = this.podxConfig(productLineId);
+    return {
+      PODX_PRODUCT_LINE: productLineId,
+      PODX_TARGET_NAME: config.targetName,
+      PODX_PRIVATE_SOURCE: config.privateSource,
+      PODX_GIT_BASE_URL: config.gitBaseUrl,
+      PODX_OVERLAY_FILE: config.overlayFile,
+      PODX_PUBLISH_REPOS: config.publishRepos.join(','),
+      PODX_PUBLISH_MAIN_REPO: config.publishMainRepo,
+      PODX_PUBLISH_WORK_DIR: config.publishWorkDir,
+      PODX_PUBLISH_BASE_BRANCH: config.publishBaseBranch,
+      JENKINS_BASE_URL: config.jenkinsBaseUrl,
+      JENKINS_NN_JOB: config.jenkinsJob,
+      JENKINS_NN_QA_JOB: config.jenkinsQualityJob,
+      JENKINS_NN_REPO_URL: config.jenkinsRepoUrl,
+    };
+  }
+
+  publishRepoUrls(productLineId = currentProductLineId()): string[] {
+    return this.podxConfig(productLineId).publishRepoUrls;
+  }
+
+  private findProductLine(productLineId: string) {
+    try {
+      return getDatabase().prepare(`
+        SELECT id, key, name, project_id, bundle_id, jenkins_base_url
+        FROM platform_product_lines
+        WHERE id = ? OR key = ? OR project_id = ?
+        LIMIT 1
+      `).get(productLineId, productLineId, productLineId) as {
+        id?: string;
+        key?: string;
+        name?: string;
+        project_id?: string;
+        bundle_id?: string;
+        jenkinsBaseUrl?: string;
+        jenkins_base_url?: string;
+      } | undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private gitBaseUrlFromRepoUrl(repoUrl: string, targetName: string) {
+    const value = trimTrailingSlash(repoUrl);
+    if (!value || !targetName) return '';
+    const marker = `/${targetName}/`;
+    const index = value.indexOf(marker);
+    return index > 0 ? value.slice(0, index) : '';
+  }
+
+  private publishRepoUrlsFromConfig(repos: string[], gitBaseUrl: string, targetName: string) {
+    const base = trimTrailingSlash(gitBaseUrl);
+    return repos.map((repo) => {
+      if (isGitUrl(repo)) return repo;
+      if (!base || !targetName) return '';
+      return `${base}/${targetName}/${repo}.git`;
+    }).filter(Boolean);
   }
 }
 

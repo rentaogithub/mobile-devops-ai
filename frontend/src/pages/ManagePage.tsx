@@ -19,6 +19,14 @@ const emptyProductLineServices = (): ProductLineServiceConfig => ({
   JENKINS_NN_JOB: '',
   JENKINS_NN_QA_JOB: '',
   JENKINS_NN_REPO_URL: '',
+  PODX_TARGET_NAME: '',
+  PODX_PRIVATE_SOURCE: '',
+  PODX_GIT_BASE_URL: '',
+  PODX_OVERLAY_FILE: '',
+  PODX_PUBLISH_REPOS: '',
+  PODX_PUBLISH_MAIN_REPO: '',
+  PODX_PUBLISH_WORK_DIR: '',
+  PODX_PUBLISH_BASE_BRANCH: '',
   PGYER_API_KEYConfigured: false,
   PGYER_APP_KEYConfigured: false,
   PGYER_SHORTCUT_URL: '',
@@ -415,6 +423,14 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     JENKINS_NN_JOB: productLineServices.JENKINS_NN_JOB,
     JENKINS_NN_QA_JOB: productLineServices.JENKINS_NN_QA_JOB,
     JENKINS_NN_REPO_URL: productLineServices.JENKINS_NN_REPO_URL,
+    PODX_TARGET_NAME: productLineServices.PODX_TARGET_NAME,
+    PODX_PRIVATE_SOURCE: productLineServices.PODX_PRIVATE_SOURCE,
+    PODX_GIT_BASE_URL: productLineServices.PODX_GIT_BASE_URL,
+    PODX_OVERLAY_FILE: productLineServices.PODX_OVERLAY_FILE,
+    PODX_PUBLISH_REPOS: productLineServices.PODX_PUBLISH_REPOS,
+    PODX_PUBLISH_MAIN_REPO: productLineServices.PODX_PUBLISH_MAIN_REPO,
+    PODX_PUBLISH_WORK_DIR: productLineServices.PODX_PUBLISH_WORK_DIR,
+    PODX_PUBLISH_BASE_BRANCH: productLineServices.PODX_PUBLISH_BASE_BRANCH,
     PGYER_SHORTCUT_URL: productLineServices.PGYER_SHORTCUT_URL,
     APP_STORE_CONNECT_API_KEY_ID: productLineServices.APP_STORE_CONNECT_API_KEY_ID,
     APP_STORE_CONNECT_API_ISSUER_ID: productLineServices.APP_STORE_CONNECT_API_ISSUER_ID,
@@ -1385,6 +1401,23 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                       <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
                       <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_QA_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_QA_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
                       <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
+                      <div><Text strong>podx Target Name</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_TARGET_NAME} onChange={(event) => updateProductLineService('PODX_TARGET_NAME', event.target.value)} placeholder="如：nn_ios、nnrtc_ios" /></div>
+                      <div><Text strong>podx 私有 Specs 源</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PRIVATE_SOURCE} onChange={(event) => updateProductLineService('PODX_PRIVATE_SOURCE', event.target.value)} placeholder="如：https://git.example.com/nnrtc_ios/nnspec.git" /></div>
+                      <div><Text strong>podx Git 基础地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_GIT_BASE_URL} onChange={(event) => updateProductLineService('PODX_GIT_BASE_URL', event.target.value)} placeholder="如：https://git.example.com" /></div>
+                      <div><Text strong>podx Overlay 文件</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_OVERLAY_FILE} onChange={(event) => updateProductLineService('PODX_OVERLAY_FILE', event.target.value)} placeholder="如：Podfile.overlay.nnrtc" /></div>
+                      <div><Text strong>mgit 发布主仓库</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_MAIN_REPO} onChange={(event) => updateProductLineService('PODX_PUBLISH_MAIN_REPO', event.target.value)} placeholder="如：nnios、nnrtc-ios" /></div>
+                      <div><Text strong>mgit 发布工作目录</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_WORK_DIR} onChange={(event) => updateProductLineService('PODX_PUBLISH_WORK_DIR', event.target.value)} placeholder="如：.mgit-publish/nnrtc" /></div>
+                      <div><Text strong>mgit 发布基准分支</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_BASE_BRANCH} onChange={(event) => updateProductLineService('PODX_PUBLISH_BASE_BRANCH', event.target.value)} placeholder="默认 develop" /></div>
+                      <div>
+                        <Text strong>mgit 发布仓库列表</Text>
+                        <Input.TextArea
+                          style={{ marginTop: 6 }}
+                          rows={5}
+                          value={productLineServices.PODX_PUBLISH_REPOS}
+                          onChange={(event) => updateProductLineService('PODX_PUBLISH_REPOS', event.target.value)}
+                          placeholder={'每行一个仓库名或 Git URL，例如：\nnnrtc-ios\nnnrtc-core'}
+                        />
+                      </div>
                     </Space>
                   ),
                 },

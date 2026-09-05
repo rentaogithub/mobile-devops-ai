@@ -9,6 +9,8 @@ import gitBranchService, {
 import podDepsResolver from '../services/PodDependencyResolver';
 import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
 
@@ -100,17 +102,29 @@ function mergeCredentials(body: { username?: string; password?: string }): {
   };
 }
 
+function defaultReposForCurrentProductLine(): string[] {
+  const repos = productLineConfigService.publishRepoUrls(currentProductLineId());
+  return repos.length > 0 ? repos : DEFAULT_REPOS;
+}
+
+function requestedReposOrDefault(repos?: string[]): string[] {
+  return Array.isArray(repos) && repos.length > 0 ? repos : defaultReposForCurrentProductLine();
+}
+
 /**
  * GET /api/git/default-repos
  * 返回脚本中硬编码的默认仓库列表和工作目录
  */
 router.get('/default-repos', (_req: Request, res: Response) => {
+  const podxConfig = productLineConfigService.podxConfig(currentProductLineId());
   res.json({
     success: true,
     data: {
-      repos: DEFAULT_REPOS,
-      baseBranch: 'develop',
+      repos: defaultReposForCurrentProductLine(),
+      baseBranch: podxConfig.publishBaseBranch,
       baseDir: gitBranchService.getBaseDir(),
+      productLineId: podxConfig.productLineId,
+      podx: podxConfig,
     },
   });
 });
@@ -130,7 +144,7 @@ router.post('/pod-deps', adminMiddleware, async (req: Request, res: Response) =>
     password?: string;
   };
   const branch = (body.branch || '').trim();
-  const repos = Array.isArray(body.repos) && body.repos.length > 0 ? body.repos : DEFAULT_REPOS;
+  const repos = requestedReposOrDefault(body.repos);
 
   if (!branch) {
     return res.status(400).json({ success: false, error: 'branch 不能为空' });
@@ -159,7 +173,7 @@ router.post('/branches', adminMiddleware, async (req: Request, res: Response) =>
     username?: string;
     password?: string;
   };
-  const repos = Array.isArray(body.repos) && body.repos.length > 0 ? body.repos : DEFAULT_REPOS;
+  const repos = requestedReposOrDefault(body.repos);
 
   try {
     const creds = mergeCredentials(body);
@@ -190,7 +204,7 @@ router.post('/branch-jobs/precheck', adminMiddleware, async (req: Request, res: 
 
   const targetBranch = (body.targetBranch || '').trim();
   const baseBranch = (body.baseBranch || 'develop').trim();
-  const repos = Array.isArray(body.repos) && body.repos.length > 0 ? body.repos : DEFAULT_REPOS;
+  const repos = requestedReposOrDefault(body.repos);
 
   if (!targetBranch) {
     return res.status(400).json({ success: false, error: 'targetBranch 不能为空' });
@@ -226,7 +240,7 @@ router.post('/branch-jobs/stream', adminMiddleware, async (req: Request, res: Re
     baseBranch: (body.baseBranch || 'develop').trim(),
     pullEnabled: !!body.pullEnabled,
     pushMode: body.pushMode || 'normal',
-    repos: Array.isArray(body.repos) && body.repos.length > 0 ? body.repos : DEFAULT_REPOS,
+    repos: requestedReposOrDefault(body.repos),
     username: creds.username,
     password: creds.password,
     baseDir: body.baseDir,

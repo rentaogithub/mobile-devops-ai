@@ -100,6 +100,14 @@ export interface ProductLineServiceConfig {
   JENKINS_NN_JOB: string;
   JENKINS_NN_QA_JOB: string;
   JENKINS_NN_REPO_URL: string;
+  PODX_TARGET_NAME: string;
+  PODX_PRIVATE_SOURCE: string;
+  PODX_GIT_BASE_URL: string;
+  PODX_OVERLAY_FILE: string;
+  PODX_PUBLISH_REPOS: string;
+  PODX_PUBLISH_MAIN_REPO: string;
+  PODX_PUBLISH_WORK_DIR: string;
+  PODX_PUBLISH_BASE_BRANCH: string;
   PGYER_API_KEYConfigured: boolean;
   PGYER_APP_KEYConfigured: boolean;
   PGYER_SHORTCUT_URL: string;
@@ -116,6 +124,8 @@ export interface ProductLineServiceConfig {
 
 export type ProductLineServiceUpdate = Partial<Record<
   | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_NN_JOB' | 'JENKINS_NN_QA_JOB' | 'JENKINS_NN_REPO_URL'
+  | 'PODX_TARGET_NAME' | 'PODX_PRIVATE_SOURCE' | 'PODX_GIT_BASE_URL' | 'PODX_OVERLAY_FILE'
+  | 'PODX_PUBLISH_REPOS' | 'PODX_PUBLISH_MAIN_REPO' | 'PODX_PUBLISH_WORK_DIR' | 'PODX_PUBLISH_BASE_BRANCH'
   | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'PGYER_SHORTCUT_URL'
   | 'APP_STORE_CONNECT_API_KEY_ID' | 'APP_STORE_CONNECT_API_ISSUER_ID' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'APP_STORE_CONNECT_APP_ID' | 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS'
   | 'WECHAT_WEBHOOK_URL',
@@ -2021,6 +2031,23 @@ export interface GitDefaultReposResponse {
   repos: string[];
   baseBranch: string;
   baseDir: string;
+  productLineId?: string;
+  podx?: {
+    productLineId: string;
+    targetName: string;
+    privateSource: string;
+    gitBaseUrl: string;
+    overlayFile: string;
+    publishRepos: string[];
+    publishRepoUrls: string[];
+    publishMainRepo: string;
+    publishWorkDir: string;
+    publishBaseBranch: string;
+    jenkinsBaseUrl: string;
+    jenkinsJob: string;
+    jenkinsQualityJob: string;
+    jenkinsRepoUrl: string;
+  };
 }
 
 export interface GitBranchJobOptions {

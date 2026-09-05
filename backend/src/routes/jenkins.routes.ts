@@ -23,7 +23,7 @@ import { JenkinsReleaseError, jenkinsAssistantService } from '../services/Jenkin
 import { platformConfigService } from '../services/PlatformConfigService';
 import { requireAnyRole, requireRole } from '../middleware/auth';
 import { currentProductLineId } from '../services/ProductLineContext';
-import { PRODUCT_LINE_CONFIG_KEYS } from '../services/ProductLineConfigService';
+import { PRODUCT_LINE_CONFIG_KEYS, productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -413,8 +413,14 @@ function getMgitPublishRepos(repoDir: string) {
 }
 
 function repoUrlForMgitRepo(repo: string) {
+  if (/^(?:https?:\/\/|git@|ssh:\/\/)/i.test(repo.trim())) return repo.trim();
   const base = defaultRepoUrl().replace(/\/nnios\.git$/i, '');
   return `${base}/${repo}.git`;
+}
+
+function getCurrentProductLineMgitPublishRepos(repoDir: string, productLineId: string) {
+  const repos = productLineConfigService.podxConfig(productLineId).publishRepos;
+  return repos.length > 0 ? repos : getMgitPublishRepos(repoDir);
 }
 
 async function remoteBranchExists(repo: string, branch: string) {
@@ -6070,6 +6076,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
   try {
     const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
     const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';
+    const productLineId = currentProductLineId();
     const repoDir = getNniosRepoLocalDir();
 
     if (!targetBranch) {
@@ -6106,7 +6113,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
     }
 
     const commands: Array<{ command: string; output: string }> = [];
-    const publishRepos = getMgitPublishRepos(repoDir);
+    const publishRepos = getCurrentProductLineMgitPublishRepos(repoDir, productLineId);
     const existingRepos: string[] = [];
     for (const repo of publishRepos) {
       if (await remoteBranchExists(repo, targetBranch)) {
@@ -6115,7 +6122,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
     }
     if (existingRepos.length === publishRepos.length) {
       commands.push({
-        command: `mgit ${buildMgitPublishArgs(targetBranch, baseBranch).join(' ')}`,
+        command: `mgit ${buildMgitPublishArgs(targetBranch, baseBranch, productLineId).join(' ')}`,
         output: `目标分支已存在，跳过重复 publish：${existingRepos.join(', ')}`,
       });
       res.json({
@@ -6136,6 +6143,10 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
       try {
         const { stdout, stderr } = await execFileAsync(bin, args, {
           cwd: repoDir,
+          env: {
+            ...process.env,
+            ...productLineConfigService.podxEnvironment(productLineId),
+          },
           timeout: 10 * 60 * 1000,
           maxBuffer: 20 * 1024 * 1024,
         });
@@ -6153,7 +6164,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
 
     await runMgit(['checkout', baseBranch]);
     await runMgit(['pull', '--ff-only']);
-    await runMgit(buildMgitPublishArgs(targetBranch, baseBranch));
+    await runMgit(buildMgitPublishArgs(targetBranch, baseBranch, productLineId));
 
     res.json({
       success: true,

@@ -9,4 +9,15 @@ describe('buildMgitPublishArgs', () => {
       'release/6.2.0',
     ]);
   });
+
+  it('passes the selected product line before the mgit action', () => {
+    expect(buildMgitPublishArgs('release/1.8.0', 'develop', 'nnrtc')).toEqual([
+      '--line',
+      'nnrtc',
+      'publish',
+      'release/1.8.0',
+      '--base-branch',
+      'develop',
+    ]);
+  });
 });

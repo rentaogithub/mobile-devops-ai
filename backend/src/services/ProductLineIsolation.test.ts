@@ -102,6 +102,14 @@ describe('product line isolation', () => {
         JENKINS_NN_JOB: 'alpha/app-build',
         JENKINS_NN_QA_JOB: 'alpha/app-quality',
         JENKINS_NN_REPO_URL: 'https://git.example.com/alpha/ios.git',
+        PODX_TARGET_NAME: 'alpha_ios',
+        PODX_PRIVATE_SOURCE: 'https://git.example.com/alpha_ios/nnspec.git',
+        PODX_GIT_BASE_URL: 'https://git.example.com',
+        PODX_OVERLAY_FILE: 'Podfile.overlay.alpha',
+        PODX_PUBLISH_REPOS: 'alpha-ios, alpha-core',
+        PODX_PUBLISH_MAIN_REPO: 'alpha-ios',
+        PODX_PUBLISH_WORK_DIR: '.mgit-publish/alpha',
+        PODX_PUBLISH_BASE_BRANCH: 'develop',
         PGYER_API_KEY: 'alpha-pgyer-key',
         APP_STORE_CONNECT_API_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nalpha-private-key\n-----END PRIVATE KEY-----',
         WECHAT_WEBHOOK_URL: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=alpha-webhook-secret',
@@ -115,6 +123,26 @@ describe('product line isolation', () => {
           jobName: 'alpha/app-build',
           qualityJobName: 'alpha/app-quality',
           repoUrl: 'https://git.example.com/alpha/ios.git',
+        }));
+        expect(productLineConfigService.podxConfig()).toEqual(expect.objectContaining({
+          targetName: 'alpha_ios',
+          privateSource: 'https://git.example.com/alpha_ios/nnspec.git',
+          gitBaseUrl: 'https://git.example.com',
+          overlayFile: 'Podfile.overlay.alpha',
+          publishRepos: ['alpha-ios', 'alpha-core'],
+          publishRepoUrls: [
+            'https://git.example.com/alpha_ios/alpha-ios.git',
+            'https://git.example.com/alpha_ios/alpha-core.git',
+          ],
+          publishMainRepo: 'alpha-ios',
+          publishWorkDir: '.mgit-publish/alpha',
+          publishBaseBranch: 'develop',
+        }));
+        expect(productLineConfigService.podxEnvironment()).toEqual(expect.objectContaining({
+          PODX_PRODUCT_LINE: alpha.id,
+          PODX_TARGET_NAME: 'alpha_ios',
+          PODX_PUBLISH_REPOS: 'alpha-ios,alpha-core',
+          JENKINS_NN_JOB: 'alpha/app-build',
         }));
       });
 
