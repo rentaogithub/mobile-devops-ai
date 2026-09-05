@@ -127,6 +127,23 @@ JENKINS_TOKEN=your-api-token
 
 如果同步时报 Jenkins 500，但原页面可访问，通常是 Jenkins 拒绝无认证的 `config.xml` 更新；使用管理员 API Token 后再执行同步。
 
+### 平台服务启停 Job
+
+`nn-ios-platform-service` 是独立的平台运维 Job，支持通过 `ACTION` 参数执行 `status`、`start`、`stop` 或 `restart`。默认是只读的 `status`，并且禁止多个启停构建并发执行。Jenkins 启用登录权限后，管理员可直接选择 `stop` 或 `restart`，不再叠加容易遗漏的确认框。
+
+同步到 Jenkins：
+
+```bash
+bash scripts/jenkins/sync-nn-ios-platform-service-job.sh
+```
+
+同步脚本会把当前仓库绝对路径固定到 Jenkins Job 执行脚本中，不在构建页面暴露可编辑的目录或端口参数。仓库迁移后需重新执行一次同步。Job 最长运行 5 分钟，构建记录保留 30 天且最多 30 次。可通过 `backend/.env` 中的 `JENKINS_PLATFORM_SERVICE_JOB` 自定义 Job 名称，认证仍复用 `JENKINS_USER` 和 `JENKINS_TOKEN`。
+
+Jenkins 应启用本地账号和 Matrix Authorization：匿名用户只保留 Jenkins、Job 和视图的读权限，构建、停止和修改 Job 必须登录。平台后台通过 `backend/.env` 中的 Jenkins API Token 继续访问 CI/CD，不使用管理员密码调用 API。
+平台管理员密码和 Jenkins 本地账号密码是两个独立的密码库：首次部署可设置为相同值，但以后在平台修改密码时，需要同时在 Jenkins 账号设置中更新，不应在两个系统间传递或记录明文密码。
+
+`ACTION=status` 会把平台作为应当处于运行状态的健康检查：前端或后端任一不可用时，Jenkins 构建返回失败。`stop` 操作使用反向检查，只有前后端都已停止才会返回成功。
+
 ## Sonic 可选诊断
 
 Sonic 现在是可选扩展能力，不随平台默认启动。需要排查 Sonic 时再使用统一入口：

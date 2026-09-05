@@ -6,6 +6,11 @@
 
 set -euo pipefail
 
+# Jenkins 的非交互 shell 可能使用 C locale，会让 macOS lsof/ps 转义中文路径，
+# 进而影响平台进程归属判断。
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 BACKEND_DIR="$PROJECT_ROOT/backend"
@@ -65,9 +70,23 @@ port_command() {
   ps -p "$pid" -o command= 2>/dev/null || true
 }
 
+process_working_directory() {
+  local pid="$1"
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
+process_belongs_to_platform() {
+  local pid="$1"
+  local working_directory
+  working_directory="$(process_working_directory "$pid")"
+  case "$working_directory" in
+    "$PROJECT_ROOT"|"$PROJECT_ROOT"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 ensure_port_available_or_owned() {
   local port="$1"
-  local expected="$2"
   local pid
   pid="$(port_pid "$port" | head -n 1)"
   if [ -z "$pid" ]; then
@@ -76,9 +95,8 @@ ensure_port_available_or_owned() {
 
   local command
   command="$(port_command "$pid")"
-  if echo "$command" | grep -Eqi "$expected"; then
-    kill "$pid" >/dev/null 2>&1 || true
-    sleep 1
+  if process_belongs_to_platform "$pid"; then
+    stop_owned_port_processes "$port"
     return 0
   fi
 
@@ -87,6 +105,78 @@ ensure_port_available_or_owned() {
   echo "  CMD: $command"
   echo "请先停止该进程，或通过 BACKEND_PORT/FRONTEND_PORT 指定其他端口。"
   exit 1
+}
+
+stop_owned_port_processes() {
+  local port="$1"
+  local pids pid command pgid
+  local current_pgid
+  local seen_groups=" "
+
+  pids="$(port_pid "$port")"
+  [ -n "$pids" ] || return 0
+
+  # 先验证全部监听进程都属于当前平台，避免误停其他服务。
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    command="$(port_command "$pid")"
+    if ! process_belongs_to_platform "$pid"; then
+      echo "端口 $port 由非平台进程占用，未强制关闭："
+      echo "  PID: $pid"
+      echo "  CMD: $command"
+      echo "  CWD: $(process_working_directory "$pid")"
+      return 1
+    fi
+  done <<< "$pids"
+
+  current_pgid="$(ps -p $$ -o pgid= 2>/dev/null | tr -d '[:space:]')"
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    pgid="$(ps -p "$pid" -o pgid= 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$pgid" ] && [ "$pgid" != "$current_pgid" ] && [[ "$seen_groups" != *" $pgid "* ]]; then
+      echo "停止平台进程组：port=$port pgid=$pgid"
+      kill -TERM -- "-$pgid" >/dev/null 2>&1 || kill -TERM "$pid" >/dev/null 2>&1 || true
+      seen_groups+="$pgid "
+    else
+      kill -TERM "$pid" >/dev/null 2>&1 || true
+    fi
+  done <<< "$pids"
+
+  for _ in $(seq 1 10); do
+    [ -z "$(port_pid "$port")" ] && return 0
+    sleep 1
+  done
+
+  pids="$(port_pid "$port")"
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    command="$(port_command "$pid")"
+    if process_belongs_to_platform "$pid"; then
+      pgid="$(ps -p "$pid" -o pgid= 2>/dev/null | tr -d '[:space:]')"
+      if [ -n "$pgid" ] && [ "$pgid" != "$current_pgid" ]; then
+        kill -KILL -- "-$pgid" >/dev/null 2>&1 || kill -KILL "$pid" >/dev/null 2>&1 || true
+      else
+        kill -KILL "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  done <<< "$pids"
+  sleep 1
+
+  if [ -n "$(port_pid "$port")" ]; then
+    echo "端口 $port 上的平台进程未能完全停止。"
+    return 1
+  fi
+}
+
+stop_platform() {
+  local failed=0
+  stop_screen_session "$BACKEND_SESSION"
+  stop_screen_session "$FRONTEND_SESSION"
+  stop_owned_port_processes "$BACKEND_PORT" || failed=1
+  stop_owned_port_processes "$FRONTEND_PORT" || failed=1
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
 }
 
 wait_for_http() {
@@ -109,10 +199,47 @@ wait_for_http() {
   return 1
 }
 
+platform_status() {
+  local expected="${1:-running}"
+  local backend_ok=0
+  local frontend_ok=0
+
+  curl -s -f "$BACKEND_HEALTH_URL" >/dev/null 2>&1 && backend_ok=1
+  curl -s -f "$FRONTEND_URL" >/dev/null 2>&1 && frontend_ok=1
+
+  echo "后端：$BACKEND_HEALTH_URL"
+  [ "$backend_ok" -eq 1 ] && echo "  ok" || echo "  unavailable"
+  echo "前端：$FRONTEND_URL"
+  [ "$frontend_ok" -eq 1 ] && echo "  ok" || echo "  unavailable"
+  echo "screen sessions:"
+  screen -ls 2>/dev/null | grep "nn-ios-platform" || true
+
+  case "$expected" in
+    running)
+      if [ "$backend_ok" -ne 1 ] || [ "$frontend_ok" -ne 1 ]; then
+        echo "平台未完全运行。"
+        return 1
+      fi
+      ;;
+    stopped)
+      if [ "$backend_ok" -ne 0 ] || [ "$frontend_ok" -ne 0 ]; then
+        echo "平台未完全停止。"
+        return 1
+      fi
+      ;;
+    any)
+      ;;
+    *)
+      echo "不支持的状态期望：$expected（可选 running|stopped|any）"
+      return 2
+      ;;
+  esac
+}
+
 start_backend() {
   echo "启动后端服务..."
   stop_screen_session "$BACKEND_SESSION"
-  ensure_port_available_or_owned "$BACKEND_PORT" "tsx|node|npm|backend|nn-ios-platform"
+  ensure_port_available_or_owned "$BACKEND_PORT"
   : > "$BACKEND_LOG"
   screen -dmS "$BACKEND_SESSION" zsh -lc "cd '$PROJECT_ROOT' && node scripts/run-with-supported-node.mjs dev:backend >> '$BACKEND_LOG' 2>&1"
   if ! wait_for_http "$BACKEND_HEALTH_URL" "后端" 45 1; then
@@ -125,7 +252,7 @@ start_backend() {
 start_frontend() {
   echo "启动前端服务..."
   stop_screen_session "$FRONTEND_SESSION"
-  ensure_port_available_or_owned "$FRONTEND_PORT" "vite|node|npm|frontend|nn-ios-platform"
+  ensure_port_available_or_owned "$FRONTEND_PORT"
   : > "$FRONTEND_LOG"
   screen -dmS "$FRONTEND_SESSION" zsh -lc "cd '$FRONTEND_DIR' && npm run dev -- --host 0.0.0.0 --port '$FRONTEND_PORT' >> '$FRONTEND_LOG' 2>&1"
   if ! wait_for_http "$FRONTEND_URL" "前端" 30 1; then
@@ -160,28 +287,21 @@ case "${1:-start}" in
     start_frontend
     ;;
   stop)
-    stop_screen_session "$BACKEND_SESSION"
-    stop_screen_session "$FRONTEND_SESSION"
+    stop_platform
     echo "平台服务已停止。"
     exit 0
     ;;
   restart)
-    stop_screen_session "$BACKEND_SESSION"
-    stop_screen_session "$FRONTEND_SESSION"
+    stop_platform
     start_backend
     start_frontend
     ;;
   status)
-    echo "后端：$BACKEND_HEALTH_URL"
-    curl -s -f "$BACKEND_HEALTH_URL" >/dev/null 2>&1 && echo "  ok" || echo "  unavailable"
-    echo "前端：$FRONTEND_URL"
-    curl -s -f "$FRONTEND_URL" >/dev/null 2>&1 && echo "  ok" || echo "  unavailable"
-    echo "screen sessions:"
-    screen -ls 2>/dev/null | grep "nn-ios-platform" || true
-    exit 0
+    platform_status "${2:-running}"
+    exit $?
     ;;
   *)
-    echo "用法：$0 [start|restart|stop|status|backend|frontend]"
+    echo "用法：$0 [start|restart|stop|status [running|stopped|any]|backend|frontend]"
     exit 1
     ;;
 esac

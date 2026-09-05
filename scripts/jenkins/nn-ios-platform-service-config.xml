@@ -1,0 +1,94 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<project>
+  <actions/>
+  <description>nn-ios-platform 服务运维 Job。在平台所在的 Jenkins 节点上启动、停止、重启或查看前后端状态。平台路径和端口由 Job 固定，只有登录的 Jenkins 管理员可执行构建。</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ACTION</name>
+          <description>选择平台服务操作。status 仅检查状态，不会修改服务。</description>
+          <choices class="java.util.Arrays$ArrayList">
+            <a class="string-array">
+              <string>status</string>
+              <string>start</string>
+              <string>stop</string>
+              <string>restart</string>
+            </a>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>30</daysToKeep>
+        <numToKeep>30</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+  </properties>
+  <scm class="hudson.scm.NullSCM"/>
+  <assignedNode>built-in</assignedNode>
+  <canRoam>false</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>set -eu
+
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+# Jenkins Freestyle 构建结束时不应清理 screen 中的平台后台进程。
+export BUILD_ID=dontKillMe
+export JENKINS_NODE_COOKIE=dontKillMe
+
+PLATFORM_DIR="__NN_IOS_PLATFORM_DIR__"
+if [ ! -f "$PLATFORM_DIR/start-platform.sh" ]; then
+  echo "ERROR: 平台目录无效。"
+  echo "Expected file: $PLATFORM_DIR/start-platform.sh"
+  exit 2
+fi
+
+case "${ACTION:-status}" in
+  start|stop|restart|status) ;;
+  *)
+    echo "ERROR: 不支持的 ACTION: ${ACTION:-}"
+    exit 2
+    ;;
+esac
+
+echo "Platform directory: $PLATFORM_DIR"
+echo "Action: ${ACTION:-status}"
+cd "$PLATFORM_DIR"
+bash ./start-platform.sh "${ACTION:-status}"
+
+case "${ACTION:-status}" in
+  start|restart)
+    echo ""
+    echo "Platform status after ${ACTION}:"
+    bash ./start-platform.sh status running
+    ;;
+  stop)
+    echo ""
+    echo "Platform status after stop:"
+    bash ./start-platform.sh status stopped
+    ;;
+esac</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers>
+    <hudson.plugins.build__timeout.BuildTimeoutWrapper plugin="build-timeout@1.38">
+      <strategy class="hudson.plugins.build_timeout.impl.AbsoluteTimeOutStrategy">
+        <timeoutMinutes>5</timeoutMinutes>
+      </strategy>
+      <operationList>
+        <hudson.plugins.build_timeout.operations.FailOperation/>
+      </operationList>
+    </hudson.plugins.build__timeout.BuildTimeoutWrapper>
+  </buildWrappers>
+</project>

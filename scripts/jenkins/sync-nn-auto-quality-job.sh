@@ -57,7 +57,7 @@ if curl "${curl_args[@]}" -c "$COOKIE_FILE" "$JENKINS_BASE_URL/crumbIssuer/api/j
   crumb_header="$(python3 -c "import json,sys; p='$CRUMB_FILE'; d=json.load(open(p)); print(d.get('crumbRequestField','Jenkins-Crumb') + ': ' + d.get('crumb',''))" 2>/dev/null || true)"
 fi
 
-post_args=("${curl_args[@]}" -b "$COOKIE_FILE" -o "$RESPONSE_FILE" -w "%{http_code}" -X POST -H "Content-Type: application/xml")
+post_args=("${curl_args[@]}" -b "$COOKIE_FILE" -o "$RESPONSE_FILE" -w "%{http_code}" -X POST -H "Content-Type: application/xml; charset=UTF-8")
 if [ -n "$crumb_header" ]; then
   post_args+=(-H "$crumb_header")
 fi
