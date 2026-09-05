@@ -453,9 +453,9 @@ ${sourceLine}
   /**
    * 同版本重新发布前清理服务器本机的 podx 缓存。
    */
-  private cleanPodxCache(name: string): void {
+  private cleanPodxCache(name: string, action: 'republish' | 'delete' = 'republish'): void {
     try {
-      logger.info('检测到相同版本组件，执行 podx clean', { name });
+      logger.info(action === 'republish' ? '检测到相同版本组件，执行 podx clean' : '删除组件后执行 podx clean', { name });
       const podxWorkDir = fs.existsSync(path.join(NNIOS_REPO_LOCAL, 'Podfile'))
         ? NNIOS_REPO_LOCAL
         : process.cwd();
@@ -478,8 +478,13 @@ ${sourceLine}
     } catch (error: any) {
       const detail = error.stderr?.toString?.() || error.stdout?.toString?.() || error.message;
       logger.error('podx clean 执行失败', { name, error: detail });
-      throw new Error(`已存在相同版本，执行 podx clean ${name} 失败: ${detail}`);
+      const prefix = action === 'republish' ? '已存在相同版本，' : '';
+      throw new Error(`${prefix}执行 podx clean ${name} 失败: ${detail}`);
     }
+  }
+
+  private appendWarning(current: string | undefined, next: string): string {
+    return current ? `${current}; ${next}` : next;
   }
 
   private normalizeNniosBranch(branch?: string): string | undefined {
@@ -1760,6 +1765,12 @@ ${sourceLine}
       }
     }
 
+    try {
+      this.cleanPodxCache(name, 'delete');
+    } catch (error: any) {
+      warning = this.appendWarning(warning, `${name}@${version} 已删除，但当前打包机 CocoaPods 缓存清理失败: ${error.message}`);
+    }
+
     return { fallbackVersion, warning };
   }
 
@@ -1794,9 +1805,16 @@ ${sourceLine}
     // 删除 spec 仓库中的整个组件目录（包含所有版本）
     await this.deleteFromSpecRepo(name);
 
+    const warnings = [...dsymWarnings.map((item) => `dSYM ${item}`)];
+    try {
+      this.cleanPodxCache(name, 'delete');
+    } catch (error: any) {
+      warnings.push(`当前打包机 CocoaPods 缓存清理失败: ${error.message}`);
+    }
+
     return {
       deletedVersions: result.changes,
-      warning: dsymWarnings.length > 0 ? `${name} 组件已删除，但部分 dSYM 清理失败: ${dsymWarnings.join('; ')}` : undefined,
+      warning: warnings.length > 0 ? `${name} 组件已删除，但${warnings.join('; ')}` : undefined,
     };
   }
 
