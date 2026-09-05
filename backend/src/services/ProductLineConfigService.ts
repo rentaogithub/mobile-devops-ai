@@ -1,12 +1,14 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { getDatabase } from '../database';
 import { currentProductLineId } from './ProductLineContext';
 
 export const PRODUCT_LINE_CONFIG_KEYS = [
   'JENKINS_USER', 'JENKINS_TOKEN', 'JENKINS_NN_JOB', 'JENKINS_NN_QA_JOB', 'JENKINS_NN_REPO_URL',
-  'PODX_TARGET_NAME', 'PODX_PRIVATE_SOURCE', 'PODX_GIT_BASE_URL', 'PODX_OVERLAY_FILE',
+  'PODX_TARGET_NAME', 'PODX_PRIVATE_SOURCE', 'PODX_GIT_BASE_URL',
   'PODX_PUBLISH_REPOS', 'PODX_PUBLISH_MAIN_REPO', 'PODX_PUBLISH_WORK_DIR', 'PODX_PUBLISH_BASE_BRANCH',
   'PGYER_API_KEY', 'PGYER_APP_KEY', 'PGYER_SHORTCUT_URL',
   'APP_STORE_CONNECT_API_KEY_ID', 'APP_STORE_CONNECT_API_ISSUER_ID', 'APP_STORE_CONNECT_API_PRIVATE_KEY', 'APP_STORE_CONNECT_APP_ID', 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS',
@@ -30,6 +32,23 @@ export interface ProductLinePodxConfig {
   jenkinsJob: string;
   jenkinsQualityJob: string;
   jenkinsRepoUrl: string;
+}
+
+export interface ProductLinePodxConfigSyncResult {
+  productLineId: string;
+  projectDirectory: string;
+  configPath: string;
+  repoUrl: string;
+  cloned: boolean;
+}
+
+interface ProductLineRecord {
+  id?: string;
+  key?: string;
+  name?: string;
+  project_id?: string;
+  bundle_id?: string;
+  jenkins_base_url?: string;
 }
 
 const SECRET_KEYS = new Set<ProductLineConfigKey>([
@@ -150,6 +169,19 @@ function isGitUrl(value: string) {
   return /^(?:https?:\/\/|git@|ssh:\/\/)/i.test(String(value || '').trim());
 }
 
+function defaultGitWorkspaceDir() {
+  return path.resolve(
+    process.env.GIT_WORK_DIR ||
+      path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.nn-ios-platform-data'), '../git-workspace')
+  );
+}
+
+function yamlScalar(value: string | boolean) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  const text = String(value || '');
+  return JSON.stringify(text);
+}
+
 class ProductLineConfigService {
   private encryptionKey() {
     return createHash('sha256')
@@ -265,7 +297,7 @@ class ProductLineConfigService {
       targetName,
       privateSource,
       gitBaseUrl,
-      overlayFile: this.get('PODX_OVERLAY_FILE', productLineId) || 'Podfile.overlay',
+      overlayFile: 'Podfile.overlay',
       publishRepos,
       publishRepoUrls,
       publishMainRepo,
@@ -297,26 +329,70 @@ class ProductLineConfigService {
     };
   }
 
+  podxConfigYaml(productLineId = currentProductLineId()): string {
+    const productLine = this.findProductLine(productLineId);
+    const config = this.podxConfig(productLineId);
+    const lineKey = String(productLine?.key || config.productLineId).trim();
+    const lines = [
+      `product_line: ${yamlScalar(lineKey)}`,
+      `target_name: ${yamlScalar(config.targetName)}`,
+      `private_source: ${yamlScalar(config.privateSource)}`,
+      `git_base_url: ${yamlScalar(config.gitBaseUrl)}`,
+      `overlay_file: ${yamlScalar(config.overlayFile)}`,
+      `publish_work_dir: ${yamlScalar(config.publishWorkDir)}`,
+      `publish_base_branch: ${yamlScalar(config.publishBaseBranch)}`,
+      'publish_pipeline_gate: false',
+    ];
+
+    if (config.publishMainRepo) lines.push(`publish_main_repo: ${yamlScalar(config.publishMainRepo)}`);
+    if (config.publishRepos.length) {
+      lines.push('publish_repos:');
+      config.publishRepos.forEach((repo) => lines.push(`  - ${yamlScalar(repo)}`));
+    } else if (config.publishMainRepo) {
+      lines.push('publish_repos:');
+      lines.push(`  - ${yamlScalar(config.publishMainRepo)}`);
+    } else {
+      lines.push('publish_repos: []');
+    }
+    if (config.jenkinsBaseUrl) lines.push(`jenkins_base_url: ${yamlScalar(config.jenkinsBaseUrl)}`);
+    if (config.jenkinsJob) lines.push(`jenkins_job: ${yamlScalar(config.jenkinsJob)}`);
+    if (config.jenkinsQualityJob) lines.push(`jenkins_quality_job: ${yamlScalar(config.jenkinsQualityJob)}`);
+    if (config.jenkinsRepoUrl) lines.push(`jenkins_repo_url: ${yamlScalar(config.jenkinsRepoUrl)}`);
+    lines.push(
+      '',
+      '# 当前主工程只对应一个产品线；多产品线由 nn-ios-platform 在不同主工程中分别维护。'
+    );
+    return lines.join('\n');
+  }
+
+  syncPodxConfigToProject(productLineId = currentProductLineId(), requestedProjectDirectory = ''): ProductLinePodxConfigSyncResult {
+    const config = this.podxConfig(productLineId);
+    const repoUrl = config.jenkinsRepoUrl || this.mainRepoUrlFromConfig(config);
+    const projectDirectory = this.resolveMainProjectDirectory(config, repoUrl, requestedProjectDirectory);
+    const cloned = this.ensureMainProjectDirectory(projectDirectory, repoUrl, Boolean(requestedProjectDirectory));
+    const configPath = path.join(projectDirectory, 'podx.config.yml');
+    fs.writeFileSync(configPath, this.podxConfigYaml(productLineId), 'utf8');
+    return {
+      productLineId,
+      projectDirectory,
+      configPath,
+      repoUrl,
+      cloned,
+    };
+  }
+
   publishRepoUrls(productLineId = currentProductLineId()): string[] {
     return this.podxConfig(productLineId).publishRepoUrls;
   }
 
-  private findProductLine(productLineId: string) {
+  private findProductLine(productLineId: string): ProductLineRecord | undefined {
     try {
       return getDatabase().prepare(`
         SELECT id, key, name, project_id, bundle_id, jenkins_base_url
         FROM platform_product_lines
         WHERE id = ? OR key = ? OR project_id = ?
         LIMIT 1
-      `).get(productLineId, productLineId, productLineId) as {
-        id?: string;
-        key?: string;
-        name?: string;
-        project_id?: string;
-        bundle_id?: string;
-        jenkinsBaseUrl?: string;
-        jenkins_base_url?: string;
-      } | undefined;
+      `).get(productLineId, productLineId, productLineId) as ProductLineRecord | undefined;
     } catch {
       return undefined;
     }
@@ -337,6 +413,40 @@ class ProductLineConfigService {
       if (!base || !targetName) return '';
       return `${base}/${targetName}/${repo}.git`;
     }).filter(Boolean);
+  }
+
+  private mainRepoUrlFromConfig(config: ProductLinePodxConfig) {
+    if (!config.publishMainRepo) return '';
+    if (isGitUrl(config.publishMainRepo)) return config.publishMainRepo;
+    const base = trimTrailingSlash(config.gitBaseUrl);
+    if (!base || !config.targetName) return '';
+    return `${base}/${config.targetName}/${config.publishMainRepo}.git`;
+  }
+
+  private resolveMainProjectDirectory(config: ProductLinePodxConfig, repoUrl: string, requestedProjectDirectory: string) {
+    const requested = String(requestedProjectDirectory || '').trim();
+    if (requested) return path.resolve(requested);
+    const repoName = repoNameFromUrl(repoUrl || config.publishMainRepo || config.productLineId);
+    if (!repoName) throw new Error('未配置主工程仓库，无法同步 podx.config.yml');
+    return path.join(defaultGitWorkspaceDir(), repoName);
+  }
+
+  private ensureMainProjectDirectory(projectDirectory: string, repoUrl: string, explicitDirectory: boolean) {
+    if (fs.existsSync(path.join(projectDirectory, '.git'))) return false;
+    if (fs.existsSync(projectDirectory) && fs.readdirSync(projectDirectory).length > 0) {
+      throw new Error(`目标目录不是 Git 仓库：${projectDirectory}`);
+    }
+    if (explicitDirectory) {
+      fs.mkdirSync(projectDirectory, { recursive: true });
+      return false;
+    }
+    if (!repoUrl) throw new Error('未配置主工程仓库地址，无法自动 clone');
+    fs.mkdirSync(path.dirname(projectDirectory), { recursive: true });
+    execFileSync('git', ['clone', repoUrl, projectDirectory], {
+      stdio: 'pipe',
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    return true;
   }
 }
 

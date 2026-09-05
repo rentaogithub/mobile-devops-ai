@@ -23,7 +23,6 @@ const emptyProductLineServices = (): ProductLineServiceConfig => ({
   PODX_TARGET_NAME: '',
   PODX_PRIVATE_SOURCE: '',
   PODX_GIT_BASE_URL: '',
-  PODX_OVERLAY_FILE: '',
   PODX_PUBLISH_REPOS: '',
   PODX_PUBLISH_MAIN_REPO: '',
   PODX_PUBLISH_WORK_DIR: '',
@@ -79,6 +78,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
   const [productLineConfigTab, setProductLineConfigTab] = useState('basic');
   const [productLineSaving, setProductLineSaving] = useState(false);
   const [productLineServicesLoading, setProductLineServicesLoading] = useState(false);
+  const [productLineConfigSyncing, setProductLineConfigSyncing] = useState(false);
   const [productLineForm, setProductLineForm] = useState({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
   const [productLineServices, setProductLineServices] = useState<ProductLineServiceConfig>(emptyProductLineServices);
   const [productLineSecrets, setProductLineSecrets] = useState<Record<ProductLineSecretKey, string>>(emptyProductLineSecrets);
@@ -429,6 +429,28 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     }
   };
 
+  const syncSavedProductLinePodxConfig = async (productLineId: string) => {
+    const response = await authApi.syncProductLinePodxConfig(productLineId);
+    return response.data;
+  };
+
+  const syncProductLinePodxConfig = async () => {
+    if (!editingProductLine) {
+      message.warning('请先保存产品线后再同步 podx.config.yml');
+      return;
+    }
+    setProductLineConfigSyncing(true);
+    try {
+      const result = await syncSavedProductLinePodxConfig(editingProductLine.id);
+      const configPath = result?.configPath;
+      message.success(configPath ? `已同步到 ${configPath}` : 'podx.config.yml 已同步到主工程');
+    } catch (error: any) {
+      message.error(error?.error || error?.message || '同步 podx.config.yml 失败');
+    } finally {
+      setProductLineConfigSyncing(false);
+    }
+  };
+
   const productLineServicePayload = (): ProductLineServiceUpdate => ({
     JENKINS_USER: productLineServices.JENKINS_USER,
     JENKINS_NN_JOB: productLineServices.JENKINS_NN_JOB,
@@ -437,7 +459,6 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     PODX_TARGET_NAME: productLineServices.PODX_TARGET_NAME,
     PODX_PRIVATE_SOURCE: productLineServices.PODX_PRIVATE_SOURCE,
     PODX_GIT_BASE_URL: productLineServices.PODX_GIT_BASE_URL,
-    PODX_OVERLAY_FILE: productLineServices.PODX_OVERLAY_FILE,
     PODX_PUBLISH_REPOS: productLineServices.PODX_PUBLISH_REPOS,
     PODX_PUBLISH_MAIN_REPO: productLineServices.PODX_PUBLISH_MAIN_REPO,
     PODX_PUBLISH_WORK_DIR: productLineServices.PODX_PUBLISH_WORK_DIR,
@@ -548,7 +569,14 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
         savedProductLine = created.data || null;
       }
       const services = await authApi.updateProductLineServices(targetProductLineId, productLineServicePayload());
-      message.success(editingProductLine ? '产品线配置已保存' : '产品线已创建');
+      try {
+        const syncResult = await syncSavedProductLinePodxConfig(targetProductLineId);
+        const action = editingProductLine ? '产品线配置已保存' : '产品线已创建';
+        message.success(syncResult?.configPath ? `${action}，已同步到 ${syncResult.configPath}` : `${action}，已同步 podx.config.yml`);
+      } catch (syncError: any) {
+        const action = editingProductLine ? '产品线配置已保存' : '产品线已创建';
+        message.warning(`${action}，但同步 podx.config.yml 失败：${syncError?.error || syncError?.message || '请检查主工程仓库配置'}`);
+      }
       setProductLineEditorMode('edit');
       if (savedProductLine) {
         setEditingProductLine(savedProductLine);
@@ -723,14 +751,20 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         type="info"
                         showIcon
                         message="用于：podx install、podx update、podx main、podx doctor、本地组件切换"
-                        description="这些配置决定当前产品线的 CocoaPods 私有源、默认 group/target、以及要读取哪个 Podfile.overlay。"
+                        description="这些配置决定当前产品线的 CocoaPods 私有源和默认 group/target；本地组件切换统一使用主工程根目录的 Podfile.overlay。"
                       />
                       <div style={productLineFormGridStyle}>
                         {renderServiceInput('PODX_TARGET_NAME', 'Target Name', '如：nn_ios、nnrtc_ios')}
                         {renderServiceInput('PODX_PRIVATE_SOURCE', '私有 Specs 源', '如：https://git.example.com/nnrtc_ios/nnspec.git')}
                         {renderServiceInput('PODX_GIT_BASE_URL', 'Git 基础地址', '如：https://git.example.com')}
-                        {renderServiceInput('PODX_OVERLAY_FILE', 'Overlay 文件', '如：Podfile.overlay.nnrtc')}
                       </div>
+                      {!isCreating && (
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          <Button icon={<SyncOutlined />} loading={productLineConfigSyncing} onClick={syncProductLinePodxConfig}>
+                            重新同步到主工程
+                          </Button>
+                        </div>
+                      )}
                       {renderTabActions(' podx')}
                     </Space>
                   ),

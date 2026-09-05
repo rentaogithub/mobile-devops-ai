@@ -26,7 +26,7 @@
 
 ## 产品线级外部服务
 
-管理员可在产品线“配置”弹窗中分别维护：
+管理员可在产品线配置页中选择左侧产品线，并在右侧按 tab 分别维护：
 
 - Jenkins：服务地址、API 用户和 Token、构建 Job、自动质检 Job、iOS Git 仓库。
 - 发布渠道：蒲公英 API Key、App Key、短链，以及 App Store Connect API Key、Issuer ID、`.p8` 私钥、App ID 和 TestFlight 测试组。
@@ -38,7 +38,39 @@ Token、密码、私钥、API Key 和 Webhook 以 AES-256-GCM 加密保存。管
 
 默认 `nn` 产品线会兼容读取现有 Jenkins 发布脚本中的蒲公英 API Key、短链和企业微信 Webhook，并识别 `APP_STORE_CONNECT_API_KEY_PATH` 指向的 `.p8` 私钥文件。敏感内容仍只显示“已配置”，不会回显明文。蒲公英采用短链查询时 App Key 为可选项。
 
-Sentry 崩溃服务属于平台公共服务，所有产品线共用平台级 Sentry 地址、项目和登录配置，不在产品线配置弹窗中重复维护。Sonic 真机与自动化测试也不作为产品线配置项展示。
+Sentry 崩溃服务属于平台公共服务，所有产品线共用平台级 Sentry 地址、项目和登录配置，不在产品线配置页中重复维护。Sonic 真机与自动化测试也不作为产品线配置项展示。
+
+## nn-ios-tools 接入
+
+平台是 `podx.config.yml` 的配置中心。管理员在产品线配置页维护 Jenkins、podx 和 mgit 字段后，保存配置时会自动将当前产品线配置同步到对应主工程仓库根目录，不再提供单独下载配置文件的流程。`podx` tab 中的“重新同步到主工程”用于仓库凭据恢复、仓库首次 clone 后或配置修正后的手动重试。
+
+同一个主工程只对应一个产品线，因此同步到主工程的 `podx.config.yml` 使用扁平单产品线结构，不写 `product_lines` 聚合配置。同步时平台会优先使用当前产品线的 iOS Git 仓库地址定位主工程；本地 Git 工作目录中已经存在仓库时直接写入，仓库不存在时会 clone 后写入。
+
+工程侧目录通常是：
+
+```text
+ios-project/
+  Podfile
+  podx.config.yml
+  Podfile.overlay
+```
+
+本地组件切换统一使用主工程根目录的 `Podfile.overlay`。overlay 文件只写需要切本地源码的组件名：
+
+```ruby
+pod 'NNRTCBase'
+pod 'NNRTCCore'
+```
+
+`podx.config.yml` 只同步非敏感工程配置，例如 `product_line`、`target_name`、`private_source`、`git_base_url`、`overlay_file: Podfile.overlay`、`publish` 和 `jenkins` 的 job/repo 地址。Jenkins Token、蒲公英 API Key、App Store Connect 私钥和企业微信 Webhook 不会写入主工程，继续由平台后端加密保存或在 CI 中通过环境变量注入。
+
+同步完成后，在工程根目录验证：
+
+```bash
+podx doctor
+podx install --no-repo-update
+mgit status
+```
 
 ## API 约定
 

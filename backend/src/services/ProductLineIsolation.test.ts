@@ -105,7 +105,6 @@ describe('product line isolation', () => {
         PODX_TARGET_NAME: 'alpha_ios',
         PODX_PRIVATE_SOURCE: 'https://git.example.com/alpha_ios/nnspec.git',
         PODX_GIT_BASE_URL: 'https://git.example.com',
-        PODX_OVERLAY_FILE: 'Podfile.overlay.alpha',
         PODX_PUBLISH_REPOS: 'alpha-ios, alpha-core',
         PODX_PUBLISH_MAIN_REPO: 'alpha-ios',
         PODX_PUBLISH_WORK_DIR: '.mgit-publish/alpha',
@@ -128,7 +127,7 @@ describe('product line isolation', () => {
           targetName: 'alpha_ios',
           privateSource: 'https://git.example.com/alpha_ios/nnspec.git',
           gitBaseUrl: 'https://git.example.com',
-          overlayFile: 'Podfile.overlay.alpha',
+          overlayFile: 'Podfile.overlay',
           publishRepos: ['alpha-ios', 'alpha-core'],
           publishRepoUrls: [
             'https://git.example.com/alpha_ios/alpha-ios.git',
@@ -144,6 +143,29 @@ describe('product line isolation', () => {
           PODX_PUBLISH_REPOS: 'alpha-ios,alpha-core',
           JENKINS_NN_JOB: 'alpha/app-build',
         }));
+        const podxConfigYaml = productLineConfigService.podxConfigYaml();
+        expect(podxConfigYaml).toContain('product_line: "alpha"');
+        expect(podxConfigYaml).toContain('target_name: "alpha_ios"');
+        expect(podxConfigYaml).toContain('private_source: "https://git.example.com/alpha_ios/nnspec.git"');
+        expect(podxConfigYaml).toContain('overlay_file: "Podfile.overlay"');
+        expect(podxConfigYaml).toContain('publish_main_repo: "alpha-ios"');
+        expect(podxConfigYaml).toContain('- "alpha-ios"');
+        expect(podxConfigYaml).toContain('jenkins_job: "alpha/app-build"');
+        expect(podxConfigYaml).not.toContain('default_product_line');
+        expect(podxConfigYaml).not.toContain('product_lines:');
+        expect(podxConfigYaml).not.toContain('alpha-token');
+        expect(podxConfigYaml).not.toContain('alpha-pgyer-key');
+        expect(podxConfigYaml).not.toContain('alpha-private-key');
+        expect(podxConfigYaml).not.toContain('alpha-webhook-secret');
+        const alphaProjectDir = path.join(tempDir, 'alpha-ios');
+        fs.mkdirSync(path.join(alphaProjectDir, '.git'), { recursive: true });
+        const syncResult = productLineConfigService.syncPodxConfigToProject(alpha.id, alphaProjectDir);
+        expect(syncResult).toEqual(expect.objectContaining({
+          projectDirectory: alphaProjectDir,
+          configPath: path.join(alphaProjectDir, 'podx.config.yml'),
+          cloned: false,
+        }));
+        expect(fs.readFileSync(syncResult.configPath, 'utf8')).toBe(podxConfigYaml);
       });
 
       await runWithProductLine({ ...empty, role: 'admin' }, async () => {

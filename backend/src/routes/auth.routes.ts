@@ -95,6 +95,16 @@ router.put('/product-lines/:id/services', sessionAuthMiddleware, requireRole('ad
   }
 });
 
+router.post('/product-lines/:id/sync-podx-config', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    if (!authService.findProductLine(req.params.id)) return res.status(404).json({ success: false, error: '产品线不存在' });
+    const result = productLineConfigService.syncPodxConfigToProject(req.params.id, String(req.body?.projectDirectory || ''));
+    res.json({ success: true, data: result, message: 'podx.config.yml 已同步到主工程' });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '同步 podx.config.yml 失败' });
+  }
+});
+
 router.get('/users', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
   res.json({ success: true, data: authService.listUsers() });
 });

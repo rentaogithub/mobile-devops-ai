@@ -103,7 +103,6 @@ export interface ProductLineServiceConfig {
   PODX_TARGET_NAME: string;
   PODX_PRIVATE_SOURCE: string;
   PODX_GIT_BASE_URL: string;
-  PODX_OVERLAY_FILE: string;
   PODX_PUBLISH_REPOS: string;
   PODX_PUBLISH_MAIN_REPO: string;
   PODX_PUBLISH_WORK_DIR: string;
@@ -122,9 +121,17 @@ export interface ProductLineServiceConfig {
   WECHAT_WEBHOOK_URL_SOURCE?: string;
 }
 
+export interface ProductLinePodxConfigSyncResult {
+  productLineId: string;
+  projectDirectory: string;
+  configPath: string;
+  repoUrl: string;
+  cloned: boolean;
+}
+
 export type ProductLineServiceUpdate = Partial<Record<
   | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_NN_JOB' | 'JENKINS_NN_QA_JOB' | 'JENKINS_NN_REPO_URL'
-  | 'PODX_TARGET_NAME' | 'PODX_PRIVATE_SOURCE' | 'PODX_GIT_BASE_URL' | 'PODX_OVERLAY_FILE'
+  | 'PODX_TARGET_NAME' | 'PODX_PRIVATE_SOURCE' | 'PODX_GIT_BASE_URL'
   | 'PODX_PUBLISH_REPOS' | 'PODX_PUBLISH_MAIN_REPO' | 'PODX_PUBLISH_WORK_DIR' | 'PODX_PUBLISH_BASE_BRANCH'
   | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'PGYER_SHORTCUT_URL'
   | 'APP_STORE_CONNECT_API_KEY_ID' | 'APP_STORE_CONNECT_API_ISSUER_ID' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'APP_STORE_CONNECT_APP_ID' | 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS'
@@ -216,6 +223,11 @@ export const authApi = {
 
   updateProductLineServices: async (id: string, payload: ProductLineServiceUpdate): Promise<ApiResponse<ProductLineServiceConfig>> => {
     const response = await api.put<ApiResponse<ProductLineServiceConfig>>(`/auth/product-lines/${encodeURIComponent(id)}/services`, payload);
+    return response.data;
+  },
+
+  syncProductLinePodxConfig: async (id: string): Promise<ApiResponse<ProductLinePodxConfigSyncResult>> => {
+    const response = await api.post<ApiResponse<ProductLinePodxConfigSyncResult>>(`/auth/product-lines/${encodeURIComponent(id)}/sync-podx-config`);
     return response.data;
   },
 
