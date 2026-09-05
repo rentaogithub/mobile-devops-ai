@@ -590,7 +590,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
           type="info"
           showIcon
           message="选择一个产品线后在这里配置"
-          description="点击表格中的“配置”，下方会按基础信息、Jenkins、podx、mgit、分发、App Store 和通知服务拆分成独立 tab。"
+          description="从左侧产品列表选择产品线，右侧会按基础信息、Jenkins、podx、mgit、分发、App Store 和通知服务拆分成独立 tab。"
         />
       );
     }
@@ -1358,54 +1358,63 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const renderProductLines = () => (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card
-        title="iOS 产品线"
-        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreateProductLine}>新增产品线</Button>}
+      <Alert
+        type="info"
+        showIcon
+        message="产品线是权限与研发数据的隔离边界"
+        description="左侧选择产品线，右侧按 tab 维护基础信息、Jenkins、podx、mgit、分发、App Store 和通知配置。"
+      />
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'clamp(280px, 28%, 360px) minmax(0, 1fr)',
+          gap: 16,
+          alignItems: 'start',
+        }}
       >
-        <Alert
-          type="info"
-          showIcon
-          message="产品线是权限与研发数据的隔离边界"
-          description="先在列表中选择产品线，再在下方按 tab 维护基础信息、Jenkins、podx、mgit、分发、App Store 和通知配置。"
-          style={{ marginBottom: 16 }}
-        />
-        <Table<PlatformProductLine>
-          rowKey="id"
-          dataSource={productLines}
-          pagination={false}
-          rowClassName={(record) => editingProductLine?.id === record.id ? 'ant-table-row-selected' : ''}
-          onRow={(record) => ({
-            onClick: () => openEditProductLine(record),
-            style: { cursor: 'pointer' },
-          })}
-          columns={[
-            { title: '名称', dataIndex: 'name', key: 'name' },
-            { title: '标识', dataIndex: 'key', key: 'key', render: (value: string) => <Text code>{value}</Text> },
-            { title: 'Workflow 项目', dataIndex: 'projectId', key: 'projectId', render: (value: string) => <Text code>{value}</Text> },
-            { title: 'Bundle ID', dataIndex: 'bundleId', key: 'bundleId', render: (value?: string) => value || '-' },
-            { title: 'Jenkins 服务', dataIndex: 'jenkinsBaseUrl', key: 'jenkinsBaseUrl', render: (value?: string) => value ? <Text copyable>{value}</Text> : <Tag color="orange">未配置</Tag> },
-            { title: '状态', dataIndex: 'active', key: 'active', render: (active: boolean) => active ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
-            {
-              title: '操作',
-              key: 'actions',
-              width: 120,
-              render: (_, record) => (
-                <Button
-                  size="small"
-                  icon={<SettingOutlined />}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    openEditProductLine(record);
+        <Card
+          title="产品列表"
+          extra={<Button type="primary" size="small" icon={<PlusOutlined />} onClick={openCreateProductLine}>新增</Button>}
+          styles={{ body: { padding: 0 } }}
+        >
+          <List
+            dataSource={productLines}
+            locale={{ emptyText: '暂无产品线' }}
+            renderItem={(productLine) => {
+              const selected = productLineEditorMode === 'edit' && editingProductLine?.id === productLine.id;
+              return (
+                <List.Item
+                  onClick={() => openEditProductLine(productLine)}
+                  style={{
+                    cursor: 'pointer',
+                    padding: '14px 16px',
+                    background: selected ? '#e6f4ff' : undefined,
+                    borderLeft: selected ? '3px solid #1677ff' : '3px solid transparent',
                   }}
                 >
-                  配置
-                </Button>
-              ),
-            },
-          ]}
-        />
-      </Card>
-      {renderProductLineConfigPanel()}
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Space style={{ width: '100%', justifyContent: 'space-between' }} align="start">
+                      <Text strong>{productLine.name}</Text>
+                      {productLine.active ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>}
+                    </Space>
+                    <Space size={[4, 4]} wrap>
+                      <Text code>{productLine.key}</Text>
+                      <Text code>{productLine.projectId}</Text>
+                    </Space>
+                    <Text type="secondary" ellipsis>
+                      {productLine.bundleId || '未配置 Bundle ID'}
+                    </Text>
+                    <Text type="secondary" ellipsis>
+                      {productLine.jenkinsBaseUrl || '未配置 Jenkins 服务'}
+                    </Text>
+                  </Space>
+                </List.Item>
+              );
+            }}
+          />
+        </Card>
+        {renderProductLineConfigPanel()}
+      </div>
     </Space>
   );
 
