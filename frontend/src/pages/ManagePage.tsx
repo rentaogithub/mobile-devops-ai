@@ -579,7 +579,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const productLineFormGridStyle = {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gridTemplateColumns: '1fr',
     gap: 12,
   };
 
@@ -599,29 +599,19 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     const panelTitle = isCreating
       ? '新增产品线配置'
       : `配置产品线：${editingProductLine?.name || productLineForm.name}`;
+    const renderTabActions = (label: string) => (
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button onClick={closeProductLineEditor}>取消</Button>
+        <Button type="primary" loading={productLineSaving} onClick={saveProductLine}>
+          {isCreating ? '创建产品线' : `保存${label}`}
+        </Button>
+      </div>
+    );
 
     return (
-      <Card
-        title={panelTitle}
-        extra={(
-          <Space>
-            <Button onClick={closeProductLineEditor}>取消</Button>
-            <Button type="primary" loading={productLineSaving} onClick={saveProductLine}>
-              {isCreating ? '创建产品线' : '保存配置'}
-            </Button>
-          </Space>
-        )}
-      >
+      <Card title={panelTitle}>
         <Spin spinning={productLineServicesLoading} tip="正在读取服务配置...">
           <Space direction="vertical" size={14} style={{ width: '100%' }}>
-            <Alert
-              type="info"
-              showIcon
-              message="按 tab 维护当前产品线配置"
-              description={isCreating
-                ? '先填写基础信息；也可以继续切到其他 tab 一次性补充服务配置，保存后会写入新产品线。'
-                : '每个 tab 只放当前能力需要的字段；未填写的 podx 字段会尽量从 iOS Git 仓库地址、产品线标识和默认值推导。'}
-            />
             <Tabs
               activeKey={productLineConfigTab}
               onChange={setProductLineConfigTab}
@@ -638,16 +628,17 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         description="产品线标识创建后不再修改；Workflow 项目标识用于隔离任务、问题与质量门禁数据。"
                       />
                       <div style={productLineFormGridStyle}>
-                        <div>
-                          <Text strong>产品线标识</Text>
-                          <Input
-                            style={{ marginTop: 6 }}
-                            value={productLineForm.key}
-                            disabled={!isCreating}
-                            onChange={(event) => setProductLineForm((current) => ({ ...current, key: event.target.value.trim() }))}
-                            placeholder="如：nn、nnrtc"
-                          />
-                        </div>
+                        {isCreating && (
+                          <div>
+                            <Text strong>产品线标识</Text>
+                            <Input
+                              style={{ marginTop: 6 }}
+                              value={productLineForm.key}
+                              onChange={(event) => setProductLineForm((current) => ({ ...current, key: event.target.value.trim() }))}
+                              placeholder="如：nn、nnrtc"
+                            />
+                          </div>
+                        )}
                         <div>
                           <Text strong>产品线名称</Text>
                           <Input
@@ -676,6 +667,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           />
                         </div>
                       </div>
+                      {renderTabActions('基础信息')}
                     </Space>
                   ),
                 },
@@ -718,6 +710,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           />
                         </div>
                       ) : renderServiceSecret('JENKINS_TOKEN', 'Jenkins API Token', productLineServices.JENKINS_TOKENConfigured, '输入 API Token')}
+                      {renderTabActions(' Jenkins')}
                     </Space>
                   ),
                 },
@@ -738,6 +731,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         {renderServiceInput('PODX_GIT_BASE_URL', 'Git 基础地址', '如：https://git.example.com')}
                         {renderServiceInput('PODX_OVERLAY_FILE', 'Overlay 文件', '如：Podfile.overlay.nnrtc')}
                       </div>
+                      {renderTabActions(' podx')}
                     </Space>
                   ),
                 },
@@ -758,6 +752,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         {renderServiceInput('PODX_PUBLISH_BASE_BRANCH', '发布基准分支', '默认 develop')}
                       </div>
                       {renderServiceTextArea('PODX_PUBLISH_REPOS', '发布仓库列表', '每行一个仓库名或 Git URL，例如：\nnnrtc-ios\nnnrtc-core', 5)}
+                      {renderTabActions(' mgit')}
                     </Space>
                   ),
                 },
@@ -787,6 +782,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         </div>
                       ) : renderServiceSecret('PGYER_APP_KEY', '蒲公英 App Key', productLineServices.PGYER_APP_KEYConfigured, '输入蒲公英 App Key')}
                       <div><Text strong>蒲公英短链</Text><Input style={{ marginTop: 6 }} value={productLineServices.PGYER_SHORTCUT_URL} onChange={(event) => updateProductLineService('PGYER_SHORTCUT_URL', event.target.value)} placeholder="如：https://www.pgyer.com/xxxx" /></div>
+                      {renderTabActions('蒲公英')}
                     </Space>
                   ),
                 },
@@ -879,6 +875,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           </Popconfirm>
                         </Space>
                       </div>
+                      {renderTabActions(' App Store')}
                     </Space>
                   ),
                 },
@@ -928,17 +925,12 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           查看企业微信机器人配置说明
                         </Button>
                       </Space>
+                      {renderTabActions('通知')}
                     </Space>
                   ),
                 },
               ]}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Button onClick={closeProductLineEditor}>取消</Button>
-              <Button type="primary" loading={productLineSaving} onClick={saveProductLine}>
-                {isCreating ? '创建产品线' : '保存配置'}
-              </Button>
-            </div>
           </Space>
         </Spin>
       </Card>
@@ -1358,12 +1350,6 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const renderProductLines = () => (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Alert
-        type="info"
-        showIcon
-        message="产品线是权限与研发数据的隔离边界"
-        description="左侧选择产品线，右侧按 tab 维护基础信息、Jenkins、podx、mgit、分发、App Store 和通知配置。"
-      />
       <div
         style={{
           display: 'grid',
