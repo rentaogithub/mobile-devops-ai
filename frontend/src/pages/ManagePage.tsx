@@ -12,6 +12,7 @@ const { Title, Paragraph, Text } = Typography;
 
 type ProductLineSecretKey = 'JENKINS_TOKEN' | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'WECHAT_WEBHOOK_URL';
 type ProductLineTextConfigKey = Exclude<keyof ProductLineServiceConfig, `${string}Configured`>;
+type ProductLineEditorMode = 'create' | 'edit';
 
 const emptyProductLineServices = (): ProductLineServiceConfig => ({
   JENKINS_USER: '',
@@ -74,7 +75,8 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
   const [platformUsers, setPlatformUsers] = useState<PlatformUser[]>([]);
   const [productLines, setProductLines] = useState<PlatformProductLine[]>([]);
   const [editingProductLine, setEditingProductLine] = useState<PlatformProductLine | null>(null);
-  const [productLineModalOpen, setProductLineModalOpen] = useState(false);
+  const [productLineEditorMode, setProductLineEditorMode] = useState<ProductLineEditorMode | null>(null);
+  const [productLineConfigTab, setProductLineConfigTab] = useState('basic');
   const [productLineSaving, setProductLineSaving] = useState(false);
   const [productLineServicesLoading, setProductLineServicesLoading] = useState(false);
   const [productLineForm, setProductLineForm] = useState({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
@@ -301,18 +303,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     }
   };
 
-  const openCreateProductLine = () => {
-    setEditingProductLine(null);
-    setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
-    setProductLineServices(emptyProductLineServices());
-    setProductLineSecrets(emptyProductLineSecrets());
-    setProductLineSecretChanges(emptySecretChanges());
-    setAppStorePrivateKeyFileName('');
-    setProductLineModalOpen(true);
-  };
-
-  const openEditProductLine = async (productLine: PlatformProductLine) => {
-    setEditingProductLine(productLine);
+  const fillProductLineForm = (productLine: PlatformProductLine) => {
     setProductLineForm({
       key: productLine.key,
       name: productLine.name,
@@ -320,11 +311,31 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       bundleId: productLine.bundleId || '',
       jenkinsBaseUrl: productLine.jenkinsBaseUrl || '',
     });
+  };
+
+  const openCreateProductLine = () => {
+    setEditingProductLine(null);
+    setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
     setProductLineServices(emptyProductLineServices());
     setProductLineSecrets(emptyProductLineSecrets());
     setProductLineSecretChanges(emptySecretChanges());
     setAppStorePrivateKeyFileName('');
-    setProductLineModalOpen(true);
+    setProductLineEditorMode('create');
+    setProductLineConfigTab('basic');
+  };
+
+  const openEditProductLine = async (productLine: PlatformProductLine) => {
+    if (productLineEditorMode === 'edit' && editingProductLine?.id === productLine.id) {
+      return;
+    }
+    setEditingProductLine(productLine);
+    fillProductLineForm(productLine);
+    setProductLineServices(emptyProductLineServices());
+    setProductLineSecrets(emptyProductLineSecrets());
+    setProductLineSecretChanges(emptySecretChanges());
+    setAppStorePrivateKeyFileName('');
+    setProductLineEditorMode('edit');
+    setProductLineConfigTab('basic');
     setProductLineServicesLoading(true);
     try {
       const response = await authApi.getProductLineServices(productLine.id);
@@ -469,32 +480,81 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     );
   };
 
+  const renderServiceInput = (
+    key: ProductLineTextConfigKey,
+    label: string,
+    placeholder: string
+  ) => (
+    <div>
+      <Text strong>{label}</Text>
+      <Input
+        style={{ marginTop: 6 }}
+        value={String(productLineServices[key] || '')}
+        onChange={(event) => updateProductLineService(key, event.target.value)}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+
+  const renderServiceTextArea = (
+    key: ProductLineTextConfigKey,
+    label: string,
+    placeholder: string,
+    rows = 5
+  ) => (
+    <div>
+      <Text strong>{label}</Text>
+      <Input.TextArea
+        style={{ marginTop: 6 }}
+        rows={rows}
+        value={String(productLineServices[key] || '')}
+        onChange={(event) => updateProductLineService(key, event.target.value)}
+        placeholder={placeholder}
+      />
+    </div>
+  );
+
   const saveProductLine = async () => {
     if (!productLineForm.name.trim()) {
       message.warning('请输入产品线名称');
       return;
     }
+    if (!editingProductLine && !productLineForm.key.trim()) {
+      message.warning('请输入产品线标识');
+      setProductLineConfigTab('basic');
+      return;
+    }
+    if (!productLineForm.projectId.trim()) {
+      message.warning('请输入 Workflow 项目标识');
+      setProductLineConfigTab('basic');
+      return;
+    }
     setProductLineSaving(true);
     try {
       let targetProductLineId = editingProductLine?.id || '';
+      let savedProductLine: PlatformProductLine | null = editingProductLine;
       if (editingProductLine) {
-        await authApi.updateProductLine(editingProductLine.id, {
+        const updated = await authApi.updateProductLine(editingProductLine.id, {
           name: productLineForm.name,
           projectId: productLineForm.projectId,
           bundleId: productLineForm.bundleId,
           jenkinsBaseUrl: productLineForm.jenkinsBaseUrl,
         });
+        savedProductLine = updated.data || { ...editingProductLine, ...productLineForm };
       } else {
         const created = await authApi.createProductLine(productLineForm);
         targetProductLineId = created.data?.id || '';
         if (!targetProductLineId) throw new Error('产品线已创建，但未返回产品线 ID');
+        savedProductLine = created.data || null;
       }
-      await authApi.updateProductLineServices(targetProductLineId, productLineServicePayload());
+      const services = await authApi.updateProductLineServices(targetProductLineId, productLineServicePayload());
       message.success(editingProductLine ? '产品线配置已保存' : '产品线已创建');
-      setProductLineModalOpen(false);
-      setEditingProductLine(null);
-      setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
-      setProductLineServices(emptyProductLineServices());
+      setProductLineEditorMode('edit');
+      if (savedProductLine) {
+        setEditingProductLine(savedProductLine);
+        fillProductLineForm(savedProductLine);
+      }
+      if (services.data) setProductLineServices(services.data);
       setProductLineSecrets(emptyProductLineSecrets());
       setProductLineSecretChanges(emptySecretChanges());
       setAppStorePrivateKeyFileName('');
@@ -504,6 +564,385 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     } finally {
       setProductLineSaving(false);
     }
+  };
+
+  const closeProductLineEditor = () => {
+    setProductLineEditorMode(null);
+    setEditingProductLine(null);
+    setProductLineForm({ key: '', name: '', projectId: '', bundleId: '', jenkinsBaseUrl: '' });
+    setProductLineServices(emptyProductLineServices());
+    setProductLineSecrets(emptyProductLineSecrets());
+    setProductLineSecretChanges(emptySecretChanges());
+    setAppStorePrivateKeyFileName('');
+    setProductLineConfigTab('basic');
+  };
+
+  const productLineFormGridStyle = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+    gap: 12,
+  };
+
+  const renderProductLineConfigPanel = () => {
+    if (!productLineEditorMode) {
+      return (
+        <Alert
+          type="info"
+          showIcon
+          message="选择一个产品线后在这里配置"
+          description="点击表格中的“配置”，下方会按基础信息、Jenkins、podx、mgit、分发、App Store 和通知服务拆分成独立 tab。"
+        />
+      );
+    }
+
+    const isCreating = productLineEditorMode === 'create';
+    const panelTitle = isCreating
+      ? '新增产品线配置'
+      : `配置产品线：${editingProductLine?.name || productLineForm.name}`;
+
+    return (
+      <Card
+        title={panelTitle}
+        extra={(
+          <Space>
+            <Button onClick={closeProductLineEditor}>取消</Button>
+            <Button type="primary" loading={productLineSaving} onClick={saveProductLine}>
+              {isCreating ? '创建产品线' : '保存配置'}
+            </Button>
+          </Space>
+        )}
+      >
+        <Spin spinning={productLineServicesLoading} tip="正在读取服务配置...">
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="按 tab 维护当前产品线配置"
+              description={isCreating
+                ? '先填写基础信息；也可以继续切到其他 tab 一次性补充服务配置，保存后会写入新产品线。'
+                : '每个 tab 只放当前能力需要的字段；未填写的 podx 字段会尽量从 iOS Git 仓库地址、产品线标识和默认值推导。'}
+            />
+            <Tabs
+              activeKey={productLineConfigTab}
+              onChange={setProductLineConfigTab}
+              items={[
+                {
+                  key: 'basic',
+                  label: '基础信息',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：权限隔离、Workflow 数据隔离、全局产品线选择"
+                        description="产品线标识创建后不再修改；Workflow 项目标识用于隔离任务、问题与质量门禁数据。"
+                      />
+                      <div style={productLineFormGridStyle}>
+                        <div>
+                          <Text strong>产品线标识</Text>
+                          <Input
+                            style={{ marginTop: 6 }}
+                            value={productLineForm.key}
+                            disabled={!isCreating}
+                            onChange={(event) => setProductLineForm((current) => ({ ...current, key: event.target.value.trim() }))}
+                            placeholder="如：nn、nnrtc"
+                          />
+                        </div>
+                        <div>
+                          <Text strong>产品线名称</Text>
+                          <Input
+                            style={{ marginTop: 6 }}
+                            value={productLineForm.name}
+                            onChange={(event) => setProductLineForm((current) => ({ ...current, name: event.target.value }))}
+                            placeholder="如：雷神加速器"
+                          />
+                        </div>
+                        <div>
+                          <Text strong>Workflow 项目</Text>
+                          <Input
+                            style={{ marginTop: 6 }}
+                            value={productLineForm.projectId}
+                            onChange={(event) => setProductLineForm((current) => ({ ...current, projectId: event.target.value.trim() }))}
+                            placeholder="如：nn-ios、nnrtc-ios"
+                          />
+                        </div>
+                        <div>
+                          <Text strong>Bundle ID</Text>
+                          <Input
+                            style={{ marginTop: 6 }}
+                            value={productLineForm.bundleId}
+                            onChange={(event) => setProductLineForm((current) => ({ ...current, bundleId: event.target.value }))}
+                            placeholder="如：com.example.app（可选）"
+                          />
+                        </div>
+                      </div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'jenkins',
+                  label: 'Jenkins',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：Jenkins 构建、自动质检、发布状态、失败诊断"
+                        description="Jenkins 服务地址保存在产品线基础信息中；账号和 Job 信息保存在产品线服务配置中。"
+                      />
+                      <div style={productLineFormGridStyle}>
+                        <div>
+                          <Text strong>Jenkins 服务地址</Text>
+                          <Input
+                            style={{ marginTop: 6 }}
+                            value={productLineForm.jenkinsBaseUrl}
+                            onChange={(event) => setProductLineForm((current) => ({ ...current, jenkinsBaseUrl: event.target.value }))}
+                            placeholder="如：https://jenkins.example.com:8080"
+                          />
+                        </div>
+                        <div><Text strong>Jenkins 用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_USER} onChange={(event) => updateProductLineService('JENKINS_USER', event.target.value)} placeholder="用于调用 Jenkins API" /></div>
+                        <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
+                        <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_QA_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_QA_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
+                        <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
+                      </div>
+                      {productLineServices.JENKINS_USER === 'anonymous' && !productLineServices.JENKINS_TOKENConfigured ? (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>Jenkins API Token</Text>
+                            <Tag color="green">匿名访问，无需配置</Tag>
+                          </Space>
+                          <Input.Password
+                            value={productLineSecrets.JENKINS_TOKEN}
+                            onChange={(event) => updateProductLineSecret('JENKINS_TOKEN', event.target.value)}
+                            placeholder="当前 Jenkins 允许匿名访问；启用账号认证后再填写 Token"
+                          />
+                        </div>
+                      ) : renderServiceSecret('JENKINS_TOKEN', 'Jenkins API Token', productLineServices.JENKINS_TOKENConfigured, '输入 API Token')}
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'podx',
+                  label: 'podx',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：podx install、podx update、podx main、podx doctor、本地组件切换"
+                        description="这些配置决定当前产品线的 CocoaPods 私有源、默认 group/target、以及要读取哪个 Podfile.overlay。"
+                      />
+                      <div style={productLineFormGridStyle}>
+                        {renderServiceInput('PODX_TARGET_NAME', 'Target Name', '如：nn_ios、nnrtc_ios')}
+                        {renderServiceInput('PODX_PRIVATE_SOURCE', '私有 Specs 源', '如：https://git.example.com/nnrtc_ios/nnspec.git')}
+                        {renderServiceInput('PODX_GIT_BASE_URL', 'Git 基础地址', '如：https://git.example.com')}
+                        {renderServiceInput('PODX_OVERLAY_FILE', 'Overlay 文件', '如：Podfile.overlay.nnrtc')}
+                      </div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'mgit',
+                  label: 'mgit',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：Git 分支页面默认仓库、mgit publish、Jenkins 发布分支"
+                        description="仓库列表可填仓库名或完整 Git URL。填仓库名时平台会按 Git 基础地址、Target Name 和仓库名拼出远端 URL。"
+                      />
+                      <div style={productLineFormGridStyle}>
+                        {renderServiceInput('PODX_PUBLISH_MAIN_REPO', '发布主仓库', '如：nnios、nnrtc-ios')}
+                        {renderServiceInput('PODX_PUBLISH_WORK_DIR', '发布工作目录', '如：.mgit-publish/nnrtc')}
+                        {renderServiceInput('PODX_PUBLISH_BASE_BRANCH', '发布基准分支', '默认 develop')}
+                      </div>
+                      {renderServiceTextArea('PODX_PUBLISH_REPOS', '发布仓库列表', '每行一个仓库名或 Git URL，例如：\nnnrtc-ios\nnnrtc-core', 5)}
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'pgyer',
+                  label: '蒲公英',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：蒲公英发布、短链查询、发布结果归档"
+                        description="如果当前产品线只通过短链查询包信息，可以不填 App Key。"
+                      />
+                      {renderServiceSecret('PGYER_API_KEY', '蒲公英 API Key', productLineServices.PGYER_API_KEYConfigured, '输入蒲公英 API Key')}
+                      {!productLineServices.PGYER_APP_KEYConfigured && productLineServices.PGYER_API_KEYConfigured && productLineServices.PGYER_SHORTCUT_URL ? (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>蒲公英 App Key</Text>
+                            <Tag color="green">短链模式，无需配置</Tag>
+                          </Space>
+                          <Input.Password
+                            value={productLineSecrets.PGYER_APP_KEY}
+                            onChange={(event) => updateProductLineSecret('PGYER_APP_KEY', event.target.value)}
+                            placeholder="当前通过蒲公英短链查询；如需改用 App Key 可在此填写"
+                          />
+                        </div>
+                      ) : renderServiceSecret('PGYER_APP_KEY', '蒲公英 App Key', productLineServices.PGYER_APP_KEYConfigured, '输入蒲公英 App Key')}
+                      <div><Text strong>蒲公英短链</Text><Input style={{ marginTop: 6 }} value={productLineServices.PGYER_SHORTCUT_URL} onChange={(event) => updateProductLineService('PGYER_SHORTCUT_URL', event.target.value)} placeholder="如：https://www.pgyer.com/xxxx" /></div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'appstore',
+                  label: 'App Store',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="用于：TestFlight 发布、App Store 发布、发布前置校验"
+                        description="私钥只保存加密状态，不会从后端明文返回。"
+                      />
+                      <div style={productLineFormGridStyle}>
+                        {renderServiceInput('APP_STORE_CONNECT_API_KEY_ID', 'App Store Connect Key ID', 'API Key ID')}
+                        {renderServiceInput('APP_STORE_CONNECT_API_ISSUER_ID', 'Issuer ID', 'Issuer ID')}
+                        {renderServiceInput('APP_STORE_CONNECT_APP_ID', 'App ID', 'App Store Connect 数字 App ID')}
+                        {renderServiceInput('APP_STORE_CONNECT_TESTFLIGHT_GROUPS', 'TestFlight 测试组', '多个组用逗号分隔')}
+                      </div>
+                      <div>
+                        {productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY && (
+                          <Alert
+                            type="success"
+                            showIcon
+                            style={{ marginBottom: 10 }}
+                            message={`已加载 App Store Connect 私钥：${productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE || '已安全配置'}`}
+                            description="私钥内容属于敏感信息，不会通过管理接口返回或在页面明文显示；直接保存会继续使用当前私钥。"
+                          />
+                        )}
+                        <Space size={6} style={{ marginBottom: 6 }}>
+                          <Text strong>{productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '更新私钥（可选）' : 'App Store Connect 私钥'}</Text>
+                          {productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY
+                            ? <Tag color={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? 'blue' : 'red'}>{productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? '待更新' : '待清除'}</Tag>
+                            : productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
+                        </Space>
+                        <Input.TextArea
+                          value={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
+                          onChange={(event) => {
+                            updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', event.target.value);
+                            setAppStorePrivateKeyFileName('');
+                          }}
+                          placeholder={productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '当前私钥已加载；仅在需要替换时粘贴新的 .p8 完整内容' : '粘贴 .p8 私钥完整内容'}
+                          autoSize={{ minRows: 3, maxRows: 8 }}
+                          style={{ fontFamily: 'monospace' }}
+                        />
+                        {appStorePrivateKeyFileName && (
+                          <Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
+                            待更新文件：{appStorePrivateKeyFileName}
+                          </Text>
+                        )}
+                        <Space size={8} wrap style={{ marginTop: 8 }}>
+                          <Upload
+                            accept=".p8"
+                            maxCount={1}
+                            showUploadList={false}
+                            beforeUpload={(file) => {
+                              void loadAppStorePrivateKeyFile(file);
+                              return false;
+                            }}
+                          >
+                            <Button size="small" type="primary" icon={<UploadOutlined />}>选择 .p8 更新</Button>
+                          </Upload>
+                          {editingProductLine && (
+                            <Button size="small" icon={<SyncOutlined />} loading={appStorePrivateKeySyncing} onClick={syncAppStorePrivateKey}>
+                              刷新私钥状态
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            icon={<LinkOutlined />}
+                            href="https://appstoreconnect.apple.com/access/integrations/api"
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            打开 App Store Connect API 密钥
+                          </Button>
+                          <Popconfirm
+                            title="确定清除当前产品线的 App Store Connect 私钥吗？"
+                            description="保存产品线后生效。"
+                            okText="清除"
+                            cancelText="取消"
+                            onConfirm={() => {
+                              updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', '');
+                              setAppStorePrivateKeyFileName('');
+                            }}
+                            disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
+                          >
+                            <Button size="small" danger disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}>清除私钥</Button>
+                          </Popconfirm>
+                        </Space>
+                      </div>
+                    </Space>
+                  ),
+                },
+                {
+                  key: 'notification',
+                  label: '通知',
+                  children: (
+                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                      <Alert
+                        type="info"
+                        showIcon
+                        message="企业微信机器人用于当前产品线的构建、发布和审核结果通知"
+                        description="在目标企业微信群中添加群机器人后复制完整 Webhook 地址。当前完整地址仅在管理员产品线配置页显示。"
+                      />
+                      {productLineServices.WECHAT_WEBHOOK_URLConfigured && !productLineSecretChanges.WECHAT_WEBHOOK_URL && (
+                        <div>
+                          <Space size={6} style={{ marginBottom: 6 }}>
+                            <Text strong>当前 Webhook</Text>
+                            <Tag color="green">已配置</Tag>
+                          </Space>
+                          <Input
+                            readOnly
+                            value={productLineServices.WECHAT_WEBHOOK_URL || ''}
+                            addonAfter={`来源：${productLineServices.WECHAT_WEBHOOK_URL_SOURCE || '已安全加载'}`}
+                          />
+                        </div>
+                      )}
+                      {renderServiceSecret(
+                        'WECHAT_WEBHOOK_URL',
+                        productLineServices.WECHAT_WEBHOOK_URLConfigured ? '更新 Webhook（可选）' : '企业微信机器人 Webhook',
+                        productLineServices.WECHAT_WEBHOOK_URLConfigured,
+                        '输入完整 Webhook URL，如：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'
+                      )}
+                      <Space size={8} wrap>
+                        {editingProductLine && (
+                          <Button size="small" icon={<SyncOutlined />} loading={weChatWebhookSyncing} onClick={syncWeChatWebhook}>
+                            刷新 Webhook 状态
+                          </Button>
+                        )}
+                        <Button
+                          size="small"
+                          icon={<LinkOutlined />}
+                          href="https://developer.work.weixin.qq.com/document/path/91770"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          查看企业微信机器人配置说明
+                        </Button>
+                      </Space>
+                    </Space>
+                  ),
+                },
+              ]}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Button onClick={closeProductLineEditor}>取消</Button>
+              <Button type="primary" loading={productLineSaving} onClick={saveProductLine}>
+                {isCreating ? '创建产品线' : '保存配置'}
+              </Button>
+            </div>
+          </Space>
+        </Spin>
+      </Card>
+    );
   };
 
   const deletePlatformUser = async (user: PlatformUser) => {
@@ -918,32 +1357,56 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
   );
 
   const renderProductLines = () => (
-    <Card
-      title="iOS 产品线"
-      extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreateProductLine}>新增产品线</Button>}
-    >
-      <Alert
-        type="info"
-        showIcon
-        message="产品线是权限与研发数据的隔离边界"
-        description="用户可在不同产品线分别拥有游客、测试、研发或产品运营角色；Workflow 项目标识用于隔离任务、问题与质量门禁数据。"
-        style={{ marginBottom: 16 }}
-      />
-      <Table<PlatformProductLine>
-        rowKey="id"
-        dataSource={productLines}
-        pagination={false}
-        columns={[
-          { title: '名称', dataIndex: 'name', key: 'name' },
-          { title: '标识', dataIndex: 'key', key: 'key', render: (value: string) => <Text code>{value}</Text> },
-          { title: 'Workflow 项目', dataIndex: 'projectId', key: 'projectId', render: (value: string) => <Text code>{value}</Text> },
-          { title: 'Bundle ID', dataIndex: 'bundleId', key: 'bundleId', render: (value?: string) => value || '-' },
-          { title: 'Jenkins 服务', dataIndex: 'jenkinsBaseUrl', key: 'jenkinsBaseUrl', render: (value?: string) => value ? <Text copyable>{value}</Text> : <Tag color="orange">未配置</Tag> },
-          { title: '状态', dataIndex: 'active', key: 'active', render: (active: boolean) => active ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
-          { title: '操作', key: 'actions', render: (_, record) => <Button size="small" icon={<SettingOutlined />} onClick={() => openEditProductLine(record)}>配置</Button> },
-        ]}
-      />
-    </Card>
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Card
+        title="iOS 产品线"
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreateProductLine}>新增产品线</Button>}
+      >
+        <Alert
+          type="info"
+          showIcon
+          message="产品线是权限与研发数据的隔离边界"
+          description="先在列表中选择产品线，再在下方按 tab 维护基础信息、Jenkins、podx、mgit、分发、App Store 和通知配置。"
+          style={{ marginBottom: 16 }}
+        />
+        <Table<PlatformProductLine>
+          rowKey="id"
+          dataSource={productLines}
+          pagination={false}
+          rowClassName={(record) => editingProductLine?.id === record.id ? 'ant-table-row-selected' : ''}
+          onRow={(record) => ({
+            onClick: () => openEditProductLine(record),
+            style: { cursor: 'pointer' },
+          })}
+          columns={[
+            { title: '名称', dataIndex: 'name', key: 'name' },
+            { title: '标识', dataIndex: 'key', key: 'key', render: (value: string) => <Text code>{value}</Text> },
+            { title: 'Workflow 项目', dataIndex: 'projectId', key: 'projectId', render: (value: string) => <Text code>{value}</Text> },
+            { title: 'Bundle ID', dataIndex: 'bundleId', key: 'bundleId', render: (value?: string) => value || '-' },
+            { title: 'Jenkins 服务', dataIndex: 'jenkinsBaseUrl', key: 'jenkinsBaseUrl', render: (value?: string) => value ? <Text copyable>{value}</Text> : <Tag color="orange">未配置</Tag> },
+            { title: '状态', dataIndex: 'active', key: 'active', render: (active: boolean) => active ? <Tag color="green">启用</Tag> : <Tag>停用</Tag> },
+            {
+              title: '操作',
+              key: 'actions',
+              width: 120,
+              render: (_, record) => (
+                <Button
+                  size="small"
+                  icon={<SettingOutlined />}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openEditProductLine(record);
+                  }}
+                >
+                  配置
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
+      {renderProductLineConfigPanel()}
+    </Space>
   );
 
   const renderPlatformUsers = () => (
@@ -1345,234 +1808,6 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             </div>
           )}
         </Space>
-      </Modal>
-
-      <Modal
-        title={editingProductLine ? `配置产品线 - ${editingProductLine.name}` : '新增 iOS 产品线'}
-        open={productLineModalOpen}
-        onCancel={() => setProductLineModalOpen(false)}
-        onOk={saveProductLine}
-        confirmLoading={productLineSaving}
-        okText={editingProductLine ? '保存' : '创建'}
-        width={860}
-        destroyOnHidden
-      >
-        <Spin spinning={productLineServicesLoading} tip="正在读取服务配置...">
-          <Space direction="vertical" size={14} style={{ width: '100%' }}>
-            <Alert
-              type="info"
-              showIcon
-              message="产品线专属服务地址与凭据相互隔离"
-              description="远程 Jenkins 可填写任意能由平台后端访问的 HTTP/HTTPS IP、域名和端口。Sentry 是平台公共服务，不在产品线中重复配置。"
-            />
-            <Collapse
-              defaultActiveKey={['basic', 'jenkins']}
-              items={[
-                {
-                  key: 'basic',
-                  label: '基础信息',
-                  children: (
-                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                      <div><Text strong>产品线名称</Text><Input style={{ marginTop: 6 }} value={productLineForm.name} onChange={(event) => setProductLineForm((current) => ({ ...current, name: event.target.value }))} placeholder="如：雷神加速器" /></div>
-                      <div><Text strong>Bundle ID</Text><Input style={{ marginTop: 6 }} value={productLineForm.bundleId} onChange={(event) => setProductLineForm((current) => ({ ...current, bundleId: event.target.value }))} placeholder="如：com.example.app（可选）" /></div>
-                    </Space>
-                  ),
-                },
-                {
-                  key: 'jenkins',
-                  label: 'Jenkins 与代码仓库',
-                  children: (
-                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                      <div><Text strong>Jenkins 服务地址</Text><Input style={{ marginTop: 6 }} value={productLineForm.jenkinsBaseUrl} onChange={(event) => setProductLineForm((current) => ({ ...current, jenkinsBaseUrl: event.target.value }))} placeholder="如：https://jenkins.example.com:8080" /></div>
-                      <div><Text strong>Jenkins 用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_USER} onChange={(event) => updateProductLineService('JENKINS_USER', event.target.value)} placeholder="用于调用 Jenkins API" /></div>
-                      {productLineServices.JENKINS_USER === 'anonymous' && !productLineServices.JENKINS_TOKENConfigured ? (
-                        <div>
-                          <Space size={6} style={{ marginBottom: 6 }}>
-                            <Text strong>Jenkins API Token</Text>
-                            <Tag color="green">匿名访问，无需配置</Tag>
-                          </Space>
-                          <Input.Password
-                            value={productLineSecrets.JENKINS_TOKEN}
-                            onChange={(event) => updateProductLineSecret('JENKINS_TOKEN', event.target.value)}
-                            placeholder="当前 Jenkins 允许匿名访问；启用账号认证后再填写 Token"
-                          />
-                        </div>
-                      ) : renderServiceSecret('JENKINS_TOKEN', 'Jenkins API Token', productLineServices.JENKINS_TOKENConfigured, '输入 API Token')}
-                      <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
-                      <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_QA_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_QA_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
-                      <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
-                      <div><Text strong>podx Target Name</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_TARGET_NAME} onChange={(event) => updateProductLineService('PODX_TARGET_NAME', event.target.value)} placeholder="如：nn_ios、nnrtc_ios" /></div>
-                      <div><Text strong>podx 私有 Specs 源</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PRIVATE_SOURCE} onChange={(event) => updateProductLineService('PODX_PRIVATE_SOURCE', event.target.value)} placeholder="如：https://git.example.com/nnrtc_ios/nnspec.git" /></div>
-                      <div><Text strong>podx Git 基础地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_GIT_BASE_URL} onChange={(event) => updateProductLineService('PODX_GIT_BASE_URL', event.target.value)} placeholder="如：https://git.example.com" /></div>
-                      <div><Text strong>podx Overlay 文件</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_OVERLAY_FILE} onChange={(event) => updateProductLineService('PODX_OVERLAY_FILE', event.target.value)} placeholder="如：Podfile.overlay.nnrtc" /></div>
-                      <div><Text strong>mgit 发布主仓库</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_MAIN_REPO} onChange={(event) => updateProductLineService('PODX_PUBLISH_MAIN_REPO', event.target.value)} placeholder="如：nnios、nnrtc-ios" /></div>
-                      <div><Text strong>mgit 发布工作目录</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_WORK_DIR} onChange={(event) => updateProductLineService('PODX_PUBLISH_WORK_DIR', event.target.value)} placeholder="如：.mgit-publish/nnrtc" /></div>
-                      <div><Text strong>mgit 发布基准分支</Text><Input style={{ marginTop: 6 }} value={productLineServices.PODX_PUBLISH_BASE_BRANCH} onChange={(event) => updateProductLineService('PODX_PUBLISH_BASE_BRANCH', event.target.value)} placeholder="默认 develop" /></div>
-                      <div>
-                        <Text strong>mgit 发布仓库列表</Text>
-                        <Input.TextArea
-                          style={{ marginTop: 6 }}
-                          rows={5}
-                          value={productLineServices.PODX_PUBLISH_REPOS}
-                          onChange={(event) => updateProductLineService('PODX_PUBLISH_REPOS', event.target.value)}
-                          placeholder={'每行一个仓库名或 Git URL，例如：\nnnrtc-ios\nnnrtc-core'}
-                        />
-                      </div>
-                    </Space>
-                  ),
-                },
-                {
-                  key: 'release',
-                  label: '蒲公英与 App Store Connect',
-                  children: (
-                    <Space direction="vertical" size={10} style={{ width: '100%' }}>
-                      {renderServiceSecret('PGYER_API_KEY', '蒲公英 API Key', productLineServices.PGYER_API_KEYConfigured, '输入蒲公英 API Key')}
-                      {!productLineServices.PGYER_APP_KEYConfigured && productLineServices.PGYER_API_KEYConfigured && productLineServices.PGYER_SHORTCUT_URL ? (
-                        <div>
-                          <Space size={6} style={{ marginBottom: 6 }}>
-                            <Text strong>蒲公英 App Key</Text>
-                            <Tag color="green">短链模式，无需配置</Tag>
-                          </Space>
-                          <Input.Password
-                            value={productLineSecrets.PGYER_APP_KEY}
-                            onChange={(event) => updateProductLineSecret('PGYER_APP_KEY', event.target.value)}
-                            placeholder="当前通过蒲公英短链查询；如需改用 App Key 可在此填写"
-                          />
-                        </div>
-                      ) : renderServiceSecret('PGYER_APP_KEY', '蒲公英 App Key', productLineServices.PGYER_APP_KEYConfigured, '输入蒲公英 App Key')}
-                      <div><Text strong>蒲公英短链</Text><Input style={{ marginTop: 6 }} value={productLineServices.PGYER_SHORTCUT_URL} onChange={(event) => updateProductLineService('PGYER_SHORTCUT_URL', event.target.value)} placeholder="如：https://www.pgyer.com/xxxx" /></div>
-                      <div><Text strong>App Store Connect Key ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_API_KEY_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_API_KEY_ID', event.target.value)} placeholder="API Key ID" /></div>
-                      <div><Text strong>Issuer ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_API_ISSUER_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_API_ISSUER_ID', event.target.value)} placeholder="Issuer ID" /></div>
-                      <div>
-                        {productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY && (
-                          <Alert
-                            type="success"
-                            showIcon
-                            style={{ marginBottom: 10 }}
-                            message={`已加载 App Store Connect 私钥：${productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE || '已安全配置'}`}
-                            description="私钥内容属于敏感信息，不会通过管理接口返回或在页面明文显示；直接保存会继续使用当前私钥。"
-                          />
-                        )}
-                        <Space size={6} style={{ marginBottom: 6 }}>
-                          <Text strong>{productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '更新私钥（可选）' : 'App Store Connect 私钥'}</Text>
-                          {productLineSecretChanges.APP_STORE_CONNECT_API_PRIVATE_KEY
-                            ? <Tag color={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? 'blue' : 'red'}>{productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY ? '待更新' : '待清除'}</Tag>
-                            : productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag>}
-                        </Space>
-                        <Input.TextArea
-                          value={productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
-                          onChange={(event) => {
-                            updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', event.target.value);
-                            setAppStorePrivateKeyFileName('');
-                          }}
-                          placeholder={productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured ? '当前私钥已加载；仅在需要替换时粘贴新的 .p8 完整内容' : '粘贴 .p8 私钥完整内容'}
-                          autoSize={{ minRows: 3, maxRows: 8 }}
-                          style={{ fontFamily: 'monospace' }}
-                        />
-                        {appStorePrivateKeyFileName && (
-                          <Text type="secondary" style={{ display: 'block', marginTop: 6 }}>
-                            待更新文件：{appStorePrivateKeyFileName}
-                          </Text>
-                        )}
-                        <Space size={8} wrap style={{ marginTop: 8 }}>
-                          <Upload
-                            accept=".p8"
-                            maxCount={1}
-                            showUploadList={false}
-                            beforeUpload={(file) => {
-                              void loadAppStorePrivateKeyFile(file);
-                              return false;
-                            }}
-                          >
-                            <Button size="small" type="primary" icon={<UploadOutlined />}>选择 .p8 更新</Button>
-                          </Upload>
-                          {editingProductLine && (
-                            <Button size="small" icon={<SyncOutlined />} loading={appStorePrivateKeySyncing} onClick={syncAppStorePrivateKey}>
-                              刷新私钥状态
-                            </Button>
-                          )}
-                          <Button
-                            size="small"
-                            icon={<LinkOutlined />}
-                            href="https://appstoreconnect.apple.com/access/integrations/api"
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            打开 App Store Connect API 密钥
-                          </Button>
-                          <Popconfirm
-                            title="确定清除当前产品线的 App Store Connect 私钥吗？"
-                            description="保存产品线后生效。"
-                            okText="清除"
-                            cancelText="取消"
-                            onConfirm={() => {
-                              updateProductLineSecret('APP_STORE_CONNECT_API_PRIVATE_KEY', '');
-                              setAppStorePrivateKeyFileName('');
-                            }}
-                            disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}
-                          >
-                            <Button size="small" danger disabled={!productLineServices.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured && !productLineSecrets.APP_STORE_CONNECT_API_PRIVATE_KEY}>清除私钥</Button>
-                          </Popconfirm>
-                        </Space>
-                      </div>
-                      <div><Text strong>App ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_APP_ID} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_APP_ID', event.target.value)} placeholder="App Store Connect 数字 App ID" /></div>
-                      <div><Text strong>TestFlight 测试组</Text><Input style={{ marginTop: 6 }} value={productLineServices.APP_STORE_CONNECT_TESTFLIGHT_GROUPS} onChange={(event) => updateProductLineService('APP_STORE_CONNECT_TESTFLIGHT_GROUPS', event.target.value)} placeholder="多个组用逗号分隔" /></div>
-                    </Space>
-                  ),
-                },
-                {
-                  key: 'notification',
-                  label: '通知服务',
-                  children: (
-                    <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                      <Alert
-                        type="info"
-                        showIcon
-                        message="企业微信机器人用于当前产品线的构建、发布和审核结果通知"
-                        description="在目标企业微信群中添加群机器人后复制完整 Webhook 地址。当前完整地址仅在管理员产品线配置页显示。"
-                      />
-                      {productLineServices.WECHAT_WEBHOOK_URLConfigured && !productLineSecretChanges.WECHAT_WEBHOOK_URL && (
-                        <div>
-                          <Space size={6} style={{ marginBottom: 6 }}>
-                            <Text strong>当前 Webhook</Text>
-                            <Tag color="green">已配置</Tag>
-                          </Space>
-                          <Input
-                            readOnly
-                            value={productLineServices.WECHAT_WEBHOOK_URL || ''}
-                            addonAfter={`来源：${productLineServices.WECHAT_WEBHOOK_URL_SOURCE || '已安全加载'}`}
-                          />
-                        </div>
-                      )}
-                      {renderServiceSecret(
-                        'WECHAT_WEBHOOK_URL',
-                        productLineServices.WECHAT_WEBHOOK_URLConfigured ? '更新 Webhook（可选）' : '企业微信机器人 Webhook',
-                        productLineServices.WECHAT_WEBHOOK_URLConfigured,
-                        '输入完整 Webhook URL，如：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...'
-                      )}
-                      <Space size={8} wrap>
-                        {editingProductLine && (
-                          <Button size="small" icon={<SyncOutlined />} loading={weChatWebhookSyncing} onClick={syncWeChatWebhook}>
-                            刷新 Webhook 状态
-                          </Button>
-                        )}
-                        <Button
-                          size="small"
-                          icon={<LinkOutlined />}
-                          href="https://developer.work.weixin.qq.com/document/path/91770"
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          查看企业微信机器人配置说明
-                        </Button>
-                      </Space>
-                    </Space>
-                  ),
-                },
-              ]}
-            />
-          </Space>
-        </Spin>
       </Modal>
 
       <Modal
