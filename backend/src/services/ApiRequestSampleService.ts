@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
+import { currentProductLineId } from './ProductLineContext';
 
 type LogSource = 'realtime_log' | 'feedback_log';
 type RequestEnvironment = 'release' | 'test' | 'test1' | 'unknown';
@@ -12,6 +13,7 @@ interface ParsedLog {
 }
 
 interface PendingRequest {
+  productLineId: string;
   source: LogSource;
   sourceRef: string;
   line: string;
@@ -29,6 +31,7 @@ interface DocumentLike {
 
 export interface ApiRequestSample {
   id: string;
+  productLineId: string;
   source: LogSource;
   sourceRef: string;
   service: string;
@@ -105,6 +108,7 @@ class ApiRequestSampleService {
     getDatabase().prepare(`
       CREATE TABLE IF NOT EXISTS api_request_samples (
         id TEXT PRIMARY KEY,
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
         sample_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL,
         source_ref TEXT DEFAULT '',
@@ -131,16 +135,35 @@ class ApiRequestSampleService {
       )
     `).run();
     this.ensureColumn('api_request_samples', 'token', 'TEXT DEFAULT ""');
+    this.ensureColumn('api_request_samples', 'product_line_id', "TEXT NOT NULL DEFAULT 'nn'");
     getDatabase().prepare(`
       CREATE TABLE IF NOT EXISTS api_request_invalid_tokens (
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
         token TEXT NOT NULL,
         environment TEXT NOT NULL,
         reason TEXT DEFAULT '',
         invalid_at TEXT NOT NULL,
-        PRIMARY KEY (token, environment)
+        PRIMARY KEY (product_line_id, token, environment)
       )
     `).run();
-    getDatabase().prepare('CREATE INDEX IF NOT EXISTS idx_api_request_samples_lookup ON api_request_samples(service, method, path, environment, created_at)').run();
+    const invalidTokenColumns = getDatabase().prepare('PRAGMA table_info(api_request_invalid_tokens)').all() as { name: string }[];
+    if (!invalidTokenColumns.some((column) => column.name === 'product_line_id')) {
+      getDatabase().exec(`
+        ALTER TABLE api_request_invalid_tokens RENAME TO api_request_invalid_tokens_legacy;
+        CREATE TABLE api_request_invalid_tokens (
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          token TEXT NOT NULL,
+          environment TEXT NOT NULL,
+          reason TEXT DEFAULT '',
+          invalid_at TEXT NOT NULL,
+          PRIMARY KEY (product_line_id, token, environment)
+        );
+        INSERT INTO api_request_invalid_tokens (product_line_id, token, environment, reason, invalid_at)
+        SELECT 'nn', token, environment, reason, invalid_at FROM api_request_invalid_tokens_legacy;
+        DROP TABLE api_request_invalid_tokens_legacy;
+      `);
+    }
+    getDatabase().prepare('CREATE INDEX IF NOT EXISTS idx_api_request_samples_lookup ON api_request_samples(product_line_id, service, method, path, environment, created_at)').run();
   }
 
   private ensureColumn(tableName: string, columnName: string, definition: string): void {
@@ -150,7 +173,7 @@ class ApiRequestSampleService {
     }
   }
 
-  ingestLogLine(line: string, options: { source: LogSource; sourceRef?: string; timestamp?: string }): number {
+  ingestLogLine(line: string, options: { source: LogSource; sourceRef?: string; timestamp?: string; productLineId?: string }): number {
     if (!line.includes('event=api_request') && !line.includes('event=api_response')) return 0;
     const parsed = this.parseBusinessLogLine(line);
     if (!parsed || (parsed.event !== 'api_request' && parsed.event !== 'api_response')) return 0;
@@ -158,7 +181,9 @@ class ApiRequestSampleService {
     if (parsed.event === 'api_request') {
       const api = parsed.fields.api || '';
       const nntid = parsed.fields.nntid || crypto.randomUUID();
-      this.pendingRequests.set(nntid, {
+      const productLineId = options.productLineId || currentProductLineId();
+      this.pendingRequests.set(`${productLineId}:${nntid}`, {
+        productLineId,
         source: options.source,
         sourceRef: options.sourceRef || '',
         line,
@@ -172,10 +197,13 @@ class ApiRequestSampleService {
     }
 
     const nntid = parsed.fields.nntid || '';
-    const pending = nntid ? this.pendingRequests.get(nntid) : undefined;
+    const productLineId = options.productLineId || currentProductLineId();
+    const pendingKey = `${productLineId}:${nntid}`;
+    const pending = nntid ? this.pendingRequests.get(pendingKey) : undefined;
     if (!pending && !parsed.fields.api) return 0;
     const api = pending?.api || parsed.fields.api || '';
     const sample = this.buildSample({
+      productLineId: pending?.productLineId || options.productLineId || currentProductLineId(),
       source: pending?.source || options.source,
       sourceRef: pending?.sourceRef || options.sourceRef || '',
       api,
@@ -191,11 +219,11 @@ class ApiRequestSampleService {
       createdAt: options.timestamp || new Date().toISOString(),
       requestTime: pending?.createdAt || parsed.time || '',
     });
-    if (nntid) this.pendingRequests.delete(nntid);
+    if (nntid) this.pendingRequests.delete(pendingKey);
     return sample ? this.saveSample(sample) : 0;
   }
 
-  ingestLogLines(lines: string[], options: { source: LogSource; sourceRef?: string }): number {
+  ingestLogLines(lines: string[], options: { source: LogSource; sourceRef?: string; productLineId?: string }): number {
     let count = 0;
     for (const line of lines) {
       try {
@@ -210,8 +238,8 @@ class ApiRequestSampleService {
   listSamples(filters: { service: string; method: string; path: string; environment?: string; limit?: number }): ApiRequestSample[] {
     this.ensureTable();
     const limit = Math.min(Math.max(Number(filters.limit || 20), 1), 50);
-    const params: unknown[] = [filters.service, filters.method.toUpperCase(), filters.path];
-    let where = 'service = ? AND method = ? AND path = ?';
+    const params: unknown[] = [currentProductLineId(), filters.service, filters.method.toUpperCase(), filters.path];
+    let where = 'product_line_id = ? AND service = ? AND method = ? AND path = ?';
     if (filters.environment && filters.environment !== 'all') {
       where += ' AND environment = ?';
       params.push(filters.environment);
@@ -225,7 +253,8 @@ class ApiRequestSampleService {
           token = ''
           OR NOT EXISTS (
             SELECT 1 FROM api_request_invalid_tokens
-            WHERE api_request_invalid_tokens.token = api_request_samples.token
+            WHERE api_request_invalid_tokens.product_line_id = api_request_samples.product_line_id
+              AND api_request_invalid_tokens.token = api_request_samples.token
               AND api_request_invalid_tokens.environment = api_request_samples.environment
           )
         )
@@ -233,8 +262,8 @@ class ApiRequestSampleService {
       LIMIT ?
     `).all(...params) as any[];
     if (rows.length === 0 && filters.method) {
-      const fallbackParams: unknown[] = [filters.service, filters.path];
-      let fallbackWhere = 'service = ? AND path = ?';
+      const fallbackParams: unknown[] = [currentProductLineId(), filters.service, filters.path];
+      let fallbackWhere = 'product_line_id = ? AND service = ? AND path = ?';
       if (filters.environment && filters.environment !== 'all') {
         fallbackWhere += ' AND environment = ?';
         fallbackParams.push(filters.environment);
@@ -248,7 +277,8 @@ class ApiRequestSampleService {
             token = ''
             OR NOT EXISTS (
               SELECT 1 FROM api_request_invalid_tokens
-              WHERE api_request_invalid_tokens.token = api_request_samples.token
+              WHERE api_request_invalid_tokens.product_line_id = api_request_samples.product_line_id
+                AND api_request_invalid_tokens.token = api_request_samples.token
                 AND api_request_invalid_tokens.environment = api_request_samples.environment
             )
           )
@@ -258,6 +288,7 @@ class ApiRequestSampleService {
     }
     return rows.map((row) => ({
       id: row.id,
+      productLineId: row.product_line_id || 'nn',
       source: row.source,
       sourceRef: row.source_ref || '',
       service: row.service,
@@ -288,16 +319,17 @@ class ApiRequestSampleService {
     const row = getDatabase().prepare(`
       SELECT token, environment, created_at, source, source_ref
       FROM api_request_samples
-      WHERE environment = ?
+      WHERE product_line_id = ? AND environment = ?
         AND token != ''
         AND NOT EXISTS (
           SELECT 1 FROM api_request_invalid_tokens
-          WHERE api_request_invalid_tokens.token = api_request_samples.token
+          WHERE api_request_invalid_tokens.product_line_id = api_request_samples.product_line_id
+            AND api_request_invalid_tokens.token = api_request_samples.token
             AND api_request_invalid_tokens.environment = api_request_samples.environment
         )
       ORDER BY created_at DESC
       LIMIT 1
-    `).get(environment) as { token?: string; environment?: string; created_at?: string; source?: LogSource; source_ref?: string } | undefined;
+    `).get(currentProductLineId(), environment) as { token?: string; environment?: string; created_at?: string; source?: LogSource; source_ref?: string } | undefined;
     if (!row?.token) return undefined;
     return {
       token: row.token,
@@ -323,6 +355,7 @@ class ApiRequestSampleService {
   }
 
   buildSample(input: {
+    productLineId?: string;
     source: LogSource;
     sourceRef: string;
     api: string;
@@ -345,16 +378,16 @@ class ApiRequestSampleService {
 
   private saveSample(sample: Omit<ApiRequestSample, 'id'> & { sampleKey: string }): number {
     this.ensureTable();
-    if (sample.token && this.isTokenInvalid(sample.environment, sample.token)) {
+    if (sample.token && this.isTokenInvalid(sample.productLineId, sample.environment, sample.token)) {
       return 0;
     }
     const id = crypto.randomUUID();
     const result = getDatabase().prepare(`
       INSERT INTO api_request_samples (
-        id, sample_key, source, source_ref, service, method, path, full_path, environment,
+        id, product_line_id, sample_key, source, source_ref, service, method, path, full_path, environment,
         headers_json, query_json, path_params_json, body_json, token, response_json, status_code,
         ret_code, ret_msg, cost_ms, uid, device_id, nntid, created_at, request_time
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sample_key) DO UPDATE SET
         token = excluded.token,
         response_json = excluded.response_json,
@@ -365,6 +398,7 @@ class ApiRequestSampleService {
         created_at = excluded.created_at
     `).run(
       id,
+      sample.productLineId,
       sample.sampleKey,
       sample.source,
       sample.sourceRef,
@@ -399,26 +433,26 @@ class ApiRequestSampleService {
     this.ensureTable();
     const now = new Date().toISOString();
     getDatabase().prepare(`
-      INSERT INTO api_request_invalid_tokens (token, environment, reason, invalid_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(token, environment) DO UPDATE SET
+      INSERT INTO api_request_invalid_tokens (product_line_id, token, environment, reason, invalid_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(product_line_id, token, environment) DO UPDATE SET
         reason = excluded.reason,
         invalid_at = excluded.invalid_at
-    `).run(normalizedToken, normalizedEnvironment, reason, now);
+    `).run(currentProductLineId(), normalizedToken, normalizedEnvironment, reason, now);
     const result = getDatabase().prepare(`
       DELETE FROM api_request_samples
-      WHERE token = ? AND environment = ?
-    `).run(normalizedToken, normalizedEnvironment);
+      WHERE product_line_id = ? AND token = ? AND environment = ?
+    `).run(currentProductLineId(), normalizedToken, normalizedEnvironment);
     return result.changes;
   }
 
-  private isTokenInvalid(environment: string, token: string): boolean {
+  private isTokenInvalid(productLineId: string, environment: string, token: string): boolean {
     const row = getDatabase().prepare(`
       SELECT 1 AS matched
       FROM api_request_invalid_tokens
-      WHERE environment = ? AND token = ?
+      WHERE product_line_id = ? AND environment = ? AND token = ?
       LIMIT 1
-    `).get(environment || 'unknown', token) as { matched?: number } | undefined;
+    `).get(productLineId, environment || 'unknown', token) as { matched?: number } | undefined;
     return Boolean(row?.matched);
   }
 
@@ -561,10 +595,11 @@ class ApiRequestSampleService {
     const parts = this.splitParameters(input.parameters, operation.method);
     const sampleKey = crypto
       .createHash('sha1')
-      .update([input.nntid, input.source, operation.service, operation.method, operation.path, JSON.stringify(input.parameters || {})].join('|'))
+      .update([input.productLineId || currentProductLineId(), input.nntid, input.source, operation.service, operation.method, operation.path, JSON.stringify(input.parameters || {})].join('|'))
       .digest('hex');
     return {
       sampleKey,
+      productLineId: input.productLineId || currentProductLineId(),
       source: input.source,
       sourceRef: input.sourceRef,
       service: operation.service,

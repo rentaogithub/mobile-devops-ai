@@ -8,16 +8,26 @@ import logger from '../utils/logger';
 import { requireAnyRole } from '../middleware/auth';
 import { getNNRtcJenkinsConfig } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
 const podDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
 const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');
-const NNRTC_TASKS_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
+const NNRTC_TASKS_BASE_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
+
+function nnrtcTasksPath(productLineId: string) {
+  if (productLineId === 'nn') return NNRTC_TASKS_BASE_PATH;
+  const extension = path.extname(NNRTC_TASKS_BASE_PATH) || '.json';
+  const base = NNRTC_TASKS_BASE_PATH.slice(0, -extension.length);
+  return `${base}.${productLineId.replace(/[^A-Za-z0-9_.-]/g, '_')}${extension}`;
+}
 
 type NNRtcTaskStatus = 'pending' | 'running' | 'success' | 'failed';
 interface NNRtcTask {
   id: string;
+  productLineId: string;
   type: 'publish' | 'replace';
   status: NNRtcTaskStatus;
   progress: number;
@@ -31,28 +41,34 @@ interface NNRtcTask {
 }
 
 const nnrtcTasks = new Map<string, NNRtcTask>();
+const loadedTaskProductLines = new Set<string>();
 
-function persistNNRtcTasks() {
+function persistNNRtcTasks(productLineId = currentProductLineId()) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
     const tasks = Array.from(nnrtcTasks.values())
+      .filter((task) => task.productLineId === productLineId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 100);
-    fs.writeFileSync(NNRTC_TASKS_PATH, JSON.stringify({ tasks, updatedAt: Date.now() }, null, 2), 'utf-8');
+    fs.writeFileSync(nnrtcTasksPath(productLineId), JSON.stringify({ productLineId, tasks, updatedAt: Date.now() }, null, 2), 'utf-8');
   } catch (error: any) {
     logger.warn('保存 NNRtc Pod 任务失败', { error: error.message });
   }
 }
 
-function loadNNRtcTasks() {
+function loadNNRtcTasks(productLineId = currentProductLineId()) {
+  if (loadedTaskProductLines.has(productLineId)) return;
+  loadedTaskProductLines.add(productLineId);
   try {
-    if (!fs.existsSync(NNRTC_TASKS_PATH)) return;
-    const parsed = JSON.parse(fs.readFileSync(NNRTC_TASKS_PATH, 'utf-8'));
+    const tasksPath = nnrtcTasksPath(productLineId);
+    if (!fs.existsSync(tasksPath)) return;
+    const parsed = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'));
     const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
     for (const item of tasks) {
       if (!item?.id) continue;
       const task: NNRtcTask = {
         id: String(item.id),
+        productLineId,
         type: item.type === 'replace' ? 'replace' : 'publish',
         status: ['pending', 'running', 'success', 'failed'].includes(item.status) ? item.status : 'failed',
         progress: Number(item.progress) || 0,
@@ -74,7 +90,7 @@ function loadNNRtcTasks() {
       }
       nnrtcTasks.set(task.id, task);
     }
-    persistNNRtcTasks();
+    persistNNRtcTasks(productLineId);
   } catch (error: any) {
     logger.warn('加载 NNRtc Pod 任务失败', { error: error.message });
   }
@@ -102,7 +118,7 @@ const upload = multer({
 function requireTargetBranch(value: unknown): string {
   const targetBranch = String(value || '').trim();
   if (!targetBranch) {
-    const error = new Error('同步到 nnios 分支不能为空') as Error & { statusCode?: number };
+    const error = new Error('同步到发布主仓库分支不能为空') as Error & { statusCode?: number };
     error.statusCode = 400;
     throw error;
   }
@@ -124,16 +140,20 @@ function isNNRtcTestVersion(version?: string) {
 }
 
 function buildJenkinsAuthConfig() {
-  const username = process.env.NNRTC_JENKINS_USER || process.env.JENKINS_USER || '';
-  const token = process.env.NNRTC_JENKINS_TOKEN || process.env.JENKINS_TOKEN || '';
+  const username = productLineConfigService.get('NNRTC_JENKINS_USER')
+    || productLineConfigService.get('JENKINS_USER');
+  const token = productLineConfigService.get('NNRTC_JENKINS_TOKEN')
+    || productLineConfigService.get('JENKINS_TOKEN');
   if (!username || !token) return {};
   return { auth: { username, password: token } };
 }
 
 function createNNRtcTask(type: NNRtcTask['type']): NNRtcTask {
+  loadNNRtcTasks();
   const now = Date.now();
   const task: NNRtcTask = {
     id: `nnrtc_${type}_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    productLineId: currentProductLineId(),
     type,
     status: 'pending',
     progress: 0,
@@ -143,7 +163,7 @@ function createNNRtcTask(type: NNRtcTask['type']): NNRtcTask {
     updatedAt: now,
   };
   nnrtcTasks.set(task.id, task);
-  persistNNRtcTasks();
+  persistNNRtcTasks(task.productLineId);
   return task;
 }
 
@@ -151,15 +171,16 @@ function updateNNRtcTask(task: NNRtcTask, patch: Partial<NNRtcTask>) {
   Object.assign(task, patch, { updatedAt: Date.now() });
   if (patch.message) task.logs.push(patch.message);
   nnrtcTasks.set(task.id, task);
-  persistNNRtcTasks();
+  persistNNRtcTasks(task.productLineId);
 }
 
 function scheduleTaskCleanup() {
+  const productLineId = currentProductLineId();
   const expireAt = Date.now() - 2 * 60 * 60 * 1000;
   for (const [id, task] of nnrtcTasks.entries()) {
-    if (task.updatedAt < expireAt) nnrtcTasks.delete(id);
+    if (task.productLineId === productLineId && task.updatedAt < expireAt) nnrtcTasks.delete(id);
   }
-  persistNNRtcTasks();
+  persistNNRtcTasks(productLineId);
 }
 
 function findNNRtcArtifact(artifacts: any[]) {
@@ -659,7 +680,10 @@ router.post('/nnrtc/:version/jenkins/replace-task', podDeveloperMiddleware, asyn
  * 查询最近 NNRtc 发布/替换任务
  */
 router.get('/nnrtc/tasks', async (_req: Request, res: Response) => {
-  const tasks = Array.from(nnrtcTasks.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  loadNNRtcTasks();
+  const tasks = Array.from(nnrtcTasks.values())
+    .filter((task) => task.productLineId === currentProductLineId())
+    .sort((a, b) => b.updatedAt - a.updatedAt);
   res.json({ success: true, data: tasks });
 });
 
@@ -668,8 +692,9 @@ router.get('/nnrtc/tasks', async (_req: Request, res: Response) => {
  * 查询 NNRtc 发布/替换任务进度
  */
 router.get('/nnrtc/tasks/:taskId', async (req: Request, res: Response) => {
+  loadNNRtcTasks();
   const task = nnrtcTasks.get(req.params.taskId);
-  if (!task) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
+  if (!task || task.productLineId !== currentProductLineId()) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
   res.json({ success: true, data: task, warning: task.warning });
 });
 
@@ -791,7 +816,7 @@ router.post('/:name/:version/retry', podDeveloperMiddleware, async (req: Request
 
 /**
  * POST /api/pods/:name/:version/sync-branch
- * 将当前组件版本同步到指定 nnios 分支（需要管理员权限）
+ * 将当前组件版本同步到指定发布主仓库分支（需要管理员权限）
  */
 router.post('/:name/:version/sync-branch', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
@@ -804,7 +829,7 @@ router.post('/:name/:version/sync-branch', podDeveloperMiddleware, async (req: R
     workflowIntegrationService.syncPodComponent(component, 'sync_branch');
     res.json({ success: true, data: component });
   } catch (error: any) {
-    logger.error('同步组件版本到 nnios 分支失败', { error: error.message });
+    logger.error('同步组件版本到发布主仓库分支失败', { error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });

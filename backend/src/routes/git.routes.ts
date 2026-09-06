@@ -1,6 +1,4 @@
 import { Router, Request, Response } from 'express';
-import fs from 'fs';
-import path from 'path';
 import gitBranchService, {
   BranchJobOptions,
   DEFAULT_REPOS,
@@ -17,40 +15,20 @@ const router = Router();
 // ============ Git 凭据管理 ============
 
 /**
- * 读取 .env 文件中的 GIT_USERNAME / GIT_PASSWORD
- * 注意：运行时 process.env 已经加载了，但修改需要写回文件
+ * 读取当前产品线的 Git 凭据。
  */
 function getGitCredentials(): { username: string; password: string; configured: boolean } {
-  const username = process.env.GIT_USERNAME || '';
-  const password = process.env.GIT_PASSWORD || '';
+  const username = productLineConfigService.get('GIT_USERNAME', currentProductLineId());
+  const password = productLineConfigService.get('GIT_PASSWORD', currentProductLineId());
   return { username, password, configured: !!(username && password) };
 }
 
 function setGitCredentials(username: string, password: string): void {
-  // 更新运行时环境变量
-  process.env.GIT_USERNAME = username;
-  process.env.GIT_PASSWORD = password;
-
-  // 写回 .env 文件
-  const envPath = path.join(__dirname, '../../.env');
-  if (!fs.existsSync(envPath)) return;
-
-  let content = fs.readFileSync(envPath, 'utf-8');
-
-  const setOrAppend = (key: string, value: string) => {
-    const re = new RegExp(`^${key}=.*$`, 'm');
-    if (re.test(content)) {
-      content = content.replace(re, `${key}=${value}`);
-    } else {
-      content = content.trimEnd() + `\n${key}=${value}\n`;
-    }
-  };
-
-  setOrAppend('GIT_USERNAME', username);
-  setOrAppend('GIT_PASSWORD', password);
-
-  fs.writeFileSync(envPath, content, 'utf-8');
-  logger.info('Git 凭据已更新');
+  productLineConfigService.setMany(currentProductLineId(), {
+    GIT_USERNAME: username,
+    GIT_PASSWORD: password,
+  });
+  logger.info('当前产品线 Git 凭据已更新', { productLineId: currentProductLineId() });
 }
 
 /**
@@ -104,7 +82,7 @@ function mergeCredentials(body: { username?: string; password?: string }): {
 
 function defaultReposForCurrentProductLine(): string[] {
   const repos = productLineConfigService.publishRepoUrls(currentProductLineId());
-  return repos.length > 0 ? repos : DEFAULT_REPOS;
+  return repos.length > 0 ? repos : (currentProductLineId() === 'nn' ? DEFAULT_REPOS : []);
 }
 
 function requestedReposOrDefault(repos?: string[]): string[] {
@@ -245,6 +223,7 @@ router.post('/branch-jobs/stream', adminMiddleware, async (req: Request, res: Re
     password: creds.password,
     baseDir: body.baseDir,
     modifyPodfile: body.modifyPodfile !== false,
+    mainRepoName: productLineConfigService.podxConfig(currentProductLineId()).publishMainRepo,
     force: !!body.force,
   };
 

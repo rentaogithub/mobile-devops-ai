@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'crypto';
 import { getDatabase } from '../database';
+import { currentProjectId } from './ProductLineContext';
 import { DeviceRecording } from './DeviceRecordingService';
 import {
   DeviceReplayFlowDsl,
@@ -298,9 +299,10 @@ export class ReplayFlowAssetService {
         INSERT INTO replay_flow_assets (
           id, project_id, name, description, owner, status, source_recording_id,
           source_fingerprint, current_draft_id, creation_completed, completed_at, created_at, updated_at
-        ) VALUES (?, 'nn-ios', ?, ?, ?, 'draft', ?, ?, NULL, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, NULL, ?, ?, ?, ?)
       `).run(
         assetId,
+        currentProjectId(),
         name,
         description || null,
         actor,
@@ -340,8 +342,8 @@ export class ReplayFlowAssetService {
   }
 
   list(filters: { search?: string; status?: string; limit?: number } = {}) {
-    const clauses: string[] = [];
-    const params: Record<string, unknown> = {};
+    const clauses: string[] = ['a.project_id = @projectId'];
+    const params: Record<string, unknown> = { projectId: currentProjectId() };
     const search = text(filters.search, 160);
     if (search) {
       clauses.push('(a.name LIKE @search OR a.description LIKE @search OR a.source_recording_id LIKE @search)');
@@ -361,7 +363,7 @@ export class ReplayFlowAssetService {
   }
 
   get(assetId: string): ReplayFlowAsset {
-    const row = getDatabase().prepare(`${ASSET_SELECT} WHERE a.id = ?`).get(assetId) as any;
+    const row = getDatabase().prepare(`${ASSET_SELECT} WHERE a.id = ? AND a.project_id = ?`).get(assetId, currentProjectId()) as any;
     if (!row) throw new ReplayFlowAssetError('回放流程不存在', 404, 'FLOW_ASSET_NOT_FOUND');
     const draftRow = getDatabase().prepare('SELECT * FROM replay_flow_drafts WHERE id = ?').get(row.current_draft_id) as any;
     const versions = (getDatabase().prepare(`
@@ -564,9 +566,9 @@ export class ReplayFlowAssetService {
     if (archived) {
       const dependent = getDatabase().prepare(`
         SELECT name FROM replay_flow_assets
-        WHERE status <> 'archived' AND id <> ? AND (pre_flow_asset_id = ? OR post_flow_asset_id = ?)
+        WHERE project_id = ? AND status <> 'archived' AND id <> ? AND (pre_flow_asset_id = ? OR post_flow_asset_id = ?)
         LIMIT 1
-      `).get(assetId, assetId, assetId) as any;
+      `).get(currentProjectId(), assetId, assetId, assetId) as any;
       if (dependent) {
         throw new ReplayFlowAssetError(`流程「${dependent.name}」仍在引用当前流程，请先解除执行链配置`, 409, 'FLOW_CHAIN_REFERENCE_IN_USE');
       }
@@ -582,8 +584,9 @@ export class ReplayFlowAssetService {
 
   private assertAcyclic(assetId: string, preFlowAssetId?: string, postFlowAssetId?: string) {
     const rows = getDatabase().prepare(`
-      SELECT id, pre_flow_asset_id, post_flow_asset_id FROM replay_flow_assets WHERE status <> 'archived'
-    `).all() as Array<{ id: string; pre_flow_asset_id?: string; post_flow_asset_id?: string }>;
+      SELECT id, pre_flow_asset_id, post_flow_asset_id FROM replay_flow_assets
+      WHERE project_id = ? AND status <> 'archived'
+    `).all(currentProjectId()) as Array<{ id: string; pre_flow_asset_id?: string; post_flow_asset_id?: string }>;
     const graph = new Map(rows.map((row) => [row.id, [row.pre_flow_asset_id, row.post_flow_asset_id].filter(Boolean) as string[]]));
     graph.set(assetId, [preFlowAssetId, postFlowAssetId].filter(Boolean) as string[]);
     const visiting = new Set<string>();

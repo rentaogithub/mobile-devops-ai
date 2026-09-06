@@ -379,6 +379,9 @@ export interface CrashGovernanceDashboard {
 export interface CrashGovernanceConfig {
   excludedVersions: string[];
   defaultIssueQuery: string;
+  sentryOrganization?: string;
+  sentryProject?: string;
+  sentryProxyPath?: string;
   updatedAt?: string;
 }
 

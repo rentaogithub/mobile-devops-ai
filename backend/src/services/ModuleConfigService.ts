@@ -9,7 +9,10 @@ import { currentProductLineId } from './ProductLineContext';
  */
 export class ModuleConfigService {
   private dataDir: string;
-  private defaultModules = ['NNIM', 'NNRtc', 'leigod_im_cross_sdk'];
+
+  private defaultModules(): string[] {
+    return currentProductLineId() === 'nn' ? ['NNIM', 'NNRtc', 'leigod_im_cross_sdk'] : [];
+  }
 
   constructor() {
     // 使用与数据库相同的数据目录
@@ -35,7 +38,7 @@ export class ModuleConfigService {
         }
         
         const defaultConfig = {
-          customModules: this.defaultModules,
+          customModules: this.defaultModules(),
           updatedAt: new Date().toISOString()
         };
         fs.writeFileSync(this.configPath, JSON.stringify(defaultConfig, null, 2));
@@ -54,10 +57,10 @@ export class ModuleConfigService {
       this.ensureConfigFile();
       const data = fs.readFileSync(this.configPath, 'utf-8');
       const config = JSON.parse(data);
-      return config.customModules || this.defaultModules;
+      return config.customModules || this.defaultModules();
     } catch (error) {
       logger.error('读取模块配置失败', error);
-      return this.defaultModules;
+      return this.defaultModules();
     }
   }
 

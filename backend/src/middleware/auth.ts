@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import logger from '../utils/logger';
 import { authService, PlatformRole, PlatformUser } from '../services/AuthService';
 import { runWithProductLine } from '../services/ProductLineContext';
+import { internalRequestToken } from '../services/InternalRequestAuth';
 
 // 简单的密码认证中间件
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
@@ -9,7 +10,23 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || AUTH_PASSWORD; // 管理员
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
 
 function resolveProductLine(req: Request, user: PlatformUser | null) {
-  const requested = String(req.headers['x-product-line-id'] || '').trim();
+  const cookieProductLineId = String(req.headers.cookie || '')
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith('active_product_line_id='))
+    ?.slice('active_product_line_id='.length);
+  let decodedCookieProductLineId = cookieProductLineId || '';
+  try {
+    decodedCookieProductLineId = decodeURIComponent(decodedCookieProductLineId);
+  } catch {
+    decodedCookieProductLineId = '';
+  }
+  const requested = String(req.headers['x-product-line-id'] || decodedCookieProductLineId || '').trim();
+  const isInternalRequest = String(req.headers['x-platform-internal-token'] || '') === internalRequestToken;
+  if (isInternalRequest) {
+    const productLine = authService.findProductLine(requested || 'nn');
+    return productLine?.active ? { ...productLine, role: 'admin' as PlatformRole } : null;
+  }
   const available = user?.productLines || [];
   if (user?.role === 'admin') {
     const productLine = authService.findProductLine(requested || available[0]?.id || 'nn');

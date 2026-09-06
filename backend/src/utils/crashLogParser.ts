@@ -411,7 +411,7 @@ function isSystemModule(module: string): boolean {
 }
 
 function isPreferredAppModule(module: string): boolean {
-  const preferredModules = ['NNIM', 'NNRtc', 'leigod_im_cross_sdk'];
+  const preferredModules = moduleConfigService.getCustomModules();
   return preferredModules.some(preferred => module.toLowerCase().includes(preferred.toLowerCase()));
 }
 
@@ -468,3 +468,4 @@ export function extractCrashInfo(originalLog: string, symbolicatedLog: string): 
     blockerThreadId: hangInfo?.blockerThreadId,
   };
 }
+import { moduleConfigService } from '../services/ModuleConfigService';

@@ -229,7 +229,7 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 - 实际工具调用、审批和结果会写入 `assistant_action_audits`，敏感字段自动脱敏。
 - 仅支持上传 `.crash`、`.ips`、`.txt`，附件 15 分钟后自动清理。
 - 管理员可在 dSYM 管理页的“平台用户”页签创建 `guest`、`tester`、`developer`、`product`、`admin` 账号；也可通过 `POST /api/auth/users` 创建。
-- 角色边界：`guest` 游客可访问常用只读服务和 iOS 设备注册申请；`tester` 测试可发布蒲公英/TestFlight 并执行自动质检；`developer` 研发在测试权限基础上可增加/删除 Pods 组件；`product` 产品运营可发布苹果商店包；`admin` 管理员支持所有功能和角色权限管理。
+- 角色边界：`guest` 游客可访问常用只读服务和 iOS 设备注册申请；`tester` 测试可发布蒲公英/TestFlight 并执行自动质检；`developer` 研发在测试权限基础上可增加/删除 Pods 组件；`product` 产品运营可发布苹果商店包；`admin` 管理员支持所有功能和配置管理。
 
 ## 🤝 贡献
 
@@ -238,6 +238,5 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
 
 

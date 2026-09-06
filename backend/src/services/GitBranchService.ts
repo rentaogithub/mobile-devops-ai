@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import logger from '../utils/logger';
+import { currentProductLineId } from './ProductLineContext';
 
 export type PushMode = 'normal' | 'skip' | 'set-upstream';
 
@@ -23,6 +24,8 @@ export interface BranchJobOptions {
   baseDir?: string;
   /** nnios 仓库的 Podfile 会被修改，将所有 branch: '...' 替换为目标分支 */
   modifyPodfile?: boolean;
+  /** 当前产品线主仓库名；仅主仓库需要更新 Podfile 分支。 */
+  mainRepoName?: string;
   /** true 时即使目标分支已存在也继续执行（相当于强制覆盖本地并 push） */
   force?: boolean;
 }
@@ -198,12 +201,14 @@ function runGit(
 export class GitBranchService {
   /** 供路由获取默认仓库配置 */
   getDefaultRepos(): string[] {
-    return DEFAULT_REPOS;
+    return currentProductLineId() === 'nn' ? DEFAULT_REPOS : [];
   }
 
   /** 工作目录（方便前端展示或排查） */
   getBaseDir(custom?: string): string {
-    return custom ? path.resolve(custom) : DEFAULT_BASE_DIR;
+    const root = custom ? path.resolve(custom) : DEFAULT_BASE_DIR;
+    if (currentProductLineId() === 'nn') return root;
+    return path.join(root, currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
 
   /**
@@ -378,6 +383,7 @@ export class GitBranchService {
       username,
       password,
       modifyPodfile = true,
+      mainRepoName = '',
       force = false,
     } = options;
 
@@ -538,8 +544,8 @@ export class GitBranchService {
         );
         if (createCode !== 0) throw new Error(`git checkout -B ${targetBranch} 失败 (exit ${createCode})`);
 
-        // nnios 仓库特殊处理：修改 Podfile
-        if (modifyPodfile && name === 'nnios') {
+        // 当前产品线主仓库特殊处理：修改 Podfile
+        if (modifyPodfile && mainRepoName && name.toLowerCase() === mainRepoName.toLowerCase()) {
           const podfilePath = path.join(repoDir, 'Podfile');
           if (fs.existsSync(podfilePath)) {
             sink({ type: 'log', repo: name, level: 'info', message: `修改 Podfile branch: 为 ${targetBranch}` });

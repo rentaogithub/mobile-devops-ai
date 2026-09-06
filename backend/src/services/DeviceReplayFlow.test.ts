@@ -128,6 +128,7 @@ describe('DeviceReplayFlow DSL v1', () => {
     };
     const recording: DeviceRecording = {
       id: 'recording-id',
+      projectId: 'nn-ios',
       title: '搜索路径',
       owner: 'admin',
       status: 'stopped',
@@ -191,6 +192,7 @@ describe('DeviceReplayFlow DSL v1', () => {
     });
     const recording: DeviceRecording = {
       id: 'search-recording',
+      projectId: 'nn-ios',
       title: '社区搜索',
       owner: 'admin',
       status: 'stopped',
@@ -242,7 +244,7 @@ describe('DeviceReplayFlow DSL v1', () => {
       locators: [{ strategy: 'predicate' as const, value: "name == '英雄联盟'", score: 84 }],
     };
     const recording: DeviceRecording = {
-      id: 'search-with-result', title: '搜索并进入社区', owner: 'admin', status: 'stopped', createdAt: '',
+      id: 'search-with-result', projectId: 'nn-ios', title: '搜索并进入社区', owner: 'admin', status: 'stopped', createdAt: '',
       observations: [], selectedCount: 2, candidateSelectedCount: 0,
       steps: [
         {

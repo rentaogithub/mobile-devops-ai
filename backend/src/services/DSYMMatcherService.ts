@@ -3,6 +3,8 @@ import path from 'path';
 import { DSYMInfo } from '../types';
 import { StorageService } from './StorageService';
 import logger from '../utils/logger';
+import { currentProductLineId, getProductLineContext } from './ProductLineContext';
+import { productLineConfigService } from './ProductLineConfigService';
 
 export interface DSYMCoverageSummary {
   appVersion: string;
@@ -76,6 +78,28 @@ function extractCrashBinaryNames(crashLog: string): Set<string> {
   return names;
 }
 
+function normalizedAppName(value: unknown): string {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function configuredMainAppNames(): Set<string> {
+  const config = productLineConfigService.podxConfig();
+  const names = [
+    getProductLineContext()?.name,
+    config.publishMainRepo,
+    config.targetName,
+  ];
+  if (currentProductLineId() === 'nn') names.push('NNIM', 'NNIOS', 'NN');
+  return new Set(names.map(normalizedAppName).filter(Boolean));
+}
+
+export function isMainAppDSYM(dsym: DSYMInfo, appVersion?: string | null): boolean {
+  if (configuredMainAppNames().has(normalizedAppName(dsym.appName))) return true;
+  return Boolean(appVersion)
+    && dsym.version === appVersion
+    && (!Array.isArray(dsym.relatedAppVersions) || dsym.relatedAppVersions.length === 0);
+}
+
 export class DSYMMatcherService {
   private storage = new StorageService();
 
@@ -97,8 +121,8 @@ export class DSYMMatcherService {
     const valid = modules.filter((item) => item.valid).length;
     return {
       appVersion,
-      mainAppReady: modules.some((item) => item.appName.toUpperCase() === 'NNIM' && item.valid),
-      relatedReady: modules.some((item) => item.appName.toUpperCase() !== 'NNIM' && item.valid),
+      mainAppReady: dsymInfos.some((dsym, index) => isMainAppDSYM(dsym, appVersion) && modules[index]?.valid),
+      relatedReady: dsymInfos.some((dsym, index) => !isMainAppDSYM(dsym, appVersion) && modules[index]?.valid),
       total: modules.length,
       valid,
       missingDwarf: modules.length - valid,
@@ -121,7 +145,7 @@ export class DSYMMatcherService {
     const matched = validCandidates.filter((dsym) => {
       const uuidMatches = crashUUIDSet.has(normalizeUUID(dsym.uuid)) || normalizedCrashLog.includes(normalizeUUID(dsym.uuid));
       const nameMatches = crashBinaryNames.has(dsym.appName);
-      const isMainApp = dsym.appName.toUpperCase() === 'NNIM';
+      const isMainApp = isMainAppDSYM(dsym, appVersion);
       return uuidMatches || (nameMatches && (!isMainApp || dsym.version === appVersion));
     });
 
@@ -143,11 +167,9 @@ export class DSYMMatcherService {
 
   async findDSYMsForAppVersion(appVersion: string): Promise<DSYMInfo[]> {
     const allDSYMs = await this.storage.getAllDSYMs();
-    const exactMainApps = allDSYMs.filter((dsym) =>
-      dsym.appName.toUpperCase() === 'NNIM' && dsym.version === appVersion
-    );
+    const exactMainApps = allDSYMs.filter((dsym) => isMainAppDSYM(dsym, appVersion) && dsym.version === appVersion);
     const relatedComponents = allDSYMs.filter((dsym) =>
-      dsym.appName.toUpperCase() !== 'NNIM' &&
+      !isMainAppDSYM(dsym, appVersion) &&
       Array.isArray(dsym.relatedAppVersions) &&
       dsym.relatedAppVersions.includes(appVersion)
     );
@@ -164,7 +186,9 @@ export class DSYMMatcherService {
       return dsym.filePath;
     }
 
-    const dsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data', 'dsyms');
+    const baseDsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data', 'dsyms');
+    const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+    const dsymDir = currentProductLineId() === 'nn' ? baseDsymDir : path.join(baseDsymDir, safeProductLineId);
     const dsymName = path.basename(dsym.filePath || `${dsym.appName}.dSYM`);
     const candidates = [
       path.join(dsymDir, dsym.uuid, dsymName),

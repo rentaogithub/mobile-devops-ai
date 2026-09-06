@@ -9,9 +9,12 @@ import logger from '../utils/logger';
 import { FileHandlerService } from './FileHandlerService';
 import { StorageService } from './StorageService';
 import symbolicationCache from './SymbolicationCacheService';
+import { currentProductLineId } from './ProductLineContext';
+import { productLineConfigService } from './ProductLineConfigService';
 
 export interface PodComponent {
   id: number;
+  product_line_id?: string;
   name: string;
   version: string;
   summary: string;
@@ -40,7 +43,7 @@ interface PodUploadParams {
   dependencies?: string;      // JSON string of [{name, version}]
   sys_frameworks?: string;    // 系统 frameworks，逗号分隔
   sys_libraries?: string;     // 系统 libraries，逗号分隔
-  target_branch?: string;     // 发布后同步到 nnios 的目标分支
+  target_branch?: string;     // 发布后同步到发布主仓库的目标分支
   package_type?: 'release' | 'test';
   build_id?: string;
   nnios_branch?: string;
@@ -55,16 +58,54 @@ export interface LeigodIMSDKVersion {
   updatedAt?: string;
 }
 
-const NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
-const NEXUS_USER = 'admin';
-const NEXUS_PASS = 'admin123';
-const SPEC_REPO_URL = 'http://rentao:renyang%40666@git.leigod.top/nn_ios/nnspec.git';
-const SPEC_REPO_LOCAL = path.join(process.env.UPLOAD_DIR || '/tmp', '../pods-spec-repo');
-const NNIOS_REPO_URL = process.env.NNIOS_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
-const NNIOS_REPO_LOCAL = path.resolve(
-  process.env.NNIOS_REPO_LOCAL ||
-    path.join(process.env.GIT_WORK_DIR || path.join(process.env.UPLOAD_DIR || '/tmp', '../git-workspace'), 'nnios')
-);
+const LEGACY_NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
+const LEGACY_NEXUS_USER = 'admin';
+const LEGACY_NEXUS_PASS = 'admin123';
+const LEGACY_SPEC_REPO_URL = 'http://rentao:renyang%40666@git.leigod.top/nn_ios/nnspec.git';
+const LEGACY_NNIOS_REPO_URL = process.env.NNIOS_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
+
+function scopedName(value: string) {
+  return value.replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+function nexusBaseUrl() {
+  const configured = productLineConfigService.get('PODS_NEXUS_BASE_URL');
+  const value = configured || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_BASE_URL : '');
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Pods Nexus 仓库地址`);
+  return value.replace(/\/+$/, '');
+}
+
+function nexusCredentials() {
+  const username = productLineConfigService.get('PODS_NEXUS_USER') || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_USER : '');
+  const password = productLineConfigService.get('PODS_NEXUS_PASSWORD') || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_PASS : '');
+  if (!username || !password) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Pods Nexus 账号或密码`);
+  return { username, password };
+}
+
+function specRepoUrl() {
+  const value = productLineConfigService.podxConfig().privateSource || (currentProductLineId() === 'nn' ? LEGACY_SPEC_REPO_URL : '');
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置私有 Specs 源`);
+  return value;
+}
+
+function specRepoLocal() {
+  const base = path.resolve(process.env.UPLOAD_DIR || '/tmp', '../pods-spec-repos');
+  return path.join(base, scopedName(currentProductLineId()));
+}
+
+function mainRepoUrl() {
+  const value = productLineConfigService.podxConfig().jenkinsRepoUrl || (currentProductLineId() === 'nn' ? LEGACY_NNIOS_REPO_URL : '');
+  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置发布主仓库`);
+  return value;
+}
+
+function mainRepoLocal() {
+  const config = productLineConfigService.podxConfig();
+  if (config.publishWorkDir) return path.resolve(config.publishWorkDir);
+  if (currentProductLineId() === 'nn' && process.env.NNIOS_REPO_LOCAL) return path.resolve(process.env.NNIOS_REPO_LOCAL);
+  const base = process.env.GIT_WORK_DIR || path.join(process.env.UPLOAD_DIR || '/tmp', '../git-workspace');
+  return path.resolve(base, scopedName(currentProductLineId()), config.publishMainRepo || 'main');
+}
 const LEIGOD_IM_SDK_DIR_CANDIDATES = [
   process.env.LEIGOD_IM_SDK_DIR,
   '/Volumes/IMSDK',
@@ -133,6 +174,7 @@ export class PodService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pods_components (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
         name TEXT NOT NULL,
         version TEXT NOT NULL,
         summary TEXT DEFAULT '',
@@ -145,14 +187,44 @@ export class PodService {
         package_type TEXT,
         build_id TEXT,
         nnios_branch TEXT,
-        UNIQUE(name, version)
+        UNIQUE(product_line_id, name, version)
       );
-      CREATE INDEX IF NOT EXISTS idx_pod_name ON pods_components(name);
-      CREATE INDEX IF NOT EXISTS idx_pod_version ON pods_components(name, version);
     `);
 
-    const columns = (this.db.prepare('PRAGMA table_info(pods_components)').all() as any[])
+    let columns = (this.db.prepare('PRAGMA table_info(pods_components)').all() as any[])
       .map((column) => column.name);
+    if (!columns.includes('product_line_id')) {
+      this.db.exec(`
+        DROP INDEX IF EXISTS idx_pod_name;
+        DROP INDEX IF EXISTS idx_pod_version;
+        ALTER TABLE pods_components RENAME TO pods_components_legacy;
+        CREATE TABLE pods_components (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          name TEXT NOT NULL,
+          version TEXT NOT NULL,
+          summary TEXT DEFAULT '',
+          homepage TEXT DEFAULT '',
+          source_zip_url TEXT NOT NULL,
+          podspec_content TEXT NOT NULL,
+          upload_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+          status TEXT DEFAULT 'uploaded',
+          error_message TEXT,
+          package_type TEXT,
+          build_id TEXT,
+          nnios_branch TEXT,
+          UNIQUE(product_line_id, name, version)
+        );
+        INSERT INTO pods_components (
+          id, product_line_id, name, version, summary, homepage, source_zip_url, podspec_content,
+          upload_time, status, error_message, package_type, build_id, nnios_branch
+        ) SELECT id, 'nn', name, version, summary, homepage, source_zip_url, podspec_content,
+          upload_time, status, error_message, package_type, build_id, nnios_branch
+          FROM pods_components_legacy;
+        DROP TABLE pods_components_legacy;
+      `);
+      columns = (this.db.prepare('PRAGMA table_info(pods_components)').all() as any[]).map((column) => column.name);
+    }
     if (!columns.includes('package_type')) {
       this.db.prepare('ALTER TABLE pods_components ADD COLUMN package_type TEXT').run();
     }
@@ -162,6 +234,10 @@ export class PodService {
     if (!columns.includes('nnios_branch')) {
       this.db.prepare('ALTER TABLE pods_components ADD COLUMN nnios_branch TEXT').run();
     }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pod_name ON pods_components(product_line_id, name);
+      CREATE INDEX IF NOT EXISTS idx_pod_version ON pods_components(product_line_id, name, version);
+    `);
 
     // 异步确保需要的第三方 spec repos 已注册（不阻塞启动）
     this.ensureSpecRepos().catch((err) => {
@@ -216,12 +292,13 @@ export class PodService {
    * 上传 zip 到 Nexus 仓库（带认证）
    */
   async uploadToNexus(filePath: string, name: string, version: string): Promise<string> {
-    const targetUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const targetUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
+    const { username, password } = nexusCredentials();
 
     logger.info('上传组件到 Nexus', { name, version, targetUrl });
 
     try {
-      const cmd = `curl -s -w "%{http_code}" -u "${NEXUS_USER}:${NEXUS_PASS}" --upload-file "${filePath}" "${targetUrl}"`;
+      const cmd = `curl -s -w "%{http_code}" -u "${username}:${password}" --upload-file "${filePath}" "${targetUrl}"`;
       const result = execSync(cmd, { encoding: 'utf-8', timeout: 120000 });
 
       const statusCode = result.trim().slice(-3);
@@ -322,7 +399,7 @@ export class PodService {
       sys_libraries,
     } = params;
 
-    const sourceUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const sourceUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
 
     let sourceLine: string;
     if (sha256) {
@@ -405,23 +482,25 @@ ${sourceLine}
 
     try {
       // 确保本地 spec 仓库存在
-      if (!fs.existsSync(SPEC_REPO_LOCAL)) {
-        logger.info('克隆 spec 仓库', { url: SPEC_REPO_URL });
-        execSync(`git clone "${SPEC_REPO_URL}" "${SPEC_REPO_LOCAL}"`, {
+      const repoLocal = specRepoLocal();
+      const repoUrl = specRepoUrl();
+      if (!fs.existsSync(repoLocal)) {
+        logger.info('克隆 spec 仓库', { url: repoUrl });
+        execSync(`git clone "${repoUrl}" "${repoLocal}"`, {
           encoding: 'utf-8',
           timeout: 60000,
         });
       } else {
         // 拉取最新代码
         execSync('git pull origin master || git pull origin main || true', {
-          cwd: SPEC_REPO_LOCAL,
+          cwd: repoLocal,
           encoding: 'utf-8',
           timeout: 30000,
         });
       }
 
       // 创建目录结构: name/version/name.podspec
-      const specDir = path.join(SPEC_REPO_LOCAL, name, version);
+      const specDir = path.join(repoLocal, name, version);
       fs.mkdirSync(specDir, { recursive: true });
 
       // 写入 podspec 文件
@@ -429,16 +508,16 @@ ${sourceLine}
       fs.writeFileSync(specFilePath, podspecContent, 'utf-8');
 
       // Git add, commit, push
-      execSync('git add -A', { cwd: SPEC_REPO_LOCAL, encoding: 'utf-8' });
+      execSync('git add -A', { cwd: repoLocal, encoding: 'utf-8' });
 
       const commitMsg = `[Auto] Update ${name} ${version}`;
       execSync(`git commit -m "${commitMsg}" --allow-empty`, {
-        cwd: SPEC_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
       });
 
       execSync('git push origin HEAD', {
-        cwd: SPEC_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
         timeout: 30000,
       });
@@ -456,8 +535,9 @@ ${sourceLine}
   private cleanPodxCache(name: string, action: 'republish' | 'delete' = 'republish'): void {
     try {
       logger.info(action === 'republish' ? '检测到相同版本组件，执行 podx clean' : '删除组件后执行 podx clean', { name });
-      const podxWorkDir = fs.existsSync(path.join(NNIOS_REPO_LOCAL, 'Podfile'))
-        ? NNIOS_REPO_LOCAL
+      const mainLocal = mainRepoLocal();
+      const podxWorkDir = fs.existsSync(path.join(mainLocal, 'Podfile'))
+        ? mainLocal
         : process.cwd();
       execSync(`podx clean ${shellQuote(name)}`, {
         encoding: 'utf-8',
@@ -497,46 +577,47 @@ ${sourceLine}
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch {
-      throw new Error('nnios 目标分支名称不是合法的 git 分支');
+      throw new Error('发布主仓库目标分支名称不是合法的 git 分支');
     }
     return normalized;
   }
 
   private assertNniosBranchExists(branch: string): void {
     try {
-      execSync(`git ls-remote --exit-code --heads ${shellQuote(NNIOS_REPO_URL)} ${shellQuote(branch)}`, {
+      execSync(`git ls-remote --exit-code --heads ${shellQuote(mainRepoUrl())} ${shellQuote(branch)}`, {
         encoding: 'utf-8',
         timeout: 30000,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (error: any) {
-      throw new Error(`nnios 分支 ${branch} 不存在或无法访问: ${error.message}`);
+      throw new Error(`发布主仓库分支 ${branch} 不存在或无法访问: ${error.message}`);
     }
   }
 
   private checkoutNniosBranch(branch: string): string {
     const targetBranch = this.normalizeNniosBranch(branch);
     if (!targetBranch) {
-      throw new Error('nnios 目标分支不能为空');
+      throw new Error('发布主仓库目标分支不能为空');
     }
 
     this.assertNniosBranchExists(targetBranch);
-    if (!fs.existsSync(path.join(NNIOS_REPO_LOCAL, '.git'))) {
-      fs.mkdirSync(path.dirname(NNIOS_REPO_LOCAL), { recursive: true });
-      execSync(`git clone ${shellQuote(NNIOS_REPO_URL)} ${shellQuote(NNIOS_REPO_LOCAL)}`, {
+    const repoLocal = mainRepoLocal();
+    if (!fs.existsSync(path.join(repoLocal, '.git'))) {
+      fs.mkdirSync(path.dirname(repoLocal), { recursive: true });
+      execSync(`git clone ${shellQuote(mainRepoUrl())} ${shellQuote(repoLocal)}`, {
         encoding: 'utf-8',
         timeout: 120000,
       });
     }
 
-    execSync('git fetch origin --prune', { cwd: NNIOS_REPO_LOCAL, encoding: 'utf-8', timeout: 60000 });
+    execSync('git fetch origin --prune', { cwd: repoLocal, encoding: 'utf-8', timeout: 60000 });
     execSync(`git checkout -B ${shellQuote(targetBranch)} ${shellQuote(`origin/${targetBranch}`)}`, {
-      cwd: NNIOS_REPO_LOCAL,
+      cwd: repoLocal,
       encoding: 'utf-8',
       timeout: 60000,
     });
     execSync(`git pull --ff-only origin ${shellQuote(targetBranch)}`, {
-      cwd: NNIOS_REPO_LOCAL,
+      cwd: repoLocal,
       encoding: 'utf-8',
       timeout: 60000,
     });
@@ -553,12 +634,23 @@ ${sourceLine}
     return content.match(pattern)?.[1] || null;
   }
 
+  private mainRepoDependencyFiles(repoLocal = mainRepoLocal()): string[] {
+    const files = ['Podfile'];
+    if (!fs.existsSync(repoLocal)) return files;
+    for (const entry of fs.readdirSync(repoLocal, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const relativePath = path.join(entry.name, 'third_sdk.rb');
+      if (fs.existsSync(path.join(repoLocal, relativePath))) files.push(relativePath);
+    }
+    return files;
+  }
+
   private getNniosPodVersion(name: string, branch: string): { branch: string; version: string | null } {
     const targetBranch = this.checkoutNniosBranch(branch);
-    const candidateFiles = ['Podfile', path.join('NNIM', 'third_sdk.rb')];
+    const candidateFiles = this.mainRepoDependencyFiles();
 
     for (const relativePath of candidateFiles) {
-      const filePath = path.join(NNIOS_REPO_LOCAL, relativePath);
+      const filePath = path.join(mainRepoLocal(), relativePath);
       if (!fs.existsSync(filePath)) continue;
 
       const version = this.findPodVersionInRuby(fs.readFileSync(filePath, 'utf-8'), name);
@@ -570,24 +662,30 @@ ${sourceLine}
     return { branch: targetBranch, version: null };
   }
 
-  private verifyNniosThirdSdkVersion(name: string, version: string, branch: string): void {
-    const thirdSdkPath = path.join(NNIOS_REPO_LOCAL, 'NNIM', 'third_sdk.rb');
-    if (!fs.existsSync(thirdSdkPath)) {
-      throw new Error(`nnios/${branch} 缺少 NNIM/third_sdk.rb，无法确认 ${name} 版本`);
+  private verifyMainRepoVersion(name: string, version: string, branch: string): void {
+    const repoLocal = mainRepoLocal();
+    let actualVersion: string | null = null;
+    let matchedPath = '';
+    for (const relativePath of this.mainRepoDependencyFiles(repoLocal)) {
+      const filePath = path.join(repoLocal, relativePath);
+      if (!fs.existsSync(filePath)) continue;
+      actualVersion = this.findPodVersionInRuby(fs.readFileSync(filePath, 'utf-8'), name);
+      if (actualVersion) {
+        matchedPath = relativePath;
+        break;
+      }
     }
-
-    const actualVersion = this.findPodVersionInRuby(fs.readFileSync(thirdSdkPath, 'utf-8'), name);
     if (actualVersion !== version) {
       throw new Error(
-        `nnios/${branch} 的 NNIM/third_sdk.rb 未同步到 ${name}@${version}，当前为 ${actualVersion || '未找到'}`
+        `发布主仓库 ${branch} 未同步到 ${name}@${version}，当前为 ${actualVersion || '未找到'}`
       );
     }
 
-    logger.info('nnios third_sdk.rb 版本确认成功', {
+    logger.info('发布主仓库组件版本确认成功', {
       name,
       version,
       targetBranch: branch,
-      relativePath: 'NNIM/third_sdk.rb',
+      relativePath: matchedPath,
     });
   }
 
@@ -670,24 +768,26 @@ ${sourceLine}
   }
 
   /**
-   * 发布成功后，将当前组件版本同步到 nnios 指定分支。
+   * 发布成功后，将当前组件版本同步到发布主仓库指定分支。
    */
   private syncVersionToNnios(name: string, version: string, branch?: string): void {
     const targetBranch = this.normalizeNniosBranch(branch);
     if (!targetBranch) return;
 
     this.assertNniosBranchExists(targetBranch);
-    logger.info('同步组件版本到 nnios', { name, version, targetBranch, repo: NNIOS_REPO_LOCAL });
+    const repoLocal = mainRepoLocal();
+    logger.info('同步组件版本到发布主仓库', { name, version, targetBranch, repo: repoLocal });
 
     try {
       this.checkoutNniosBranch(targetBranch);
 
-      const candidateFiles = ['Podfile', path.join('NNIM', 'third_sdk.rb')];
+      const candidateFiles = this.mainRepoDependencyFiles(repoLocal);
       let changed = false;
       let matchedExisting = false;
+      const changedFiles = new Set<string>();
 
       for (const relativePath of candidateFiles) {
-        const filePath = path.join(NNIOS_REPO_LOCAL, relativePath);
+        const filePath = path.join(repoLocal, relativePath);
         if (!fs.existsSync(filePath)) continue;
 
         const original = fs.readFileSync(filePath, 'utf-8');
@@ -696,15 +796,17 @@ ${sourceLine}
           fs.writeFileSync(filePath, updated.content, 'utf-8');
           changed = true;
           matchedExisting = true;
-          logger.info('更新 nnios 组件版本声明', { relativePath, name, version });
+          changedFiles.add(relativePath);
+          logger.info('更新发布主仓库组件版本声明', { relativePath, name, version });
         }
       }
 
       if (!matchedExisting) {
-        const thirdSdkPath = path.join(NNIOS_REPO_LOCAL, 'NNIM', 'third_sdk.rb');
-        if (!fs.existsSync(thirdSdkPath)) {
-          throw new Error('未找到组件声明，且 NNIM/third_sdk.rb 不存在，无法追加');
+        const thirdSdkRelativePath = candidateFiles.find((relativePath) => relativePath.endsWith('third_sdk.rb'));
+        if (!thirdSdkRelativePath) {
+          throw new Error('发布主仓库未找到组件声明，也未找到可追加的 third_sdk.rb');
         }
+        const thirdSdkPath = path.join(repoLocal, thirdSdkRelativePath);
         const original = fs.readFileSync(thirdSdkPath, 'utf-8');
         const appended = this.appendPodToThirdSdk(original, name, version);
         if (!appended.changed) {
@@ -712,42 +814,43 @@ ${sourceLine}
         }
         fs.writeFileSync(thirdSdkPath, appended.content, 'utf-8');
         changed = true;
-        logger.info('追加 nnios 组件版本声明', { relativePath: 'NNIM/third_sdk.rb', name, version });
+        changedFiles.add(thirdSdkRelativePath);
+        logger.info('追加发布主仓库组件版本声明', { relativePath: thirdSdkRelativePath, name, version });
       }
 
       if (!changed) {
-        logger.info('nnios 组件版本无需更新', { name, version, targetBranch });
+        logger.info('发布主仓库组件版本无需更新', { name, version, targetBranch });
         return;
       }
 
       const diffNameOnly = execSync('git diff --name-only', {
-        cwd: NNIOS_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
         timeout: 10000,
       }).trim();
       if (!diffNameOnly) {
-        logger.info('nnios 工作区无变更，跳过提交', { name, version, targetBranch });
-        this.verifyNniosThirdSdkVersion(name, version, targetBranch);
+        logger.info('发布主仓库工作区无变更，跳过提交', { name, version, targetBranch });
+        this.verifyMainRepoVersion(name, version, targetBranch);
         return;
       }
 
-      execSync('git add Podfile NNIM/third_sdk.rb', { cwd: NNIOS_REPO_LOCAL, encoding: 'utf-8' });
+      execSync(`git add -- ${Array.from(changedFiles).map(shellQuote).join(' ')}`, { cwd: repoLocal, encoding: 'utf-8' });
       execSync(`git commit -m ${shellQuote(`chore: update ${name} to ${version}`)}`, {
-        cwd: NNIOS_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
         timeout: 60000,
       });
       execSync(`git push origin ${shellQuote(targetBranch)}`, {
-        cwd: NNIOS_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
         timeout: 60000,
       });
 
-      this.verifyNniosThirdSdkVersion(name, version, targetBranch);
-      logger.info('nnios 分支同步成功', { name, version, targetBranch });
+      this.verifyMainRepoVersion(name, version, targetBranch);
+      logger.info('发布主仓库分支同步成功', { name, version, targetBranch });
     } catch (error: any) {
-      logger.error('同步组件版本到 nnios 失败', { name, version, targetBranch, error: error.message });
-      throw new Error(`同步到 nnios/${targetBranch} 失败: ${error.message}`);
+      logger.error('同步组件版本到发布主仓库失败', { name, version, targetBranch, error: error.message });
+      throw new Error(`同步到发布主仓库分支 ${targetBranch} 失败: ${error.message}`);
     }
   }
 
@@ -758,22 +861,23 @@ ${sourceLine}
    */
   private async deleteFromSpecRepo(name: string, version?: string): Promise<void> {
     try {
-      if (!fs.existsSync(SPEC_REPO_LOCAL)) {
+      const repoLocal = specRepoLocal();
+      if (!fs.existsSync(repoLocal)) {
         logger.warn('spec 仓库本地目录不存在，跳过删除', { name, version });
         return;
       }
 
       // 拉取最新
       execSync('git pull origin master || git pull origin main || true', {
-        cwd: SPEC_REPO_LOCAL,
+        cwd: repoLocal,
         encoding: 'utf-8',
         timeout: 30000,
       });
 
       // 确定要删除的目录
       const targetDir = version
-        ? path.join(SPEC_REPO_LOCAL, name, version)
-        : path.join(SPEC_REPO_LOCAL, name);
+        ? path.join(repoLocal, name, version)
+        : path.join(repoLocal, name);
 
       if (!fs.existsSync(targetDir)) {
         logger.info('spec 仓库中目录不存在，无需删除', { name, version, targetDir });
@@ -785,23 +889,23 @@ ${sourceLine}
 
       // 如果删除的是版本目录，检查组件目录是否为空，为空也删掉
       if (version) {
-        const componentDir = path.join(SPEC_REPO_LOCAL, name);
+        const componentDir = path.join(repoLocal, name);
         if (fs.existsSync(componentDir) && fs.readdirSync(componentDir).length === 0) {
           fs.rmSync(componentDir, { recursive: true, force: true });
         }
       }
 
       // Git add, commit, push
-      execSync('git add -A', { cwd: SPEC_REPO_LOCAL, encoding: 'utf-8' });
+      execSync('git add -A', { cwd: repoLocal, encoding: 'utf-8' });
 
       const what = version ? `${name}/${version}` : name;
       try {
         execSync(`git commit -m "[Auto] Remove ${what}"`, {
-          cwd: SPEC_REPO_LOCAL,
+          cwd: repoLocal,
           encoding: 'utf-8',
         });
         execSync('git push origin HEAD', {
-          cwd: SPEC_REPO_LOCAL,
+          cwd: repoLocal,
           encoding: 'utf-8',
           timeout: 30000,
         });
@@ -953,8 +1057,8 @@ ${sourceLine}
 
   private getHighestComponentVersion(name: string): string {
     const rows = this.db
-      .prepare('SELECT version FROM pods_components WHERE name = ?')
-      .all(name) as Array<{ version: string }>;
+      .prepare('SELECT version FROM pods_components WHERE product_line_id = ? AND name = ?')
+      .all(currentProductLineId(), name) as Array<{ version: string }>;
     return rows
       .map((row) => String(row.version || '').trim())
       .filter(Boolean)
@@ -1178,8 +1282,8 @@ ${sourceLine}
       await this.saveNNRtcDSYM(extracted.dsymPath, version);
       if (buildId) {
         this.db
-          .prepare('UPDATE pods_components SET build_id = ? WHERE name = ? AND version = ?')
-          .run(buildId, 'NNRtc', version);
+          .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+          .run(buildId, currentProductLineId(), 'NNRtc', version);
       }
     } finally {
       fs.rmSync(extracted.workDir, { recursive: true, force: true });
@@ -1249,14 +1353,14 @@ ${sourceLine}
       const component = await this.replaceZip('NNRtc', version, extracted.frameworkZipPath, 'NNRtc.zip', targetBranch);
       if (buildId) {
         this.db
-          .prepare('UPDATE pods_components SET build_id = ? WHERE name = ? AND version = ?')
-          .run(buildId, 'NNRtc', version);
+          .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+          .run(buildId, currentProductLineId(), 'NNRtc', version);
         component.build_id = buildId;
       }
       if (!shouldSyncDSYM) {
         this.db
-          .prepare('UPDATE pods_components SET package_type = ?, nnios_branch = ? WHERE name = ? AND version = ?')
-          .run('test', targetBranch, 'NNRtc', version);
+          .prepare('UPDATE pods_components SET package_type = ?, nnios_branch = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+          .run('test', targetBranch, currentProductLineId(), 'NNRtc', version);
         component.package_type = 'test';
         component.nnios_branch = targetBranch;
       }
@@ -1467,7 +1571,7 @@ ${sourceLine}
         version,
         summary: params.summary || '',
         homepage: params.homepage || '',
-        source_zip_url: `${NEXUS_BASE_URL}/${name}/${version}.zip`,
+        source_zip_url: `${nexusBaseUrl()}/${name}/${version}.zip`,
         podspec_content: podspecContent,
         status: 'failed',
         error_message: error.message,
@@ -1491,7 +1595,7 @@ ${sourceLine}
       logger.warn('Spec 同步失败，但 Nexus 上传已成功', { name, version });
     }
 
-    // 7. 同步当前组件版本到 nnios 指定分支
+    // 7. 同步当前组件版本到发布主仓库指定分支
     if (status === 'published' && params.target_branch) {
       try {
         this.syncVersionToNnios(name, version, params.target_branch);
@@ -1559,7 +1663,7 @@ ${sourceLine}
       version,
       summary: params.summary || '',
       homepage: params.homepage || '',
-      source_zip_url: `${NEXUS_BASE_URL}/${name}/${version}.zip`,
+      source_zip_url: `${nexusBaseUrl()}/${name}/${version}.zip`,
       podspec_content: podspecContent,
       status,
       error_message: errorMessage,
@@ -1588,11 +1692,12 @@ ${sourceLine}
     // 使用 REPLACE 实现 upsert，覆盖同名同版本记录，刷新 upload_time
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO pods_components 
-        (name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, package_type, build_id, nnios_branch, upload_time)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+        (product_line_id, name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, package_type, build_id, nnios_branch, upload_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
     `);
 
     const result = stmt.run(
+      currentProductLineId(),
       data.name,
       data.version,
       data.summary,
@@ -1607,8 +1712,8 @@ ${sourceLine}
     );
 
     const row = this.db
-      .prepare('SELECT * FROM pods_components WHERE id = ?')
-      .get(result.lastInsertRowid) as any;
+      .prepare('SELECT * FROM pods_components WHERE id = ? AND product_line_id = ?')
+      .get(result.lastInsertRowid, currentProductLineId()) as any;
 
     return this.mapRow(row);
   }
@@ -1618,8 +1723,8 @@ ${sourceLine}
    */
   async getAll(): Promise<PodComponent[]> {
     const rows = this.db
-      .prepare('SELECT * FROM pods_components ORDER BY name ASC, upload_time DESC')
-      .all() as any[];
+      .prepare('SELECT * FROM pods_components WHERE product_line_id = ? ORDER BY name ASC, upload_time DESC')
+      .all(currentProductLineId()) as any[];
     return rows.map(this.mapRow);
   }
 
@@ -1628,8 +1733,8 @@ ${sourceLine}
    */
   async getVersions(name: string): Promise<PodComponent[]> {
     const rows = this.db
-      .prepare('SELECT * FROM pods_components WHERE name = ? ORDER BY upload_time DESC')
-      .all(name) as any[];
+      .prepare('SELECT * FROM pods_components WHERE product_line_id = ? AND name = ? ORDER BY upload_time DESC')
+      .all(currentProductLineId(), name) as any[];
     return rows.map(this.mapRow);
   }
 
@@ -1638,8 +1743,8 @@ ${sourceLine}
    */
   async getComponentNames(): Promise<string[]> {
     const rows = this.db
-      .prepare('SELECT DISTINCT name FROM pods_components ORDER BY name ASC')
-      .all() as any[];
+      .prepare('SELECT DISTINCT name FROM pods_components WHERE product_line_id = ? ORDER BY name ASC')
+      .all(currentProductLineId()) as any[];
     return rows.map((r: any) => r.name);
   }
 
@@ -1647,11 +1752,12 @@ ${sourceLine}
    * 删除 Nexus 上的 zip 文件
    */
   async deleteFromNexus(name: string, version: string): Promise<void> {
-    const targetUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const targetUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
+    const { username, password } = nexusCredentials();
     logger.info('删除 Nexus 文件', { name, version, targetUrl });
 
     try {
-      const cmd = `curl -s -w "%{http_code}" -u "${NEXUS_USER}:${NEXUS_PASS}" -X DELETE "${targetUrl}"`;
+      const cmd = `curl -s -w "%{http_code}" -u "${username}:${password}" -X DELETE "${targetUrl}"`;
       const result = execSync(cmd, { encoding: 'utf-8', timeout: 30000 });
       const statusCode = result.trim().slice(-3);
       const statusNum = parseInt(statusCode, 10);
@@ -1698,7 +1804,7 @@ ${sourceLine}
         canDelete: false,
         branch: currentRef.branch,
         currentVersion: currentRef.version,
-        reason: `nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`,
+        reason: `发布主仓库/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`,
       };
     }
 
@@ -1724,9 +1830,9 @@ ${sourceLine}
       if (currentRef.version === version) {
         fallbackVersion = remainingVersions[0]?.version;
         if (!fallbackVersion) {
-          throw new Error(`nnios/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`);
+          throw new Error(`发布主仓库/${currentRef.branch} 正在引用 ${name}@${version}，且没有可回退版本，禁止删除`);
         }
-        logger.info('删除版本前回退 nnios 组件版本', {
+        logger.info('删除版本前回退发布主仓库组件版本', {
           name,
           version,
           targetBranch: currentRef.branch,
@@ -1734,7 +1840,7 @@ ${sourceLine}
         });
         this.syncVersionToNnios(name, fallbackVersion, currentRef.branch);
       } else {
-        logger.info('删除版本无需回退 nnios 组件版本', {
+        logger.info('删除版本无需回退发布主仓库组件版本', {
           name,
           version,
           targetBranch: currentRef.branch,
@@ -1742,14 +1848,14 @@ ${sourceLine}
         });
       }
     } else {
-      logger.info('删除版本未指定 nnios 分支，跳过 nnios 引用检查和回退', {
+      logger.info('删除版本未指定发布主仓库分支，跳过主仓库引用检查和回退', {
         name,
         version,
       });
     }
 
-    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ? AND version = ?');
-    stmt.run(name, version);
+    const stmt = this.db.prepare('DELETE FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?');
+    stmt.run(currentProductLineId(), name, version);
 
     // 删除 Nexus 上的文件
     await this.deleteFromNexus(name, version);
@@ -1798,8 +1904,8 @@ ${sourceLine}
     }
 
     // 删除数据库记录
-    const stmt = this.db.prepare('DELETE FROM pods_components WHERE name = ?');
-    const result = stmt.run(name);
+    const stmt = this.db.prepare('DELETE FROM pods_components WHERE product_line_id = ? AND name = ?');
+    const result = stmt.run(currentProductLineId(), name);
     logger.info('删除整个组件', { name, deletedVersions: result.changes });
 
     // 删除 spec 仓库中的整个组件目录（包含所有版本）
@@ -1823,8 +1929,8 @@ ${sourceLine}
    */
   async getOne(name: string, version: string): Promise<PodComponent | null> {
     const row = this.db
-      .prepare('SELECT * FROM pods_components WHERE name = ? AND version = ?')
-      .get(name, version) as any;
+      .prepare('SELECT * FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?')
+      .get(currentProductLineId(), name, version) as any;
     return row ? this.mapRow(row) : null;
   }
 
@@ -1853,8 +1959,8 @@ ${sourceLine}
 
     // 2. 更新数据库
     this.db
-      .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = ? WHERE name = ? AND version = ?')
-      .run(podspecContent, status, errorMessage || null, name, version);
+      .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+      .run(podspecContent, status, errorMessage || null, currentProductLineId(), name, version);
 
     logger.info('Podspec 更新成功', { name, version, targetBranch, status });
 
@@ -1936,7 +2042,7 @@ ${sourceLine}
       errorMessage = `Nexus 上传成功，但 spec 仓库同步失败: ${error.message}`;
     }
 
-    // 8. 同步当前组件版本到 nnios 指定分支
+    // 8. 同步当前组件版本到发布主仓库指定分支
     if (status === 'published') {
       try {
         this.syncVersionToNnios(name, version, targetBranch);
@@ -1948,8 +2054,8 @@ ${sourceLine}
 
     // 9. 更新数据库
     this.db
-      .prepare(`UPDATE pods_components SET source_zip_url = ?, podspec_content = ?, status = ?, error_message = ?, upload_time = datetime('now', 'localtime') WHERE name = ? AND version = ?`)
-      .run(sourceZipUrl, podspecContent, status, errorMessage || null, name, version);
+      .prepare(`UPDATE pods_components SET source_zip_url = ?, podspec_content = ?, status = ?, error_message = ?, upload_time = datetime('now', 'localtime') WHERE product_line_id = ? AND name = ? AND version = ?`)
+      .run(sourceZipUrl, podspecContent, status, errorMessage || null, currentProductLineId(), name, version);
 
     logger.info('zip 替换成功', { name, version, targetBranch, status });
 
@@ -1985,20 +2091,20 @@ ${sourceLine}
       }
 
       this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE name = ? AND version = ?')
-        .run(status, errorMessage || null, name, version);
+        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+        .run(status, errorMessage || null, currentProductLineId(), name, version);
 
       return { ...component, status, error_message: errorMessage };
     } catch (error: any) {
       this.db
-        .prepare('UPDATE pods_components SET error_message = ? WHERE name = ? AND version = ?')
-        .run(error.message, name, version);
+        .prepare('UPDATE pods_components SET error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+        .run(error.message, currentProductLineId(), name, version);
       throw error;
     }
   }
 
   /**
-   * 仅同步当前组件版本到 nnios 指定分支的 Podfile / third_sdk.rb。
+   * 仅同步当前组件版本到发布主仓库指定分支的 Podfile / third_sdk.rb。
    */
   async syncVersionToBranch(name: string, version: string, targetBranch?: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);
@@ -2008,20 +2114,20 @@ ${sourceLine}
     const isTestPackage = component.package_type === 'test' || isNNRtcTestVersion(component.version);
     const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
     if (!branch) {
-      throw new Error('请选择 nnios 分支');
+      throw new Error('请选择发布主仓库分支');
     }
 
     try {
       this.syncVersionToNnios(name, version, branch);
       this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = NULL, nnios_branch = CASE WHEN ? THEN ? ELSE nnios_branch END WHERE name = ? AND version = ?')
-        .run('published', isTestPackage ? 1 : 0, branch, name, version);
+        .prepare('UPDATE pods_components SET status = ?, error_message = NULL, nnios_branch = CASE WHEN ? THEN ? ELSE nnios_branch END WHERE product_line_id = ? AND name = ? AND version = ?')
+        .run('published', isTestPackage ? 1 : 0, branch, currentProductLineId(), name, version);
 
       return { ...component, status: 'published', error_message: undefined, nnios_branch: isTestPackage ? branch : component.nnios_branch };
     } catch (error: any) {
       this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE name = ? AND version = ?')
-        .run('failed', error.message, name, version);
+        .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+        .run('failed', error.message, currentProductLineId(), name, version);
       throw error;
     }
   }
@@ -2259,7 +2365,7 @@ ${sourceLine}
     const sha256 = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
     // 生成 podspec，包含 subspec 别名（让依赖 libwebp/WebP 等写法的库能正常解析）
-    const sourceUrl = `${NEXUS_BASE_URL}/${podName}/${pubVer}.zip`;
+    const sourceUrl = `${nexusBaseUrl()}/${podName}/${pubVer}.zip`;
     let podspecContent = `Pod::Spec.new do |s|
   s.name         = '${podName}'
   s.version      = '${pubVer}'
@@ -2390,6 +2496,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
   private mapRow(row: any): PodComponent {
     return {
       id: row.id,
+      product_line_id: row.product_line_id || 'nn',
       name: row.name,
       version: row.version,
       summary: row.summary || '',
@@ -3736,7 +3843,7 @@ end
     selectedSubspecs?: string[],
     prepareCommand?: string
   ): string {
-    const internalUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const internalUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
     const platform = spec.platforms?.ios || '12.0';
     const summary = spec.summary || `${name} iOS SDK`;
     const homepage = spec.homepage || `https://cocoapods.org/pods/${name}`;
@@ -3966,7 +4073,7 @@ end
    * 基于官方 podspec JSON 生成内部 podspec，保留原始路径，只替换 source 为内部 Nexus
    */
   private generateOfficialPodspec(spec: any, name: string, version: string, sha256: string, prepareCommand?: string): string {
-    const internalUrl = `${NEXUS_BASE_URL}/${name}/${version}.zip`;
+    const internalUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
     const platform = spec.platforms?.ios || '12.0';
     const summary = spec.summary || `${name} iOS SDK`;
     const homepage = spec.homepage || `https://cocoapods.org/pods/${name}`;

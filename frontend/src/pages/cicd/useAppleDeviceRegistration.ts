@@ -46,9 +46,7 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
   const [registrationRequestsLoading, setRegistrationRequestsLoading] = useState(false);
   const [approvingRegistrationRequest, setApprovingRegistrationRequest] = useState('');
   const [configSaving, setConfigSaving] = useState(false);
-  const [configKeyId, setConfigKeyId] = useState('');
   const [configIssuerId, setConfigIssuerId] = useState('');
-  const [configKeyPath, setConfigKeyPath] = useState('');
   const [configKeyFile, setConfigKeyFile] = useState<File | null>(null);
   const enrollmentAutoCreatedRef = useRef(false);
   const deviceLookupSeqRef = useRef(0);
@@ -83,9 +81,7 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
       const status = response.data || null;
       setConfigStatus(status);
       if (status) {
-        setConfigKeyId(status.keyId || '');
         setConfigIssuerId(status.issuerId || '');
-        setConfigKeyPath(status.keyPath || '');
       }
     } catch (err: any) {
       message.warning(err?.error || err?.message || '加载 Apple Developer 配置状态失败');
@@ -98,18 +94,14 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
     setConfigSaving(true);
     try {
       const response = await appleDeviceApi.updateConfig({
-        keyId: configKeyId.trim(),
         issuerId: configIssuerId.trim(),
-        keyPath: configKeyPath.trim(),
         keyFile: configKeyFile,
       });
       const status = response.data || null;
       setConfigStatus(status);
       setConfigKeyFile(null);
       if (status) {
-        setConfigKeyId(status.keyId || configKeyId.trim());
         setConfigIssuerId(status.issuerId || configIssuerId.trim());
-        setConfigKeyPath(status.keyPath || configKeyPath.trim());
       }
       message.success(status?.message || 'Apple Developer API 配置已更新');
     } catch (err: any) {
@@ -408,16 +400,12 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
     registrationRequestsLoading,
     approvingRegistrationRequest,
     configSaving,
-    configKeyId,
     configIssuerId,
-    configKeyPath,
     configKeyFile,
     registeredDevice,
     filteredDeveloperDevices,
     setDeveloperDeviceKeyword,
-    setConfigKeyId,
     setConfigIssuerId,
-    setConfigKeyPath,
     setConfigKeyFile,
     loadConfigStatus,
     saveConfig,

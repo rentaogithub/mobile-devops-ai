@@ -37,11 +37,22 @@ export function extractVersionFromCrashLog(crashLog: string): string | null {
     return versionMatch[1].trim();
   }
   
-  // 方法2: 从 Binary Images 部分提取主应用的版本
-  const binaryImageMatch = crashLog.match(/Binary Images:[\s\S]*?0x[0-9a-f]+\s+-\s+0x[0-9a-f]+\s+NNIM\s+\S+\s+<[^>]+>\s+[^\n]*\(([^\)]+)\)/i);
-  if (binaryImageMatch) {
-    return binaryImageMatch[1].trim();
-  }
+  // 方法2: 从 Binary Images 部分提取当前进程对应的主应用版本。
+  const processName = [
+    crashLog.match(/^Process:\s+([^\s\[]+)/im)?.[1],
+    crashLog.match(/^Command:\s+([^\s]+)/im)?.[1],
+    crashLog.match(/^Path:\s+.*\/([^/]+)\.app\/([^/\s]+)$/im)?.[2],
+  ].find(Boolean)?.trim();
+  const binaryImages = crashLog.split(/Binary Images:/i)[1] || '';
+  const imageLines = binaryImages.split(/\r?\n/).filter((line) => /^\s*0x[0-9a-f]+\s+-\s+0x[0-9a-f]+/i.test(line));
+  const matchingLine = processName
+    ? imageLines.find((line) => {
+      const imageName = line.match(/^\s*0x[0-9a-f]+\s+-\s+0x[0-9a-f]+\s+(\S+)/i)?.[1];
+      return imageName === processName || line.includes(`/${processName}.app/${processName}`);
+    })
+    : imageLines.find((line) => /\/[^/\s]+\.app\/[^/\s]+/i.test(line));
+  const binaryImageVersion = matchingLine?.match(/\((\d+(?:\.\d+){1,3}(?:[-+][^\s)]+)?)\)\s*$/)?.[1];
+  if (binaryImageVersion) return binaryImageVersion.trim();
   
   // 方法3: 从 CFBundleShortVersionString 提取
   const bundleVersionMatch = crashLog.match(/CFBundleShortVersionString:\s+([^\s\n]+)/);

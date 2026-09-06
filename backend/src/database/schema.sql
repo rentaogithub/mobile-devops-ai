@@ -49,9 +49,21 @@ CREATE INDEX IF NOT EXISTS idx_app_version ON symbolication_history(app_version)
 -- 为创建时间创建索引
 CREATE INDEX IF NOT EXISTS idx_created_at ON symbolication_history(created_at DESC);
 
+-- Sentry Issue 与符号化历史的关联（按产品线隔离）
+CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
+  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  issue_id TEXT NOT NULL,
+  short_id TEXT,
+  permalink TEXT,
+  history_id INTEGER NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (product_line_id, issue_id)
+);
+
 -- 实时日志配对会话表
 CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
   pairing_id TEXT PRIMARY KEY,
+  product_line_id TEXT NOT NULL DEFAULT 'nn',
   token TEXT NOT NULL,
   status TEXT NOT NULL,
   device_info TEXT,
@@ -63,6 +75,7 @@ CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_status ON realtime_log_pairing_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_last_active_at ON realtime_log_pairing_sessions(last_active_at DESC);
+CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pairing_sessions(product_line_id, status, last_active_at DESC);
 
 -- 移动研发 Workflow：构建产物与血缘
 CREATE TABLE IF NOT EXISTS workflow_artifacts (
@@ -459,6 +472,7 @@ CREATE TABLE IF NOT EXISTS platform_config (
 -- AI 会话只持久化实际工具调用与审批，不保存普通聊天正文
 CREATE TABLE IF NOT EXISTS assistant_action_audits (
   id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL DEFAULT 'nn-ios',
   user_id TEXT NOT NULL,
   username TEXT NOT NULL,
   tool_name TEXT NOT NULL,

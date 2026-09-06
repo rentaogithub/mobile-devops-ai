@@ -21,7 +21,6 @@ const { Title, Text, Paragraph } = Typography;
 const { TextArea, Search } = Input;
 
 const SENTRY_SERVICE_URL = '/sentry-service';
-const SENTRY_OVERVIEW_PATH = '/organizations/sentry/projects/nn-ios/';
 const DEFAULT_ISSUE_QUERY = 'is:unresolved !release:"10.0.0"';
 const TOP_PERIOD = '7d';
 const RECENT_PERIOD = '24h';
@@ -50,7 +49,7 @@ function toLocalIssueURL(issue?: Pick<SentryIssueSummary, 'id' | 'shortId'>) {
   return issueId ? `${SENTRY_SERVICE_URL}?issue=${encodeURIComponent(issueId)}` : SENTRY_SERVICE_URL;
 }
 
-function toSentryProxyIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink'>) {
+function toSentryProxyIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink'>, config?: CrashGovernanceConfig | null) {
   if (issue.permalink) {
     try {
       const url = new URL(issue.permalink);
@@ -64,16 +63,19 @@ function toSentryProxyIssueURL(issue: Pick<SentryIssueSummary, 'id' | 'permalink
     }
   }
 
-  return `/organizations/sentry/issues/${encodeURIComponent(issue.id)}/?project=6&query=&referrer=project-issue-stream`;
+  const organization = config?.sentryOrganization;
+  return organization
+    ? `/organizations/${encodeURIComponent(organization)}/issues/${encodeURIComponent(issue.id)}/?referrer=project-issue-stream`
+    : '/sentry/';
 }
 
-function buildOverviewURL(version: number) {
+function buildOverviewURL(version: number, config?: CrashGovernanceConfig | null) {
   const params = new URLSearchParams({
-    project: '6',
     statsPeriod: '14d',
     _: String(version),
   });
-  return `${SENTRY_OVERVIEW_PATH}?${params.toString()}`;
+  const path = config?.sentryProxyPath || '/';
+  return `${path}${path.includes('?') ? '&' : '?'}${params.toString()}`;
 }
 
 function getIssueTime(issue: SentryIssueSummary) {
@@ -589,7 +591,7 @@ export default function SentryServicePage() {
     updateCurrentIssue({
       id: issue.id,
       title: issue.title || issue.shortId || issue.id,
-      permalink: toSentryProxyIssueURL(issue),
+      permalink: toSentryProxyIssueURL(issue, governanceConfig),
     });
     setSentryDetailIssue(issue);
     setSentryDetailFrameKey((key) => key + 1);
@@ -2111,7 +2113,7 @@ export default function SentryServicePage() {
     );
   };
 
-  const sentryDetailURL = sentryDetailIssue ? toSentryProxyIssueURL(sentryDetailIssue) : '';
+  const sentryDetailURL = sentryDetailIssue ? toSentryProxyIssueURL(sentryDetailIssue, governanceConfig) : '';
   const sentryDetailTitle = sentryDetailIssue
     ? `${sentryDetailIssue.shortId || sentryDetailIssue.id} - ${sentryDetailIssue.title || '原始 Sentry 详情'}`
     : '原始 Sentry 详情';
@@ -2172,8 +2174,8 @@ export default function SentryServicePage() {
         <Card styles={{ body: { padding: 0, height: 'calc(100vh - 220px)', minHeight: 560 } }}>
           <iframe
             key={rawSentryFrameKey}
-            src={buildOverviewURL(rawSentryFrameKey)}
-            title="Sentry NNIOS 总览"
+            src={buildOverviewURL(rawSentryFrameKey, governanceConfig)}
+            title="当前产品线 Sentry 总览"
             sandbox="allow-same-origin allow-scripts allow-forms allow-downloads"
             style={{
               width: '100%',

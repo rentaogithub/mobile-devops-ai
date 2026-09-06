@@ -1,6 +1,7 @@
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import { currentProductLineId } from './ProductLineContext';
+import { productLineConfigService } from './ProductLineConfigService';
 
 export interface SymbolicationHistoryRecord {
   id: number;
@@ -520,10 +521,10 @@ export class HistoryService {
       const row = db.prepare(`
         SELECT issue_id, short_id, permalink
         FROM sentry_issue_symbolication_history
-        WHERE history_id = ?
+        WHERE history_id = ? AND product_line_id = ?
         ORDER BY updated_at DESC
         LIMIT 1
-      `).get(id) as { issue_id?: string; short_id?: string; permalink?: string } | undefined;
+      `).get(id, currentProductLineId()) as { issue_id?: string; short_id?: string; permalink?: string } | undefined;
 
       return this.buildSentryOriginalUrl(row);
     } catch (error: any) {
@@ -691,7 +692,10 @@ export class HistoryService {
       return undefined;
     }
 
-    return `/organizations/sentry/issues/${encodeURIComponent(issueId)}/?project=6&query=&referrer=project-issue-stream`;
+    const organization = productLineConfigService.get('SENTRY_ORG')
+      || (currentProductLineId() === 'nn' ? process.env.SENTRY_ORG || 'sentry' : '');
+    if (!organization) return undefined;
+    return `/organizations/${encodeURIComponent(organization)}/issues/${encodeURIComponent(issueId)}/`;
   }
 
   private extractUserIdentifiers(params: Pick<SaveHistoryParams, 'uid' | 'deviceId' | 'originalLog' | 'symbolicatedLog'>): UserIdentifiers {

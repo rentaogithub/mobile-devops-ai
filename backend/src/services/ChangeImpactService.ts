@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { currentProductLineId } from './ProductLineContext';
+import { productLineConfigService } from './ProductLineConfigService';
 
 export interface ChangeImpactInput {
   repoPath?: string;
@@ -88,9 +90,19 @@ function parseNumstat(output: string) {
   return stats;
 }
 
+function currentMainRepoPath() {
+  if (currentProductLineId() === 'nn') {
+    const configured = String(process.env.NNIOS_REPO_PATH || process.env.NNIOS_REPO_LOCAL || '').trim();
+    if (configured) return path.resolve(configured);
+    const legacy = '/Users/a1/工作/nnios';
+    if (fs.existsSync(legacy)) return legacy;
+  }
+  return productLineConfigService.mainProjectDirectory(currentProductLineId());
+}
+
 export class ChangeImpactService {
   analyze(input: ChangeImpactInput) {
-    const repoPath = path.resolve(input.repoPath || process.env.NNIOS_REPO_PATH || '/Users/a1/工作/nnios');
+    const repoPath = path.resolve(input.repoPath || currentMainRepoPath());
     let files = normalizeFiles(input.files);
     let stats = new Map<string, { added: number; deleted: number }>();
     const baseRef = String(input.baseRef || '').trim();
@@ -180,4 +192,3 @@ export class ChangeImpactService {
 }
 
 export const changeImpactService = new ChangeImpactService();
-

@@ -8,10 +8,16 @@ import path from 'path';
 import axios from 'axios';
 import { execFileSync } from 'child_process';
 import logger from '../utils/logger';
-import { adminMiddleware } from '../middleware/auth';
+import { adminMiddleware, productLineContextMiddleware } from '../middleware/auth';
 import { getDatabase } from '../database';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
+router.use((req, res, next) => {
+  if (/^\/enroll\//.test(req.path)) return next();
+  return productLineContextMiddleware(req, res, next);
+});
 const appleConfigUpload = multer({
   dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
   limits: { fileSize: 1024 * 1024 },
@@ -21,6 +27,7 @@ type EnrollmentStatus = 'pending' | 'completed';
 
 interface EnrollmentSession {
   id: string;
+  productLineId: string;
   createdAt: number;
   status: EnrollmentStatus;
   device?: {
@@ -44,6 +51,7 @@ type RegistrationRequestStatus = 'pending' | 'registered' | 'rejected';
 
 interface RegistrationRequest {
   id: string;
+  productLineId: string;
   createdAt: number;
   updatedAt: number;
   status: RegistrationRequestStatus;
@@ -101,19 +109,23 @@ function ensureAppleDeviceTables() {
   if (appleDeviceTablesReady) return;
   getDatabase().exec(`
     CREATE TABLE IF NOT EXISTS apple_developer_devices (
-      id TEXT PRIMARY KEY,
+      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      id TEXT NOT NULL,
       name TEXT NOT NULL DEFAULT '',
-      udid TEXT NOT NULL UNIQUE,
+      udid TEXT NOT NULL,
       platform TEXT NOT NULL DEFAULT 'IOS',
       status TEXT NOT NULL DEFAULT '',
       device_class TEXT NOT NULL DEFAULT '',
       model TEXT NOT NULL DEFAULT '',
       added_date TEXT NOT NULL DEFAULT '',
-      synced_at INTEGER NOT NULL
+      synced_at INTEGER NOT NULL,
+      PRIMARY KEY (product_line_id, id),
+      UNIQUE (product_line_id, udid)
     );
     CREATE INDEX IF NOT EXISTS idx_apple_developer_devices_platform ON apple_developer_devices(platform, added_date DESC);
     CREATE TABLE IF NOT EXISTS apple_device_registration_requests (
       id TEXT PRIMARY KEY,
+      product_line_id TEXT NOT NULL DEFAULT 'nn',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       status TEXT NOT NULL,
@@ -128,6 +140,40 @@ function ensureAppleDeviceTables() {
     CREATE INDEX IF NOT EXISTS idx_apple_device_registration_requests_status ON apple_device_registration_requests(status, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_apple_device_registration_requests_udid ON apple_device_registration_requests(udid);
   `);
+  const deviceColumns = getDatabase().prepare('PRAGMA table_info(apple_developer_devices)').all() as Array<{ name: string }>;
+  if (!deviceColumns.some((column) => column.name === 'product_line_id')) {
+    getDatabase().exec(`
+      DROP INDEX IF EXISTS idx_apple_developer_devices_platform;
+      ALTER TABLE apple_developer_devices RENAME TO apple_developer_devices_legacy;
+      CREATE TABLE apple_developer_devices (
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        udid TEXT NOT NULL,
+        platform TEXT NOT NULL DEFAULT 'IOS',
+        status TEXT NOT NULL DEFAULT '',
+        device_class TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        added_date TEXT NOT NULL DEFAULT '',
+        synced_at INTEGER NOT NULL,
+        PRIMARY KEY (product_line_id, id),
+        UNIQUE (product_line_id, udid)
+      );
+      INSERT INTO apple_developer_devices (
+        product_line_id, id, name, udid, platform, status, device_class, model, added_date, synced_at
+      ) SELECT 'nn', id, name, udid, platform, status, device_class, model, added_date, synced_at
+        FROM apple_developer_devices_legacy;
+      DROP TABLE apple_developer_devices_legacy;
+    `);
+  }
+  const requestColumns = getDatabase().prepare('PRAGMA table_info(apple_device_registration_requests)').all() as Array<{ name: string }>;
+  if (!requestColumns.some((column) => column.name === 'product_line_id')) {
+    getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+  }
+  getDatabase().exec(`
+    CREATE INDEX IF NOT EXISTS idx_apple_developer_devices_platform ON apple_developer_devices(product_line_id, platform, added_date DESC);
+    CREATE INDEX IF NOT EXISTS idx_apple_registration_product ON apple_device_registration_requests(product_line_id, status, created_at DESC);
+  `);
   appleDeviceTablesReady = true;
 }
 
@@ -140,6 +186,7 @@ function registrationRequestFromRow(row: any): RegistrationRequest {
   }
   return {
     id: row.id,
+    productLineId: row.product_line_id || 'nn',
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0),
     status: row.status,
@@ -157,8 +204,8 @@ function saveRegistrationRequest(request: RegistrationRequest) {
   ensureAppleDeviceTables();
   getDatabase().prepare(`
     INSERT INTO apple_device_registration_requests (
-      id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, product_line_id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       updated_at = excluded.updated_at,
       status = excluded.status,
@@ -171,6 +218,7 @@ function saveRegistrationRequest(request: RegistrationRequest) {
       message = excluded.message
   `).run(
     request.id,
+    request.productLineId,
     request.createdAt,
     request.updatedAt,
     request.status,
@@ -186,7 +234,7 @@ function saveRegistrationRequest(request: RegistrationRequest) {
 
 function getRegistrationRequest(id: string) {
   ensureAppleDeviceTables();
-  const row = getDatabase().prepare('SELECT * FROM apple_device_registration_requests WHERE id = ?').get(id);
+  const row = getDatabase().prepare('SELECT * FROM apple_device_registration_requests WHERE id = ? AND product_line_id = ?').get(id, currentProductLineId());
   return row ? registrationRequestFromRow(row) : null;
 }
 
@@ -194,19 +242,20 @@ function listRegistrationRequests() {
   ensureAppleDeviceTables();
   return (getDatabase().prepare(`
     SELECT * FROM apple_device_registration_requests
+    WHERE product_line_id = ?
     ORDER BY created_at DESC
     LIMIT 100
-  `).all() as any[]).map(registrationRequestFromRow);
+  `).all(currentProductLineId()) as any[]).map(registrationRequestFromRow);
 }
 
 function findPendingRegistrationRequest(udid: string) {
   ensureAppleDeviceTables();
   const row = getDatabase().prepare(`
     SELECT * FROM apple_device_registration_requests
-    WHERE status = 'pending' AND udid = ?
+    WHERE product_line_id = ? AND status = 'pending' AND udid = ?
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(udid);
+  `).get(currentProductLineId(), udid);
   return row ? registrationRequestFromRow(row) : null;
 }
 
@@ -227,10 +276,10 @@ function listCachedAppleDevices(platform: string) {
   ensureAppleDeviceTables();
   const rows = getDatabase().prepare(`
     SELECT * FROM apple_developer_devices
-    WHERE platform = ?
+    WHERE product_line_id = ? AND platform = ?
     ORDER BY added_date DESC
     LIMIT 500
-  `).all(platform) as any[];
+  `).all(currentProductLineId(), platform) as any[];
   return rows.map(appleDeviceFromRow);
 }
 
@@ -240,9 +289,9 @@ function findCachedAppleDeviceByUdid(udid: string) {
   if (!normalized) return null;
   const row = getDatabase().prepare(`
     SELECT * FROM apple_developer_devices
-    WHERE REPLACE(UPPER(udid), '-', '') = ?
+    WHERE product_line_id = ? AND REPLACE(UPPER(udid), '-', '') = ?
     LIMIT 1
-  `).get(normalized);
+  `).get(currentProductLineId(), normalized);
   return row ? appleDeviceFromRow(row) : null;
 }
 
@@ -251,9 +300,9 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
   const now = Date.now();
   const stmt = getDatabase().prepare(`
     INSERT INTO apple_developer_devices (
-      id, name, udid, platform, status, device_class, model, added_date, synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(udid) DO UPDATE SET
+      product_line_id, id, name, udid, platform, status, device_class, model, added_date, synced_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(product_line_id, udid) DO UPDATE SET
       id = excluded.id,
       name = excluded.name,
       platform = excluded.platform,
@@ -266,6 +315,7 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
   const tx = getDatabase().transaction((items: ReturnType<typeof normalizeAppleDevice>[]) => {
     for (const device of items) {
       stmt.run(
+        currentProductLineId(),
         device.id,
         device.name,
         device.udid,
@@ -341,97 +391,32 @@ function enrichEnrollmentDeviceFromLocal(session: EnrollmentSession) {
 }
 
 function readApplePrivateKey() {
-  const inlineKey = String(process.env.APP_STORE_CONNECT_API_PRIVATE_KEY || '').trim();
-  if (inlineKey) return inlineKey.replace(/\\n/g, '\n');
-
-  const keyPath = String(process.env.APP_STORE_CONNECT_API_KEY_PATH || '').trim();
-  if (!keyPath) return '';
-  const resolved = path.isAbsolute(keyPath) ? keyPath : path.resolve(process.cwd(), keyPath);
-  return fs.existsSync(resolved) ? fs.readFileSync(resolved, 'utf-8') : '';
+  return productLineConfigService.get('APP_STORE_CONNECT_API_PRIVATE_KEY').replace(/\\n/g, '\n');
 }
 
 function appleKeyPathInfo() {
-  const keyPath = String(process.env.APP_STORE_CONNECT_API_KEY_PATH || '').trim();
-  if (!keyPath) {
-    return { keyPathConfigured: false };
-  }
-  const resolved = path.isAbsolute(keyPath) ? keyPath : path.resolve(process.cwd(), keyPath);
-  const keyFileName = path.basename(resolved);
-  const exists = fs.existsSync(resolved);
   return {
-    keyPathConfigured: true,
-    keyFileName,
-    keyFileExists: exists,
-    keyLooksLikeSubscriptionKey: /^SubscriptionKey_/i.test(keyFileName),
-    keyLooksLikeAppStoreConnectKey: /^AuthKey_/i.test(keyFileName),
+    keyPathConfigured: Boolean(readApplePrivateKey()),
+    keyFileExists: Boolean(readApplePrivateKey()),
+    keyLooksLikeSubscriptionKey: false,
+    keyLooksLikeAppStoreConnectKey: Boolean(readApplePrivateKey()),
   };
 }
 
 function appleConfigStatus() {
-  const keyId = String(process.env.APP_STORE_CONNECT_API_KEY_ID || '').trim();
-  const issuerId = String(process.env.APP_STORE_CONNECT_API_ISSUER_ID || '').trim();
-  const keyPath = String(process.env.APP_STORE_CONNECT_API_KEY_PATH || '').trim();
+  const keyId = productLineConfigService.get('APP_STORE_CONNECT_API_KEY_ID');
+  const issuerId = productLineConfigService.get('APP_STORE_CONNECT_API_ISSUER_ID');
   const privateKey = readApplePrivateKey();
   const keyInfo = appleKeyPathInfo();
   const missing = [
     !keyId ? 'APP_STORE_CONNECT_API_KEY_ID' : '',
     !issuerId ? 'APP_STORE_CONNECT_API_ISSUER_ID' : '',
-    !privateKey ? 'APP_STORE_CONNECT_API_KEY_PATH 或 APP_STORE_CONNECT_API_PRIVATE_KEY' : '',
+    !privateKey ? 'APP_STORE_CONNECT_API_PRIVATE_KEY' : '',
   ].filter(Boolean);
   const warnings = [
-    keyInfo.keyLooksLikeSubscriptionKey
-      ? '当前私钥文件名像 Subscription Key，通常不能访问 Apple Developer 设备管理接口；请使用 App Store Connect API 的 AuthKey_*.p8。'
-      : '',
-    keyInfo.keyPathConfigured && !keyInfo.keyFileExists
-      ? 'APP_STORE_CONNECT_API_KEY_PATH 指向的私钥文件不存在。'
-      : '',
+    '',
   ].filter(Boolean);
-  return { configured: missing.length === 0, missing, warnings, keyId, issuerId, keyPath, ...keyInfo };
-}
-
-function backendEnvPath() {
-  const candidates = [
-    path.resolve(process.cwd(), '.env'),
-    path.resolve(process.cwd(), 'backend/.env'),
-    path.resolve(__dirname, '../../.env'),
-    path.resolve(__dirname, '../../../backend/.env'),
-  ];
-  const found = candidates.find((candidate) => fs.existsSync(candidate));
-  return found || path.resolve(process.cwd(), '.env');
-}
-
-function dataSecretsDir() {
-  if (process.env.APP_STORE_CONNECT_API_KEY_PATH) {
-    return path.dirname(path.resolve(process.env.APP_STORE_CONNECT_API_KEY_PATH));
-  }
-  if (process.env.DB_PATH) {
-    return path.join(path.dirname(path.resolve(process.env.DB_PATH)), 'secrets');
-  }
-  return path.resolve(process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data'), 'secrets');
-}
-
-function updateEnvValues(updates: Record<string, string>) {
-  const envPath = backendEnvPath();
-  const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-  const lines = existing ? existing.split(/\r?\n/) : [];
-  const keys = new Set(Object.keys(updates));
-  const seen = new Set<string>();
-  const nextLines = lines.map((line) => {
-    const match = line.match(/^([A-Z0-9_]+)=/);
-    if (!match || !keys.has(match[1])) return line;
-    seen.add(match[1]);
-    return `${match[1]}=${updates[match[1]]}`;
-  });
-  for (const key of keys) {
-    if (!seen.has(key)) {
-      nextLines.push(`${key}=${updates[key]}`);
-    }
-  }
-  fs.writeFileSync(envPath, nextLines.join('\n').replace(/\n*$/, '\n'), 'utf-8');
-  Object.entries(updates).forEach(([key, value]) => {
-    process.env[key] = value;
-  });
-  return envPath;
+  return { configured: missing.length === 0, missing, warnings, keyId, issuerId, productLineId: currentProductLineId(), ...keyInfo };
 }
 
 function markdownEscape(value: unknown) {
@@ -439,7 +424,8 @@ function markdownEscape(value: unknown) {
 }
 
 async function notifyAppleDeviceApproval(req: Request, request: RegistrationRequest) {
-  const webhookUrl = String(process.env.APPLE_DEVICE_APPROVAL_WEBHOOK_URL || '').trim();
+  const webhookUrl = productLineConfigService.get('WECHAT_WEBHOOK_URL')
+    || (currentProductLineId() === 'nn' ? String(process.env.APPLE_DEVICE_APPROVAL_WEBHOOK_URL || '').trim() : '');
   if (!webhookUrl) return;
   const approvalUrl = `${platformPageUrl(req)}/cicd/devices`;
   const sourceText = [request.source?.product, request.source?.version, request.source?.serial]
@@ -470,10 +456,7 @@ async function notifyAppleDeviceApproval(req: Request, request: RegistrationRequ
 function appleDeviceApiErrorMessage(error: any, fallback: string) {
   const appleError = error?.response?.data?.errors?.[0];
   if (appleError?.code === 'NOT_AUTHORIZED') {
-    const status = appleConfigStatus();
-    const keyHint = status.keyLooksLikeSubscriptionKey
-      ? `当前配置的是 ${status.keyFileName}，它像 Subscription Key，不是设备管理接口需要的 AuthKey_*.p8。`
-      : '请确认使用的是 App Store Connect API Team Key，并且账号具备管理 Certificates, Identifiers & Profiles 的权限。';
+    const keyHint = '请确认使用的是 App Store Connect API Team Key，并且账号具备管理 Certificates, Identifiers & Profiles 的权限。';
     return {
       appleError,
       message: `${keyHint}Apple 返回 NOT_AUTHORIZED，暂时无法拉取或注册开发者设备列表。`,
@@ -531,8 +514,8 @@ function base64Url(input: Buffer | string) {
 }
 
 function createAppleJwt() {
-  const keyId = String(process.env.APP_STORE_CONNECT_API_KEY_ID || '').trim();
-  const issuerId = String(process.env.APP_STORE_CONNECT_API_ISSUER_ID || '').trim();
+  const keyId = productLineConfigService.get('APP_STORE_CONNECT_API_KEY_ID');
+  const issuerId = productLineConfigService.get('APP_STORE_CONNECT_API_ISSUER_ID');
   const privateKey = readApplePrivateKey();
   if (!keyId || !issuerId || !privateKey) {
     throw new Error(`App Store Connect API Key 未配置完整：${appleConfigStatus().missing.join('、')}`);
@@ -782,50 +765,52 @@ router.get('/status', (_req, res) => {
 
 router.post('/config', adminMiddleware, appleConfigUpload.single('keyFile'), (req, res) => {
   try {
-    const keyId = String(req.body?.keyId || '').trim();
+    let keyId = String(req.body?.keyId || '').trim();
     const issuerId = String(req.body?.issuerId || '').trim();
-    let keyPath = String(req.body?.keyPath || '').trim();
-
-    if (!keyId || !issuerId) {
-      res.status(400).json({ success: false, error: '请填写 Key ID 和 Issuer ID' });
-      return;
-    }
+    const keyPath = String(req.body?.keyPath || '').trim();
+    let privateKey = readApplePrivateKey();
 
     if (req.file) {
-      const originalName = path.basename(req.file.originalname || `AuthKey_${keyId}.p8`);
-      if (!/^AuthKey_[A-Z0-9]+\.p8$/i.test(originalName)) {
+      const originalName = path.basename(req.file.originalname || '');
+      const keyIdMatch = originalName.match(/^AuthKey_([A-Z0-9]+)\.p8$/i);
+      if (!keyIdMatch) {
         fs.unlinkSync(req.file.path);
-        res.status(400).json({ success: false, error: '请上传 App Store Connect API 的 AuthKey_*.p8 文件' });
+        res.status(400).json({ success: false, error: '请上传未改名的 App Store Connect AuthKey_*.p8 文件' });
         return;
       }
-      const secretsDir = dataSecretsDir();
-      fs.mkdirSync(secretsDir, { recursive: true });
-      keyPath = path.join(secretsDir, originalName);
-      fs.renameSync(req.file.path, keyPath);
-      fs.chmodSync(keyPath, 0o600);
+      keyId = keyId || keyIdMatch[1];
+      privateKey = fs.readFileSync(req.file.path, 'utf8');
+      fs.unlinkSync(req.file.path);
+    } else if (keyPath) {
+      const resolvedKeyPath = path.isAbsolute(keyPath) ? keyPath : path.resolve(process.cwd(), keyPath);
+      if (!fs.existsSync(resolvedKeyPath)) {
+        res.status(400).json({ success: false, error: 'Key 文件路径不存在' });
+        return;
+      }
+      const keyIdMatch = path.basename(resolvedKeyPath).match(/^AuthKey_([A-Z0-9]+)\.p8$/i);
+      if (!keyIdMatch) {
+        res.status(400).json({ success: false, error: '私钥文件必须保持 AuthKey_<KeyID>.p8 原始文件名' });
+        return;
+      }
+      keyId = keyId || keyIdMatch[1];
+      privateKey = fs.readFileSync(resolvedKeyPath, 'utf8');
     }
 
-    if (!keyPath) {
-      res.status(400).json({ success: false, error: '请填写 Key 文件路径或上传 AuthKey_*.p8 文件' });
+    if (!keyId || !issuerId || !privateKey.trim()) {
+      res.status(400).json({ success: false, error: '请配置 Issuer ID 并上传未改名的 AuthKey_*.p8 私钥' });
       return;
     }
 
-    const resolvedKeyPath = path.isAbsolute(keyPath) ? keyPath : path.resolve(process.cwd(), keyPath);
-    if (!fs.existsSync(resolvedKeyPath)) {
-      res.status(400).json({ success: false, error: 'Key 文件路径不存在' });
-      return;
-    }
-    const envPath = updateEnvValues({
+    productLineConfigService.setMany(currentProductLineId(), {
       APP_STORE_CONNECT_API_KEY_ID: keyId,
       APP_STORE_CONNECT_API_ISSUER_ID: issuerId,
-      APP_STORE_CONNECT_API_KEY_PATH: resolvedKeyPath,
-    });
+      APP_STORE_CONNECT_API_PRIVATE_KEY: privateKey,
+    }, String((req as any).authUser?.username || 'admin'));
     res.json({
       success: true,
       data: {
         ...appleConfigStatus(),
-        envFile: path.basename(envPath),
-        message: 'Apple Developer API 配置已更新',
+        message: '当前产品线 Apple Developer API 配置已更新',
       },
     });
   } catch (error: any) {
@@ -930,6 +915,7 @@ router.post('/enrollments', (req, res) => {
   const id = crypto.randomUUID();
   const session: EnrollmentSession = {
     id,
+    productLineId: currentProductLineId(),
     createdAt: Date.now(),
     status: 'pending',
   };
@@ -949,7 +935,7 @@ router.post('/enrollments', (req, res) => {
 router.get('/enrollments/:id', (req, res) => {
   cleanupSessions();
   const session = sessions.get(req.params.id);
-  if (!session) {
+  if (!session || session.productLineId !== currentProductLineId()) {
     res.status(404).json({ success: false, error: '设备采集会话不存在或已过期' });
     return;
   }
@@ -1108,6 +1094,7 @@ router.post('/registration-requests', express.json({ limit: '1mb' }), async (req
 
     const request: RegistrationRequest = {
       id: crypto.randomUUID(),
+      productLineId: currentProductLineId(),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       status: 'pending',

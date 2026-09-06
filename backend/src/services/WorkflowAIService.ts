@@ -113,7 +113,7 @@ ${candidate.assertions.map((assertion: string) => `        // Assertion: ${escap
   "requiredAccessibilityIdentifiers": ["需要研发补充的 identifier"],
   "notes": ["实现说明"]
 }
-要求：代码必须自包含，不得依赖 nnios 新增辅助类或修改业务代码；优先使用 App 现有 accessibilityIdentifier 和稳定文案；禁止坐标点击；禁止支付、删除、退出登录；使用 guard/throw 表达失败，避免依赖无法独立 typecheck 的 XCTest 断言宏；输出必须是可单独类型检查的完整 Swift 测试文件；不得声称已经执行。`,
+要求：代码必须自包含，不得依赖主工程新增辅助类或修改业务代码；优先使用 App 现有 accessibilityIdentifier 和稳定文案；禁止坐标点击；禁止支付、删除、退出登录；使用 guard/throw 表达失败，避免依赖无法独立 typecheck 的 XCTest 断言宏；输出必须是可单独类型检查的完整 Swift 测试文件；不得声称已经执行。`,
       userPrompt: JSON.stringify(candidate, null, 2),
       fallback: {
         testName,

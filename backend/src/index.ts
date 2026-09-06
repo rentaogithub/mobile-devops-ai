@@ -64,7 +64,7 @@ const sentryProxyPaths = [
   '/settings',
   '/api/0',
 ];
-sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, sentryProxyRoutes));
+sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, productLineContextMiddleware, sentryProxyRoutes));
 app.use('/op', opProxyRoutes);
 app.use('/jeecg-boot', opProxyRoutes);
 app.use('/sys', opProxyRoutes);

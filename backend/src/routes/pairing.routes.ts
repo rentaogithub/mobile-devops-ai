@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import os from 'os';
 import pairingService from '../services/PairingService';
+import { currentProductLineId } from '../services/ProductLineContext';
 import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
 import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
@@ -105,7 +106,7 @@ router.get('/status/:pairingId', (req: Request, res: Response) => {
     const result = pairingService.getSessionStatus(pairingId);
     const session = pairingService.getSession(pairingId);
 
-    if (!result || !session) {
+    if (!result || !session || session.productLineId !== currentProductLineId()) {
       res.status(404).json({
         success: false,
         error: '配对会话不存在或已过期',
@@ -142,7 +143,7 @@ router.get('/devices', (req: Request, res: Response) => {
   try {
     const wsUrls = makeWebSocketUrls(req);
     const wsUrl = wsUrls[0] || '';
-    const devices = pairingService.listSessions().map((session) => ({
+    const devices = pairingService.listSessions(currentProductLineId()).map((session) => ({
       pairingId: session.pairingId,
       token: session.token,
       status: session.status,
@@ -174,9 +175,14 @@ router.get('/devices', (req: Request, res: Response) => {
 router.delete('/:pairingId', adminMiddleware, (req: Request, res: Response) => {
   try {
     const { pairingId } = req.params;
+    const session = pairingService.getSession(pairingId);
+    if (!session || session.productLineId !== currentProductLineId()) {
+      res.status(404).json({ success: false, error: '配对会话不存在' });
+      return;
+    }
     logger.info(`[Pairing] 删除配对会话: pairingId=${pairingId}`);
     browserLogWebSocketService.closeSession(pairingId);
-    pairingService.deleteSession(pairingId);
+    pairingService.deleteSession(pairingId, currentProductLineId());
     res.json({ success: true, message: '会话已删除' });
   } catch (error: any) {
     logger.error(`[Pairing] 删除会话失败: ${error.message}`);

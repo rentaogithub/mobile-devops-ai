@@ -35,7 +35,7 @@ function fail(res: Response, error: any, fallback: string, status = 500) {
 
 router.get('/overview', (req, res) => {
   try {
-    ok(res, workflowService.overview(String(req.query.projectId || 'nn-ios')));
+    ok(res, workflowService.overview(currentProjectId()));
   } catch (error) {
     fail(res, error, '加载 Workflow 概览失败');
   }
@@ -221,7 +221,7 @@ router.post('/impact/analyze', (req, res) => {
 
 router.get('/baselines', (req, res) => {
   try {
-    ok(res, workflowService.listBaselines(String(req.query.projectId || 'nn-ios')));
+    ok(res, workflowService.listBaselines(currentProjectId()));
   } catch (error) {
     fail(res, error, '加载质量基线失败');
   }
@@ -253,7 +253,7 @@ router.post('/release-gates/preview', (req, res) => {
 
 router.get('/release-gates', (req, res) => {
   try {
-    ok(res, workflowService.listReleaseGates(String(req.query.projectId || 'nn-ios'), Number(req.query.limit) || 50));
+    ok(res, workflowService.listReleaseGates(currentProjectId(), Number(req.query.limit) || 50));
   } catch (error) {
     fail(res, error, '加载发布门禁记录失败');
   }
@@ -269,7 +269,7 @@ router.post('/issues/:issueId/regression-candidates', (req, res) => {
 
 router.get('/regression-candidates', (req, res) => {
   try {
-    ok(res, workflowService.listRegressionCandidates(String(req.query.projectId || 'nn-ios')));
+    ok(res, workflowService.listRegressionCandidates(currentProjectId()));
   } catch (error) {
     fail(res, error, '加载回归候选失败');
   }
@@ -335,7 +335,7 @@ router.post('/knowledge/synthesize', async (req: Request, res: Response) => {
 
 router.get('/ai-evaluations', (req, res) => {
   try {
-    ok(res, workflowService.listAIEvaluations(String(req.query.projectId || 'nn-ios')));
+    ok(res, workflowService.listAIEvaluations(currentProjectId()));
   } catch (error) {
     fail(res, error, '加载 AI 评测记录失败');
   }
@@ -369,7 +369,7 @@ router.post('/release-observations', (req, res) => {
 
 router.get('/release-observations', (req, res) => {
   try {
-    ok(res, workflowService.listReleaseObservations(String(req.query.projectId || 'nn-ios'), req.query.releaseVersion ? String(req.query.releaseVersion) : undefined));
+    ok(res, workflowService.listReleaseObservations(currentProjectId(), req.query.releaseVersion ? String(req.query.releaseVersion) : undefined));
   } catch (error) {
     fail(res, error, '加载发布观察指标失败');
   }
@@ -377,7 +377,7 @@ router.get('/release-observations', (req, res) => {
 
 router.get('/release-health/:releaseVersion', (req, res) => {
   try {
-    ok(res, qualityGateService.evaluateReleaseHealth(String(req.query.projectId || 'nn-ios'), req.params.releaseVersion));
+    ok(res, qualityGateService.evaluateReleaseHealth(currentProjectId(), req.params.releaseVersion));
   } catch (error) {
     fail(res, error, '评估发布健康度失败');
   }

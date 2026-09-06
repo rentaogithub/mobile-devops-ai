@@ -11,6 +11,7 @@ import { buildOpCookieHeader } from '../services/OpCookieJar';
 import logger from '../utils/logger';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { apiRequestSampleService } from '../services/ApiRequestSampleService';
+import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
 const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
@@ -30,6 +31,11 @@ interface FeedbackLogLine {
   id: string;
   time: string;
   content: string;
+}
+
+function feedbackLogTempPrefix() {
+  const productLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `feedback-log-${productLineId}-`;
 }
 
 function resolveLogURL(rawURL: string): URL {
@@ -195,7 +201,7 @@ async function assertSafePreviewPath(filePath: string): Promise<string> {
   if (
     relative.startsWith('..') ||
     path.isAbsolute(relative) ||
-    !relative.split(path.sep).some((part) => part.startsWith('feedback-log-')) ||
+    !relative.split(path.sep).some((part) => part.startsWith(feedbackLogTempPrefix())) ||
     !isTargetLogFile(resolvedPath)
   ) {
     throw new Error('非法日志文件路径');
@@ -317,7 +323,7 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
       throw new Error('缺少日志压缩包');
     }
 
-    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'feedback-log-'));
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), feedbackLogTempPrefix()));
     const archivePath = path.join(tempDir, 'nn-logs.zip');
     await fsPromises.writeFile(archivePath, archive);
 
@@ -380,7 +386,7 @@ router.post('/preview', async (req: Request, res: Response) => {
     const rawURL = typeof req.body?.url === 'string' ? req.body.url : '';
     const targetURL = resolveLogURL(rawURL);
     const archive = await downloadFile(targetURL);
-    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'feedback-log-'));
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), feedbackLogTempPrefix()));
     const archivePath = path.join(tempDir, 'feedback-log.zip');
     await fsPromises.writeFile(archivePath, archive);
 

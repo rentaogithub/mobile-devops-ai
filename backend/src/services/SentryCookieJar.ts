@@ -1,9 +1,24 @@
 import fs from 'fs';
 import path from 'path';
+import { currentProductLineId } from './ProductLineContext';
 
-const sentrySessionCookies = new Map<string, string>();
-let isLoaded = false;
-let cookieJarUpdatedAt = 0;
+interface SentryCookieJarState {
+  cookies: Map<string, string>;
+  loaded: boolean;
+  updatedAt: number;
+}
+
+const cookieJars = new Map<string, SentryCookieJarState>();
+
+function currentCookieJar() {
+  const productLineId = currentProductLineId();
+  let state = cookieJars.get(productLineId);
+  if (!state) {
+    state = { cookies: new Map(), loaded: false, updatedAt: 0 };
+    cookieJars.set(productLineId, state);
+  }
+  return { productLineId, state };
+}
 
 function isSentryCookieName(name: string): boolean {
   const normalized = name.toLowerCase();
@@ -16,21 +31,25 @@ function getDefaultDatabasePath(): string {
   return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite'));
 }
 
-function getCookieJarPath(): string {
-  return path.resolve(
+function getCookieJarPath(productLineId = currentProductLineId()): string {
+  const basePath = path.resolve(
     process.env.SENTRY_COOKIE_JAR_PATH ||
     path.join(path.dirname(getDefaultDatabasePath()), 'sentry-cookie-jar.json')
   );
+  if (productLineId === 'nn') return basePath;
+  const extension = path.extname(basePath) || '.json';
+  return `${basePath.slice(0, -extension.length)}.${productLineId.replace(/[^A-Za-z0-9_.-]/g, '_')}${extension}`;
 }
 
 function loadCookieJar() {
-  if (isLoaded) {
+  const { productLineId, state } = currentCookieJar();
+  if (state.loaded) {
     return;
   }
-  isLoaded = true;
+  state.loaded = true;
 
   try {
-    const filePath = getCookieJarPath();
+    const filePath = getCookieJarPath(productLineId);
     if (!fs.existsSync(filePath)) {
       return;
     }
@@ -41,25 +60,26 @@ function loadCookieJar() {
     };
     Object.entries(payload.cookies || {}).forEach(([name, value]) => {
       if (name && value) {
-        sentrySessionCookies.set(name, value);
+        state.cookies.set(name, value);
       }
     });
-    cookieJarUpdatedAt = Number(payload.updatedAt || 0);
+    state.updatedAt = Number(payload.updatedAt || 0);
   } catch {
-    sentrySessionCookies.clear();
-    cookieJarUpdatedAt = 0;
+    state.cookies.clear();
+    state.updatedAt = 0;
   }
 }
 
 function persistCookieJar() {
-  const filePath = getCookieJarPath();
+  const { productLineId, state } = currentCookieJar();
+  const filePath = getCookieJarPath(productLineId);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  cookieJarUpdatedAt = Date.now();
+  state.updatedAt = Date.now();
   fs.writeFileSync(
     filePath,
     JSON.stringify({
-      updatedAt: cookieJarUpdatedAt,
-      cookies: Object.fromEntries(sentrySessionCookies.entries()),
+      updatedAt: state.updatedAt,
+      cookies: Object.fromEntries(state.cookies.entries()),
     }, null, 2)
   );
 }
@@ -81,6 +101,7 @@ function parseCookiePair(cookiePart: string): { name: string; value: string } | 
 
 export function updateSentryCookieJar(setCookie: string | string[] | undefined) {
   loadCookieJar();
+  const { state } = currentCookieJar();
   if (!setCookie) {
     return;
   }
@@ -93,11 +114,11 @@ export function updateSentryCookieJar(setCookie: string | string[] | undefined) 
       return;
     }
     if (!parsed.value) {
-      sentrySessionCookies.delete(parsed.name);
+      state.cookies.delete(parsed.name);
       changed = true;
       return;
     }
-    sentrySessionCookies.set(parsed.name, parsed.value);
+    state.cookies.set(parsed.name, parsed.value);
     changed = true;
   });
 
@@ -108,6 +129,7 @@ export function updateSentryCookieJar(setCookie: string | string[] | undefined) 
 
 export function updateSentryCookieJarFromCookieHeader(cookieHeader: string | undefined) {
   loadCookieJar();
+  const { state } = currentCookieJar();
   if (!cookieHeader) {
     return;
   }
@@ -116,7 +138,7 @@ export function updateSentryCookieJarFromCookieHeader(cookieHeader: string | und
   cookieHeader.split(';').forEach((part) => {
     const parsed = parseCookiePair(part);
     if (parsed?.value && isSentryCookieName(parsed.name)) {
-      sentrySessionCookies.set(parsed.name, parsed.value);
+      state.cookies.set(parsed.name, parsed.value);
       changed = true;
     }
   });
@@ -129,33 +151,34 @@ export function updateSentryCookieJarFromCookieHeader(cookieHeader: string | und
 export function buildSentryCookieHeader(extraCookie?: string): string | undefined {
   loadCookieJar();
   updateSentryCookieJarFromCookieHeader(extraCookie);
+  const { state } = currentCookieJar();
 
-  if (sentrySessionCookies.size === 0) {
+  if (state.cookies.size === 0) {
     return undefined;
   }
 
-  return Array.from(sentrySessionCookies.entries())
+  return Array.from(state.cookies.entries())
     .map(([name, value]) => `${name}=${value}`)
     .join('; ');
 }
 
 export function hasSentryCookie(name: string): boolean {
   loadCookieJar();
-  return sentrySessionCookies.has(name);
+  return currentCookieJar().state.cookies.has(name);
 }
 
 export function getSentryCookie(name: string): string | undefined {
   loadCookieJar();
-  return sentrySessionCookies.get(name);
+  return currentCookieJar().state.cookies.get(name);
 }
 
 export function getSentryCookieJarUpdatedAt(): number {
   loadCookieJar();
-  return cookieJarUpdatedAt;
+  return currentCookieJar().state.updatedAt;
 }
 
 export function clearSentryCookieJar() {
   loadCookieJar();
-  sentrySessionCookies.clear();
+  currentCookieJar().state.cookies.clear();
   persistCookieJar();
 }

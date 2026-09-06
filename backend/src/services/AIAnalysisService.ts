@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios';
 import logger from '../utils/logger';
 import { extractCrashInfo } from '../utils/crashLogParser';
 import { platformConfigService } from './PlatformConfigService';
+import { moduleConfigService } from './ModuleConfigService';
 
 export interface CrashAnalysis {
   summary: string;
@@ -295,7 +296,7 @@ ${compactLog}`;
 
     // 提取应用版本号
     // 优先从 Binary Images 部分提取主应用的版本
-    // 格式: 0x100000000 - 0x100ffffff NNIM arm64 <uuid> /var/containers/Bundle/Application/.../NNIM.app/NNIM (5.12.0)
+    // 格式: 0x100000000 - 0x100ffffff AppExecutable arm64 <uuid> /var/containers/Bundle/Application/.../App.app/App (5.12.0)
     const binaryImageMatch = crashLog.match(/Binary Images:[\s\S]*?0x[0-9a-f]+\s+-\s+0x[0-9a-f]+\s+\S+\s+\S+\s+<[^>]+>\s+[^\n]*\(([^\)]+)\)/i);
     if (binaryImageMatch) {
       info.appVersion = binaryImageMatch[1];
@@ -462,7 +463,7 @@ ${compactLog}`;
                 }
               }
               
-              // 如果是我们自己的模块（NNIM、NNRtc、leigod_im_cross_sdk），记录为最后一个
+              // 如果是当前产品线配置的自有模块，记录为最后一个
               // 但排除通用的入口函数（main、start 等）
               if (this.isOurModule(moduleName) && locationInfo.location) {
                 const isGenericEntry = ['main', 'start', '_main', '_start'].includes(locationInfo.location.toLowerCase());
@@ -547,7 +548,6 @@ ${compactLog}`;
    */
   private isOurModule(moduleName: string): boolean {
     // 从配置服务中获取自定义模块列表
-    const { moduleConfigService } = require('./ModuleConfigService');
     const ourModules = moduleConfigService.getCustomModules();
     
     return ourModules.some((mod: string) => 
@@ -707,9 +707,10 @@ ${compactCrashLog}
 
     const binaryImages = symbolicatedLog.match(/Binary Images:\n([\s\S]*)$/i)?.[0];
     if (binaryImages) {
+      const configuredModules = moduleConfigService.getCustomModules().map((moduleName) => moduleName.toLowerCase());
       const appImages = binaryImages
         .split('\n')
-        .filter((line) => /NNIM|nnios|Runner|\.app\//i.test(line))
+        .filter((line) => /\.app\//i.test(line) || configuredModules.some((moduleName) => line.toLowerCase().includes(moduleName)))
         .slice(0, 12)
         .join('\n');
       if (appImages) {

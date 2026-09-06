@@ -237,7 +237,12 @@ class BrowserLogWebSocketService {
     }
     this.recentLogs.set(pairingId, logs);
     try {
-      apiRequestSampleService.ingestLogLine(line, { source: 'realtime_log', sourceRef: pairingId, timestamp });
+      apiRequestSampleService.ingestLogLine(line, {
+        source: 'realtime_log',
+        sourceRef: pairingId,
+        timestamp,
+        productLineId: pairingService.getSession(pairingId)?.productLineId,
+      });
     } catch (error) {
       logger.debug(`[BrowserLogWS] API 请求样本采集失败: ${error instanceof Error ? error.message : 'unknown'}`);
     }
@@ -351,6 +356,7 @@ class BrowserLogWebSocketService {
             source: 'realtime_log',
             sourceRef: pairingId,
             timestamp: entry.timestamp,
+            productLineId: pairingService.getSession(pairingId)?.productLineId,
           });
         } catch (error) {
           logger.debug(`[BrowserLogWS] 重扫实时日志样本失败: ${error instanceof Error ? error.message : 'unknown'}`);

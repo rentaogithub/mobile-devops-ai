@@ -23,9 +23,7 @@ interface AppleDeviceAdminTabsProps {
   configStatus: AppleDeviceConfigStatus | null;
   configStatusLoading?: boolean;
   configSaving?: boolean;
-  configKeyId: string;
   configIssuerId: string;
-  configKeyPath: string;
   configKeyFile: File | null;
   onTabChange: (key: string) => void;
   onLoadRegistrationRequests: () => void;
@@ -34,9 +32,7 @@ interface AppleDeviceAdminTabsProps {
   onDeveloperDeviceKeywordChange: (value: string) => void;
   onLoadConfigStatus: () => void;
   onSaveConfig: () => void;
-  onConfigKeyIdChange: (value: string) => void;
   onConfigIssuerIdChange: (value: string) => void;
-  onConfigKeyPathChange: (value: string) => void;
   onConfigKeyFileChange: (file: File | null) => void;
 }
 
@@ -53,9 +49,7 @@ export function AppleDeviceAdminTabs({
   configStatus,
   configStatusLoading,
   configSaving,
-  configKeyId,
   configIssuerId,
-  configKeyPath,
   configKeyFile,
   onTabChange,
   onLoadRegistrationRequests,
@@ -64,9 +58,7 @@ export function AppleDeviceAdminTabs({
   onDeveloperDeviceKeywordChange,
   onLoadConfigStatus,
   onSaveConfig,
-  onConfigKeyIdChange,
   onConfigIssuerIdChange,
-  onConfigKeyPathChange,
   onConfigKeyFileChange,
 }: AppleDeviceAdminTabsProps) {
   const requests = registrationRequests?.requests || [];
@@ -127,13 +119,9 @@ export function AppleDeviceAdminTabs({
               status={configStatus}
               statusLoading={configStatusLoading}
               saving={configSaving}
-              keyId={configKeyId}
               issuerId={configIssuerId}
-              keyPath={configKeyPath}
               keyFile={configKeyFile}
-              onKeyIdChange={onConfigKeyIdChange}
               onIssuerIdChange={onConfigIssuerIdChange}
-              onKeyPathChange={onConfigKeyPathChange}
               onKeyFileChange={onConfigKeyFileChange}
               onCheck={onLoadConfigStatus}
               onSave={onSaveConfig}

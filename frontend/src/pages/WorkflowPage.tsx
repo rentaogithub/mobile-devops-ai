@@ -225,7 +225,7 @@ export default function WorkflowPage() {
   const exportXCUITest = async (candidate: WorkflowRegressionCandidate) => {
     try {
       const response = await workflowApi.exportXCUITest(candidate.id);
-      message.success('XCUITest 已导出到平台数据目录，未修改 nnios');
+      message.success('XCUITest 已导出到当前产品线的平台数据目录，未修改主工程');
       openJson('导出结果', response.data);
       await loadAll();
     } catch (error: any) {
@@ -419,9 +419,9 @@ export default function WorkflowPage() {
   const impactTab = (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card title="PR / Commit 变更影响分析">
-        <Form form={impactForm} layout="vertical" initialValues={{ repoPath: '/Users/a1/工作/nnios', headRef: 'HEAD' }}>
+        <Form form={impactForm} layout="vertical" initialValues={{ headRef: 'HEAD' }}>
           <Row gutter={16}>
-            <Col xs={24} lg={10}><Form.Item label="iOS 仓库路径" name="repoPath" rules={[{ required: true }]}><Input /></Form.Item></Col>
+            <Col xs={24} lg={10}><Form.Item label="iOS 仓库路径" name="repoPath"><Input placeholder="留空使用当前产品线主仓库" /></Form.Item></Col>
             <Col xs={12} lg={5}><Form.Item label="Base Ref" name="baseRef"><Input placeholder="origin/main；留空分析工作区" /></Form.Item></Col>
             <Col xs={12} lg={5}><Form.Item label="Head Ref" name="headRef"><Input /></Form.Item></Col>
             <Col xs={24} lg={4} style={{ display: 'flex', alignItems: 'end' }}><Form.Item><Button type="primary" onClick={analyzeImpact}>开始分析</Button></Form.Item></Col>

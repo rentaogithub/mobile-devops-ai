@@ -35,7 +35,7 @@ export function getCicdPageMeta(activeSection: CICDSection) {
   }
   return {
     title: '发布管理',
-    description: 'nn-ios Jekins构建与发布蒲公英、TestFlight、苹果商店包。',
+    description: '当前产品线由 Jenkins 构建，并发布到蒲公英、TestFlight 或 App Store。',
   };
 }
 

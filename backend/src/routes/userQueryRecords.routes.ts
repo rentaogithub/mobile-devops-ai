@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { getDatabase } from '../database';
 import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
+import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
 
@@ -22,7 +23,8 @@ interface IncomingUserRecord {
 function ensureTable() {
   getDatabase().prepare(`
     CREATE TABLE IF NOT EXISTS user_query_records (
-      record_key TEXT PRIMARY KEY,
+      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      record_key TEXT NOT NULL,
       id TEXT,
       user_id TEXT,
       nick_name TEXT,
@@ -36,9 +38,43 @@ function ensureTable() {
       search_key TEXT,
       remark TEXT DEFAULT '',
       last_query_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (product_line_id, record_key)
     )
   `).run();
+  const columns = getDatabase().prepare('PRAGMA table_info(user_query_records)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'product_line_id')) {
+    getDatabase().exec(`
+      ALTER TABLE user_query_records RENAME TO user_query_records_legacy;
+      CREATE TABLE user_query_records (
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        record_key TEXT NOT NULL,
+        id TEXT,
+        user_id TEXT,
+        nick_name TEXT,
+        tel_num TEXT,
+        email TEXT,
+        nn_number TEXT,
+        user_type_text TEXT,
+        status_text TEXT,
+        register_canal TEXT,
+        create_time TEXT,
+        search_key TEXT,
+        remark TEXT DEFAULT '',
+        last_query_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (product_line_id, record_key)
+      );
+      INSERT INTO user_query_records (
+        product_line_id, record_key, id, user_id, nick_name, tel_num, email, nn_number,
+        user_type_text, status_text, register_canal, create_time, search_key, remark, last_query_at, updated_at
+      ) SELECT 'nn', record_key, id, user_id, nick_name, tel_num, email, nn_number,
+        user_type_text, status_text, register_canal, create_time, search_key, remark, last_query_at, updated_at
+        FROM user_query_records_legacy;
+      DROP TABLE user_query_records_legacy;
+    `);
+  }
+  getDatabase().prepare('CREATE INDEX IF NOT EXISTS idx_user_query_product ON user_query_records(product_line_id, last_query_at DESC)').run();
 }
 
 function getRecordKey(record: IncomingUserRecord): string {
@@ -71,9 +107,10 @@ function listRecords() {
       remark,
       last_query_at AS lastQueryAt
     FROM user_query_records
+    WHERE product_line_id = ?
     ORDER BY last_query_at DESC
     LIMIT 100
-  `).all();
+  `).all(currentProductLineId());
 }
 
 router.get('/', (_req: Request, res: Response) => {
@@ -93,6 +130,7 @@ router.post('/batch', (req: Request, res: Response) => {
     const now = new Date().toISOString();
     const stmt = getDatabase().prepare(`
       INSERT INTO user_query_records (
+        product_line_id,
         record_key,
         id,
         user_id,
@@ -109,6 +147,7 @@ router.post('/batch', (req: Request, res: Response) => {
         last_query_at,
         updated_at
       ) VALUES (
+        @productLineId,
         @recordKey,
         @id,
         @userId,
@@ -125,7 +164,7 @@ router.post('/batch', (req: Request, res: Response) => {
         @lastQueryAt,
         @updatedAt
       )
-      ON CONFLICT(record_key) DO UPDATE SET
+      ON CONFLICT(product_line_id, record_key) DO UPDATE SET
         id = excluded.id,
         user_id = excluded.user_id,
         nick_name = excluded.nick_name,
@@ -148,6 +187,7 @@ router.post('/batch', (req: Request, res: Response) => {
           return;
         }
         stmt.run({
+          productLineId: currentProductLineId(),
           recordKey,
           id: normalizeText(record.id),
           userId: normalizeText(record.userId),
@@ -186,7 +226,8 @@ router.put('/:recordKey/remark', adminMiddleware, (req: Request, res: Response) 
       UPDATE user_query_records
       SET remark = @remark, updated_at = @updatedAt
       WHERE record_key = @recordKey
-    `).run({ recordKey, remark, updatedAt: now });
+        AND product_line_id = @productLineId
+    `).run({ recordKey, productLineId: currentProductLineId(), remark, updatedAt: now });
 
     if (result.changes === 0) {
       res.status(404).json({ success: false, error: '用户记录不存在' });
@@ -203,7 +244,7 @@ router.put('/:recordKey/remark', adminMiddleware, (req: Request, res: Response) 
 router.delete('/:recordKey', adminMiddleware, (req: Request, res: Response) => {
   try {
     ensureTable();
-    getDatabase().prepare('DELETE FROM user_query_records WHERE record_key = ?').run(req.params.recordKey);
+    getDatabase().prepare('DELETE FROM user_query_records WHERE record_key = ? AND product_line_id = ?').run(req.params.recordKey, currentProductLineId());
     res.json({ success: true, data: listRecords() });
   } catch (error: any) {
     logger.error(`删除用户查询记录失败: ${error.message}`);
@@ -214,7 +255,7 @@ router.delete('/:recordKey', adminMiddleware, (req: Request, res: Response) => {
 router.delete('/', adminMiddleware, (_req: Request, res: Response) => {
   try {
     ensureTable();
-    getDatabase().prepare('DELETE FROM user_query_records').run();
+    getDatabase().prepare('DELETE FROM user_query_records WHERE product_line_id = ?').run(currentProductLineId());
     res.json({ success: true, data: [] });
   } catch (error: any) {
     logger.error(`清空用户查询记录失败: ${error.message}`);

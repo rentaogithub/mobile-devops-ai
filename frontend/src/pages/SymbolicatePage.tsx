@@ -31,12 +31,13 @@ import AIAnalysisPanel from '../components/AIAnalysisPanel';
 import { shareToWeChatWork } from '../utils/wechatShare';
 import { authUtils } from '../utils/auth';
 import { downloadTextFile, generateFilename } from '../utils/helpers';
+import { extractAppVersionFromCrashLog, isComponentDSYM, isMainAppDSYM } from '../utils/dsym';
 
 const { TextArea } = Input;
 const { Title, Paragraph, Text } = Typography;
-const SENTRY_IOS_PROJECT_URL = '/organizations/sentry/projects/nn-ios/?project=6';
 
 export default function SymbolicatePage() {
+  const mainAppName = authUtils.getActiveProductLine()?.name || '主应用';
   const [crashLog, setCrashLog] = useState('');
   const [symbolicating, setSymbolicating] = useState(false);
   const [selectedUUIDs, setSelectedUUIDs] = useState<string[]>([]);
@@ -130,13 +131,13 @@ export default function SymbolicatePage() {
     }
 
     // 尝试从崩溃日志中提取版本号
-    const extractedVersion = extractVersionFromCrashLog(crashLog);
+    const extractedVersion = extractAppVersionFromCrashLog(crashLog);
     
     // 获取主应用版本列表
     const availableVersions = Array.from(
       new Set(
         dsymList
-          .filter(d => d.appName.toUpperCase() === 'NNIM')
+          .filter(d => isMainAppDSYM(d))
           .map(d => d.version)
       )
     ).sort((a, b) => b.localeCompare(a));
@@ -171,7 +172,7 @@ export default function SymbolicatePage() {
 
     // 获取关联的组件库数量
     const relatedComponents = dsymList.filter(
-      d => d.appName.toUpperCase() !== 'NNIM' && 
+      d => isComponentDSYM(d, selectedVersion) &&
       d.relatedAppVersions && 
       d.relatedAppVersions.includes(selectedVersion)
     );
@@ -213,7 +214,7 @@ export default function SymbolicatePage() {
 
     // 找到选中的主应用 dSYM
     const mainAppDsym = dsymList.find(
-      d => d.appName.toUpperCase() === 'NNIM' && d.version === version
+      d => isMainAppDSYM(d, version) && d.version === version
     );
 
     if (!mainAppDsym) {
@@ -223,7 +224,7 @@ export default function SymbolicatePage() {
 
     // 找到所有关联到这个主应用版本的组件库
     const relatedComponents = dsymList.filter(
-      d => d.appName.toUpperCase() !== 'NNIM' && 
+      d => isComponentDSYM(d, version) &&
       d.relatedAppVersions && 
       d.relatedAppVersions.includes(version)
     );
@@ -246,7 +247,7 @@ export default function SymbolicatePage() {
   const mainAppVersions = Array.from(
     new Set(
       dsymList
-        .filter(d => d.appName.toUpperCase() === 'NNIM')
+        .filter(d => isMainAppDSYM(d))
         .map(d => d.version.trim()) // 清理空格
     )
   ).sort((a, b) => b.localeCompare(a));
@@ -261,7 +262,7 @@ export default function SymbolicatePage() {
     }
 
     // 尝试从崩溃日志中提取版本号
-    const extractedVersion = extractVersionFromCrashLog(crashLog);
+    const extractedVersion = extractAppVersionFromCrashLog(crashLog);
 
     // 如果没有选择主应用版本，或者选择的版本与崩溃日志版本不同，尝试自动选择
     let versionToUse = selectedMainAppVersion;
@@ -319,7 +320,7 @@ export default function SymbolicatePage() {
 
       // 获取该版本对应的 UUIDs
       const mainAppDsym = dsymList.find(
-        d => d.appName.toUpperCase() === 'NNIM' && d.version === versionToUse
+        d => isMainAppDSYM(d, versionToUse) && d.version === versionToUse
       );
 
       if (!mainAppDsym) {
@@ -329,7 +330,7 @@ export default function SymbolicatePage() {
 
       // 找到所有关联到这个主应用版本的组件库
       const relatedComponents = dsymList.filter(
-        d => d.appName.toUpperCase() !== 'NNIM' && 
+        d => isComponentDSYM(d, versionToUse) &&
         d.relatedAppVersions && 
         d.relatedAppVersions.includes(versionToUse!)
       );
@@ -486,7 +487,7 @@ export default function SymbolicatePage() {
       if (selectedMainAppVersion) {
         appVersion = selectedMainAppVersion;
       } else {
-        const extractedVersion = extractVersionFromCrashLog(crashLog);
+        const extractedVersion = extractAppVersionFromCrashLog(crashLog);
         if (extractedVersion) {
           appVersion = extractedVersion;
         }
@@ -542,7 +543,7 @@ export default function SymbolicatePage() {
         appVersion = selectedMainAppVersion;
       } else {
         // 尝试从崩溃日志中提取版本号
-        const extractedVersion = extractVersionFromCrashLog(crashLog);
+        const extractedVersion = extractAppVersionFromCrashLog(crashLog);
         if (extractedVersion) {
           appVersion = extractedVersion;
         }
@@ -576,7 +577,7 @@ export default function SymbolicatePage() {
 
     const sourceLog = result?.original || crashLog;
     const extension = sourceLog.trim().startsWith('{') ? 'ips' : 'crash';
-    const version = selectedMainAppVersion || extractVersionFromCrashLog(sourceLog);
+    const version = selectedMainAppVersion || extractAppVersionFromCrashLog(sourceLog);
     return version
       ? `original_crash_${sanitizeFilename(version)}.${extension}`
       : generateFilename('original_crash', extension);
@@ -591,64 +592,6 @@ export default function SymbolicatePage() {
 
     downloadTextFile(originalLog, getOriginalCrashFileName());
     message.success('原始崩溃文件下载已开始');
-  };
-
-  // 从崩溃日志中提取版本号
-  const extractVersionFromCrashLog = (crashLog: string): string | null => {
-    // 检查是否是 .ips JSON 格式
-    const trimmed = crashLog.trim();
-    if (trimmed.startsWith('{')) {
-      try {
-        // 尝试解析第一行（头部信息）
-        const firstLineEnd = crashLog.indexOf('\n');
-        if (firstLineEnd > 0) {
-          const firstLine = crashLog.substring(0, firstLineEnd);
-          try {
-            const headerData = JSON.parse(firstLine);
-            if (headerData.app_version) {
-              return headerData.app_version;
-            }
-          } catch (e) {
-            // 第一行不是有效的 JSON，继续尝试整个内容
-          }
-        }
-        
-        // 如果第一行解析失败，尝试解析整个 JSON
-        const jsonData = JSON.parse(crashLog);
-        if (jsonData.app_version) {
-          return jsonData.app_version;
-        }
-      } catch (e) {
-        // JSON 解析失败，继续尝试文本格式方法
-      }
-    }
-    
-    // 文本格式的提取方法
-    // 方法1: 从 Version 字段提取
-    const versionMatch = crashLog.match(/^Version:\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)/m);
-    if (versionMatch) {
-      return versionMatch[1].trim();
-    }
-    
-    // 方法2: 从 Binary Images 部分提取主应用的版本
-    const binaryImageMatch = crashLog.match(/Binary Images:[\s\S]*?0x[0-9a-f]+\s+-\s+0x[0-9a-f]+\s+NNIM\s+\S+\s+<[^>]+>\s+[^\n]*\(([^\)]+)\)/i);
-    if (binaryImageMatch) {
-      return binaryImageMatch[1].trim();
-    }
-    
-    // 方法3: 从 CFBundleShortVersionString 提取
-    const bundleVersionMatch = crashLog.match(/CFBundleShortVersionString:\s+([^\s\n]+)/);
-    if (bundleVersionMatch) {
-      return bundleVersionMatch[1].trim();
-    }
-    
-    // 方法4: 从 App Version 字段提取
-    const appVersionMatch = crashLog.match(/App Version:\s+([^\s\n]+)/);
-    if (appVersionMatch) {
-      return appVersionMatch[1].trim();
-    }
-    
-    return null;
   };
 
   // 查找最接近的版本号
@@ -791,10 +734,10 @@ export default function SymbolicatePage() {
                     }}
                   >
                     {`# 符号化单个地址
-atos -o ./NNIM.app.dSYM/Contents/Resources/DWARF/NNIM -l 0x107ac0000 0x107b8b004
+atos -o ./AppExecutable.app.dSYM/Contents/Resources/DWARF/AppExecutable -l 0x107ac0000 0x107b8b004
 
 # 符号化多个地址
-atos -o ./NNIM.app.dSYM/Contents/Resources/DWARF/NNIM -l 0x107ac0000 0x107b8b004 0x107b8b100`}
+atos -o ./AppExecutable.app.dSYM/Contents/Resources/DWARF/AppExecutable -l 0x107ac0000 0x107b8b004 0x107b8b100`}
                   </pre>
                 </Paragraph>
 
@@ -821,7 +764,7 @@ atos -o ./NNIM.app.dSYM/Contents/Resources/DWARF/NNIM -l 0x107ac0000 0x107b8b004
                       overflow: 'auto',
                     }}
                   >
-                    {`atos -arch arm64 -o NNRtc.dSYM/Contents/Resources/DWARF/NNRtc 895660`}
+                    {`atos -arch arm64 -o Component.dSYM/Contents/Resources/DWARF/Component 895660`}
                   </pre>
                 </Paragraph>
 
@@ -838,11 +781,11 @@ atos -o ./NNIM.app.dSYM/Contents/Resources/DWARF/NNIM -l 0x107ac0000 0x107b8b004
                     }}
                   >
                     {`Thread 0 Crashed:
-0   NNIM    0x107b8b004    0x107ac0000 + 831492
+0   AppExecutable    0x107b8b004    0x107ac0000 + 831492
             ↑ 目标地址      ↑ 加载基址    ↑ 偏移量
 
 Binary Images:
-0x107ac0000 - 0x107ffffff NNIM arm64  <e08bdb14efd731409629ff39911fd971>
+0x107ac0000 - 0x107ffffff AppExecutable arm64  <e08bdb14efd731409629ff39911fd971>
 ↑ 加载基址                           ↑ 架构      ↑ UUID`}
                   </pre>
                 </Paragraph>
@@ -873,8 +816,8 @@ Binary Images:
                       overflow: 'auto',
                     }}
                   >
-                    {`$ atos -o ./NNIM.app.dSYM/Contents/Resources/DWARF/NNIM -l 0x107ac0000 0x107b8b004
--[ViewController handleCrash:] (in NNIM) (ViewController.m:123)`}
+                    {`$ atos -o ./AppExecutable.app.dSYM/Contents/Resources/DWARF/AppExecutable -l 0x107ac0000 0x107b8b004
+-[ViewController handleCrash:] (in AppExecutable) (ViewController.m:123)`}
                   </pre>
                 </Paragraph>
               </div>
@@ -903,7 +846,7 @@ Binary Images:
                 fontSize: 12
               }}>
                 <a 
-                  href={SENTRY_IOS_PROJECT_URL}
+                  href="/sentry/"
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ 
@@ -917,7 +860,7 @@ Binary Images:
                     e.currentTarget.style.textDecoration = 'none';
                   }}
                 >
-                  📊 Sentry NN 项目
+                  📊 当前产品线 Sentry 项目
                 </a>
               </div>
             </Space>
@@ -941,7 +884,7 @@ Binary Images:
             </Space>
             <Select
               style={{ width: '100%' }}
-              placeholder="选择 NNIM 主应用版本（必选）"
+              placeholder="选择主应用版本（必选）"
               showSearch
               allowClear
               value={selectedMainAppVersion}
@@ -952,7 +895,7 @@ Binary Images:
               }
               options={mainAppVersions.map((version) => ({
                 value: version,
-                label: `NNIM ${version}`,
+                label: `${mainAppName} ${version}`,
               }))}
             />
             {!selectedMainAppVersion && crashLog && (

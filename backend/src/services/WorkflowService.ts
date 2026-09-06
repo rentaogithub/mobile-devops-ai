@@ -37,6 +37,24 @@ function sha1(value: string) {
   return createHash('sha1').update(value).digest('hex');
 }
 
+type WorkflowGlobalIdTable =
+  | 'workflow_artifacts'
+  | 'workflow_tasks'
+  | 'workflow_issues'
+  | 'workflow_events'
+  | 'workflow_release_gates'
+  | 'workflow_regression_candidates'
+  | 'workflow_knowledge_entries'
+  | 'workflow_ai_evaluations'
+  | 'workflow_release_observations';
+
+function assertIdOwnership(table: WorkflowGlobalIdTable, entityId: string, projectId: string, label: string) {
+  const existing = getDatabase().prepare(`SELECT project_id FROM ${table} WHERE id = ?`).get(entityId) as { project_id?: string } | undefined;
+  if (existing && existing.project_id !== projectId) {
+    throw new Error(`${label} ID 已被其他产品线占用`);
+  }
+}
+
 function normalizeSeverity(value: unknown) {
   const severity = normalizeText(value, 30).toLowerCase();
   if (['blocker', 'critical', 'high', 'medium', 'low', 'info'].includes(severity)) return severity;
@@ -124,6 +142,8 @@ export class WorkflowService {
     const db = getDatabase();
     const timestamp = now();
     const artifactId = normalizeText(input.id, 160) || id('artifact');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_artifacts', artifactId, projectId, 'Artifact');
     db.prepare(`
       INSERT INTO workflow_artifacts (
         id, project_id, artifact_type, name, version, build_number, commit_hash,
@@ -145,7 +165,7 @@ export class WorkflowService {
         updated_at = excluded.updated_at
     `).run({
       id: artifactId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       artifactType: normalizeText(input.artifactType, 80) || 'unknown',
       name: normalizeText(input.name, 240) || artifactId,
       version: normalizeText(input.version, 120) || null,
@@ -206,7 +226,9 @@ export class WorkflowService {
     const db = getDatabase();
     const timestamp = now();
     const taskId = normalizeText(input.id, 180) || id('task');
-    const previous = db.prepare('SELECT * FROM workflow_tasks WHERE id = ?').get(taskId) as any;
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_tasks', taskId, projectId, 'Workflow 任务');
+    const previous = db.prepare('SELECT * FROM workflow_tasks WHERE id = ? AND project_id = ?').get(taskId, projectId) as any;
     const status = normalizeText(input.status, 60) || previous?.status || 'created';
     const startedAt = input.startedAt || previous?.started_at || (['running', 'installing', 'preparing'].includes(status) ? timestamp : null);
     const finishedAt = input.finishedAt || previous?.finished_at || (['passed', 'failed', 'canceled', 'completed', 'unstable'].includes(status) ? timestamp : null);
@@ -238,7 +260,7 @@ export class WorkflowService {
         updated_at = excluded.updated_at
     `).run({
       id: taskId,
-      projectId: normalizeText(input.projectId, 120) || previous?.project_id || currentProjectId(),
+      projectId,
       taskType: normalizeText(input.taskType, 100) || previous?.task_type || 'ios_quality',
       suite: normalizeText(input.suite, 80) || previous?.suite || null,
       status,
@@ -306,7 +328,7 @@ export class WorkflowService {
   upsertIssue(input: JsonObject) {
     const db = getDatabase();
     const timestamp = normalizeText(input.lastSeen, 80) || now();
-    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
+    const projectId = currentProjectId();
     const fingerprintSource = normalizeText(input.fingerprint, 300) || [
       input.source,
       input.category,
@@ -320,6 +342,7 @@ export class WorkflowService {
       : sha1(fingerprintSource);
     const previous = db.prepare('SELECT * FROM workflow_issues WHERE project_id = ? AND fingerprint = ?').get(projectId, fingerprint) as any;
     const issueId = previous?.id || normalizeText(input.id, 180) || id('issue');
+    assertIdOwnership('workflow_issues', issueId, projectId, 'Workflow Issue');
     const previousEvidence = parseJson<any[]>(previous?.evidence_json, []);
     const evidence = Array.isArray(input.evidence)
       ? Array.from(new Map(
@@ -459,8 +482,10 @@ export class WorkflowService {
         owner_hint = @ownerHint,
         updated_at = @updatedAt
       WHERE id = @id
+        AND project_id = @projectId
     `).run({
       id: issueId,
+      projectId: currentProjectId(),
       status,
       severity,
       summary: input.summary === undefined ? issue.summary : normalizeText(input.summary, 4000),
@@ -479,7 +504,7 @@ export class WorkflowService {
   }
 
   addRelation(input: JsonObject) {
-    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
+    const projectId = currentProjectId();
     const createdAt = now();
     getDatabase().prepare(`
       INSERT INTO workflow_relations (
@@ -520,6 +545,8 @@ export class WorkflowService {
 
   recordEvent(input: JsonObject) {
     const eventId = normalizeText(input.id, 180) || id('event');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_events', eventId, projectId, 'Workflow 事件');
     const occurredAt = normalizeText(input.occurredAt, 80) || now();
     getDatabase().prepare(`
       INSERT OR IGNORE INTO workflow_events (
@@ -527,7 +554,7 @@ export class WorkflowService {
       ) VALUES (@id, @projectId, @eventType, @entityType, @entityId, @payloadJson, @occurredAt, @createdAt)
     `).run({
       id: eventId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       eventType: normalizeText(input.eventType, 120) || 'unknown',
       entityType: normalizeText(input.entityType, 80) || 'unknown',
       entityId: normalizeText(input.entityId, 240) || 'unknown',
@@ -570,7 +597,7 @@ export class WorkflowService {
 
   upsertBaseline(input: JsonObject) {
     const timestamp = now();
-    const projectId = normalizeText(input.projectId, 120) || currentProjectId();
+    const projectId = currentProjectId();
     const metric = normalizeText(input.metric, 120);
     const scope = normalizeText(input.scope, 160) || 'app';
     const branch = normalizeText(input.branch, 240) || '*';
@@ -644,6 +671,8 @@ export class WorkflowService {
 
   saveReleaseGate(input: JsonObject) {
     const gateId = normalizeText(input.id, 180) || id('gate');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_release_gates', gateId, projectId, '发布门禁');
     const existing = this.getReleaseGate(gateId);
     getDatabase().prepare(`
       INSERT INTO workflow_release_gates (
@@ -656,7 +685,7 @@ export class WorkflowService {
         result_json = excluded.result_json
     `).run({
       id: gateId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       buildNumber: normalizeText(input.buildNumber, 120),
       commitHash: normalizeText(input.commitHash, 120) || null,
       branch: normalizeText(input.branch, 240) || null,
@@ -698,6 +727,8 @@ export class WorkflowService {
   createRegressionCandidate(input: JsonObject) {
     const timestamp = now();
     const candidateId = normalizeText(input.id, 180) || id('regression');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_regression_candidates', candidateId, projectId, '回归候选');
     getDatabase().prepare(`
       INSERT INTO workflow_regression_candidates (
         id, project_id, issue_id, source_task_id, title, suite, business_domain,
@@ -710,7 +741,7 @@ export class WorkflowService {
       )
     `).run({
       id: candidateId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       issueId: normalizeText(input.issueId, 180) || null,
       sourceTaskId: normalizeText(input.sourceTaskId, 180) || null,
       title: normalizeText(input.title, 500) || 'Monkey 回归候选',
@@ -768,8 +799,10 @@ export class WorkflowService {
         metadata_json = @metadataJson,
         updated_at = @updatedAt
       WHERE id = @id
+        AND project_id = @projectId
     `).run({
       id: candidateId,
+      projectId: currentProjectId(),
       title: input.title === undefined ? candidate.title : normalizeText(input.title, 500),
       status: normalizeText(input.status, 50) || candidate.status,
       generatedCode: input.generatedCode === undefined ? candidate.generatedCode : String(input.generatedCode || ''),
@@ -795,6 +828,8 @@ export class WorkflowService {
   saveKnowledge(input: JsonObject) {
     const timestamp = now();
     const entryId = normalizeText(input.id, 180) || id('knowledge');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_knowledge_entries', entryId, projectId, '知识条目');
     getDatabase().prepare(`
       INSERT INTO workflow_knowledge_entries (
         id, project_id, kind, fingerprint, title, summary, tags_json, source_refs_json,
@@ -805,7 +840,7 @@ export class WorkflowService {
       )
     `).run({
       id: entryId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       kind: normalizeText(input.kind, 100) || 'engineering_note',
       fingerprint: normalizeText(input.fingerprint, 160) || null,
       title: normalizeText(input.title, 500),
@@ -822,7 +857,7 @@ export class WorkflowService {
   }
 
   getKnowledge(entryId: string) {
-    const row = getDatabase().prepare('SELECT * FROM workflow_knowledge_entries WHERE id = ?').get(entryId) as any;
+    const row = getDatabase().prepare('SELECT * FROM workflow_knowledge_entries WHERE id = ? AND project_id = ?').get(entryId, currentProjectId()) as any;
     if (!row) return null;
     return {
       id: row.id,
@@ -859,6 +894,8 @@ export class WorkflowService {
 
   recordAIEvaluation(input: JsonObject) {
     const evaluationId = normalizeText(input.id, 180) || id('ai_eval');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_ai_evaluations', evaluationId, projectId, 'AI 评估');
     getDatabase().prepare(`
       INSERT INTO workflow_ai_evaluations (
         id, project_id, capability, model, prompt_version, input_ref, output_json,
@@ -869,7 +906,7 @@ export class WorkflowService {
       )
     `).run({
       id: evaluationId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       capability: normalizeText(input.capability, 120),
       model: normalizeText(input.model, 120) || null,
       promptVersion: normalizeText(input.promptVersion, 120) || null,
@@ -907,16 +944,17 @@ export class WorkflowService {
   }
 
   updateAIEvaluation(evaluationId: string, input: JsonObject) {
-    const existing = getDatabase().prepare('SELECT id FROM workflow_ai_evaluations WHERE id = ?').get(evaluationId);
+    const existing = getDatabase().prepare('SELECT id FROM workflow_ai_evaluations WHERE id = ? AND project_id = ?').get(evaluationId, currentProjectId());
     if (!existing) return null;
     getDatabase().prepare(`
       UPDATE workflow_ai_evaluations SET
         score = COALESCE(@score, score),
         accepted = COALESCE(@accepted, accepted),
         notes = COALESCE(@notes, notes)
-      WHERE id = @id
+      WHERE id = @id AND project_id = @projectId
     `).run({
       id: evaluationId,
+      projectId: currentProjectId(),
       score: input.score === undefined ? null : Number(input.score),
       accepted: input.accepted === undefined ? null : input.accepted ? 1 : 0,
       notes: input.notes === undefined ? null : normalizeText(input.notes, 4000),
@@ -926,6 +964,8 @@ export class WorkflowService {
 
   addReleaseObservation(input: JsonObject) {
     const observationId = normalizeText(input.id, 180) || id('observation');
+    const projectId = currentProjectId();
+    assertIdOwnership('workflow_release_observations', observationId, projectId, '发布观测');
     getDatabase().prepare(`
       INSERT INTO workflow_release_observations (
         id, project_id, release_version, build_number, channel, metric, value,
@@ -936,7 +976,7 @@ export class WorkflowService {
       )
     `).run({
       id: observationId,
-      projectId: normalizeText(input.projectId, 120) || currentProjectId(),
+      projectId,
       releaseVersion: normalizeText(input.releaseVersion, 120),
       buildNumber: normalizeText(input.buildNumber, 120) || null,
       channel: normalizeText(input.channel, 80) || null,

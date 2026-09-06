@@ -2,10 +2,12 @@ import { createHash, randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { currentProjectId } from './ProductLineContext';
 
 export interface AssistantAttachment {
   id: string;
   userId: string;
+  projectId: string;
   originalName: string;
   path: string;
   size: number;
@@ -33,12 +35,16 @@ export class AssistantAttachmentService {
       throw new Error('仅支持 .crash、.ips、.txt 崩溃日志');
     }
     const id = `attachment_${randomUUID()}`;
-    const target = path.join(this.uploadDir, `${id}${extension}`);
+    const projectId = currentProjectId();
+    const projectDirectory = path.join(this.uploadDir, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    const target = path.join(projectDirectory, `${id}${extension}`);
     fs.renameSync(file.path, target);
     const content = fs.readFileSync(target);
     const attachment: AssistantAttachment = {
       id,
       userId,
+      projectId,
       originalName: path.basename(file.originalname).slice(0, 240),
       path: target,
       size: content.length,
@@ -53,7 +59,7 @@ export class AssistantAttachmentService {
   get(id: string, userId: string) {
     this.cleanupExpired();
     const attachment = this.attachments.get(id);
-    if (!attachment || attachment.userId !== userId || !fs.existsSync(attachment.path)) return null;
+    if (!attachment || attachment.userId !== userId || attachment.projectId !== currentProjectId() || !fs.existsSync(attachment.path)) return null;
     return attachment;
   }
 

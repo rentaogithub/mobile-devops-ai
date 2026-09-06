@@ -106,10 +106,14 @@ export function getJenkinsConfig(productLineId = currentProductLineId()) {
 }
 
 export function getNNRtcJenkinsConfig() {
+  const productLineId = currentProductLineId();
+  const isLegacyProductLine = productLineId === 'nn';
   const baseUrl = trimTrailingSlash(
-    envValue('NNRTC_JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`)
+    getProductLineConfig('NNRTC_JENKINS_BASE_URL', productLineId)
+      || (isLegacyProductLine ? envValue('NNRTC_JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`) : '')
   );
-  const jobName = envValue('NNRTC_JENKINS_JOB', 'nnrtc-ios-build');
+  const jobName = getProductLineConfig('NNRTC_JENKINS_JOB', productLineId)
+    || (isLegacyProductLine ? envValue('NNRTC_JENKINS_JOB', 'nnrtc-ios-build') : '');
   const jobPath = encodeJenkinsJobPath(jobName);
 
   return {

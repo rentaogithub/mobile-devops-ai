@@ -3,7 +3,7 @@ import { operationalLogService } from './OperationalLogService';
 import sentryIssueService from './SentryIssueService';
 import { StorageService } from './StorageService';
 import { workflowService } from './WorkflowService';
-import { currentProjectId } from './ProductLineContext';
+import { currentProductLineId, currentProjectId } from './ProductLineContext';
 import { getDatabase } from '../database';
 
 function escapeQuery(value: string) {
@@ -126,7 +126,11 @@ export class AssistantInsightService {
   }
 
   async analyzePodImpact(name: string, version?: string) {
-    const rows = getDatabase().prepare('SELECT * FROM pods_components ORDER BY upload_time DESC').all() as any[];
+    const rows = getDatabase().prepare(`
+      SELECT * FROM pods_components
+      WHERE product_line_id = ?
+      ORDER BY upload_time DESC
+    `).all(currentProductLineId()) as any[];
     const all = rows.map((row) => ({
       name: String(row.name || ''),
       version: String(row.version || ''),

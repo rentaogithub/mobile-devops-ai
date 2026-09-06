@@ -1,4 +1,4 @@
-import { Space, Tag } from 'antd';
+import { Tag } from 'antd';
 import { JenkinsBuild, JenkinsQualityBuild } from '../../services/api';
 import { appStoreReleaseTag } from './AppStoreReleaseCard';
 import { releaseOrderStatusTag } from './ReleaseTimelineCard';
@@ -137,18 +137,24 @@ export function resultTag(build: Pick<JenkinsBuild, 'building' | 'result'>) {
 }
 
 export function buildStatusTags(build: JenkinsBuild) {
-  return (
-    <Space size={4} wrap>
-      {resultTag(build)}
-      {build.releaseOrder && (
-        <span title={build.releaseOrder.failureReason || build.releaseOrder.phase || undefined}>
-          {releaseOrderStatusTag(build.releaseOrder.status)}
-        </span>
-      )}
-      {build.publishChannel === 'TestFlight' && testFlightDistributionTag(build)}
-      {build.publishChannel === 'AppStore' && appStoreReleaseTag(build)}
-    </Space>
-  );
+  if (build.building || (build.result && build.result !== 'SUCCESS')) {
+    return resultTag(build);
+  }
+
+  if (build.publishChannel === 'AppStore' && build.appStoreRelease) {
+    return appStoreReleaseTag(build);
+  }
+  if (build.publishChannel === 'TestFlight' && build.testFlightDistribution) {
+    return testFlightDistributionTag(build);
+  }
+  if (build.releaseOrder) {
+    return (
+      <span title={build.releaseOrder.failureReason || build.releaseOrder.phase || undefined}>
+        {releaseOrderStatusTag(build.releaseOrder.status)}
+      </span>
+    );
+  }
+  return resultTag(build);
 }
 
 export function qualityResultTag(build: JenkinsQualityBuild) {

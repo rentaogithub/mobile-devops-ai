@@ -36,9 +36,7 @@ interface AppleDeviceSectionProps {
   configStatus: AppleDeviceConfigStatus | null;
   configStatusLoading?: boolean;
   configSaving?: boolean;
-  configKeyId: string;
   configIssuerId: string;
-  configKeyPath: string;
   configKeyFile: File | null;
   onCreateEnrollment: () => void;
   onTabChange: (key: string) => void;
@@ -48,9 +46,7 @@ interface AppleDeviceSectionProps {
   onDeveloperDeviceKeywordChange: (value: string) => void;
   onLoadConfigStatus: () => void;
   onSaveConfig: () => void;
-  onConfigKeyIdChange: (value: string) => void;
   onConfigIssuerIdChange: (value: string) => void;
-  onConfigKeyPathChange: (value: string) => void;
   onConfigKeyFileChange: (file: File | null) => void;
 }
 
@@ -77,9 +73,7 @@ export function AppleDeviceSection({
   configStatus,
   configStatusLoading,
   configSaving,
-  configKeyId,
   configIssuerId,
-  configKeyPath,
   configKeyFile,
   onCreateEnrollment,
   onTabChange,
@@ -89,9 +83,7 @@ export function AppleDeviceSection({
   onDeveloperDeviceKeywordChange,
   onLoadConfigStatus,
   onSaveConfig,
-  onConfigKeyIdChange,
   onConfigIssuerIdChange,
-  onConfigKeyPathChange,
   onConfigKeyFileChange,
 }: AppleDeviceSectionProps) {
   const scanCard = (
@@ -130,9 +122,7 @@ export function AppleDeviceSection({
           configStatus={configStatus}
           configStatusLoading={configStatusLoading}
           configSaving={configSaving}
-          configKeyId={configKeyId}
           configIssuerId={configIssuerId}
-          configKeyPath={configKeyPath}
           configKeyFile={configKeyFile}
           onTabChange={onTabChange}
           onLoadRegistrationRequests={onLoadRegistrationRequests}
@@ -141,9 +131,7 @@ export function AppleDeviceSection({
           onDeveloperDeviceKeywordChange={onDeveloperDeviceKeywordChange}
           onLoadConfigStatus={onLoadConfigStatus}
           onSaveConfig={onSaveConfig}
-          onConfigKeyIdChange={onConfigKeyIdChange}
           onConfigIssuerIdChange={onConfigIssuerIdChange}
-          onConfigKeyPathChange={onConfigKeyPathChange}
           onConfigKeyFileChange={onConfigKeyFileChange}
         />
       ) : (

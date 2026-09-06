@@ -8,13 +8,9 @@ interface AppleDeveloperApiConfigCardProps {
   status: AppleDeviceConfigStatus | null;
   statusLoading?: boolean;
   saving?: boolean;
-  keyId: string;
   issuerId: string;
-  keyPath: string;
   keyFile: File | null;
-  onKeyIdChange: (value: string) => void;
   onIssuerIdChange: (value: string) => void;
-  onKeyPathChange: (value: string) => void;
   onKeyFileChange: (file: File | null) => void;
   onCheck: () => void;
   onSave: () => void;
@@ -24,13 +20,9 @@ export function AppleDeveloperApiConfigCard({
   status,
   statusLoading,
   saving,
-  keyId,
   issuerId,
-  keyPath,
   keyFile,
-  onKeyIdChange,
   onIssuerIdChange,
-  onKeyPathChange,
   onKeyFileChange,
   onCheck,
   onSave,
@@ -56,7 +48,7 @@ export function AppleDeveloperApiConfigCard({
           message={status?.configured ? '配置可用' : '配置不完整'}
           description={status?.configured
             ? '当前 App Store Connect API Key 可用于设备注册、TestFlight 和版本管理相关接口。'
-            : `缺少：${status?.missing?.join('、') || 'APP_STORE_CONNECT_API_KEY_ID、APP_STORE_CONNECT_API_ISSUER_ID、APP_STORE_CONNECT_API_KEY_PATH'}`}
+            : '请填写 Issuer ID，并上传从 App Store Connect 下载且未改名的 AuthKey_<KeyID>.p8 私钥。Key ID 会从文件名自动识别。'}
         />
         <Descriptions bordered size="small" column={1}>
           <Descriptions.Item label="Key 文件">
@@ -73,15 +65,6 @@ export function AppleDeveloperApiConfigCard({
           <Alert key={warning} type="warning" showIcon message={warning} />
         ))}
         <div>
-          <Text strong>Key ID</Text>
-          <Input
-            value={keyId}
-            onChange={(event) => onKeyIdChange(event.target.value.trim())}
-            placeholder="例如 L69RVXCYFU"
-            style={{ marginTop: 8 }}
-          />
-        </div>
-        <div>
           <Text strong>Issuer ID</Text>
           <Input
             value={issuerId}
@@ -89,15 +72,7 @@ export function AppleDeveloperApiConfigCard({
             placeholder="App Store Connect API Issuer ID"
             style={{ marginTop: 8 }}
           />
-        </div>
-        <div>
-          <Text strong>Key 文件路径</Text>
-          <Input
-            value={keyPath}
-            onChange={(event) => onKeyPathChange(event.target.value)}
-            placeholder="/Users/a1/工作/nn-ios-platform-data/secrets/AuthKey_xxx.p8"
-            style={{ marginTop: 8 }}
-          />
+          <Text type="secondary">在 App Store Connect → 用户和访问 → 集成 → App Store Connect API 页面获取。</Text>
         </div>
         <Upload
           accept=".p8"
@@ -116,8 +91,8 @@ export function AppleDeveloperApiConfigCard({
         <Alert
           type="info"
           showIcon
-          message="上传后会保存到平台数据目录"
-          description="选择新的 .p8 文件并保存配置后，后端会将文件保存到 nn-ios-platform-data/secrets，并更新 backend/.env。"
+          message="私钥按产品线加密保存"
+          description="私钥用于调用 Apple 官方 API，支持设备注册、TestFlight 测试组和 App Store 版本管理。文件必须保持 AuthKey_<KeyID>.p8 原名；平台提取 Key ID 后加密存储，不写入 backend/.env。"
         />
       </Space>
     </Card>

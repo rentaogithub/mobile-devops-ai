@@ -11,17 +11,23 @@ import {
   hasSentryCookie,
   updateSentryCookieJar,
 } from '../services/SentryCookieJar';
+import { productLineConfigService } from '../services/ProductLineConfigService';
+import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
 const DEFAULT_SENTRY_TARGET = 'http://172.31.2.239:9000';
-const SENTRY_TARGET = (process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET).replace(/\/+$/, '');
 const DEFAULT_SENTRY_PUBLIC_URL = 'https://data.nn.com/sentry';
 const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLIC_URL).replace(/\/+$/, '');
-const SENTRY_AUTO_LOGIN = process.env.SENTRY_AUTO_LOGIN === 'true';
-const SENTRY_LOGIN_USERNAME = process.env.SENTRY_LOGIN_USERNAME || '';
-const SENTRY_LOGIN_PASSWORD = process.env.SENTRY_LOGIN_PASSWORD || '';
-const SENTRY_DEFAULT_PATH = process.env.SENTRY_DEFAULT_PATH || '/organizations/sentry/projects/nn-ios/?project=6';
 const SENTRY_SESSION_TTL_MS = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
+
+interface SentryProxyConfig {
+  productLineId: string;
+  target: string;
+  autoLogin: boolean;
+  username: string;
+  password: string;
+  defaultPath: string;
+}
 
 type SentryHTTPResponse = {
   statusCode: number;
@@ -29,11 +35,43 @@ type SentryHTTPResponse = {
   body: Buffer;
 };
 
-let sentryLoginPromise: Promise<void> | null = null;
-let sentryLastLoginAt = 0;
+const sentryLoginStates = new Map<string, { promise: Promise<void> | null; lastLoginAt: number }>();
 
-function buildTargetURL(req: Request): URL {
-  const target = new URL(SENTRY_TARGET);
+function currentSentryProxyConfig(): SentryProxyConfig {
+  const productLineId = currentProductLineId();
+  const legacy = productLineId === 'nn';
+  const target = (
+    productLineConfigService.get('SENTRY_PROXY_TARGET')
+    || (legacy ? process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET : '')
+  ).replace(/\/+$/, '');
+  if (!target) throw new Error(`当前产品线 ${productLineId} 未配置 Sentry 服务地址`);
+  const org = productLineConfigService.get('SENTRY_ORG') || (legacy ? process.env.SENTRY_ORG || 'sentry' : '');
+  const project = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'nn-ios' : '');
+  const configuredDefaultPath = legacy ? String(process.env.SENTRY_DEFAULT_PATH || '').trim() : '';
+  const defaultPath = configuredDefaultPath || (org && project
+    ? `/organizations/${encodeURIComponent(org)}/projects/${encodeURIComponent(project)}/`
+    : '/');
+  return {
+    productLineId,
+    target,
+    autoLogin: (productLineConfigService.get('SENTRY_AUTO_LOGIN') || (legacy ? String(process.env.SENTRY_AUTO_LOGIN || '') : '')) === 'true',
+    username: productLineConfigService.get('SENTRY_LOGIN_USERNAME') || (legacy ? process.env.SENTRY_LOGIN_USERNAME || '' : ''),
+    password: productLineConfigService.get('SENTRY_LOGIN_PASSWORD') || (legacy ? process.env.SENTRY_LOGIN_PASSWORD || '' : ''),
+    defaultPath,
+  };
+}
+
+function currentLoginState(productLineId: string) {
+  let state = sentryLoginStates.get(productLineId);
+  if (!state) {
+    state = { promise: null, lastLoginAt: 0 };
+    sentryLoginStates.set(productLineId, state);
+  }
+  return state;
+}
+
+function buildTargetURL(req: Request, config: SentryProxyConfig): URL {
+  const target = new URL(config.target);
   const targetBasePath = target.pathname.replace(/\/+$/, '');
   let proxyPath = req.originalUrl.replace(/^\/sentry(?=\/|$)/, '') || req.originalUrl || '/';
   proxyPath = proxyPath.replace(/npm_modules/g, 'node_modules');
@@ -48,9 +86,9 @@ function buildTargetURL(req: Request): URL {
   return target;
 }
 
-function rewriteSentryAssetURLs(body: string, proxyBaseURL: string, options: { injectBridge?: boolean } = {}): string {
+function rewriteSentryAssetURLs(body: string, proxyBaseURL: string, config: SentryProxyConfig, options: { injectBridge?: boolean } = {}): string {
   const sentryPublicURLPattern = SENTRY_PUBLIC_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const sentryTargetPattern = SENTRY_TARGET.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const sentryTargetPattern = config.target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rewritten = body
     .replace(new RegExp(sentryPublicURLPattern, 'g'), proxyBaseURL)
     .replace(new RegExp(sentryTargetPattern, 'g'), proxyBaseURL)
@@ -121,9 +159,9 @@ function injectSentryIssueBridge(body: string): string {
   return body.replace('</body>', `${bridgeScript}\n</body>`);
 }
 
-function rewriteLocationHeader(location: string): string {
+function rewriteLocationHeader(location: string, config: SentryProxyConfig): string {
   const normalizedLocation = location;
-  if (normalizedLocation.startsWith(SENTRY_TARGET)) {
+  if (normalizedLocation.startsWith(config.target)) {
     const target = new URL(normalizedLocation);
     return `${target.pathname}${target.search}${target.hash}`;
   }
@@ -143,19 +181,19 @@ function rewriteSetCookieHeaders(setCookie: string | string[]): string[] {
     : [rewriteCookie(setCookie)];
 }
 
-function rewriteRequestURLHeader(value: string): string {
-  const target = new URL(SENTRY_TARGET);
+function rewriteRequestURLHeader(value: string, config: SentryProxyConfig): string {
+  const target = new URL(config.target);
   return value.replace(/^https?:\/\/[^/]+\/sentry(?=\/|$)/i, `${target.origin}`);
 }
 
-function requestSentry(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
-  const baseURL = new URL(SENTRY_TARGET);
+function requestSentry(config: SentryProxyConfig, requestPathWithQuery: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
+  const baseURL = new URL(config.target);
   const targetBasePath = baseURL.pathname.replace(/\/+$/, '');
-  const targetURL = new URL(SENTRY_TARGET);
-  const queryIndex = path.indexOf('?');
-  const requestPath = queryIndex >= 0 ? path.substring(0, queryIndex) : path;
+  const targetURL = new URL(config.target);
+  const queryIndex = requestPathWithQuery.indexOf('?');
+  const requestPath = queryIndex >= 0 ? requestPathWithQuery.substring(0, queryIndex) : requestPathWithQuery;
   targetURL.pathname = `${targetBasePath}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;
-  targetURL.search = queryIndex >= 0 ? path.substring(queryIndex) : '';
+  targetURL.search = queryIndex >= 0 ? requestPathWithQuery.substring(queryIndex) : '';
   const client = targetURL.protocol === 'https:' ? https : http;
   const headers: Record<string, string> = {
     ...(options.headers || {}),
@@ -216,81 +254,93 @@ function extractCSRFToken(html: string): string {
   return decodeHTML(token);
 }
 
-async function performSentryLogin() {
+async function performSentryLogin(config: SentryProxyConfig) {
   clearSentryCookieJar();
-  const loginPage = await requestSentry('/auth/login/sentry/');
+  const loginPage = await requestSentry(config, '/auth/login/sentry/');
   const csrfToken = extractCSRFToken(loginPage.body.toString('utf8'));
   if (!csrfToken) {
     throw new Error('Sentry login csrf token missing');
   }
 
   const form = new URLSearchParams();
-  form.set('op', SENTRY_LOGIN_USERNAME);
-  form.set('password', SENTRY_LOGIN_PASSWORD);
+  form.set('op', config.username);
+  form.set('password', config.password);
   form.set('csrfmiddlewaretoken', csrfToken);
 
-  await requestSentry('/auth/login/sentry/', {
+  await requestSentry(config, '/auth/login/sentry/', {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
-      origin: new URL(SENTRY_TARGET).origin,
-      referer: `${SENTRY_TARGET}/auth/login/sentry/`,
+      origin: new URL(config.target).origin,
+      referer: `${config.target}/auth/login/sentry/`,
     },
     body: form.toString(),
   });
 
-  sentryLastLoginAt = Date.now();
+  currentLoginState(config.productLineId).lastLoginAt = Date.now();
   if (!hasSentryCookie('sentrysid')) {
     throw new Error('Sentry login session cookie missing');
   }
 }
 
-async function ensureSentryAutoLogin() {
-  if (!SENTRY_AUTO_LOGIN || !SENTRY_LOGIN_USERNAME || !SENTRY_LOGIN_PASSWORD) {
+async function ensureSentryAutoLogin(config: SentryProxyConfig) {
+  if (!config.autoLogin || !config.username || !config.password) {
     return;
   }
 
+  const state = currentLoginState(config.productLineId);
+
   const isSessionFresh =
     hasSentryCookie('sentrysid') &&
-    Date.now() - Math.max(sentryLastLoginAt, getSentryCookieJarUpdatedAt()) < SENTRY_SESSION_TTL_MS;
+    Date.now() - Math.max(state.lastLoginAt, getSentryCookieJarUpdatedAt()) < SENTRY_SESSION_TTL_MS;
   if (isSessionFresh) {
     return;
   }
 
-  if (!sentryLoginPromise) {
-    sentryLoginPromise = performSentryLogin()
+  if (!state.promise) {
+    state.promise = performSentryLogin(config)
       .catch((error) => {
         logger.warn('Sentry 自动登录失败', {
-          target: SENTRY_TARGET,
+          target: config.target,
+          productLineId: config.productLineId,
           error: error instanceof Error ? error.message : String(error),
         });
         clearSentryCookieJar();
       })
       .finally(() => {
-        sentryLoginPromise = null;
+        state.promise = null;
       });
   }
 
-  await sentryLoginPromise;
+  await state.promise;
 }
 
 function isSentryLoginPath(req: Request): boolean {
   return req.originalUrl.startsWith('/sentry/auth/login/');
 }
 
-function buildDefaultProxyPath(): string {
-  const defaultPath = SENTRY_DEFAULT_PATH.startsWith('/') ? SENTRY_DEFAULT_PATH : `/${SENTRY_DEFAULT_PATH}`;
+function buildDefaultProxyPath(config: SentryProxyConfig): string {
+  const defaultPath = config.defaultPath.startsWith('/') ? config.defaultPath : `/${config.defaultPath}`;
   return defaultPath.replace(/^\/sentry(?=\/)/, '');
 }
 
 router.use(async (req: Request, res: Response) => {
-  await ensureSentryAutoLogin();
-  if (SENTRY_AUTO_LOGIN && isSentryLoginPath(req) && hasSentryCookie('sentrysid')) {
-    res.redirect(buildDefaultProxyPath());
+  let config: SentryProxyConfig;
+  try {
+    config = currentSentryProxyConfig();
+    await ensureSentryAutoLogin(config);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn('Sentry 代理配置不可用', { productLineId: currentProductLineId(), error: message });
+    res.status(503).send(message);
+    return;
+  }
+  if (config.autoLogin && isSentryLoginPath(req) && hasSentryCookie('sentrysid')) {
+    res.redirect(buildDefaultProxyPath(config));
     return;
   }
 
-  const targetURL = buildTargetURL(req);
+  const targetURL = buildTargetURL(req, config);
   const isHttps = targetURL.protocol === 'https:';
   const client = isHttps ? https : http;
   const targetOrigin = `${targetURL.protocol}//${targetURL.host}`;
@@ -311,7 +361,7 @@ router.use(async (req: Request, res: Response) => {
   }
 
   if (typeof headers.referer === 'string') {
-    headers.referer = rewriteRequestURLHeader(headers.referer);
+    headers.referer = rewriteRequestURLHeader(headers.referer, config);
   }
 
   const sentryCookieHeader = buildSentryCookieHeader(typeof headers.cookie === 'string' ? headers.cookie : undefined);
@@ -338,7 +388,7 @@ router.use(async (req: Request, res: Response) => {
       responseHeaders['cache-control'] = 'no-cache, no-store, must-revalidate';
 
       if (typeof responseHeaders.location === 'string') {
-        responseHeaders.location = rewriteLocationHeader(responseHeaders.location);
+        responseHeaders.location = rewriteLocationHeader(responseHeaders.location, config);
       }
 
       if (responseHeaders['set-cookie']) {
@@ -372,7 +422,7 @@ router.use(async (req: Request, res: Response) => {
         const body = Buffer.concat(chunks).toString('utf8');
         const rewrittenBody = shouldRewriteJavaScript
           ? rewriteSentryJavaScript(body)
-          : rewriteSentryAssetURLs(body, proxyBaseURL, { injectBridge: shouldRewriteHTML });
+          : rewriteSentryAssetURLs(body, proxyBaseURL, config, { injectBridge: shouldRewriteHTML });
         res.send(rewrittenBody);
       });
     }

@@ -1,8 +1,10 @@
 import crypto from 'crypto';
 import logger from '../utils/logger';
+import { currentProductLineId } from './ProductLineContext';
 
 interface CachedSymbolication {
   hash: string;
+  productLineId: string;
   symbolicatedLog: string;
   matchedUUIDs: string[];
   warning?: string;
@@ -30,7 +32,7 @@ export class SymbolicationCacheService {
    * 计算崩溃日志的哈希值
    */
   private calculateHash(crashLog: string, uuids: string[]): string {
-    const content = crashLog + uuids.sort().join(',');
+    const content = `${currentProductLineId()}\n${crashLog}\n${[...uuids].sort().join(',')}`;
     return crypto.createHash('sha256').update(content).digest('hex');
   }
 
@@ -99,6 +101,7 @@ export class SymbolicationCacheService {
 
     this.cache.set(hash, {
       hash,
+      productLineId: currentProductLineId(),
       symbolicatedLog,
       matchedUUIDs: uuids,
       warning,
@@ -120,8 +123,21 @@ export class SymbolicationCacheService {
    * 清空缓存
    */
   clear(): void {
+    const productLineId = currentProductLineId();
+    let cleared = 0;
+    for (const [key, entry] of this.cache.entries()) {
+      if (entry.productLineId === productLineId) {
+        this.cache.delete(key);
+        cleared += 1;
+      }
+    }
+    logger.info('当前产品线符号化缓存已清空', { productLineId, cleared });
+  }
+
+  clearAll(): void {
+    const cleared = this.cache.size;
     this.cache.clear();
-    logger.info('符号化缓存已清空');
+    logger.info('全部产品线符号化缓存已清空', { cleared });
   }
 
   /**
@@ -132,8 +148,9 @@ export class SymbolicationCacheService {
     maxSize: number;
     expireTime: number;
   } {
+    const productLineId = currentProductLineId();
     return {
-      size: this.cache.size,
+      size: Array.from(this.cache.values()).filter((entry) => entry.productLineId === productLineId).length,
       maxSize: this.maxCacheSize,
       expireTime: this.cacheExpireTime,
     };

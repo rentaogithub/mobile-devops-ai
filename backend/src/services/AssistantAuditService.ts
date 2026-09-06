@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { getDatabase } from '../database';
 import { PlatformUser } from './AuthService';
+import { currentProjectId } from './ProductLineContext';
 
 const REDACT_KEY = /password|token|secret|authorization|cookie|api[_-]?key/i;
 
@@ -45,12 +46,13 @@ export class AssistantAuditService {
     const timestamp = now();
     getDatabase().prepare(`
       INSERT INTO assistant_action_audits (
-        id, user_id, username, tool_name, domain, risk_level, status,
+        id, project_id, user_id, username, tool_name, domain, risk_level, status,
         arguments_json, preview_json, approval_count, approvals_required,
         idempotency_key, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     `).run(
       id,
+      currentProjectId(),
       input.user.id,
       input.user.username,
       input.toolName,
@@ -92,15 +94,17 @@ export class AssistantAuditService {
       fields.push('completed_at = @completedAt');
       params.completedAt = now();
     }
-    getDatabase().prepare(`UPDATE assistant_action_audits SET ${fields.join(', ')} WHERE id = @id`).run(params);
+    params.projectId = currentProjectId();
+    getDatabase().prepare(`UPDATE assistant_action_audits SET ${fields.join(', ')} WHERE id = @id AND project_id = @projectId`).run(params);
     return this.get(id);
   }
 
   get(id: string) {
-    const row = getDatabase().prepare('SELECT * FROM assistant_action_audits WHERE id = ?').get(id) as any;
+    const row = getDatabase().prepare('SELECT * FROM assistant_action_audits WHERE id = ? AND project_id = ?').get(id, currentProjectId()) as any;
     if (!row) return null;
     return {
       id: row.id,
+      projectId: row.project_id || 'nn-ios',
       userId: row.user_id,
       username: row.username,
       toolName: row.tool_name,
@@ -123,21 +127,21 @@ export class AssistantAuditService {
   }
 
   list(limit = 100) {
-    return (getDatabase().prepare(`SELECT id FROM assistant_action_audits ORDER BY created_at DESC LIMIT ?`).all(Math.min(Math.max(limit, 1), 500)) as any[])
+    return (getDatabase().prepare(`SELECT id FROM assistant_action_audits WHERE project_id = ? ORDER BY created_at DESC LIMIT ?`).all(currentProjectId(), Math.min(Math.max(limit, 1), 500)) as any[])
       .map((row) => this.get(row.id));
   }
 
   idempotencyKey(user: PlatformUser, toolName: string, args: unknown) {
-    return createHash('sha256').update(`${user.id}:${toolName}:${JSON.stringify(sanitizeForAudit(args))}`).digest('hex');
+    return createHash('sha256').update(`${currentProjectId()}:${user.id}:${toolName}:${JSON.stringify(sanitizeForAudit(args))}`).digest('hex');
   }
 
   findRecentSuccess(idempotencyKey: string, seconds = 120) {
     const threshold = new Date(Date.now() - seconds * 1000).toISOString();
     const row = getDatabase().prepare(`
       SELECT id FROM assistant_action_audits
-      WHERE idempotency_key = ? AND status = 'completed' AND created_at > ?
+      WHERE project_id = ? AND idempotency_key = ? AND status = 'completed' AND created_at > ?
       ORDER BY created_at DESC LIMIT 1
-    `).get(idempotencyKey, threshold) as any;
+    `).get(currentProjectId(), idempotencyKey, threshold) as any;
     return row ? this.get(row.id) : null;
   }
 
@@ -145,11 +149,11 @@ export class AssistantAuditService {
     const threshold = new Date(Date.now() - seconds * 1000).toISOString();
     const row = getDatabase().prepare(`
       SELECT id FROM assistant_action_audits
-      WHERE idempotency_key = ?
+      WHERE project_id = ? AND idempotency_key = ?
         AND status IN ('created', 'awaiting_confirmation', 'running', 'completed')
         AND created_at > ?
       ORDER BY created_at DESC LIMIT 1
-    `).get(idempotencyKey, threshold) as any;
+    `).get(currentProjectId(), idempotencyKey, threshold) as any;
     return row ? this.get(row.id) : null;
   }
 }

@@ -8,6 +8,8 @@ import logger from '../utils/logger';
 import { extractCrashInfo } from '../utils/crashLogParser';
 import { convertIPSToCrash } from '../utils/ipsConverter';
 import { crashGovernanceService } from '../services/CrashGovernanceService';
+import { isMainAppDSYM } from '../services/DSYMMatcherService';
+import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 
 const router = Router();
 
@@ -336,7 +338,8 @@ router.post('/', async (req: Request, res: Response) => {
 
     // 获取主应用版本
     let appVersion = 'Unknown';
-    const mainApp = dsymInfos.find((info) => info.appName.toUpperCase() === 'NNIM');
+    const crashAppVersion = extractVersionFromCrashLog(crashLog);
+    const mainApp = dsymInfos.find((info) => isMainAppDSYM(info, crashAppVersion));
     if (mainApp) {
       appVersion = mainApp.version;
     } else if (dsymInfos.length > 0) {
@@ -344,7 +347,6 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     // 检查版本是否被检测到
-    const { extractVersionFromCrashLog } = await import('../utils/versionExtractor');
     const extractedVersion = extractVersionFromCrashLog(crashLog);
     const versionDetected = extractedVersion === appVersion;
 
@@ -526,14 +528,14 @@ router.post('/analyze', async (req: Request, res: Response) => {
           version: dsymInfo?.version 
         });
         
-        if (dsymInfo && dsymInfo.appName.toUpperCase() === 'NNIM') {
+        if (dsymInfo && isMainAppDSYM(dsymInfo, extractVersionFromCrashLog(symbolicatedLog))) {
           mainAppVersion = dsymInfo.version;
-          logger.info('找到主应用 NNIM 的版本', { version: mainAppVersion });
+          logger.info('找到当前产品线主应用版本', { appName: dsymInfo.appName, version: mainAppVersion });
           break;
         }
       }
       
-      // 如果没有找到 NNIM，使用第一个
+      // 如果无法识别主应用，使用第一个 dSYM 的版本兼容旧数据。
       if (!mainAppVersion && uuids.length > 0) {
         const dsymInfo = await storage.findByUUID(uuids[0]);
         if (dsymInfo) {

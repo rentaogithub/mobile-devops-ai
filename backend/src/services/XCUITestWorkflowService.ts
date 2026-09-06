@@ -4,6 +4,7 @@ import fsPromises from 'fs/promises';
 import path from 'path';
 import { promisify } from 'util';
 import { workflowService } from './WorkflowService';
+import { currentProjectId } from './ProductLineContext';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,10 +48,12 @@ async function runCommand(command: string, args: string[], options: { cwd: strin
 
 export class XCUITestWorkflowService {
   private outputRoot() {
-    return path.resolve(
+    const base = path.resolve(
       process.env.WORKFLOW_XCUITEST_OUTPUT_DIR
         || path.join(process.env.DATA_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data'), 'workflow-xcuitest'),
     );
+    const projectId = currentProjectId();
+    return projectId === 'nn-ios' ? base : path.join(base, safeToken(projectId));
   }
 
   async exportCandidate(candidateId: string, input: Record<string, any> = {}) {
@@ -142,7 +145,7 @@ export class XCUITestWorkflowService {
     if (!candidate) throw new Error('回归候选不存在');
     const runnerUrl = String(process.env.WORKFLOW_XCUITEST_RUNNER_URL || '').trim();
     if (!runnerUrl) {
-      throw new Error('未配置 WORKFLOW_XCUITEST_RUNNER_URL；为保证不修改 nnios，实际执行必须由 CI/临时工作区 Runner 完成');
+      throw new Error('未配置 WORKFLOW_XCUITEST_RUNNER_URL；为保证不修改产品线主工程，实际执行必须由 CI/临时工作区 Runner 完成');
     }
     const compileResult = await this.verifyCandidate(candidateId, input);
     if (!compileResult.passed) return { ...compileResult, executed: false };

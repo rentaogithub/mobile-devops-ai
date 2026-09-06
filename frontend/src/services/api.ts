@@ -38,7 +38,14 @@ api.interceptors.request.use((config) => {
 });
 
 const FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS = ['10.0.0'];
-let sentryGovernanceConfigCache: { excludedVersions: string[]; defaultIssueQuery: string; loadedAt: number } | null = null;
+const fallbackExcludedSentryAppVersions = () => authUtils.getActiveProductLine()?.id === 'nn'
+  ? FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS
+  : [];
+const fallbackSentryIssueQuery = () => {
+  const versions = fallbackExcludedSentryAppVersions();
+  return versions.length > 0 ? `is:unresolved !release:"${versions[0]}"` : 'is:unresolved';
+};
+let sentryGovernanceConfigCache: (CrashGovernanceConfig & { productLineId: string; loadedAt: number }) | null = null;
 export const BACKEND_UNAVAILABLE_CODE = 'BACKEND_UNAVAILABLE';
 export const BACKEND_UNAVAILABLE_MESSAGE = '平台后端服务不可达，请确认 3000 端口服务已启动';
 export const BACKEND_UNAVAILABLE_HINT = '可在 nn-ios-platform 目录执行 ./start-platform.sh，或查看 backend-dev.log。';
@@ -96,6 +103,7 @@ export interface PlatformConfigStatus {
 
 export interface ProductLineServiceConfig {
   JENKINS_USER: string;
+  JENKINS_TOKEN: string;
   JENKINS_TOKENConfigured: boolean;
   JENKINS_NN_JOB: string;
   JENKINS_NN_QA_JOB: string;
@@ -107,6 +115,22 @@ export interface ProductLineServiceConfig {
   PODX_PUBLISH_MAIN_REPO: string;
   PODX_PUBLISH_WORK_DIR: string;
   PODX_PUBLISH_BASE_BRANCH: string;
+  PODS_NEXUS_BASE_URL: string;
+  PODS_NEXUS_USER: string;
+  PODS_NEXUS_PASSWORDConfigured: boolean;
+  GIT_USERNAME: string;
+  GIT_PASSWORDConfigured: boolean;
+  NNRTC_JENKINS_BASE_URL: string;
+  NNRTC_JENKINS_JOB: string;
+  NNRTC_JENKINS_USER: string;
+  NNRTC_JENKINS_TOKENConfigured: boolean;
+  SENTRY_PROXY_TARGET: string;
+  SENTRY_ORG: string;
+  SENTRY_PROJECT: string;
+  SENTRY_AUTO_LOGIN: string;
+  SENTRY_LOGIN_USERNAME: string;
+  SENTRY_LOGIN_PASSWORDConfigured: boolean;
+  PGYER_API_KEY: string;
   PGYER_API_KEYConfigured: boolean;
   PGYER_APP_KEYConfigured: boolean;
   PGYER_SHORTCUT_URL: string;
@@ -114,11 +138,15 @@ export interface ProductLineServiceConfig {
   APP_STORE_CONNECT_API_ISSUER_ID: string;
   APP_STORE_CONNECT_API_PRIVATE_KEYConfigured: boolean;
   APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE?: string;
+  APP_STORE_CONNECT_API_PRIVATE_KEY_STORAGE?: string;
   APP_STORE_CONNECT_APP_ID: string;
   APP_STORE_CONNECT_TESTFLIGHT_GROUPS: string;
   WECHAT_WEBHOOK_URLConfigured: boolean;
   WECHAT_WEBHOOK_URL?: string;
   WECHAT_WEBHOOK_URL_SOURCE?: string;
+  WECHAT_WORK_CORP_ID: string;
+  WECHAT_WORK_AGENT_ID: string;
+  WECHAT_WORK_SECRETConfigured: boolean;
 }
 
 export interface ProductLinePodxConfigSyncResult {
@@ -129,13 +157,28 @@ export interface ProductLinePodxConfigSyncResult {
   cloned: boolean;
 }
 
+export interface ProductLineComponentRepository {
+  name: string;
+  url: string;
+}
+
+export interface ProductLineTestFlightGroup {
+  id: string;
+  name: string;
+  isInternal: boolean;
+}
+
 export type ProductLineServiceUpdate = Partial<Record<
   | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_NN_JOB' | 'JENKINS_NN_QA_JOB' | 'JENKINS_NN_REPO_URL'
   | 'PODX_TARGET_NAME' | 'PODX_PRIVATE_SOURCE' | 'PODX_GIT_BASE_URL'
   | 'PODX_PUBLISH_REPOS' | 'PODX_PUBLISH_MAIN_REPO' | 'PODX_PUBLISH_WORK_DIR' | 'PODX_PUBLISH_BASE_BRANCH'
+  | 'PODS_NEXUS_BASE_URL' | 'PODS_NEXUS_USER' | 'PODS_NEXUS_PASSWORD'
+  | 'GIT_USERNAME' | 'GIT_PASSWORD'
+  | 'NNRTC_JENKINS_BASE_URL' | 'NNRTC_JENKINS_JOB' | 'NNRTC_JENKINS_USER' | 'NNRTC_JENKINS_TOKEN'
+  | 'SENTRY_PROXY_TARGET' | 'SENTRY_ORG' | 'SENTRY_PROJECT' | 'SENTRY_AUTO_LOGIN' | 'SENTRY_LOGIN_USERNAME' | 'SENTRY_LOGIN_PASSWORD'
   | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'PGYER_SHORTCUT_URL'
   | 'APP_STORE_CONNECT_API_KEY_ID' | 'APP_STORE_CONNECT_API_ISSUER_ID' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'APP_STORE_CONNECT_APP_ID' | 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS'
-  | 'WECHAT_WEBHOOK_URL',
+  | 'WECHAT_WEBHOOK_URL' | 'WECHAT_WORK_CORP_ID' | 'WECHAT_WORK_AGENT_ID' | 'WECHAT_WORK_SECRET',
   string
 >>;
 
@@ -218,6 +261,16 @@ export const authApi = {
 
   getProductLineServices: async (id: string): Promise<ApiResponse<ProductLineServiceConfig>> => {
     const response = await api.get<ApiResponse<ProductLineServiceConfig>>(`/auth/product-lines/${encodeURIComponent(id)}/services`);
+    return response.data;
+  },
+
+  getProductLineComponentRepositories: async (id: string): Promise<ApiResponse<ProductLineComponentRepository[]>> => {
+    const response = await api.get<ApiResponse<ProductLineComponentRepository[]>>(`/auth/product-lines/${encodeURIComponent(id)}/component-repositories`);
+    return response.data;
+  },
+
+  getProductLineTestFlightGroups: async (id: string): Promise<ApiResponse<ProductLineTestFlightGroup[]>> => {
+    const response = await api.get<ApiResponse<ProductLineTestFlightGroup[]>>(`/auth/product-lines/${encodeURIComponent(id)}/app-store/testflight-groups`);
     return response.data;
   },
 
@@ -1087,7 +1140,10 @@ function collectAppVersions(source: any): string[] {
 }
 
 async function getSentryGovernanceConfigForClient() {
-  if (sentryGovernanceConfigCache && Date.now() - sentryGovernanceConfigCache.loadedAt < 5 * 60 * 1000) {
+  const productLineId = authUtils.getActiveProductLine()?.id || 'nn';
+  if (sentryGovernanceConfigCache
+    && sentryGovernanceConfigCache.productLineId === productLineId
+    && Date.now() - sentryGovernanceConfigCache.loadedAt < 5 * 60 * 1000) {
     return sentryGovernanceConfigCache;
   }
   try {
@@ -1095,8 +1151,12 @@ async function getSentryGovernanceConfigForClient() {
     const config = response.data.data;
     if (response.data.success && config) {
       sentryGovernanceConfigCache = {
-        excludedVersions: config.excludedVersions || FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
-        defaultIssueQuery: config.defaultIssueQuery || `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+        excludedVersions: config.excludedVersions || fallbackExcludedSentryAppVersions(),
+        defaultIssueQuery: config.defaultIssueQuery || fallbackSentryIssueQuery(),
+        sentryOrganization: config.sentryOrganization,
+        sentryProject: config.sentryProject,
+        sentryProxyPath: config.sentryProxyPath,
+        productLineId,
         loadedAt: Date.now(),
       };
       return sentryGovernanceConfigCache;
@@ -1105,13 +1165,17 @@ async function getSentryGovernanceConfigForClient() {
     // 配置读取失败时使用兜底版本，避免影响 Sentry 列表展示。
   }
   return {
-    excludedVersions: FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
-    defaultIssueQuery: `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+    excludedVersions: fallbackExcludedSentryAppVersions(),
+    defaultIssueQuery: fallbackSentryIssueQuery(),
+    sentryOrganization: productLineId === 'nn' ? 'sentry' : '',
+    sentryProject: productLineId === 'nn' ? 'nn-ios' : '',
+    sentryProxyPath: productLineId === 'nn' ? '/organizations/sentry/projects/nn-ios/' : '/',
+    productLineId,
     loadedAt: Date.now(),
   };
 }
 
-function buildAppVersionRange(values: string[], excludedVersions: string[] = FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS) {
+function buildAppVersionRange(values: string[], excludedVersions: string[] = fallbackExcludedSentryAppVersions()) {
   const excludedAppVersions = new Set(excludedVersions);
   const versions = Array.from(new Set(values.filter((version) =>
     Boolean(version) && !excludedAppVersions.has(version)
@@ -1126,7 +1190,7 @@ function buildAppVersionRange(values: string[], excludedVersions: string[] = FAL
   };
 }
 
-function normalizeSentryIssue(issue: any, excludedVersions: string[] = FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS): SentryIssueSummary {
+function normalizeSentryIssue(issue: any, excludedVersions: string[] = fallbackExcludedSentryAppVersions()): SentryIssueSummary {
   const range = buildAppVersionRange(collectAppVersions(issue), excludedVersions);
   return {
     id: String(issue.id || ''),
@@ -1148,10 +1212,12 @@ function normalizeSentryIssue(issue: any, excludedVersions: string[] = FALLBACK_
 }
 
 async function sentryProxyGet<T>(path: string): Promise<T> {
+  const productLine = authUtils.getActiveProductLine();
   const response = await fetch(`/sentry${path}`, {
     credentials: 'include',
     headers: {
       Accept: 'application/json',
+      ...(productLine ? { 'X-Product-Line-Id': productLine.id } : {}),
     },
   });
   const text = await response.text();
@@ -1189,7 +1255,7 @@ async function enrichSentryIssueVersionRange(issue: SentryIssueSummary): Promise
     });
     try {
       const tagValues = await Promise.race([
-        sentryProxyGet<any[]>(`/api/0/projects/sentry/nn-ios/tags/release/values/?${releaseQuery.toString()}`),
+        sentryProxyGet<any[]>(`/api/0/projects/${encodeURIComponent(config.sentryOrganization || '')}/${encodeURIComponent(config.sentryProject || '')}/tags/release/values/?${releaseQuery.toString()}`),
         timeout<any[]>('Sentry release tag values timeout'),
       ]);
       versions.push(...(Array.isArray(tagValues) ? tagValues.map((item) => item.value || item.name || item.key) : []));
@@ -1230,8 +1296,12 @@ async function listSentryIssuesFromProxy(params: {
 
   search.set('statsPeriod', period === '7d' ? '14d' : period);
 
+  if (!config.sentryOrganization || !config.sentryProject) {
+    throw new Error('当前产品线未配置 Sentry Organization 或 Project');
+  }
+
   const data = await sentryProxyGet<any[] | { results?: any[] }>(
-    `/api/0/projects/sentry/nn-ios/issues/?${search.toString()}`
+    `/api/0/projects/${encodeURIComponent(config.sentryOrganization)}/${encodeURIComponent(config.sentryProject)}/issues/?${search.toString()}`
   );
   const rawIssues = Array.isArray(data) ? data : data?.results || [];
   const issues = rawIssues
@@ -1279,8 +1349,12 @@ export const sentryAnalysisApi = {
     );
     if (response.data.success && response.data.data) {
       sentryGovernanceConfigCache = {
-        excludedVersions: response.data.data.excludedVersions || FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS,
-        defaultIssueQuery: response.data.data.defaultIssueQuery || `is:unresolved !release:"${FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS[0]}"`,
+        excludedVersions: response.data.data.excludedVersions || fallbackExcludedSentryAppVersions(),
+        defaultIssueQuery: response.data.data.defaultIssueQuery || fallbackSentryIssueQuery(),
+        sentryOrganization: response.data.data.sentryOrganization || sentryGovernanceConfigCache?.sentryOrganization,
+        sentryProject: response.data.data.sentryProject || sentryGovernanceConfigCache?.sentryProject,
+        sentryProxyPath: response.data.data.sentryProxyPath || sentryGovernanceConfigCache?.sentryProxyPath,
+        productLineId: authUtils.getActiveProductLine()?.id || 'nn',
         loadedAt: Date.now(),
       };
     }
@@ -3436,15 +3510,11 @@ export const appleDeviceApi = {
   },
 
   updateConfig: async (payload: {
-    keyId: string;
     issuerId: string;
-    keyPath?: string;
     keyFile?: File | null;
   }): Promise<ApiResponse<AppleDeviceConfigStatus & { message?: string }>> => {
     const formData = new FormData();
-    formData.append('keyId', payload.keyId);
     formData.append('issuerId', payload.issuerId);
-    if (payload.keyPath) formData.append('keyPath', payload.keyPath);
     if (payload.keyFile) formData.append('keyFile', payload.keyFile, payload.keyFile.name);
     const response = await api.post<ApiResponse<AppleDeviceConfigStatus & { message?: string }>>('/apple-devices/config', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

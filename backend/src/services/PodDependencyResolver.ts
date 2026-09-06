@@ -3,6 +3,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import logger from '../utils/logger';
+import { productLineConfigService } from './ProductLineConfigService';
+import { currentProductLineId } from './ProductLineContext';
 
 /**
  * 基于 nnios 的 Podfile / third_sdk.rb 为各业务仓库的 podspec 依赖反查版本。
@@ -15,6 +17,15 @@ import logger from '../utils/logger';
  */
 
 export const NNIOS_REPO_URL = 'http://git.leigod.top/nn_ios/nnios.git';
+
+function currentMainRepoUrl(): string {
+  const config = productLineConfigService.podxConfig(currentProductLineId());
+  const configured = config.jenkinsRepoUrl
+    || config.publishRepoUrls.find((url) => extractRepoName(url).toLowerCase() === config.publishMainRepo.toLowerCase());
+  if (configured) return configured;
+  if (currentProductLineId() === 'nn') return NNIOS_REPO_URL;
+  throw new Error(`当前产品线 ${currentProductLineId()} 未配置发布主仓库地址`);
+}
 
 export interface PodSpecDependency {
   /** 依赖的 pod 名（s.dependency 的第一个参数） */
@@ -392,7 +403,7 @@ export class PodDependencyResolver {
     const tmpRoot = workDir || fs.mkdtempSync(path.join(os.tmpdir(), 'pod-deps-'));
     let repoDir: string | undefined;
     try {
-      repoDir = await shallowClone(NNIOS_REPO_URL, branch, tmpRoot, creds, revision);
+      repoDir = await shallowClone(currentMainRepoUrl(), branch, tmpRoot, creds, revision);
 
       const read = (rel: string): string | null => {
         const p = path.join(repoDir!, rel);
@@ -526,7 +537,8 @@ export class PodDependencyResolver {
         (await this.loadNniosIndex(branch, { username: opts.username, password: opts.password }, workDir));
 
       // 对 nnios 仓库本身，不再重复扫自己的 podspec 依赖（可能没有 podspec）
-      const toResolve = repoUrls.filter((u) => extractRepoName(u) !== extractRepoName(NNIOS_REPO_URL));
+      const mainRepoUrl = currentMainRepoUrl();
+      const toResolve = repoUrls.filter((u) => extractRepoName(u) !== extractRepoName(mainRepoUrl));
 
       const results = await Promise.all(
         toResolve.map((u) =>

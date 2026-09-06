@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { apiRequestSampleService } from './ApiRequestSampleService';
+import { currentProductLineId } from './ProductLineContext';
+import { productLineConfigService } from './ProductLineConfigService';
 
 interface ApiOperationResult {
   service: string;
@@ -25,8 +27,6 @@ interface RouteIndexEntry {
 }
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
-const API_CACHE_DIR = path.join(DATA_DIR, 'api-docs-cache');
-const ROUTE_REPO = path.resolve(process.env.NNIOS_REPO_PATH || process.env.NNIOS_REPO_LOCAL || '/Users/a1/工作/nnios');
 const SOURCE_EXTENSIONS = new Set(['.swift', '.m', '.mm', '.h', '.hpp', '.plist', '.json', '.js', '.ts', '.tsx']);
 const ROUTE_MARKER = /router|route|scheme|deeplink|openurl|open\(|jump|navigate|jsbridge|webview|protocol|页面跳转|路由|跳转/i;
 const IGNORED_DIRECTORIES = new Set(['.git', 'Pods', 'Carthage', 'DerivedData', 'build', 'node_modules', '.build']);
@@ -77,19 +77,34 @@ function extractRoute(snippet: string) {
   return quoted || '-';
 }
 
+function currentApiCacheDir() {
+  // API 文档描述的是平台共享后端服务；调用样本和查看历史另行按产品线隔离。
+  return path.join(DATA_DIR, 'api-docs-cache');
+}
+
+function currentRouteRepo() {
+  if (currentProductLineId() === 'nn') {
+    const configured = String(process.env.NNIOS_REPO_PATH || process.env.NNIOS_REPO_LOCAL || '').trim();
+    if (configured) return path.resolve(configured);
+    const legacy = '/Users/a1/工作/nnios';
+    if (fs.existsSync(legacy)) return legacy;
+  }
+  return productLineConfigService.mainProjectDirectory(currentProductLineId());
+}
+
 export class ApiRouteSearchService {
-  private routeIndex: RouteIndexEntry[] = [];
-  private routeIndexedAt = 0;
+  private routeIndexes = new Map<string, { repo: string; entries: RouteIndexEntry[]; indexedAt: number }>();
 
   searchApi(keyword: string, limit = 30) {
     const tokens = queryTokens(keyword);
     if (tokens.length === 0) throw new Error('API 查询关键词不能为空');
-    if (!fs.existsSync(API_CACHE_DIR)) return { kind: 'api_search', keyword, total: 0, rows: [], warning: 'API 文档缓存尚未同步' };
+    const apiCacheDir = currentApiCacheDir();
+    if (!fs.existsSync(apiCacheDir)) return { kind: 'api_search', keyword, total: 0, rows: [], warning: '当前产品线 API 文档缓存尚未同步' };
     const results: ApiOperationResult[] = [];
-    for (const filename of fs.readdirSync(API_CACHE_DIR).filter((item) => item.endsWith('.json'))) {
+    for (const filename of fs.readdirSync(apiCacheDir).filter((item) => item.endsWith('.json'))) {
       let document: any;
       try {
-        document = JSON.parse(fs.readFileSync(path.join(API_CACHE_DIR, filename), 'utf8'));
+        document = JSON.parse(fs.readFileSync(path.join(apiCacheDir, filename), 'utf8'));
       } catch {
         continue;
       }
@@ -136,14 +151,15 @@ export class ApiRouteSearchService {
   searchRoutes(keyword: string, limit = 30) {
     const tokens = queryTokens(keyword);
     if (tokens.length === 0) throw new Error('路由查询关键词不能为空');
-    this.ensureRouteIndex();
-    const rows = this.routeIndex
+    const routeRepo = currentRouteRepo();
+    const routeIndex = this.ensureRouteIndex(routeRepo);
+    const rows = routeIndex
       .filter((item) => matches(`${item.file} ${item.route} ${item.snippet} ${item.module}`, tokens))
       .slice(0, Math.min(Math.max(limit, 1), 100));
     return {
       kind: 'route_search',
       keyword,
-      repo: ROUTE_REPO,
+      repo: routeRepo,
       total: rows.length,
       rows,
       note: '负责人和跨端兼容性来自模块路径与代码特征推断，最终以模块维护信息为准。',
@@ -151,12 +167,15 @@ export class ApiRouteSearchService {
     };
   }
 
-  private ensureRouteIndex() {
-    if (this.routeIndex.length > 0 && Date.now() - this.routeIndexedAt < 5 * 60_000) return;
-    if (!fs.existsSync(ROUTE_REPO)) {
-      this.routeIndex = [];
-      this.routeIndexedAt = Date.now();
-      return;
+  private ensureRouteIndex(routeRepo: string) {
+    const productLineId = currentProductLineId();
+    const cached = this.routeIndexes.get(productLineId);
+    if (cached?.repo === routeRepo && cached.entries.length > 0 && Date.now() - cached.indexedAt < 5 * 60_000) {
+      return cached.entries;
+    }
+    if (!fs.existsSync(routeRepo)) {
+      this.routeIndexes.set(productLineId, { repo: routeRepo, entries: [], indexedAt: Date.now() });
+      return [];
     }
     const entries: RouteIndexEntry[] = [];
     let visitedFiles = 0;
@@ -190,7 +209,7 @@ export class ApiRouteSearchService {
         } catch {
           continue;
         }
-        const relative = path.relative(ROUTE_REPO, absolute).replace(/\\/g, '/');
+        const relative = path.relative(routeRepo, absolute).replace(/\\/g, '/');
         content.split(/\r?\n/).forEach((line, index) => {
           const snippet = line.trim();
           if (!snippet || (!ROUTE_MARKER.test(snippet) && !/router|route|scheme|deeplink|jsbridge/i.test(relative))) return;
@@ -207,9 +226,9 @@ export class ApiRouteSearchService {
         });
       }
     };
-    visit(ROUTE_REPO);
-    this.routeIndex = entries;
-    this.routeIndexedAt = Date.now();
+    visit(routeRepo);
+    this.routeIndexes.set(productLineId, { repo: routeRepo, entries, indexedAt: Date.now() });
+    return entries;
   }
 }
 

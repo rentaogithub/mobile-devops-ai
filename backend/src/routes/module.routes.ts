@@ -2,6 +2,7 @@ import express from 'express';
 import { moduleConfigService } from '../services/ModuleConfigService';
 import logger from '../utils/logger';
 import { getExternalServicesPublicConfig } from '../config/externalServices';
+import { requireRole } from '../middleware/auth';
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ router.get('/modules', (req, res) => {
 /**
  * 更新自定义模块列表
  */
-router.post('/modules', (req, res) => {
+router.post('/modules', requireRole('admin'), (req, res) => {
   try {
     const { modules } = req.body;
     

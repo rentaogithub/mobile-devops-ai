@@ -35,9 +35,7 @@ export function AppleDeviceSectionContainer({
       configStatus={registration.configStatus}
       configStatusLoading={registration.configStatusLoading}
       configSaving={registration.configSaving}
-      configKeyId={registration.configKeyId}
       configIssuerId={registration.configIssuerId}
-      configKeyPath={registration.configKeyPath}
       configKeyFile={registration.configKeyFile}
       onCreateEnrollment={registration.createEnrollment}
       onTabChange={(key) => {
@@ -51,9 +49,7 @@ export function AppleDeviceSectionContainer({
       onDeveloperDeviceKeywordChange={registration.setDeveloperDeviceKeyword}
       onLoadConfigStatus={registration.loadConfigStatus}
       onSaveConfig={registration.saveConfig}
-      onConfigKeyIdChange={registration.setConfigKeyId}
       onConfigIssuerIdChange={registration.setConfigIssuerId}
-      onConfigKeyPathChange={registration.setConfigKeyPath}
       onConfigKeyFileChange={registration.setConfigKeyFile}
     />
   );

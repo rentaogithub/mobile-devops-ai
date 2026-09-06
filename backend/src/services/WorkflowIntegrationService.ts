@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import logger from '../utils/logger';
 import { workflowService } from './WorkflowService';
+import { currentProductLineId, currentProjectId, getProductLineContext } from './ProductLineContext';
 
 type JsonObject = Record<string, any>;
 
@@ -18,6 +19,21 @@ function sha1(value: string) {
 
 function compact(value: unknown, maxLength = 1000) {
   return text(value).replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+function workflowScope() {
+  return currentProductLineId() === 'nn' ? 'nn' : token(currentProjectId());
+}
+
+function productLabel() {
+  return getProductLineContext()?.name || currentProductLineId();
+}
+
+function scopedArtifactId(kind: string, ...parts: unknown[]) {
+  const suffix = parts.map(token).join('_');
+  return currentProductLineId() === 'nn'
+    ? `artifact_${kind}_${suffix}`
+    : `artifact_${kind}_${workflowScope()}_${suffix}`;
 }
 
 function buildStatus(build: JsonObject) {
@@ -72,13 +88,15 @@ export class WorkflowIntegrationService {
       const jenkinsNumber = text(build.number || build.jenkinsBuildNumber);
       if (!jenkinsNumber) return null;
       const sourceBuildNumber = jenkinsNumber;
-      const artifactId = `artifact_jenkins_nn_${token(jenkinsNumber)}`;
-      const taskId = `jenkins:nn:${jenkinsNumber}`;
+      const scope = workflowScope();
+      const label = productLabel();
+      const artifactId = `artifact_jenkins_${scope}_${token(jenkinsNumber)}`;
+      const taskId = `jenkins:${scope}:${jenkinsNumber}`;
       const status = buildStatus(build);
       const artifact = workflowService.createArtifact({
         id: artifactId,
         artifactType: 'jenkins_build',
-        name: `nn Jenkins #${jenkinsNumber}`,
+        name: `${label} Jenkins #${jenkinsNumber}`,
         version: build.appVersion,
         buildNumber: sourceBuildNumber,
         commitHash: build.commitHash,
@@ -123,12 +141,12 @@ export class WorkflowIntegrationService {
       });
       if (status === 'failed' || status === 'unstable') {
         workflowService.upsertIssue({
-          fingerprint: `jenkins:nn:${jenkinsNumber}:build_failure`,
+          fingerprint: `jenkins:${scope}:${jenkinsNumber}:build_failure`,
           source: 'jenkins',
-          sourceRef: build.url || `nn#${jenkinsNumber}`,
+          sourceRef: build.url || `${label}#${jenkinsNumber}`,
           category: 'build_failure',
           severity: status === 'failed' ? 'high' : 'medium',
-          title: `nn Jenkins #${jenkinsNumber} ${status === 'failed' ? '构建失败' : '构建不稳定'}`,
+          title: `${label} Jenkins #${jenkinsNumber} ${status === 'failed' ? '构建失败' : '构建不稳定'}`,
           summary: `分支 ${text(build.branchName || build.branch) || '-'}，发布渠道 ${text(build.publishChannel) || '-'}`,
           taskId,
           artifactId,
@@ -152,16 +170,18 @@ export class WorkflowIntegrationService {
       this.syncJenkinsBuild({ ...build, result: build.result || 'FAILURE', building: false });
       const jenkinsNumber = text(build.number || build.jenkinsBuildNumber || build.buildNumber);
       const sourceBuildNumber = jenkinsNumber;
+      const scope = workflowScope();
+      const label = productLabel();
       return workflowService.upsertIssue({
-        fingerprint: `jenkins:nn:${jenkinsNumber}:build_failure`,
+        fingerprint: `jenkins:${scope}:${jenkinsNumber}:build_failure`,
         source: 'jenkins',
-        sourceRef: build.url || `nn#${jenkinsNumber}`,
+        sourceRef: build.url || `${label}#${jenkinsNumber}`,
         category: 'build_failure',
         severity: text(analysis?.severity).toLowerCase() || 'high',
-        title: compact(analysis?.title || analysis?.failureStage || `nn Jenkins #${jenkinsNumber} 构建失败`, 500),
+        title: compact(analysis?.title || analysis?.failureStage || `${label} Jenkins #${jenkinsNumber} 构建失败`, 500),
         summary: analysisSummary(analysis) || '已采集 Jenkins 失败日志，等待进一步定位。',
-        taskId: `jenkins:nn:${jenkinsNumber}`,
-        artifactId: `artifact_jenkins_nn_${token(jenkinsNumber)}`,
+        taskId: `jenkins:${scope}:${jenkinsNumber}`,
+        artifactId: `artifact_jenkins_${scope}_${token(jenkinsNumber)}`,
         buildNumber: sourceBuildNumber,
         commitHash: build.commitHash,
         module: analysis?.module || analysis?.suspectedModule,
@@ -176,14 +196,14 @@ export class WorkflowIntegrationService {
       const issueId = text(issue.id || issue.shortId);
       if (!issueId) return null;
       const appVersion = text(issue.maxAppVersion || issue.appVersion || issue.appVersions?.[0]);
-      const releaseArtifactId = appVersion ? `artifact_sentry_release_${token(appVersion)}` : undefined;
+      const releaseArtifactId = appVersion ? scopedArtifactId('sentry_release', appVersion) : undefined;
       const linkedBuild = appVersion ? latestBuildArtifactForVersion(appVersion) : null;
       const artifactId = linkedBuild?.id || releaseArtifactId;
       if (releaseArtifactId) {
         workflowService.createArtifact({
           id: releaseArtifactId,
           artifactType: 'app_release',
-          name: `NNIM ${appVersion}`,
+          name: `${productLabel()} ${appVersion}`,
           version: appVersion,
           metadata: { source: 'sentry', appVersionRange: issue.appVersionRange, appVersions: issue.appVersions },
         });
@@ -238,7 +258,7 @@ export class WorkflowIntegrationService {
   syncFeedbackLog(rows: JsonObject[], context: JsonObject = {}) {
     return this.bestEffort('feedback log', () => {
       const sourcePath = text(context.path || context.filePath);
-      const artifactId = `artifact_feedback_log_${sha1(sourcePath || JSON.stringify(rows.slice(0, 5))).slice(0, 16)}`;
+      const artifactId = scopedArtifactId('feedback_log', sha1(sourcePath || JSON.stringify(rows.slice(0, 5))).slice(0, 16));
       workflowService.createArtifact({
         id: artifactId,
         artifactType: 'feedback_log',
@@ -307,7 +327,7 @@ export class WorkflowIntegrationService {
       const uuid = text(dsym.uuid);
       if (!uuid) return null;
       const artifact = workflowService.createArtifact({
-        id: `artifact_dsym_${token(uuid)}`,
+        id: scopedArtifactId('dsym', uuid),
         artifactType: 'dsym',
         name: `${text(dsym.appName) || 'Unknown'}.dSYM`,
         version: dsym.version,
@@ -342,7 +362,7 @@ export class WorkflowIntegrationService {
         buildId: component.build_id || component.buildNumber,
         branch: component.target_branch || component.targetBranch || component.branch,
       };
-      const artifactId = `artifact_pod_${token(name)}_${token(version)}`;
+      const artifactId = scopedArtifactId('pod', name, version);
       const artifact = workflowService.createArtifact({
         id: artifactId,
         artifactType: 'pod_component',
@@ -354,7 +374,9 @@ export class WorkflowIntegrationService {
         metadata: { action, component: componentSummary },
       });
       const task = workflowService.upsertTask({
-        id: `pod:${token(action)}:${token(name)}:${token(version)}`,
+        id: currentProductLineId() === 'nn'
+          ? `pod:${token(action)}:${token(name)}:${token(version)}`
+          : `pod:${workflowScope()}:${token(action)}:${token(name)}:${token(version)}`,
         taskType: 'pod_delivery',
         suite: 'pods',
         status: component.status === 'failed' ? 'failed' : 'passed',

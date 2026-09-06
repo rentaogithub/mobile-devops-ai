@@ -4,6 +4,9 @@ import { getDatabase, getDatabasePath } from '../database';
 import { platformConfigService } from './PlatformConfigService';
 import { StorageService } from './StorageService';
 import logger from '../utils/logger';
+import { authService } from './AuthService';
+import { currentProductLineId, currentProjectId, runWithProductLine } from './ProductLineContext';
+import { internalRequestToken } from './InternalRequestAuth';
 
 type SyncSource = 'jenkins' | 'quality' | 'dsym' | 'pods' | 'sentry';
 
@@ -44,17 +47,15 @@ export class PlatformOperationsService {
   private backupTimer: NodeJS.Timeout | null = null;
   private checkpointTimer: NodeJS.Timeout | null = null;
   private startupTimer: NodeJS.Timeout | null = null;
-  private readonly statuses = new Map<SyncSource, OperationStatus>(
-    SYNC_SOURCES.map((source) => [source, { source, running: false }])
-  );
+  private readonly statuses = new Map<string, OperationStatus>();
   private lastBackup?: { path: string; size: number; createdAt: string };
 
   start(port: number) {
     this.baseUrl = `http://127.0.0.1:${port}`;
     if (process.env.WORKFLOW_SYNC_ENABLED !== 'false') {
       const intervalMs = numberEnv('WORKFLOW_SYNC_INTERVAL_MINUTES', 10) * 60 * 1000;
-      this.startupTimer = setTimeout(() => void this.runAllSyncs(), 15_000);
-      this.syncTimer = setInterval(() => void this.runAllSyncs(), intervalMs);
+      this.startupTimer = setTimeout(() => void this.runAllProductLineSyncs(), 15_000);
+      this.syncTimer = setInterval(() => void this.runAllProductLineSyncs(), intervalMs);
       this.startupTimer.unref?.();
       this.syncTimer.unref?.();
       logger.info('Workflow 后台同步已启动', { intervalMinutes: intervalMs / 60_000 });
@@ -85,7 +86,8 @@ export class PlatformOperationsService {
     return {
       enabled: process.env.WORKFLOW_SYNC_ENABLED !== 'false',
       intervalMinutes: numberEnv('WORKFLOW_SYNC_INTERVAL_MINUTES', 10),
-      sources: SYNC_SOURCES.map((source) => this.statuses.get(source)),
+      productLineId: currentProductLineId(),
+      sources: SYNC_SOURCES.map((source) => this.getSourceStatus(source)),
     };
   }
 
@@ -96,9 +98,30 @@ export class PlatformOperationsService {
     return this.getSyncStatus();
   }
 
+  private async runAllProductLineSyncs() {
+    const productLines = authService.listProductLines();
+    await Promise.allSettled(productLines.map((productLine) => runWithProductLine({
+      id: productLine.id,
+      key: productLine.key,
+      name: productLine.name,
+      projectId: productLine.projectId,
+      role: 'admin',
+    }, () => this.runAllSyncs())));
+  }
+
+  private getSourceStatus(source: SyncSource) {
+    const key = `${currentProductLineId()}:${source}`;
+    let status = this.statuses.get(key);
+    if (!status) {
+      status = { source, running: false };
+      this.statuses.set(key, status);
+    }
+    return status;
+  }
+
   async runSync(source: SyncSource) {
     if (!SYNC_SOURCES.includes(source)) throw new Error(`不支持的同步源: ${source}`);
-    const status = this.statuses.get(source)!;
+    const status = this.getSourceStatus(source);
     if (status.running) return status;
     status.running = true;
     status.lastStartedAt = new Date().toISOString();
@@ -140,7 +163,10 @@ export class PlatformOperationsService {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(`${this.baseUrl}${relativePath}`, { ...init, signal: controller.signal });
+      const headers = new Headers(init.headers || {});
+      headers.set('x-product-line-id', currentProductLineId());
+      headers.set('x-platform-internal-token', internalRequestToken);
+      const response = await fetch(`${this.baseUrl}${relativePath}`, { ...init, headers, signal: controller.signal });
       const text = await response.text();
       if (!response.ok) throw new Error(`${relativePath} -> HTTP ${response.status}: ${text.slice(0, 200)}`);
       const parsed = text ? JSON.parse(text) : {};
@@ -176,7 +202,11 @@ export class PlatformOperationsService {
       this.probe('jenkins', '/api/jenkins/nn/builds', 20_000),
       this.probe('sonic', '/api/jenkins/nn/quality/sonic/status', 10_000),
       this.probe('devices', '/api/jenkins/nn/quality/sonic/device-pools/status', 15_000),
-      this.probe('sentry', `/sentry/api/0/projects/${process.env.SENTRY_ORG || 'sentry'}/${process.env.SENTRY_PROJECT || 'nn-ios'}/issues/?limit=1`, 15_000),
+      this.probe('sentry', '/api/sentry-analysis/issues', 30_000, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ period: '24h', limit: 1 }),
+      }),
     ]);
     const dependencies: Record<string, any> = Object.fromEntries(probes.map((item) => [item.name, item]));
     dependencies.openai = {
@@ -197,10 +227,10 @@ export class PlatformOperationsService {
     return { status: degraded.length ? 'degraded' : 'healthy', dependencies, checkedAt: new Date().toISOString() };
   }
 
-  private async probe(name: string, endpoint: string, timeoutMs: number) {
+  private async probe(name: string, endpoint: string, timeoutMs: number, init: RequestInit = {}) {
     const startedAt = Date.now();
     try {
-      const result = await this.fetchJson(endpoint, {}, timeoutMs);
+      const result = await this.fetchJson(endpoint, init, timeoutMs);
       let status = 'up';
       if (name === 'sonic' && result?.data?.reachable === false) status = 'down';
       if (name === 'devices' && !result?.data?.pools?.some((pool: any) => Number(pool?.stats?.online) > 0)) status = 'degraded';
@@ -323,7 +353,7 @@ export class PlatformOperationsService {
     const gateDays = numberEnv('WORKFLOW_GATE_RETENTION_DAYS', 365);
     const dsymCutoff = Date.now() - dsymDays * 24 * 60 * 60 * 1000;
     const keepLatest = numberEnv('DSYM_RETENTION_KEEP_LATEST_PER_APP', 5);
-    const rows = db.prepare('SELECT uuid, app_name, version, file_path, file_size, upload_time FROM dsym_info ORDER BY app_name, upload_time DESC').all() as any[];
+    const rows = db.prepare('SELECT uuid, app_name, version, file_path, file_size, upload_time FROM dsym_info WHERE product_line_id = ? ORDER BY app_name, upload_time DESC').all(currentProductLineId()) as any[];
     const appCounts = new Map<string, number>();
     const dsymCandidates = rows.filter((row) => {
       const count = appCounts.get(row.app_name) || 0;
@@ -336,8 +366,8 @@ export class PlatformOperationsService {
     return {
       policy: { dsymDays, eventDays, gateDays, keepLatest, deletionEnabled: process.env.WORKFLOW_RETENTION_ALLOW_DELETE === 'true' },
       dsymCandidates,
-      eventCount: Number((db.prepare("SELECT count(*) AS count FROM workflow_events WHERE occurred_at < datetime('now', ?)").get(`-${eventDays} days`) as any)?.count || 0),
-      gateCount: Number((db.prepare("SELECT count(*) AS count FROM workflow_release_gates WHERE created_at < datetime('now', ?)").get(`-${gateDays} days`) as any)?.count || 0),
+      eventCount: Number((db.prepare("SELECT count(*) AS count FROM workflow_events WHERE project_id = ? AND occurred_at < datetime('now', ?)").get(currentProjectId(), `-${eventDays} days`) as any)?.count || 0),
+      gateCount: Number((db.prepare("SELECT count(*) AS count FROM workflow_release_gates WHERE project_id = ? AND created_at < datetime('now', ?)").get(currentProjectId(), `-${gateDays} days`) as any)?.count || 0),
     };
   }
 
@@ -352,8 +382,8 @@ export class PlatformOperationsService {
       freedSpace += Number(candidate.fileSize || 0);
     }
     const db = getDatabase();
-    const deletedEvents = db.prepare("DELETE FROM workflow_events WHERE occurred_at < datetime('now', ?)").run(`-${candidates.policy.eventDays} days`).changes;
-    const deletedGates = db.prepare("DELETE FROM workflow_release_gates WHERE created_at < datetime('now', ?)").run(`-${candidates.policy.gateDays} days`).changes;
+    const deletedEvents = db.prepare("DELETE FROM workflow_events WHERE project_id = ? AND occurred_at < datetime('now', ?)").run(currentProjectId(), `-${candidates.policy.eventDays} days`).changes;
+    const deletedGates = db.prepare("DELETE FROM workflow_release_gates WHERE project_id = ? AND created_at < datetime('now', ?)").run(currentProjectId(), `-${candidates.policy.gateDays} days`).changes;
     this.checkpointWal();
     return { deletedDsyms: candidates.dsymCandidates.length, deletedEvents, deletedGates, freedSpace };
   }
@@ -375,13 +405,13 @@ export class PlatformOperationsService {
     } : component;
 
     let tasksUpdated = 0;
-    const tasks = db.prepare("SELECT id, result_json FROM workflow_tasks WHERE suite = 'pods'").all() as any[];
-    const updateTask = db.prepare('UPDATE workflow_tasks SET result_json = ?, updated_at = ? WHERE id = ?');
+    const tasks = db.prepare("SELECT id, result_json FROM workflow_tasks WHERE project_id = ? AND suite = 'pods'").all(currentProjectId()) as any[];
+    const updateTask = db.prepare('UPDATE workflow_tasks SET result_json = ?, updated_at = ? WHERE id = ? AND project_id = ?');
     for (const task of tasks) {
       try {
         const result = JSON.parse(task.result_json || '{}');
         if (!result.component) continue;
-        updateTask.run(JSON.stringify({ ...result, component: compactComponent(result.component) }), new Date().toISOString(), task.id);
+        updateTask.run(JSON.stringify({ ...result, component: compactComponent(result.component) }), new Date().toISOString(), task.id, currentProjectId());
         tasksUpdated += 1;
       } catch {
         // 跳过损坏的历史 JSON。
@@ -389,13 +419,13 @@ export class PlatformOperationsService {
     }
 
     let artifactsUpdated = 0;
-    const artifacts = db.prepare("SELECT id, metadata_json FROM workflow_artifacts WHERE artifact_type = 'pod_component'").all() as any[];
-    const updateArtifact = db.prepare('UPDATE workflow_artifacts SET metadata_json = ?, updated_at = ? WHERE id = ?');
+    const artifacts = db.prepare("SELECT id, metadata_json FROM workflow_artifacts WHERE project_id = ? AND artifact_type = 'pod_component'").all(currentProjectId()) as any[];
+    const updateArtifact = db.prepare('UPDATE workflow_artifacts SET metadata_json = ?, updated_at = ? WHERE id = ? AND project_id = ?');
     for (const artifact of artifacts) {
       try {
         const metadata = JSON.parse(artifact.metadata_json || '{}');
         if (!metadata.component) continue;
-        updateArtifact.run(JSON.stringify({ ...metadata, component: compactComponent(metadata.component) }), new Date().toISOString(), artifact.id);
+        updateArtifact.run(JSON.stringify({ ...metadata, component: compactComponent(metadata.component) }), new Date().toISOString(), artifact.id, currentProjectId());
         artifactsUpdated += 1;
       } catch {
         // 跳过损坏的历史 JSON。

@@ -13,6 +13,7 @@ import { DeviceControlError, deviceControlService } from './DeviceControlService
 import { inspectReplayTarget, screenSizeFromSource } from './DeviceRecordingLocator';
 import { deviceRecordingService, replaySourceSimilarity } from './DeviceRecordingService';
 import logger from '../utils/logger';
+import { currentProjectId } from './ProductLineContext';
 
 export type ReplayFlowRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type ReplayFlowNodeRunStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -87,6 +88,7 @@ export interface ReplayFlowNodeRun {
 
 export interface ReplayFlowRun {
   id: string;
+  projectId: string;
   flowId: string;
   flowName: string;
   schemaVersion: string;
@@ -205,12 +207,17 @@ function conditionKind(condition: ReplayFlowCondition): string {
 export class DeviceReplayFlowExecutionService {
   private runs = new Map<string, InternalReplayFlowRun>();
   private completions = new Map<string, Promise<void>>();
-  private activeRunId = '';
+  private activeRunIds = new Map<string, string>();
 
   constructor(
     private adapter: DeviceReplayRuntimeAdapter = defaultAdapter,
     private runRoot = path.resolve(process.env.DEVICE_REPLAY_RUN_DIR || path.join(process.cwd(), '../nn-ios-platform-data/device-replay-runs')),
   ) {}
+
+  private currentRunRoot() {
+    const projectId = currentProjectId();
+    return projectId === 'nn-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+  }
 
   start(flow: DeviceReplayFlowDsl, suppliedInputs: Record<string, unknown>, actor: string, isAdmin: boolean) {
     const validation = validateDeviceReplayFlow(flow);
@@ -218,21 +225,24 @@ export class DeviceReplayFlowExecutionService {
       throw new DeviceControlError(`流程校验失败：${validation.errors.map((item) => item.message).join('；')}`, 422);
     }
     compileDeviceReplayFlow(flow);
-    if (this.activeRunId) {
-      const active = this.runs.get(this.activeRunId);
+    const projectId = currentProjectId();
+    const activeRunId = this.activeRunIds.get(projectId) || '';
+    if (activeRunId) {
+      const active = this.runs.get(activeRunId);
       if (active && (active.status === 'queued' || active.status === 'running')) {
         throw new DeviceControlError(`真机正在执行流程 ${active.flowName}`, 409);
       }
-      this.activeRunId = '';
+      this.activeRunIds.delete(projectId);
     }
     const status = this.adapter.getStatus();
     if (status.phase !== 'connected' || !status.device) throw new DeviceControlError('请先连接真机操作台，再执行流程', 409);
     const inputs = this.resolveInputs(flow, suppliedInputs || {});
     const id = crypto.randomUUID();
-    const directory = path.join(this.runRoot, id);
+    const directory = path.join(this.currentRunRoot(), id);
     fs.mkdirSync(path.join(directory, 'evidence'), { recursive: true });
     const run: InternalReplayFlowRun = {
       id,
+      projectId,
       flowId: flow.id,
       flowName: flow.name,
       schemaVersion: flow.schemaVersion,
@@ -249,7 +259,7 @@ export class DeviceReplayFlowExecutionService {
       abortController: new AbortController(),
     };
     this.runs.set(id, run);
-    this.activeRunId = id;
+    this.activeRunIds.set(projectId, id);
     this.persist(run);
     const completion = Promise.resolve()
       .then(() => this.execute(run))
@@ -258,7 +268,7 @@ export class DeviceReplayFlowExecutionService {
       });
     this.completions.set(id, completion);
     completion.finally(() => {
-      if (this.activeRunId === id) this.activeRunId = '';
+      if (this.activeRunIds.get(projectId) === id) this.activeRunIds.delete(projectId);
     });
     return this.publicRun(run);
   }
@@ -860,6 +870,7 @@ export class DeviceReplayFlowExecutionService {
   private publicRun(run: InternalReplayFlowRun): ReplayFlowRun {
     return {
       id: run.id,
+      projectId: run.projectId,
       flowId: run.flowId,
       flowName: run.flowName,
       schemaVersion: run.schemaVersion,
@@ -893,13 +904,15 @@ export class DeviceReplayFlowExecutionService {
 
   private findRun(runId: string) {
     const cached = this.runs.get(runId);
-    if (cached) return cached;
+    if (cached) return cached.projectId === currentProjectId() ? cached : undefined;
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(runId)) return undefined;
-    const directory = path.join(this.runRoot, runId);
+    const directory = path.join(this.currentRunRoot(), runId);
     const file = path.join(directory, 'run.json');
     if (!fs.existsSync(file)) return undefined;
     try {
       const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as ReplayFlowRun;
+      stored.projectId ||= currentProjectId();
+      if (stored.projectId !== currentProjectId()) return undefined;
       if (stored.status === 'queued' || stored.status === 'running') {
         stored.status = 'failed';
         stored.result = 'failure';

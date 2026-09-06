@@ -282,7 +282,7 @@ export default function PodsPage() {
       setNniosBranches(branches);
       return branches;
     } catch (error: any) {
-      message.warning(error?.error || error?.message || '加载 nnios 分支失败，请稍后重试');
+      message.warning(error?.error || error?.message || '加载发布主仓库分支失败，请稍后重试');
       return [];
     } finally {
       setNniosBranchLoading(false);
@@ -425,7 +425,7 @@ export default function PodsPage() {
   const triggerNniosBuildTask = useCallback(async (branch: string) => {
     const targetBranch = branch.trim();
     if (!targetBranch) {
-      message.warning('未选择 nnios 分支，已跳过 nnios 构建任务');
+      message.warning('未选择发布主仓库分支，已跳过主仓库构建任务');
       return;
     }
     const buildsResponse = await jenkinsApi.listNNBuilds();
@@ -440,7 +440,7 @@ export default function PodsPage() {
       branch: targetBranch,
       gateBuildNumber: gateBuild.number,
     });
-    message.success(`已触发 nnios/${targetBranch} 构建任务`);
+    message.success(`已触发发布主仓库 ${targetBranch} 构建任务`);
   }, []);
 
   const startNNRtcTaskPolling = useCallback((task: NNRtcPodTask, context: {
@@ -488,7 +488,7 @@ export default function PodsPage() {
             try {
               await triggerNniosBuildTask(context.targetBranch);
             } catch (error: any) {
-              message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+              message.error(error?.error || error?.message || '触发主仓库构建任务失败');
             }
           }
         } else if (res.data.status === 'failed') {
@@ -765,7 +765,7 @@ export default function PodsPage() {
             try {
               await triggerNniosBuildTask(values.target_branch);
             } catch (error: any) {
-              message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+              message.error(error?.error || error?.message || '触发主仓库构建任务失败');
             }
           }
         }
@@ -800,7 +800,7 @@ export default function PodsPage() {
           try {
             await triggerNniosBuildTask(values.target_branch);
           } catch (error: any) {
-            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
         }
       }
@@ -820,7 +820,7 @@ export default function PodsPage() {
       }
       const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
       if (shouldTriggerNniosBuild && !String(values.target_branch || '').trim()) {
-        message.error('发布 nnios 构建任务时需要选择 nnios 分支');
+        message.error('发布主仓库构建任务时需要选择发布主仓库分支');
         return;
       }
 
@@ -837,16 +837,16 @@ export default function PodsPage() {
           <div>
             <p>将发布组件 <Text strong code>{values.name}@{values.version}</Text>。</p>
             {targetBranch && (
-              <p>发布成功后会同步到 nnios 分支 <Text strong code>{targetBranch}</Text>。</p>
+              <p>发布成功后会同步到发布主仓库分支 <Text strong code>{targetBranch}</Text>。</p>
             )}
             <p>发布来源：<Text strong code>{sourceText}</Text></p>
             {shouldTriggerNniosBuild && (
-              <p>发布成功后会触发 nnios/<Text strong code>{targetBranch}</Text> 的构建任务。</p>
+              <p>发布成功后会触发发布主仓库 <Text strong code>{targetBranch}</Text> 的构建任务。</p>
             )}
             {targetBranch && (
               <>
                 <p>
-                  请再次输入 nnios 目标分支 <Text strong code>{targetBranch}</Text> 确认：
+                  请再次输入发布主仓库目标分支 <Text strong code>{targetBranch}</Text> 确认：
                 </p>
                 <Input
                   placeholder={`请输入 ${targetBranch}，不是版本号`}
@@ -860,7 +860,7 @@ export default function PodsPage() {
         cancelText: '取消',
         onOk: async () => {
           if (targetBranch && confirmBranch !== targetBranch) {
-            message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
+            message.error(`发布主仓库目标分支输入不匹配，请输入 ${targetBranch}`);
             return Promise.reject();
           }
           await doPublish(values);
@@ -874,13 +874,13 @@ export default function PodsPage() {
 
   const handleRetry = async (record: PodComponent, targetBranch: string) => {
     if (!targetBranch) {
-      message.error('请选择 nnios 分支');
+      message.error('请选择发布主仓库分支');
       return;
     }
     try {
       const res = await podsApi.retry(record.name, record.version, targetBranch);
       if (res.data?.status === 'failed') {
-        message.warning(res.data.error_message || 'Spec 已同步，但 nnios 分支同步失败');
+        message.warning(res.data.error_message || 'Spec 已同步，但发布主仓库分支同步失败');
       } else {
         message.success('同步成功');
       }
@@ -902,7 +902,7 @@ export default function PodsPage() {
       content: (
         <div>
           <p>
-            将把当前组件版本写入指定 nnios 分支的 <Text code>NNIM/third_sdk.rb</Text>。
+            将把当前组件版本写入指定发布主仓库分支的 <Text code>Podfile / third_sdk.rb</Text>。
           </p>
           <p>请选择要同步的分支：</p>
           <Select
@@ -910,12 +910,12 @@ export default function PodsPage() {
             defaultValue={targetBranch || undefined}
             loading={nniosBranchLoading}
             style={{ width: '100%' }}
-            placeholder="选择 nnios 分支"
+            placeholder="选择发布主仓库分支"
             options={branches.map((branch) => ({ value: branch, label: branch }))}
             onChange={(value) => { targetBranch = value; }}
           />
           <p style={{ marginTop: 12 }}>
-            请再次输入 nnios 目标分支确认：
+            请再次输入发布主仓库目标分支确认：
           </p>
           <Input
             placeholder="请输入选择的分支名"
@@ -931,13 +931,13 @@ export default function PodsPage() {
           return Promise.reject();
         }
         if (confirmBranch !== targetBranch) {
-          message.error(`nnios 目标分支输入不匹配，请输入 ${targetBranch}`);
+          message.error(`发布主仓库目标分支输入不匹配，请输入 ${targetBranch}`);
           return Promise.reject();
         }
         try {
           const res = await podsApi.syncBranch(record.name, record.version, targetBranch);
           if (res.success) {
-            message.success(`已同步到 nnios/${targetBranch}`);
+            message.success(`已同步到发布主仓库/${targetBranch}`);
             fetchComponents();
           }
         } catch (error: any) {
@@ -951,13 +951,13 @@ export default function PodsPage() {
   const handleSyncIntegratedBranch = async (record: PodComponent) => {
     const targetBranch = record.nnios_branch || detailTargetBranch;
     if (!targetBranch) {
-      message.error('当前测试包没有记录 nnios 集成分支，请重新发布或先选择分支同步一次');
+      message.error('当前测试包没有记录发布主仓库集成分支，请重新发布或先选择分支同步一次');
       return;
     }
     try {
       const res = await podsApi.syncBranch(record.name, record.version, targetBranch);
       if (res.success) {
-        message.success(`已同步到 nnios/${targetBranch}`);
+        message.success(`已同步到发布主仓库/${targetBranch}`);
         if (res.data) {
           setSelectedComponent(res.data);
           setDetailTargetBranch(res.data.nnios_branch || targetBranch);
@@ -976,7 +976,7 @@ export default function PodsPage() {
       content: (
         <div>
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
-          <p>仅删除当前组件版本，不会修改 nnios 分支引用。</p>
+          <p>仅删除当前组件版本，不会修改发布主仓库分支引用。</p>
           <p>将执行 <Text strong code>podx clean {record.name}</Text> 清理当前打包机 CocoaPods 缓存。</p>
           {(record.name === 'NNRtc' || record.name === 'leigod_im_cross_sdk') && (
             <p>将同时删除 dSYM 管理中的 <Text strong code>{record.name}@{record.version}</Text> 符号文件。</p>
@@ -1001,7 +1001,7 @@ export default function PodsPage() {
           if (res.warning || res.data?.warning) {
             message.warning(res.warning || res.data?.warning);
           } else if (res.data?.fallbackVersion) {
-            message.success(`删除成功，nnios 已回退到 ${record.name}@${res.data.fallbackVersion}`);
+            message.success(`删除成功，发布主仓库已回退到 ${record.name}@${res.data.fallbackVersion}`);
           } else {
             message.success('删除成功');
           }
@@ -1053,7 +1053,7 @@ export default function PodsPage() {
       const res = await podsApi.updatePodspec(selectedComponent.name, selectedComponent.version, podspecDraft, detailTargetBranch);
       if (res.success) {
         if (res.data?.status === 'failed') {
-          message.warning(res.data.error_message || 'Podspec 已同步，但 nnios 分支同步失败');
+          message.warning(res.data.error_message || 'Podspec 已同步，但发布主仓库分支同步失败');
         } else {
           message.success('Podspec 更新成功，已同步到远程仓库');
         }
@@ -1077,7 +1077,7 @@ export default function PodsPage() {
         if (res.warning) {
           message.warning(res.warning);
         } else if (res.data.status === 'failed') {
-          message.warning(res.data.error_message || 'zip 已替换，但 nnios 分支同步失败');
+          message.warning(res.data.error_message || 'zip 已替换，但发布主仓库分支同步失败');
         } else {
           message.success('zip 替换成功，podspec 已更新');
         }
@@ -1088,7 +1088,7 @@ export default function PodsPage() {
           try {
             await triggerNniosBuildTask(detailTargetBranch);
           } catch (error: any) {
-            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
         }
       }
@@ -1107,13 +1107,13 @@ export default function PodsPage() {
       content: (
         <div>
           <p>
-            将替换 Nexus 上的二进制，并同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。
+            将替换 Nexus 上的二进制，并同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。
           </p>
           {supportsNniosBuildTask(selectedComponent.name) && detailTriggerNniosBuild && (
-            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+            <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
-            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+            请再次输入发布主仓库目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
           </p>
           <Input
             placeholder={`请输入 ${detailTargetBranch}`}
@@ -1126,7 +1126,7 @@ export default function PodsPage() {
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmBranch !== detailTargetBranch) {
-          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
+          message.error(`发布主仓库目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
         await handleReplaceZip(file);
@@ -1143,7 +1143,7 @@ export default function PodsPage() {
         if (res.warning) {
           message.warning(res.warning);
         } else if (res.data.status === 'failed') {
-          message.warning(res.data.error_message || 'IMSDK 包已替换，但 nnios 分支同步失败');
+          message.warning(res.data.error_message || 'IMSDK 包已替换，但发布主仓库分支同步失败');
         } else {
           message.success('IMSDK 包替换成功，podspec 已更新');
         }
@@ -1154,7 +1154,7 @@ export default function PodsPage() {
           try {
             await triggerNniosBuildTask(detailTargetBranch);
           } catch (error: any) {
-            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
         }
       }
@@ -1176,12 +1176,12 @@ export default function PodsPage() {
             将使用 <Text strong code>smb://192.168.3.30/share/IMSDK/{selectedComponent.version}</Text> 对应版本包，
             提取 leigod_im_cross_sdk.framework 替换 Nexus 二进制。
           </p>
-          <p>同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。</p>
+          <p>同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。</p>
           {detailTriggerNniosBuild && (
-            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+            <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
-            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+            请再次输入发布主仓库目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
           </p>
           <Input
             placeholder={`请输入 ${detailTargetBranch}`}
@@ -1194,7 +1194,7 @@ export default function PodsPage() {
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmBranch !== detailTargetBranch) {
-          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
+          message.error(`发布主仓库目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
         await handleReplaceLeigodIMFromIMSDK();
@@ -1240,12 +1240,12 @@ export default function PodsPage() {
             将使用 NNRtc Jenkins 构建 <Text strong code>#{buildNumber}</Text> 的 nrt/nrtc.tgz，
             提取 NNRtc.framework 发布，并同步 NNRtc.dSYM。
           </p>
-          <p>同步到 nnios 分支 <Text strong code>{detailTargetBranch}</Text>。</p>
+          <p>同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。</p>
           {detailTriggerNniosBuild && (
-            <p>替换成功后会触发 nnios/<Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
+            <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
-            请再次输入 nnios 目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
+            请再次输入发布主仓库目标分支 <Text strong code>{detailTargetBranch}</Text> 确认：
           </p>
           <Input
             placeholder={`请输入 ${detailTargetBranch}`}
@@ -1258,7 +1258,7 @@ export default function PodsPage() {
       okButtonProps: { danger: true },
       onOk: async () => {
         if (confirmBranch !== detailTargetBranch) {
-          message.error(`nnios 目标分支输入不匹配，请输入 ${detailTargetBranch}`);
+          message.error(`发布主仓库目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
         await handleReplaceNNRtcFromJenkins(buildNumber);
@@ -1344,7 +1344,7 @@ export default function PodsPage() {
         const publishedVer = internalVersion.trim() || officialVersion;
         if (status === 'published') {
           message.success(targetBranch
-            ? `${officialName}@${publishedVer} 导入成功，已同步到 nnios/${targetBranch}`
+            ? `${officialName}@${publishedVer} 导入成功，已同步到发布主仓库/${targetBranch}`
             : `${officialName}@${publishedVer} 导入成功`);
         } else {
           message.warning(res.data?.error_message || 'Nexus 上传成功，但后续同步失败');
@@ -1369,7 +1369,7 @@ export default function PodsPage() {
           try {
             await triggerNniosBuildTask(targetBranch);
           } catch (error: any) {
-            message.error(error?.error || error?.message || '触发 nnios 构建任务失败');
+            message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
         }
       }
@@ -1445,7 +1445,7 @@ export default function PodsPage() {
       ),
     },
     {
-      title: 'nnios 集成分支',
+      title: '发布主仓库集成分支',
       dataIndex: 'nnios_branch',
       key: 'nnios_branch',
       width: 220,
@@ -1858,8 +1858,8 @@ export default function PodsPage() {
                     {canManagePods && (
                       <Form.Item
                         name="target_branch"
-                        label="同步到 nnios 分支（可选）"
-                        extra={publishTriggerNniosBuild ? '发布 nnios 构建任务时需要选择分支' : undefined}
+                        label="同步到发布主仓库分支（可选）"
+                        extra={publishTriggerNniosBuild ? '发布主仓库构建任务时需要选择分支' : undefined}
                       >
                         <Select
                           allowClear
@@ -1880,7 +1880,7 @@ export default function PodsPage() {
                         initialValue={false}
                         style={{ marginBottom: 16 }}
                       >
-                        <Checkbox>是否发布 nnios 构建任务</Checkbox>
+                        <Checkbox>是否发布主仓库构建任务</Checkbox>
                       </Form.Item>
                     )}
                     <Form.Item
@@ -2106,7 +2106,7 @@ export default function PodsPage() {
                   {officialVersions.length > 0 && canManagePods && (
                     <div style={{ marginBottom: 16 }}>
                       <div style={{ marginBottom: 4 }}>
-                        <Text strong>同步到 nnios 分支</Text>
+                        <Text strong>同步到发布主仓库分支</Text>
                         <Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>可选</Text>
                       </div>
                       <Select
@@ -2114,7 +2114,7 @@ export default function PodsPage() {
                         loading={nniosBranchLoading}
                         value={officialTargetBranch}
                         style={{ width: '100%' }}
-                        placeholder="选择 nnios 分支"
+                        placeholder="选择发布主仓库分支"
                         allowClear
                         options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
                         onChange={(branch) => {
@@ -2134,7 +2134,7 @@ export default function PodsPage() {
                         disabled={!officialTargetBranch}
                         onChange={(e) => setOfficialTriggerNniosBuild(e.target.checked)}
                       >
-                        是否发布 nnios 构建任务
+                        是否发布主仓库构建任务
                       </Checkbox>
                     </div>
                   )}
@@ -2270,7 +2270,7 @@ export default function PodsPage() {
                 </Descriptions.Item>
               )}
               {selectedComponent.name === 'NNRtc' && (
-                <Descriptions.Item label="nnios 集成分支">
+                <Descriptions.Item label="发布主仓库集成分支">
                   {selectedNNRtcPackageType === 'test'
                     ? (selectedComponent.nnios_branch ? <Tag color="blue">{selectedComponent.nnios_branch}</Tag> : <Text type="secondary">未记录</Text>)
                     : <Text type="secondary">-</Text>}
@@ -2307,7 +2307,7 @@ export default function PodsPage() {
             <Card size="small" style={{ marginBottom: 8 }}>
               {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到发布主仓库分支</Text>
                   <Tag color="blue" style={{ marginInlineEnd: 0 }}>{selectedComponent.nnios_branch || detailTargetBranch || '未记录'}</Tag>
                   <Button
                     size="small"
@@ -2320,13 +2320,13 @@ export default function PodsPage() {
                 </div>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到 nnios 分支</Text>
+                  <Text strong style={{ whiteSpace: 'nowrap' }}>同步到发布主仓库分支</Text>
                   <Select
                     showSearch
                     loading={nniosBranchLoading}
                     value={detailTargetBranch}
                     style={{ flex: 1 }}
-                    placeholder="选择 nnios 分支"
+                    placeholder="选择发布主仓库分支"
                     options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
                     onChange={setDetailTargetBranch}
                     onDropdownVisibleChange={(open) => {
@@ -2344,7 +2344,7 @@ export default function PodsPage() {
                 checked={detailTriggerNniosBuild}
                 onChange={(e) => setDetailTriggerNniosBuild(e.target.checked)}
               >
-                是否发布 nnios 构建任务
+                是否发布主仓库构建任务
               </Checkbox>
             </Card>
             )}
@@ -2485,7 +2485,7 @@ export default function PodsPage() {
                 </div>
                 <Popconfirm
                   title="确认重试同步？"
-                  description={`将当前 podspec 重新推送到 NNSpec 仓库，并同步到 nnios/${detailTargetBranch}`}
+                  description={`将当前 podspec 重新推送到私有 Specs 仓库，并同步到发布主仓库/${detailTargetBranch}`}
                   onConfirm={() => selectedComponent && handleRetry(selectedComponent, detailTargetBranch)}
                   okText="确认"
                   cancelText="取消"

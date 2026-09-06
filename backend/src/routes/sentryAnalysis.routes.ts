@@ -10,10 +10,12 @@ import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { crashGovernanceService, CrashGovernanceRecord, CrashGovernanceStatus } from '../services/CrashGovernanceService';
-import { dsymMatcherService } from '../services/DSYMMatcherService';
+import { dsymMatcherService, isMainAppDSYM } from '../services/DSYMMatcherService';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
+import { currentProductLineId } from '../services/ProductLineContext';
+import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
 const symbolizer = new SymbolizerService();
@@ -26,6 +28,20 @@ function getExcludedSentryAppVersions() {
 
 function getDefaultSentryIssueQuery() {
   return crashGovernanceService.getDefaultIssueQuery();
+}
+
+function governanceConfigResponse() {
+  const legacy = currentProductLineId() === 'nn';
+  const sentryOrganization = productLineConfigService.get('SENTRY_ORG') || (legacy ? process.env.SENTRY_ORG || 'sentry' : '');
+  const sentryProject = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'nn-ios' : '');
+  return {
+    ...crashGovernanceService.getConfig(),
+    sentryOrganization,
+    sentryProject,
+    sentryProxyPath: sentryOrganization && sentryProject
+      ? `/organizations/${encodeURIComponent(sentryOrganization)}/projects/${encodeURIComponent(sentryProject)}/`
+      : '/',
+  };
 }
 
 function getRequestOperator(req: Request): string | undefined {
@@ -42,14 +58,16 @@ function ensureSentryIssueHistoryTable() {
   const db = getDatabase();
   db.exec(`
     CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
-      issue_id TEXT PRIMARY KEY,
+      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      issue_id TEXT NOT NULL,
       short_id TEXT,
       permalink TEXT,
       history_id INTEGER NOT NULL,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (product_line_id, issue_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_sentry_issue_history_short_id
-      ON sentry_issue_symbolication_history(short_id);
+    CREATE INDEX IF NOT EXISTS idx_sentry_issue_history_product_short_id
+      ON sentry_issue_symbolication_history(product_line_id, short_id);
   `);
 
   const columns = db.prepare("PRAGMA table_info(sentry_issue_symbolication_history)").all() as any[];
@@ -66,14 +84,14 @@ function upsertSentryIssueHistory(issue: any, historyId?: number) {
 
   ensureSentryIssueHistoryTable();
   getDatabase().prepare(`
-    INSERT INTO sentry_issue_symbolication_history (issue_id, short_id, permalink, history_id, updated_at)
-    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(issue_id) DO UPDATE SET
+    INSERT INTO sentry_issue_symbolication_history (product_line_id, issue_id, short_id, permalink, history_id, updated_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(product_line_id, issue_id) DO UPDATE SET
       short_id = excluded.short_id,
       permalink = COALESCE(excluded.permalink, sentry_issue_symbolication_history.permalink),
       history_id = excluded.history_id,
       updated_at = CURRENT_TIMESTAMP
-  `).run(issueId, issue?.shortId || null, issue?.permalink || null, historyId);
+  `).run(currentProductLineId(), issueId, issue?.shortId || null, issue?.permalink || null, historyId);
 }
 
 function getSentryIssueHistoryMap(issues: any[]) {
@@ -84,8 +102,9 @@ function getSentryIssueHistoryMap(issues: any[]) {
       h.history_id,
       sh.app_version
     FROM sentry_issue_symbolication_history h
-    INNER JOIN symbolication_history sh ON sh.id = h.history_id
-    WHERE h.issue_id = ? OR h.short_id = ?
+    INNER JOIN symbolication_history sh
+      ON sh.id = h.history_id AND sh.product_line_id = h.product_line_id
+    WHERE h.product_line_id = ? AND (h.issue_id = ? OR h.short_id = ?)
     ORDER BY h.updated_at DESC
     LIMIT 1
   `);
@@ -97,7 +116,7 @@ function getSentryIssueHistoryMap(issues: any[]) {
     if (!issueId && !shortId) {
       return;
     }
-    const row = lookup.get(issueId, shortId) as { history_id?: number; app_version?: string } | undefined;
+    const row = lookup.get(currentProductLineId(), issueId, shortId) as { history_id?: number; app_version?: string } | undefined;
     if (row?.history_id) {
       const status = {
         historyId: row.history_id,
@@ -212,7 +231,7 @@ function filterDSYMsForCrash(dsymInfos: DSYMInfo[], crashLog: string): DSYMInfo[
   const filtered = dsymInfos.filter((dsym) => {
     const resolvedFilePath = resolveDSYMFilePath(dsym);
     const appName = dsym.appName;
-    const isMainApp = appName.toUpperCase() === 'NNIM';
+    const isMainApp = isMainAppDSYM(dsym, crashAppVersion);
     const uuidMatches = normalizedCrashLog.includes(normalizeUUID(dsym.uuid));
     const nameMatches = crashBinaryNames.has(appName);
     const hasDWARF = hasDWARFFile(resolvedFilePath);
@@ -285,7 +304,8 @@ function assertSentryCrashLogSymbolicatable(crashLog: string, issue: any, eventI
 }
 
 function getCrashGovernanceWebhookUrl() {
-  return String(process.env.CRASH_GOVERNANCE_WEBHOOK_URL || process.env.WECHAT_WEBHOOK_URL || '').trim();
+  return productLineConfigService.get('WECHAT_WEBHOOK_URL')
+    || (currentProductLineId() === 'nn' ? String(process.env.CRASH_GOVERNANCE_WEBHOOK_URL || '').trim() : '');
 }
 
 function isHighRiskCrash(record: CrashGovernanceRecord) {
@@ -613,7 +633,7 @@ router.get('/governance/config', (_req: Request, res: Response) => {
   try {
     res.json({
       success: true,
-      data: crashGovernanceService.getConfig(),
+      data: governanceConfigResponse(),
     });
   } catch (error: any) {
     logger.error('获取 Crash 治理配置失败', { error: error.message });
@@ -626,12 +646,12 @@ router.get('/governance/config', (_req: Request, res: Response) => {
 
 router.patch('/governance/config', (req: Request, res: Response) => {
   try {
-    const config = crashGovernanceService.updateConfig({
+    crashGovernanceService.updateConfig({
       excludedVersions: req.body?.excludedVersions,
     });
     res.json({
       success: true,
-      data: config,
+      data: governanceConfigResponse(),
     });
   } catch (error: any) {
     logger.error('更新 Crash 治理配置失败', { error: error.message });

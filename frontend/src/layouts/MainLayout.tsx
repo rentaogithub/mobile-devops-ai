@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge, Select } from 'antd';
+import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge, Select, Spin } from 'antd';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
   HomeOutlined,
@@ -27,6 +27,7 @@ export default function MainLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [, setAuthVersion] = useState(0);
+  const [authHydrating, setAuthHydrating] = useState(true);
   const [pendingRegistrationCount, setPendingRegistrationCount] = useState(0);
   const isAuthenticated = authUtils.isAuthenticated();
   const currentUser = authUtils.getUser();
@@ -53,7 +54,7 @@ export default function MainLayout() {
       offset={[8, -2]}
       style={{ backgroundColor: '#ff4d4f' }}
     >
-      <span style={{ color: roleMenuTextColor }}>角色权限管理</span>
+      <span style={{ color: roleMenuTextColor }}>配置管理</span>
     </Badge>
   );
 
@@ -68,10 +69,17 @@ export default function MainLayout() {
   }, []);
 
   useEffect(() => {
-    void authUtils.refreshUser();
+    let cancelled = false;
+    authUtils.refreshUser().finally(() => {
+      if (!cancelled) setAuthHydrating(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
+    if (authHydrating) return;
     const path = location.pathname;
     if (!canAccessCrashTools && ['/sentry-service', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
       navigate('/history', { replace: true });
@@ -93,6 +101,7 @@ export default function MainLayout() {
     canAccessCrashTools,
     canAccessQualityCenter,
     canAccessRoleManagement,
+    authHydrating,
     location.pathname,
     navigate,
   ]);
@@ -275,7 +284,11 @@ export default function MainLayout() {
           />
         </div>
 
-        {isAuthenticated ? (
+        {authHydrating ? (
+          <Button type="text" loading style={{ color: 'rgba(255, 255, 255, 0.85)' }}>
+            正在恢复登录
+          </Button>
+        ) : isAuthenticated ? (
           <Space size={10} style={{ paddingLeft: 12, whiteSpace: 'nowrap' }}>
             <Select
               value={activeProductLine?.id}
@@ -317,7 +330,13 @@ export default function MainLayout() {
             minWidth: 0,
           }}
         >
-          <Outlet key={activeProductLine?.id || 'public-nn'} />
+          {authHydrating ? (
+            <div style={{ minHeight: 320, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Spin tip="正在恢复登录状态..." />
+            </div>
+          ) : (
+            <Outlet key={activeProductLine?.id || 'public-nn'} />
+          )}
         </div>
       </Content>
     </Layout>

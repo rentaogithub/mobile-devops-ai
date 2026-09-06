@@ -1,6 +1,7 @@
 import { getDatabase } from '../database';
 import { CrashAnalysis } from '../types';
 import type { SentryIssueSummary } from './SentryIssueService';
+import { currentProductLineId } from './ProductLineContext';
 import historyService from './HistoryService';
 import { dsymMatcherService, DSYMCoverageSummary } from './DSYMMatcherService';
 
@@ -809,7 +810,7 @@ function buildActionRecommendations(input: {
 function normalizeExcludedVersions(versions: unknown): string[] {
   const raw = Array.isArray(versions)
     ? versions
-    : String(versions || process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0').split(',');
+    : String(versions || (currentProductLineId() === 'nn' ? process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0' : '')).split(',');
   return Array.from(new Set(
     raw
       .map((version) => String(version || '').trim())
@@ -872,7 +873,8 @@ export class CrashGovernanceService {
         last_sync_error TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(source, source_issue_id)
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        UNIQUE(product_line_id, source, source_issue_id)
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_updated
         ON crash_governance_records(updated_at DESC);
@@ -885,14 +887,17 @@ export class CrashGovernanceService {
         record_id INTEGER NOT NULL,
         notification_type TEXT NOT NULL,
         sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(record_id, notification_type)
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        UNIQUE(product_line_id, record_id, notification_type)
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_notifications_record
         ON crash_governance_notifications(record_id);
       CREATE TABLE IF NOT EXISTS crash_governance_config (
-        key TEXT PRIMARY KEY,
+        key TEXT NOT NULL,
         value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        PRIMARY KEY (product_line_id, key)
       );
       CREATE TABLE IF NOT EXISTS crash_governance_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -904,21 +909,164 @@ export class CrashGovernanceService {
         operator TEXT,
         note TEXT,
         related_record_ids_json TEXT,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        product_line_id TEXT NOT NULL DEFAULT 'nn'
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_events_record
         ON crash_governance_events(record_id, created_at DESC);
     `);
+    const ensureProductColumn = (table: string) => {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (!columns.some((column) => column.name === 'product_line_id')) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'`);
+      }
+    };
+    ensureProductColumn('crash_governance_records');
+    ensureProductColumn('crash_governance_notifications');
+    ensureProductColumn('crash_governance_events');
     ensureColumn(this.db, 'crash_governance_records', 'symbolication_failure_category', 'TEXT');
+    const hasLegacyUniqueIndex = (table: string, expectedColumns: string[]) => {
+      const indexes = this.db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>;
+      return indexes.some((index) => {
+        if (!index.unique) {
+          return false;
+        }
+        const columns = this.db.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>;
+        return columns.map((column) => column.name).join(',') === expectedColumns.join(',');
+      });
+    };
+    if (hasLegacyUniqueIndex('crash_governance_records', ['source', 'source_issue_id'])) {
+      this.db.exec(`
+        ALTER TABLE crash_governance_records RENAME TO crash_governance_records_legacy;
+        CREATE TABLE crash_governance_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source TEXT NOT NULL DEFAULT 'sentry',
+          source_issue_id TEXT NOT NULL,
+          short_id TEXT,
+          event_id TEXT,
+          permalink TEXT,
+          title TEXT NOT NULL,
+          culprit TEXT,
+          level TEXT,
+          sentry_status TEXT,
+          app_version TEXT,
+          app_version_range TEXT,
+          first_seen TEXT,
+          last_seen TEXT,
+          event_count INTEGER DEFAULT 0,
+          user_count INTEGER DEFAULT 0,
+          crash_type TEXT,
+          crash_reason TEXT,
+          crash_module TEXT,
+          crash_location TEXT,
+          fingerprint TEXT,
+          symbolication_status TEXT NOT NULL DEFAULT 'pending',
+          symbolication_error TEXT,
+          symbolication_failure_category TEXT,
+          analysis_status TEXT NOT NULL DEFAULT 'pending',
+          analysis_error TEXT,
+          governance_status TEXT NOT NULL DEFAULT 'new',
+          owner TEXT,
+          fixed_version TEXT,
+          fixed_remark TEXT,
+          ignore_reason TEXT,
+          history_id INTEGER,
+          quality_task_id TEXT,
+          release_record_id TEXT,
+          dsym_coverage_status TEXT NOT NULL DEFAULT 'unknown',
+          dsym_coverage_json TEXT,
+          retry_count INTEGER DEFAULT 0,
+          last_synced_at TEXT,
+          last_sync_error TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          UNIQUE(product_line_id, source, source_issue_id)
+        );
+        INSERT INTO crash_governance_records (
+          id, source, source_issue_id, short_id, event_id, permalink, title, culprit, level, sentry_status,
+          app_version, app_version_range, first_seen, last_seen, event_count, user_count,
+          crash_type, crash_reason, crash_module, crash_location, fingerprint,
+          symbolication_status, symbolication_error, symbolication_failure_category,
+          analysis_status, analysis_error, governance_status, owner, fixed_version, fixed_remark, ignore_reason,
+          history_id, quality_task_id, release_record_id, dsym_coverage_status, dsym_coverage_json,
+          retry_count, last_synced_at, last_sync_error, created_at, updated_at, product_line_id
+        )
+        SELECT
+          id, source, source_issue_id, short_id, event_id, permalink, title, culprit, level, sentry_status,
+          app_version, app_version_range, first_seen, last_seen, event_count, user_count,
+          crash_type, crash_reason, crash_module, crash_location, fingerprint,
+          symbolication_status, symbolication_error, symbolication_failure_category,
+          analysis_status, analysis_error, governance_status, owner, fixed_version, fixed_remark, ignore_reason,
+          history_id, quality_task_id, release_record_id, dsym_coverage_status, dsym_coverage_json,
+          retry_count, last_synced_at, last_sync_error, created_at, updated_at,
+          COALESCE(NULLIF(product_line_id, ''), 'nn')
+        FROM crash_governance_records_legacy;
+        DROP TABLE crash_governance_records_legacy;
+      `);
+    }
+    if (hasLegacyUniqueIndex('crash_governance_notifications', ['record_id', 'notification_type'])) {
+      this.db.exec(`
+        ALTER TABLE crash_governance_notifications RENAME TO crash_governance_notifications_legacy;
+        CREATE TABLE crash_governance_notifications (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          record_id INTEGER NOT NULL,
+          notification_type TEXT NOT NULL,
+          sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          UNIQUE(product_line_id, record_id, notification_type)
+        );
+        INSERT INTO crash_governance_notifications (
+          id, record_id, notification_type, sent_at, product_line_id
+        )
+        SELECT id, record_id, notification_type, sent_at, COALESCE(NULLIF(product_line_id, ''), 'nn')
+        FROM crash_governance_notifications_legacy;
+        DROP TABLE crash_governance_notifications_legacy;
+      `);
+    }
+    const configColumns = this.db.prepare('PRAGMA table_info(crash_governance_config)').all() as Array<{ name: string; pk: number }>;
+    if (!configColumns.some((column) => column.name === 'product_line_id')) {
+      this.db.exec(`
+        ALTER TABLE crash_governance_config RENAME TO crash_governance_config_legacy;
+        CREATE TABLE crash_governance_config (
+          key TEXT NOT NULL,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          PRIMARY KEY (product_line_id, key)
+        );
+        INSERT INTO crash_governance_config (key, value, updated_at, product_line_id)
+        SELECT key, value, updated_at, 'nn' FROM crash_governance_config_legacy;
+        DROP TABLE crash_governance_config_legacy;
+      `);
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_updated
+        ON crash_governance_records(updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_status
+        ON crash_governance_records(governance_status, last_seen DESC);
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_app_version
+        ON crash_governance_records(app_version);
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_notifications_record
+        ON crash_governance_notifications(record_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_crash_governance_source_product
+        ON crash_governance_records(product_line_id, source, source_issue_id);
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_product_updated
+        ON crash_governance_records(product_line_id, updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_crash_governance_notification_product
+        ON crash_governance_notifications(product_line_id, record_id, notification_type);
+      CREATE INDEX IF NOT EXISTS idx_crash_governance_events_product
+        ON crash_governance_events(product_line_id, created_at DESC);
+    `);
   }
 
   getConfig(): CrashGovernanceConfig {
     this.ensureTable();
     const row = this.db.prepare(`
       SELECT value, updated_at FROM crash_governance_config
-      WHERE key = 'excluded_versions'
+      WHERE product_line_id = ? AND key = 'excluded_versions'
       LIMIT 1
-    `).get() as any;
+    `).get(currentProductLineId()) as any;
     const excludedVersions = normalizeExcludedVersions(row?.value ? safeJsonParse<string[]>(row.value, []) : undefined);
     return {
       excludedVersions,
@@ -931,12 +1079,12 @@ export class CrashGovernanceService {
     this.ensureTable();
     const excludedVersions = normalizeExcludedVersions(payload.excludedVersions);
     this.db.prepare(`
-      INSERT INTO crash_governance_config (key, value, updated_at)
-      VALUES ('excluded_versions', ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(key) DO UPDATE SET
+      INSERT INTO crash_governance_config (key, value, updated_at, product_line_id)
+      VALUES ('excluded_versions', ?, CURRENT_TIMESTAMP, ?)
+      ON CONFLICT(product_line_id, key) DO UPDATE SET
         value = excluded.value,
         updated_at = CURRENT_TIMESTAMP
-    `).run(JSON.stringify(excludedVersions));
+    `).run(JSON.stringify(excludedVersions), currentProductLineId());
     return this.getConfig();
   }
 
@@ -995,7 +1143,7 @@ export class CrashGovernanceService {
 
     this.db.prepare(`
       INSERT INTO crash_governance_records (
-        source, source_issue_id, short_id, event_id, permalink, title, culprit, level, sentry_status,
+        product_line_id, source, source_issue_id, short_id, event_id, permalink, title, culprit, level, sentry_status,
         app_version, app_version_range, first_seen, last_seen, event_count, user_count,
         crash_type, crash_reason, crash_module, crash_location, fingerprint,
         symbolication_status, symbolication_error, symbolication_failure_category, analysis_status, analysis_error,
@@ -1003,14 +1151,14 @@ export class CrashGovernanceService {
         retry_count, last_synced_at, last_sync_error, updated_at
       )
       VALUES (
-        'sentry', @sourceIssueId, @shortId, @eventId, @permalink, @title, @culprit, @level, @sentryStatus,
+        @productLineId, 'sentry', @sourceIssueId, @shortId, @eventId, @permalink, @title, @culprit, @level, @sentryStatus,
         @appVersion, @appVersionRange, @firstSeen, @lastSeen, @eventCount, @userCount,
         @crashType, @crashReason, @crashModule, @crashLocation, @fingerprint,
         @symbolicationStatus, @symbolicationError, @symbolicationFailureCategory, @analysisStatus, @analysisError,
         @governanceStatus, @historyId, @coverageStatus, @coverageJson,
         @retryCount, @lastSyncedAt, @lastSyncError, @updatedAt
       )
-      ON CONFLICT(source, source_issue_id) DO UPDATE SET
+      ON CONFLICT(product_line_id, source, source_issue_id) DO UPDATE SET
         short_id = excluded.short_id,
         event_id = COALESCE(excluded.event_id, crash_governance_records.event_id),
         permalink = COALESCE(excluded.permalink, crash_governance_records.permalink),
@@ -1045,6 +1193,7 @@ export class CrashGovernanceService {
         last_sync_error = excluded.last_sync_error,
         updated_at = excluded.updated_at
     `).run({
+      productLineId: currentProductLineId(),
       sourceIssueId,
       shortId: issue.shortId || null,
       eventId: options.eventId || existing?.eventId || null,
@@ -1121,20 +1270,20 @@ export class CrashGovernanceService {
 
     this.db.prepare(`
       INSERT INTO crash_governance_records (
-        source, source_issue_id, title, level, app_version, event_count, user_count,
+        product_line_id, source, source_issue_id, title, level, app_version, event_count, user_count,
         crash_type, crash_reason, crash_module, crash_location, fingerprint,
         symbolication_status, analysis_status, governance_status,
         quality_task_id, dsym_coverage_status, last_seen, last_synced_at,
         updated_at, last_sync_error
       )
       VALUES (
-        'quality', @sourceIssueId, @title, @level, @appVersion, 1, 0,
+        @productLineId, 'quality', @sourceIssueId, @title, @level, @appVersion, 1, 0,
         @crashType, @crashReason, @crashModule, @crashLocation, @fingerprint,
         @symbolicationStatus, 'skipped', @governanceStatus,
         @qualityTaskId, @coverageStatus, @lastSeen, @lastSyncedAt,
         @updatedAt, @lastSyncError
       )
-      ON CONFLICT(source, source_issue_id) DO UPDATE SET
+      ON CONFLICT(product_line_id, source, source_issue_id) DO UPDATE SET
         title = excluded.title,
         level = excluded.level,
         app_version = COALESCE(excluded.app_version, crash_governance_records.app_version),
@@ -1149,6 +1298,7 @@ export class CrashGovernanceService {
         last_synced_at = excluded.last_synced_at,
         updated_at = excluded.updated_at
     `).run({
+      productLineId: currentProductLineId(),
       sourceIssueId,
       title: input.title || '质检 Crash',
       level: input.level || 'error',
@@ -1211,18 +1361,18 @@ export class CrashGovernanceService {
 
     this.db.prepare(`
       INSERT INTO crash_governance_records (
-        source, source_issue_id, title, level, app_version, event_count, user_count,
+        product_line_id, source, source_issue_id, title, level, app_version, event_count, user_count,
         crash_type, crash_reason, crash_module, crash_location, fingerprint,
         symbolication_status, analysis_status, governance_status,
         history_id, dsym_coverage_status, last_seen, last_synced_at, updated_at
       )
       VALUES (
-        'manual', @sourceIssueId, @title, @level, @appVersion, 1, 0,
+        @productLineId, 'manual', @sourceIssueId, @title, @level, @appVersion, 1, 0,
         @crashType, @crashReason, @crashModule, @crashLocation, @fingerprint,
         'success', 'pending', 'new',
         @historyId, @coverageStatus, @lastSeen, @lastSyncedAt, @updatedAt
       )
-      ON CONFLICT(source, source_issue_id) DO UPDATE SET
+      ON CONFLICT(product_line_id, source, source_issue_id) DO UPDATE SET
         title = excluded.title,
         level = excluded.level,
         app_version = COALESCE(excluded.app_version, crash_governance_records.app_version),
@@ -1237,6 +1387,7 @@ export class CrashGovernanceService {
         last_synced_at = excluded.last_synced_at,
         updated_at = excluded.updated_at
     `).run({
+      productLineId: currentProductLineId(),
       sourceIssueId,
       title: input.title || '手动解析 Crash',
       level: input.level || 'medium',
@@ -1282,8 +1433,8 @@ export class CrashGovernanceService {
             ELSE governance_status
           END,
           updated_at = ?
-      WHERE source = 'sentry' AND source_issue_id = ?
-    `).run(payload.status, payload.error || null, failureCategory || null, payload.historyId || null, payload.eventId || null, payload.status, now, issueId);
+      WHERE product_line_id = ? AND source = 'sentry' AND source_issue_id = ?
+    `).run(payload.status, payload.error || null, failureCategory || null, payload.historyId || null, payload.eventId || null, payload.status, now, currentProductLineId(), issueId);
   }
 
   markAnalysis(issueId: string, payload: {
@@ -1304,8 +1455,8 @@ export class CrashGovernanceService {
           crash_module = COALESCE(?, crash_module),
           crash_location = COALESCE(?, crash_location),
           updated_at = ?
-      WHERE source = 'sentry' AND source_issue_id = ?
-    `).run(payload.status, payload.error || null, crashType, crashModule, crashLocation, now, issueId);
+      WHERE product_line_id = ? AND source = 'sentry' AND source_issue_id = ?
+    `).run(payload.status, payload.error || null, crashType, crashModule, crashLocation, now, currentProductLineId(), issueId);
   }
 
   markAnalysisByRecordId(id: number, payload: {
@@ -1331,8 +1482,8 @@ export class CrashGovernanceService {
             ELSE governance_status
           END,
           updated_at = ?
-      WHERE id = ?
-    `).run(payload.status, payload.error || null, crashType, crashModule, crashLocation, payload.status, payload.status, now, id);
+      WHERE id = ? AND product_line_id = ?
+    `).run(payload.status, payload.error || null, crashType, crashModule, crashLocation, payload.status, payload.status, now, id, currentProductLineId());
     return this.getById(id);
   }
 
@@ -1366,10 +1517,10 @@ export class CrashGovernanceService {
     }
     const rows = this.db.prepare(`
       SELECT * FROM crash_governance_records
-      WHERE app_version = ?
+      WHERE product_line_id = ? AND app_version = ?
       ORDER BY datetime(last_seen) DESC, datetime(updated_at) DESC
       LIMIT 200
-    `).all(normalizedVersion) as any[];
+    `).all(currentProductLineId(), normalizedVersion) as any[];
     const records = rows.map((row) => this.mapRow(row));
     const refreshedRecords: CrashGovernanceRecord[] = [];
     let skipped = 0;
@@ -1404,8 +1555,8 @@ export class CrashGovernanceService {
   } = {}): CrashGovernanceRecord[] {
     this.ensureTable();
     const limit = Math.min(Math.max(Number(options.limit || 30), 1), 200);
-    const clauses: string[] = [];
-    const params: any[] = [];
+    const clauses: string[] = ['product_line_id = ?'];
+    const params: any[] = [currentProductLineId()];
     if (options.status === 'open') {
       clauses.push("governance_status NOT IN ('fixed', 'ignored')");
     } else if (options.status) {
@@ -1477,7 +1628,7 @@ export class CrashGovernanceService {
     }
     const rows = this.db.prepare(`
       SELECT * FROM crash_governance_records
-      WHERE app_version = ?
+      WHERE product_line_id = ? AND app_version = ?
         AND source = 'sentry'
         AND governance_status NOT IN ('fixed', 'ignored')
       ORDER BY
@@ -1490,7 +1641,7 @@ export class CrashGovernanceService {
         event_count DESC,
         datetime(last_seen) DESC
       LIMIT ?
-    `).all(normalizedVersion, Math.min(Math.max(Number(limit || 50), 1), 100)) as any[];
+    `).all(currentProductLineId(), normalizedVersion, Math.min(Math.max(Number(limit || 50), 1), 100)) as any[];
     return rows.map((row) => this.mapRow(row));
   }
 
@@ -1523,7 +1674,7 @@ export class CrashGovernanceService {
 
     const rows = this.db.prepare(`
       SELECT * FROM crash_governance_records
-      WHERE app_version = ?
+      WHERE product_line_id = ? AND app_version = ?
       ORDER BY
         CASE
           WHEN governance_status = 'regression' THEN 0
@@ -1534,7 +1685,7 @@ export class CrashGovernanceService {
         event_count DESC,
         datetime(last_seen) DESC,
         datetime(updated_at) DESC
-    `).all(normalizedVersion) as any[];
+    `).all(currentProductLineId(), normalizedVersion) as any[];
     const records = rows.map((row) => this.mapRow(row));
     const onlineOpen = records.filter((record) => record.source === 'sentry' && isOpenCrash(record));
     const highRisks = onlineOpen.filter(isHighRiskCrash).slice(0, 20);
@@ -1709,21 +1860,22 @@ export class CrashGovernanceService {
         SUM(CASE WHEN scope = 'single' THEN 1 ELSE 0 END) AS single_count,
         SUM(CASE WHEN scope = 'fingerprint' THEN 1 ELSE 0 END) AS fingerprint_count
       FROM crash_governance_events
-      WHERE datetime(created_at) >= datetime(?)
-    `).get(since) as any;
+      WHERE product_line_id = ? AND datetime(created_at) >= datetime(?)
+    `).get(currentProductLineId(), since) as any;
     const topOperatorRows = this.db.prepare(`
       SELECT COALESCE(NULLIF(TRIM(operator), ''), '系统') AS operator, COUNT(*) AS count
       FROM crash_governance_events
-      WHERE datetime(created_at) >= datetime(?)
+      WHERE product_line_id = ? AND datetime(created_at) >= datetime(?)
       GROUP BY COALESCE(NULLIF(TRIM(operator), ''), '系统')
       ORDER BY count DESC, operator ASC
       LIMIT 5
-    `).all(since) as any[];
+    `).all(currentProductLineId(), since) as any[];
     const lastEventRow = this.db.prepare(`
       SELECT * FROM crash_governance_events
+      WHERE product_line_id = ?
       ORDER BY datetime(created_at) DESC, id DESC
       LIMIT 1
-    `).get() as any | undefined;
+    `).get(currentProductLineId()) as any | undefined;
 
     return {
       recent7dCount: Number(summary?.recent_7d_count || 0),
@@ -1741,9 +1893,10 @@ export class CrashGovernanceService {
     const limit = Math.min(Math.max(Number(process.env.CRASH_GOVERNANCE_DASHBOARD_LIMIT || 5000), 100), 20000);
     const rows = this.db.prepare(`
       SELECT * FROM crash_governance_records
+      WHERE product_line_id = ?
       ORDER BY datetime(last_seen) DESC, datetime(updated_at) DESC
       LIMIT ?
-    `).all(limit) as any[];
+    `).all(currentProductLineId(), limit) as any[];
     return rows.map((row) => this.mapRow(row));
   }
 
@@ -1769,7 +1922,7 @@ export class CrashGovernanceService {
           fixed_remark = ?,
           ignore_reason = ?,
           updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND product_line_id = ?
     `).run(
       payload.governanceStatus,
       payload.owner || null,
@@ -1778,6 +1931,7 @@ export class CrashGovernanceService {
       payload.ignoreReason || null,
       now,
       id,
+      currentProductLineId(),
     );
     const record = this.getById(id);
     if (!record) {
@@ -1833,7 +1987,7 @@ export class CrashGovernanceService {
           fixed_remark = ?,
           ignore_reason = ?,
           updated_at = ?
-      WHERE source = 'sentry' AND fingerprint = ?
+      WHERE product_line_id = ? AND source = 'sentry' AND fingerprint = ?
     `).run(
       payload.governanceStatus,
       payload.owner || null,
@@ -1841,6 +1995,7 @@ export class CrashGovernanceService {
       payload.fixedRemark || null,
       payload.ignoreReason || null,
       now,
+      currentProductLineId(),
       group.fingerprint,
     );
 
@@ -1875,10 +2030,10 @@ export class CrashGovernanceService {
     this.ensureTable();
     const rows = this.db.prepare(`
       SELECT * FROM crash_governance_events
-      WHERE record_id = ?
+      WHERE product_line_id = ? AND record_id = ?
       ORDER BY datetime(created_at) DESC, id DESC
       LIMIT ?
-    `).all(recordId, Math.min(Math.max(Number(limit || 50), 1), 200)) as any[];
+    `).all(currentProductLineId(), recordId, Math.min(Math.max(Number(limit || 50), 1), 200)) as any[];
     return rows.map((row) => this.mapEventRow(row));
   }
 
@@ -1891,8 +2046,8 @@ export class CrashGovernanceService {
   } = {}): CrashGovernanceEvent[] {
     this.ensureTable();
     const limit = Math.min(Math.max(Number(options.limit || 100), 1), 200);
-    const clauses: string[] = [];
-    const params: any[] = [];
+    const clauses: string[] = ['e.product_line_id = ?'];
+    const params: any[] = [currentProductLineId()];
     if (options.scope) {
       clauses.push('e.scope = ?');
       params.push(options.scope);
@@ -1964,7 +2119,7 @@ export class CrashGovernanceService {
         r.created_at AS record_created_at,
         r.updated_at AS record_updated_at
       FROM crash_governance_events e
-      LEFT JOIN crash_governance_records r ON r.id = e.record_id
+      LEFT JOIN crash_governance_records r ON r.id = e.record_id AND r.product_line_id = e.product_line_id
       ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY datetime(e.created_at) DESC, e.id DESC
       LIMIT ?
@@ -2029,9 +2184,9 @@ export class CrashGovernanceService {
   }): void {
     this.db.prepare(`
       INSERT INTO crash_governance_events (
-        record_id, action, scope, from_status, to_status, operator, note, related_record_ids_json, created_at
+        record_id, action, scope, from_status, to_status, operator, note, related_record_ids_json, created_at, product_line_id
       )
-      VALUES (?, 'status_update', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, 'status_update', ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       input.recordId,
       input.scope,
@@ -2041,6 +2196,7 @@ export class CrashGovernanceService {
       input.note || null,
       JSON.stringify(input.relatedRecordIds || [input.recordId]),
       new Date().toISOString(),
+      currentProductLineId(),
     );
   }
 
@@ -2048,23 +2204,23 @@ export class CrashGovernanceService {
     this.ensureTable();
     const row = this.db.prepare(`
       SELECT id FROM crash_governance_notifications
-      WHERE record_id = ? AND notification_type = ?
+      WHERE product_line_id = ? AND record_id = ? AND notification_type = ?
       LIMIT 1
-    `).get(recordId, notificationType);
+    `).get(currentProductLineId(), recordId, notificationType);
     return Boolean(row);
   }
 
   markNotificationSent(recordId: number, notificationType: string): void {
     this.ensureTable();
     this.db.prepare(`
-      INSERT OR IGNORE INTO crash_governance_notifications (record_id, notification_type)
-      VALUES (?, ?)
-    `).run(recordId, notificationType);
+      INSERT OR IGNORE INTO crash_governance_notifications (record_id, notification_type, product_line_id)
+      VALUES (?, ?, ?)
+    `).run(recordId, notificationType, currentProductLineId());
   }
 
   getById(id: number): CrashGovernanceRecord | undefined {
     this.ensureTable();
-    const row = this.db.prepare('SELECT * FROM crash_governance_records WHERE id = ?').get(id) as any;
+    const row = this.db.prepare('SELECT * FROM crash_governance_records WHERE id = ? AND product_line_id = ?').get(id, currentProductLineId()) as any;
     return row ? this.mapRow(row) : undefined;
   }
 
@@ -2076,8 +2232,8 @@ export class CrashGovernanceService {
     this.ensureTable();
     const row = this.db.prepare(`
       SELECT * FROM crash_governance_records
-      WHERE source = ? AND source_issue_id = ?
-    `).get(source, issueId) as any;
+      WHERE product_line_id = ? AND source = ? AND source_issue_id = ?
+    `).get(currentProductLineId(), source, issueId) as any;
     return row ? this.mapRow(row) : undefined;
   }
 
@@ -2092,15 +2248,15 @@ export class CrashGovernanceService {
     const rows = record.fingerprint
       ? this.db.prepare(`
         SELECT * FROM crash_governance_records
-        WHERE source = 'sentry' AND fingerprint = ?
+        WHERE product_line_id = ? AND source = 'sentry' AND fingerprint = ?
         ORDER BY event_count DESC, datetime(last_seen) DESC, datetime(updated_at) DESC
         LIMIT ?
-      `).all(record.fingerprint, normalizedLimit) as any[]
+      `).all(currentProductLineId(), record.fingerprint, normalizedLimit) as any[]
       : this.db.prepare(`
         SELECT * FROM crash_governance_records
-        WHERE id = ?
+        WHERE id = ? AND product_line_id = ?
         LIMIT 1
-      `).all(record.id) as any[];
+      `).all(record.id, currentProductLineId()) as any[];
     const records = rows.map((row) => this.mapRow(row));
     const versions = Array.from(new Set(records
       .map((item) => item.appVersion)
@@ -2134,8 +2290,8 @@ export class CrashGovernanceService {
       SET dsym_coverage_status = ?,
           dsym_coverage_json = ?,
           updated_at = ?
-      WHERE id = ?
-    `).run(status, JSON.stringify(coverage), new Date().toISOString(), record.id);
+      WHERE id = ? AND product_line_id = ?
+    `).run(status, JSON.stringify(coverage), new Date().toISOString(), record.id, currentProductLineId());
   }
 
   private async refreshCoverage(record: CrashGovernanceRecord | undefined, crashLog?: string): Promise<CrashGovernanceRecord | undefined> {
@@ -2152,8 +2308,8 @@ export class CrashGovernanceService {
       SET dsym_coverage_status = ?,
           dsym_coverage_json = ?,
           updated_at = ?
-      WHERE id = ?
-    `).run(status, JSON.stringify(coverage), new Date().toISOString(), record.id);
+      WHERE id = ? AND product_line_id = ?
+    `).run(status, JSON.stringify(coverage), new Date().toISOString(), record.id, currentProductLineId());
     return this.getById(record.id);
   }
 

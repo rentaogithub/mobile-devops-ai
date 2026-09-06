@@ -15,6 +15,8 @@ import { apiRouteSearchService } from './ApiRouteSearchService';
 import { currentProjectId } from './ProductLineContext';
 import { operationalLogService } from './OperationalLogService';
 import { platformConfigService } from './PlatformConfigService';
+import { isMainAppDSYM } from './DSYMMatcherService';
+import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 
 export type AssistantRiskLevel = 'read' | 'confirm' | 'high';
 
@@ -113,7 +115,8 @@ async function symbolicateAttachment(args: { attachmentId: string; uuids?: strin
     dsymInfos.push(info);
   }
   const result = await symbolizer.symbolicateWithMultipleDSYMs(crashLog, dsymInfos.map((item) => item.filePath));
-  const main = dsymInfos.find((item) => item.appName.toUpperCase() === 'NNIM') || dsymInfos[0];
+  const crashVersion = extractVersionFromCrashLog(crashLog);
+  const main = dsymInfos.find((item) => isMainAppDSYM(item, crashVersion)) || dsymInfos[0];
   const crashInfo = extractCrashInfo(crashLog, result.symbolicatedLog);
   const history = await historyService.saveHistory({
     appVersion: main?.version || 'Unknown',
@@ -154,7 +157,7 @@ const tools: AssistantTool[] = [
   },
   {
     name: 'routes_search', domain: 'api', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 30_000,
-    description: '用自然语言搜索固定 nnios 仓库中的 App 路由、Scheme、Universal Link 和 JSBridge 入口，返回源码位置、模块与跨端兼容性提示。',
+    description: '用自然语言搜索当前产品线主仓库中的 App 路由、Scheme、Universal Link 和 JSBridge 入口，返回源码位置、模块与跨端兼容性提示。',
     parameters: objectSchema({ keyword: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 100 } }, ['keyword']),
     execute: (args) => apiRouteSearchService.searchRoutes(args.keyword, args.limit || 30),
   },
@@ -167,7 +170,7 @@ const tools: AssistantTool[] = [
   {
     name: 'workflow_overview', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
     description: '获取移动研发质量中心概览、最新任务和最新问题。',
-    parameters: objectSchema({ projectId: { type: 'string', description: '项目 ID，默认 nn-ios' } }),
+    parameters: objectSchema({ projectId: { type: 'string', description: '项目 ID，默认使用当前产品线' } }),
     execute: () => workflowService.overview(currentProjectId()),
   },
   {

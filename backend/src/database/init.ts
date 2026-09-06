@@ -194,6 +194,41 @@ function migrateDatabase(): void {
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_history_product_line ON symbolication_history(product_line_id, created_at DESC)');
 
+    const sentryHistoryColumns = db.prepare('PRAGMA table_info(sentry_issue_symbolication_history)').all() as any[];
+    if (!sentryHistoryColumns.some((col: any) => col.name === 'permalink')) {
+      db.exec('ALTER TABLE sentry_issue_symbolication_history ADD COLUMN permalink TEXT');
+    }
+    const currentSentryHistoryColumns = db.prepare('PRAGMA table_info(sentry_issue_symbolication_history)').all() as any[];
+    const sentryIssueIdColumn = currentSentryHistoryColumns.find((col: any) => col.name === 'issue_id');
+    const sentryHistoryNeedsProductScope =
+      !currentSentryHistoryColumns.some((col: any) => col.name === 'product_line_id')
+      || sentryIssueIdColumn?.pk === 1;
+    if (sentryHistoryNeedsProductScope) {
+      console.log('Migrating Sentry issue history to product-line scope...');
+      db.exec(`
+        ALTER TABLE sentry_issue_symbolication_history RENAME TO sentry_issue_symbolication_history_legacy;
+        CREATE TABLE sentry_issue_symbolication_history (
+          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          issue_id TEXT NOT NULL,
+          short_id TEXT,
+          permalink TEXT,
+          history_id INTEGER NOT NULL,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (product_line_id, issue_id)
+        );
+        INSERT INTO sentry_issue_symbolication_history (
+          product_line_id, issue_id, short_id, permalink, history_id, updated_at
+        )
+        SELECT 'nn', issue_id, short_id, permalink, history_id, updated_at
+        FROM sentry_issue_symbolication_history_legacy;
+        DROP TABLE sentry_issue_symbolication_history_legacy;
+      `);
+    }
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_sentry_issue_history_product_short_id
+      ON sentry_issue_symbolication_history(product_line_id, short_id)
+    `);
+
     const registrationColumns = db.prepare('PRAGMA table_info(platform_user_registration_requests)').all() as any[];
     if (!registrationColumns.some((col: any) => col.name === 'product_line_id')) {
       console.log('Adding product_line_id column to platform_user_registration_requests...');
@@ -249,6 +284,18 @@ function migrateDatabase(): void {
       `);
       console.log('Migration completed: assistant audits now support anonymous clients');
     }
+
+    const assistantAuditColumns = db.prepare('PRAGMA table_info(assistant_action_audits)').all() as any[];
+    if (!assistantAuditColumns.some((column) => column.name === 'project_id')) {
+      db.exec("ALTER TABLE assistant_action_audits ADD COLUMN project_id TEXT NOT NULL DEFAULT 'nn-ios'");
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_assistant_audits_project ON assistant_action_audits(project_id, created_at DESC)');
+
+    const pairingColumns = db.prepare('PRAGMA table_info(realtime_log_pairing_sessions)').all() as any[];
+    if (!pairingColumns.some((column) => column.name === 'product_line_id')) {
+      db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pairing_sessions(product_line_id, status, last_active_at DESC)');
 
     db.prepare("DELETE FROM platform_users WHERE id = 'assistant-guest' AND username = '__assistant_guest__'").run();
 

@@ -2,6 +2,7 @@ import { AssistantInputMessage, AssistantModelResult, AssistantModelState, assis
 import { assistantAuditService } from './AssistantAuditService';
 import { AssistantTool, AssistantToolContext, assistantToolRegistry } from './AssistantToolRegistry';
 import { PlatformUser } from './AuthService';
+import { currentProjectId } from './ProductLineContext';
 
 export interface AssistantEvent {
   type: 'assistant.delta' | 'tool.proposed' | 'tool.started' | 'tool.progress' | 'tool.completed' | 'tool.failed' | 'assistant.completed';
@@ -11,6 +12,7 @@ export interface AssistantEvent {
 interface PendingAction {
   id: string;
   userId: string;
+  projectId: string;
   tool: AssistantTool;
   args: Record<string, unknown>;
   callId: string;
@@ -83,7 +85,7 @@ export class AssistantService {
   ) {
     this.cleanupExpired();
     const pending = this.pending.get(actionId);
-    if (!pending || pending.userId !== user.id) throw new Error('待确认操作不存在、已过期或不属于当前用户');
+    if (!pending || pending.userId !== user.id || pending.projectId !== currentProjectId()) throw new Error('待确认操作不存在、已过期或不属于当前产品线');
     if (decision === 'reject') {
       this.pending.delete(actionId);
       assistantAuditService.update(actionId, { status: 'rejected', completed: true });
@@ -135,7 +137,7 @@ export class AssistantService {
   cancel(user: PlatformUser, actionId: string) {
     this.cleanupExpired();
     const pending = this.pending.get(actionId);
-    if (!pending || pending.userId !== user.id) throw new Error('待确认操作不存在、已过期或不属于当前用户');
+    if (!pending || pending.userId !== user.id || pending.projectId !== currentProjectId()) throw new Error('待确认操作不存在、已过期或不属于当前产品线');
     this.pending.delete(actionId);
     return assistantAuditService.update(actionId, { status: 'canceled', completed: true });
   }
@@ -184,7 +186,7 @@ export class AssistantService {
 
     if (tool.approvalsRequired > 0) {
       this.pending.set(audit.id, {
-        id: audit.id, userId: user.id, tool, args, callId: call.callId, state: initial.state,
+        id: audit.id, userId: user.id, projectId: currentProjectId(), tool, args, callId: call.callId, state: initial.state,
         approvalCount: 0, expiresAt: Date.now() + ACTION_TTL_MS,
       });
       emit({

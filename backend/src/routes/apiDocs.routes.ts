@@ -6,6 +6,7 @@ import { getDatabase } from '../database';
 import { apiRequestSampleService } from '../services/ApiRequestSampleService';
 import { browserLogWebSocketService } from '../services/BrowserLogWebSocketService';
 import { clearOpAccessToken, getOpAccessToken } from '../services/OpCookieJar';
+import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
 const sourceBase = 'https://test1-doc.nn.com';
@@ -71,16 +72,42 @@ const invalidTokenRetCodes = new Set(['300002', 'auth_10003', 'auth_40001', 'aut
 function ensureApiDocRecordsTable(): void {
   getDatabase().prepare(`
     CREATE TABLE IF NOT EXISTS api_doc_view_records (
-      record_key TEXT PRIMARY KEY,
+      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      record_key TEXT NOT NULL,
       service TEXT NOT NULL,
       method TEXT NOT NULL,
       path TEXT NOT NULL,
       summary TEXT DEFAULT '',
       tag TEXT DEFAULT '',
       view_count INTEGER NOT NULL DEFAULT 0,
-      last_viewed_at TEXT NOT NULL
+      last_viewed_at TEXT NOT NULL,
+      PRIMARY KEY (product_line_id, record_key)
     )
   `).run();
+  const columns = getDatabase().prepare('PRAGMA table_info(api_doc_view_records)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'product_line_id')) {
+    getDatabase().exec(`
+      ALTER TABLE api_doc_view_records RENAME TO api_doc_view_records_legacy;
+      CREATE TABLE api_doc_view_records (
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        record_key TEXT NOT NULL,
+        service TEXT NOT NULL,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        summary TEXT DEFAULT '',
+        tag TEXT DEFAULT '',
+        view_count INTEGER NOT NULL DEFAULT 0,
+        last_viewed_at TEXT NOT NULL,
+        PRIMARY KEY (product_line_id, record_key)
+      );
+      INSERT INTO api_doc_view_records (
+        product_line_id, record_key, service, method, path, summary, tag, view_count, last_viewed_at
+      ) SELECT 'nn', record_key, service, method, path, summary, tag, view_count, last_viewed_at
+        FROM api_doc_view_records_legacy;
+      DROP TABLE api_doc_view_records_legacy;
+    `);
+  }
+  getDatabase().prepare('CREATE INDEX IF NOT EXISTS idx_api_doc_views_product ON api_doc_view_records(product_line_id, last_viewed_at DESC)').run();
 }
 
 router.get('/records/list', (_req, res) => {
@@ -88,9 +115,10 @@ router.get('/records/list', (_req, res) => {
   const data = getDatabase().prepare(`
     SELECT service, method, path, summary, tag, view_count AS viewCount, last_viewed_at AS lastViewedAt
     FROM api_doc_view_records
+    WHERE product_line_id = ?
     ORDER BY last_viewed_at DESC
     LIMIT 500
-  `).all();
+  `).all(currentProductLineId());
   res.json({ data });
 });
 
@@ -105,14 +133,14 @@ router.post('/records/view', (req, res) => {
   const recordKey = `${service}:${normalizedMethod}:${apiPath}`;
   const now = new Date().toISOString();
   getDatabase().prepare(`
-    INSERT INTO api_doc_view_records (record_key, service, method, path, summary, tag, view_count, last_viewed_at)
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-    ON CONFLICT(record_key) DO UPDATE SET
+    INSERT INTO api_doc_view_records (product_line_id, record_key, service, method, path, summary, tag, view_count, last_viewed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+    ON CONFLICT(product_line_id, record_key) DO UPDATE SET
       summary = excluded.summary,
       tag = excluded.tag,
       view_count = api_doc_view_records.view_count + 1,
       last_viewed_at = excluded.last_viewed_at
-  `).run(recordKey, service, normalizedMethod, apiPath, String(summary), String(tag), now);
+  `).run(currentProductLineId(), recordKey, service, normalizedMethod, apiPath, String(summary), String(tag), now);
   res.json({ success: true });
 });
 

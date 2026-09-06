@@ -70,7 +70,7 @@ const APIKeyInput: React.FC<APIKeyInputProps> = ({ value, onChange, onValidate, 
           : (serverConfigured ? '平台统一 API Key 已配置' : 'API Key 未配置（请联系管理员）')}
         disabled={!isAdmin && !value}
         prefix={
-          <Tooltip title={isAdmin ? "临时备用 API Key 仅保存在当前浏览器；统一 Key 请到角色权限管理配置。" : "仅管理员可以配置平台统一 API Key"}>
+          <Tooltip title={isAdmin ? "临时备用 API Key 仅保存在当前浏览器；统一 Key 请到配置管理中配置。" : "仅管理员可以配置平台统一 API Key"}>
             {isAdmin ? <InfoCircleOutlined style={{ color: 'rgba(0,0,0,.45)' }} /> : <LockOutlined style={{ color: 'rgba(0,0,0,.45)' }} />}
           </Tooltip>
         }

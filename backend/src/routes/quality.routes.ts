@@ -5,8 +5,9 @@ import fs from 'fs';
 import path from 'path';
 import { getJenkinsBaseUrl, getJenkinsConfig } from '../config/externalServices';
 import { workflowService } from '../services/WorkflowService';
-import { currentProductLineId, currentProjectId } from '../services/ProductLineContext';
+import { currentProductLineId, currentProjectId, getProductLineContext } from '../services/ProductLineContext';
 import { crashGovernanceService } from '../services/CrashGovernanceService';
+import { authService } from '../services/AuthService';
 
 const router = Router();
 
@@ -26,8 +27,8 @@ function defaultQaJobName() {
   return value;
 }
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
-const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
-const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
+const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
+const LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE = 'sonic-device-pools.json';
 const LOCAL_ARTIFACT_ROUTE = '/api/quality/artifacts/local';
 const ACTIVE_TASK_STATUSES = new Set(['created', 'queued', 'preparing', 'installing', 'running', 'collecting', 'analyzing', 'reporting', 'notifying']);
 const QUALITY_ORPHAN_TASK_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 10 * 60 * 1000);
@@ -37,6 +38,20 @@ const DEFAULT_QUALITY_DEVICE_POOLS = [
   { label: 'iPhone 新系统池', value: 'ios-latest', description: '较新 iOS 系统真机。' },
   { label: 'iPhone 兼容性池', value: 'ios-compat', description: '兼容性回归真机。' },
 ];
+
+function productLineDataPath(fileName: string) {
+  const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(DATA_DIR, 'product-lines', safeProductLineId, fileName);
+}
+
+function currentProductName() {
+  return getProductLineContext()?.name || currentProductLineId();
+}
+
+function qualityTaskId(buildNumber: number) {
+  const legacyId = `jenkins:${defaultQaJobName()}:${buildNumber}`;
+  return currentProductLineId() === 'nn' ? legacyId : `jenkins:${currentProjectId()}:${defaultQaJobName()}:${buildNumber}`;
+}
 
 function encodeJobPath(jobName: string) {
   return jobName.split('/').filter(Boolean).map((part) => `job/${encodeURIComponent(part)}`).join('/');
@@ -165,9 +180,12 @@ function readXmlParameter(xml: string, name: string) {
 
 function getQualityDevicePools() {
   try {
-    const configPath = fs.existsSync(QUALITY_DEVICE_POOLS_CONFIG_PATH)
-      ? QUALITY_DEVICE_POOLS_CONFIG_PATH
-      : LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH;
+    const scopedPath = productLineDataPath(QUALITY_DEVICE_POOLS_CONFIG_FILE);
+    const legacyQualityPath = path.join(DATA_DIR, QUALITY_DEVICE_POOLS_CONFIG_FILE);
+    const legacySonicPath = path.join(DATA_DIR, LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE);
+    const configPath = fs.existsSync(legacyQualityPath)
+      ? legacyQualityPath
+      : (fs.existsSync(legacySonicPath) ? legacySonicPath : scopedPath);
     if (!fs.existsSync(configPath)) return DEFAULT_QUALITY_DEVICE_POOLS;
     const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     const pools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
@@ -192,6 +210,14 @@ function getPlatformRootDir() {
   if (configured) return configured;
   const candidates = [process.cwd(), path.resolve(process.cwd(), '..')];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'scripts/sonic/ios-quality.sh'))) || process.cwd();
+}
+
+function productLineBusinessMapPath() {
+  if (currentProductLineId() === 'nn') {
+    return path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json');
+  }
+  const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(getPlatformRootDir(), 'config', 'product-lines', safeProductLineId, 'business-map.json');
 }
 
 function isPathInside(parentDir: string, candidatePath: string) {
@@ -393,14 +419,14 @@ function mapBuildToTask(buildNumber: number) {
     parseLogField(buildLog, /WDA 当前不可访问:\s*([^\s\n\r]+)/);
   const platformTaskId = readXmlParameter(buildXml, 'PLATFORM_TASK_ID') || summary?.platformTaskId;
   const task = {
-    task_id: platformTaskId || `jenkins:${defaultQaJobName()}:${buildNumber}`,
-    external_task_id: `jenkins:${defaultQaJobName()}:${buildNumber}`,
+    task_id: platformTaskId || qualityTaskId(buildNumber),
+    external_task_id: qualityTaskId(buildNumber),
     task_type: requestedSuite === 'monkey' ? 'ios_monkey' : `ios_${requestedSuite || 'quality'}`,
     status,
     progress: progress?.progressPercent ?? (status === 'running' ? 0 : 100),
     progress_updated_at: progress?.updatedAt,
     project_id: currentProjectId(),
-    app_name: 'NNIM',
+    app_name: currentProductName(),
     app_version: summary?.appVersion || readXmlParameter(buildXml, 'APP_VERSION'),
     build: sourceBuild,
     created_by: 'jenkins',
@@ -497,12 +523,14 @@ function suiteFromTaskType(taskType: string, payload: any) {
 
 function syncTaskToWorkflow(task: any) {
   const suite = String(task.task_type || '').replace(/^ios_/, '') || 'quality';
-  const artifactId = task.build ? `artifact_build_${String(task.build).replace(/[^A-Za-z0-9_.-]/g, '_')}` : undefined;
+  const artifactId = task.build
+    ? `artifact_build_${currentProjectId().replace(/[^A-Za-z0-9_.-]/g, '_')}_${String(task.build).replace(/[^A-Za-z0-9_.-]/g, '_')}`
+    : undefined;
   if (artifactId && !workflowService.getArtifact(artifactId)) {
     workflowService.createArtifact({
       id: artifactId,
       artifactType: 'ios_app_build',
-      name: `NNIM Build #${task.build}`,
+      name: `${currentProductName()} Build #${task.build}`,
       version: task.app_version,
       buildNumber: task.build,
       commitHash: task.summary?.commitHash,
@@ -579,6 +607,10 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   const monkey = payload.monkey || {};
   const taskType = String(payload.task_type || payload.taskType || 'ios_smoke').trim();
   const suite = suiteFromTaskType(taskType, payload);
+  const businessMapPath = productLineBusinessMapPath();
+  if ((suite === 'monkey' || suite === 'business_flow') && !fs.existsSync(businessMapPath)) {
+    throw new Error(`当前产品线 ${currentProductLineId()} 未配置业务地图：${businessMapPath}`);
+  }
   const devicePool = String(monkey.device_pool || payload.devicePool || payload.quality?.device_pool || 'ios-default').trim();
   const pool = getQualityDevicePools().find((item: any) => item.value === devicePool) || getQualityDevicePools()[0];
   const selectedDevice = selectAvailableDeviceFromPool(pool, devicePool);
@@ -588,6 +620,15 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   }
   const sourceBuild = String(app.build || payload.buildNumber || payload.sourceBuildNumber || '').trim();
   if (!sourceBuild) throw new Error('app.build 或 buildNumber 不能为空');
+  const appBundleId = String(
+    app.bundle_id
+    || (currentProductLineId() === 'nn' ? process.env.QA_APP_BUNDLE_ID : '')
+    || authService.findProductLine(currentProductLineId())?.bundleId
+    || (currentProductLineId() === 'nn' ? 'com.nndev.im' : '')
+  ).trim();
+  if (!appBundleId) {
+    throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Bundle ID，无法触发自动质检`);
+  }
   const durationMinutes = Number(monkey.duration_minutes || payload.durationMinutes || 120);
   const durationSeconds = Math.max(1, Math.round(durationMinutes * 60));
   const wdaUrl = buildWdaUrl(deviceKey, devicePool);
@@ -627,7 +668,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     QUALITY_RUNNER: `local-ios-device-${suite}`,
     QA_RUNNER_MODE: `local-usb-${suite}`,
     PLATFORM_TASK_ID: String(platformTask?.id || payload.platformTaskId || ''),
-    APP_BUNDLE_ID: String(app.bundle_id || process.env.QA_APP_BUNDLE_ID || 'com.nndev.im'),
+    APP_BUNDLE_ID: appBundleId,
     SKIP_APP_INSTALL: app.skip_install || payload.skipAppInstall ? '1' : '0',
     WDA_URL: wdaUrl,
     WDA_AUTO_START: String(process.env.QA_WDA_AUTO_START || '1'),
@@ -645,7 +686,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     MONKEY_FORBIDDEN_TEXTS: String(monkey.text_blacklist || process.env.QA_MONKEY_FORBIDDEN_TEXTS || ''),
     MONKEY_FORBIDDEN_PAGE_TEXTS: String(monkey.page_blacklist || process.env.QA_MONKEY_FORBIDDEN_PAGE_TEXTS || ''),
     MONKEY_BUSINESS_AWARE: suite === 'monkey' || suite === 'business_flow' ? '1' : '0',
-    MONKEY_BUSINESS_MAP_PATH: path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json'),
+    MONKEY_BUSINESS_MAP_PATH: businessMapPath,
     MONKEY_BUSINESS_DOMAINS: String(monkey.business_domains || 'login,im,community,voice_room,profile,playwith'),
     MONKEY_GUARDED_ACTION_POLICY: 'read_only',
     BUSINESS_FLOW_PLAN_JSON: suite === 'business_flow' ? JSON.stringify(payload.businessFlowPlan || payload.business_flow_plan || {}) : '',

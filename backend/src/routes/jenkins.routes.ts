@@ -22,8 +22,9 @@ import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
 import { platformConfigService } from '../services/PlatformConfigService';
 import { requireAnyRole, requireRole } from '../middleware/auth';
-import { currentProductLineId } from '../services/ProductLineContext';
+import { currentProductLineId, currentProjectId, runWithProductLine } from '../services/ProductLineContext';
 import { PRODUCT_LINE_CONFIG_KEYS, productLineConfigService } from '../services/ProductLineConfigService';
+import { authService } from '../services/AuthService';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -87,16 +88,16 @@ const RELEASE_SYNC_INTERVAL_MS = Math.max(15000, Number(process.env.JENKINS_RELE
 const RELEASE_SYNC_SCAN_LIMIT = Math.min(80, Math.max(10, Number(process.env.JENKINS_RELEASE_SYNC_SCAN_LIMIT || 40) || 40));
 const RELEASE_SYNC_CONCURRENCY = Math.min(8, Math.max(1, Number(process.env.JENKINS_RELEASE_SYNC_CONCURRENCY || 4) || 4));
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
-const QUALITY_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'quality-device-pools.json');
-const LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH = path.join(DATA_DIR, 'sonic-device-pools.json');
-const BUILD_FAILURE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-failure-analysis.json');
-const BUILD_DSYM_SYNC_CACHE_PATH = path.join(DATA_DIR, 'jenkins-build-dsym-sync.json');
-const PACKAGE_SIZE_ANALYSIS_CACHE_PATH = path.join(DATA_DIR, 'jenkins-package-size-analysis.json');
-const TESTFLIGHT_DISTRIBUTION_CACHE_PATH = path.join(DATA_DIR, 'jenkins-testflight-distribution.json');
-const APPSTORE_RELEASE_CACHE_PATH = path.join(DATA_DIR, 'jenkins-appstore-release.json');
-const RELEASE_REQUEST_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-requests.json');
-const RELEASE_ORDER_CACHE_PATH = path.join(DATA_DIR, 'jenkins-release-orders.json');
-const JENKINS_BRANCH_CACHE_PATH = path.join(DATA_DIR, 'jenkins-branches.json');
+const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
+const LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE = 'sonic-device-pools.json';
+const BUILD_FAILURE_ANALYSIS_CACHE_FILE = 'jenkins-build-failure-analysis.json';
+const BUILD_DSYM_SYNC_CACHE_FILE = 'jenkins-build-dsym-sync.json';
+const PACKAGE_SIZE_ANALYSIS_CACHE_FILE = 'jenkins-package-size-analysis.json';
+const TESTFLIGHT_DISTRIBUTION_CACHE_FILE = 'jenkins-testflight-distribution.json';
+const APPSTORE_RELEASE_CACHE_FILE = 'jenkins-appstore-release.json';
+const RELEASE_REQUEST_CACHE_FILE = 'jenkins-release-requests.json';
+const RELEASE_ORDER_CACHE_FILE = 'jenkins-release-orders.json';
+const JENKINS_BRANCH_CACHE_FILE = 'jenkins-branches.json';
 const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
 const fileHandler = new FileHandlerService();
@@ -105,7 +106,7 @@ const podService = new PodService();
 const BUILD_DSYM_SYNC_RUNNING = new Set<string>();
 const TESTFLIGHT_DISTRIBUTION_RUNNING = new Set<string>();
 const APPSTORE_RELEASE_RUNNING = new Set<string>();
-let RELEASE_SYNC_RUNNING = false;
+const RELEASE_SYNC_RUNNING = new Set<string>();
 const ASC_API_BASE = 'https://api.appstoreconnect.apple.com/v1';
 const TESTFLIGHT_DISTRIBUTION_POLL_INTERVAL_MS = Math.max(
   5000,
@@ -116,6 +117,28 @@ const TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS = Math.max(
   Number(process.env.TESTFLIGHT_DISTRIBUTION_MAX_ATTEMPTS || 80) || 80,
 );
 const APPSTORE_RELEASE_APPROVED_STATUSES = new Set(['pending_release', 'ready_for_distribution', 'ready_for_sale']);
+
+function productLineDataDir() {
+  const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(DATA_DIR, 'product-lines', safeProductLineId);
+}
+
+function productLineDataPath(fileName: string) {
+  return path.join(productLineDataDir(), fileName);
+}
+
+function readableProductLineDataPath(fileName: string, legacyFileName = fileName) {
+  const scopedPath = productLineDataPath(fileName);
+  if (fs.existsSync(scopedPath)) return scopedPath;
+  const legacyPath = path.join(DATA_DIR, legacyFileName);
+  return currentProductLineId() === 'nn' && fs.existsSync(legacyPath) ? legacyPath : scopedPath;
+}
+
+function ensureProductLineDataDir() {
+  const directory = productLineDataDir();
+  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+  return directory;
+}
 
 const ENV_FILE_CANDIDATES = [
   path.resolve(process.cwd(), 'backend/.env'),
@@ -188,14 +211,17 @@ async function sendWeChatRobotMarkdown(content: string) {
 }
 
 function buildAppStoreReleaseApprovedMessage(jenkinsBuildNumber: number, release: any) {
+  const productLine = authService.findProductLine(currentProductLineId());
+  const productName = String(productLine?.name || currentProductLineId()).trim();
+  const bundleId = String(productLine?.bundleId || '-').trim();
   const appVersion = String(release?.appVersion || '-');
   const channelBuildNumber = String(release?.buildNumber || '-');
   const branchName = String(release?.branchName || '-');
   const statusText = appStoreReleaseApprovedTitle(String(release?.status || ''));
-  return `🎉 NNIM iOS 苹果商店包审核通过
+  return `🎉 ${productName} iOS 苹果商店包审核通过
 
 APP版本: ${appVersion}
-Bundle ID: com.nnhuyu.im
+Bundle ID: ${bundleId}
 发布渠道: AppStore
 Jenkins构建号: ${jenkinsBuildNumber}
 苹果构建号: ${channelBuildNumber}
@@ -233,7 +259,7 @@ function normalizeQualitySuite(value?: string) {
 
 function readBusinessFlowPresetFeatures() {
   try {
-    const presetPath = path.join(getPlatformRootDir(), 'config', 'nnios-business-flow-presets.json');
+    const presetPath = productLineQualityConfigPath('business-flow-presets.json');
     const parsed = JSON.parse(fs.readFileSync(presetPath, 'utf-8'));
     return Array.isArray(parsed?.features) ? parsed.features : [];
   } catch {
@@ -332,7 +358,7 @@ function getSonicConfig() {
     apiProxyTarget: (getRuntimeEnv('SONIC_API_PROXY_TARGET') || 'http://127.0.0.1:8094').replace(/\/$/, ''),
     webProxyTarget: (getRuntimeEnv('SONIC_WEB_PROXY_TARGET') || 'http://127.0.0.1:3002').replace(/\/$/, ''),
     token: getRuntimeEnv('SONIC_TOKEN') || '',
-    projectId: getRuntimeEnv('SONIC_PROJECT_ID') || 'nn-ios',
+    projectId: getRuntimeEnv('SONIC_PROJECT_ID') || currentProjectId(),
     testPlanId: getRuntimeEnv('SONIC_TEST_PLAN_ID') || 'smoke',
   };
 }
@@ -351,7 +377,32 @@ function getPlatformRootDir() {
   return matched || process.cwd();
 }
 
-function getNniosRepoLocalDir() {
+function productLineQualityConfigPath(fileName: 'business-map.json' | 'business-flow-presets.json') {
+  if (currentProductLineId() === 'nn') {
+    const legacyName = fileName === 'business-map.json'
+      ? 'nnios-business-map.json'
+      : 'nnios-business-flow-presets.json';
+    return path.join(getPlatformRootDir(), 'config', legacyName);
+  }
+  const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(getPlatformRootDir(), 'config', 'product-lines', safeProductLineId, fileName);
+}
+
+function requireProductLineBusinessMap(testSuite: string) {
+  const configuredPath = currentProductLineId() === 'nn'
+    ? String(getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH') || '').trim()
+    : '';
+  const businessMapPath = configuredPath || productLineQualityConfigPath('business-map.json');
+  if ((testSuite === 'monkey' || testSuite === 'business_flow') && !fs.existsSync(businessMapPath)) {
+    throw new JenkinsReleaseError(`当前产品线 ${currentProductLineId()} 未配置业务地图：${businessMapPath}`, 400);
+  }
+  return businessMapPath;
+}
+
+function getMainRepoLocalDir() {
+  if (currentProductLineId() !== 'nn') {
+    return productLineConfigService.mainProjectDirectory(currentProductLineId());
+  }
   const configured = String(getRuntimeEnv('NNIOS_REPO_LOCAL') || '').trim();
   if (configured) return path.resolve(configured);
 
@@ -414,13 +465,20 @@ function getMgitPublishRepos(repoDir: string) {
 
 function repoUrlForMgitRepo(repo: string) {
   if (/^(?:https?:\/\/|git@|ssh:\/\/)/i.test(repo.trim())) return repo.trim();
-  const base = defaultRepoUrl().replace(/\/nnios\.git$/i, '');
-  return `${base}/${repo}.git`;
+  const config = productLineConfigService.podxConfig(currentProductLineId());
+  const configuredUrl = config.publishRepoUrls.find((url) => path.basename(url).replace(/\.git$/i, '') === repo);
+  if (configuredUrl) return configuredUrl;
+  if (config.gitBaseUrl && config.targetName) {
+    return `${config.gitBaseUrl.replace(/\/+$/, '')}/${config.targetName}/${repo}.git`;
+  }
+  throw new Error(`当前产品线 ${currentProductLineId()} 无法解析仓库地址：${repo}`);
 }
 
 function getCurrentProductLineMgitPublishRepos(repoDir: string, productLineId: string) {
   const repos = productLineConfigService.podxConfig(productLineId).publishRepos;
-  return repos.length > 0 ? repos : getMgitPublishRepos(repoDir);
+  if (repos.length > 0) return repos;
+  if (productLineId === 'nn') return getMgitPublishRepos(repoDir);
+  throw new Error(`当前产品线 ${productLineId} 未配置发布仓库`);
 }
 
 async function remoteBranchExists(repo: string, branch: string) {
@@ -512,9 +570,12 @@ function normalizeQualityDevicePool(pool: any): QualityDevicePool | null {
 
 function getQualityDevicePools() {
   try {
-    const configPath = fs.existsSync(QUALITY_DEVICE_POOLS_CONFIG_PATH)
-      ? QUALITY_DEVICE_POOLS_CONFIG_PATH
-      : LEGACY_SONIC_DEVICE_POOLS_CONFIG_PATH;
+    const scopedConfigPath = productLineDataPath(QUALITY_DEVICE_POOLS_CONFIG_FILE);
+    const legacyQualityPath = path.join(DATA_DIR, QUALITY_DEVICE_POOLS_CONFIG_FILE);
+    const legacySonicPath = path.join(DATA_DIR, LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE);
+    const configPath = fs.existsSync(legacyQualityPath)
+      ? legacyQualityPath
+      : (fs.existsSync(legacySonicPath) ? legacySonicPath : scopedConfigPath);
     if (fs.existsSync(configPath)) {
       const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       const savedPools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
@@ -855,10 +916,8 @@ async function ensureQualityJenkinsJobConfigFresh() {
 }
 
 function saveQualityDevicePools(pools: QualityDevicePool[]) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  fs.writeFileSync(QUALITY_DEVICE_POOLS_CONFIG_PATH, JSON.stringify({
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(path.join(DATA_DIR, QUALITY_DEVICE_POOLS_CONFIG_FILE), JSON.stringify({
     devicePools: pools,
     updatedAt: new Date().toISOString(),
   }, null, 2));
@@ -1034,133 +1093,148 @@ function readJsonFile(filePath: string): any | null {
   }
 }
 
+function buildCacheKey(buildNumber: number) {
+  return `${currentProductLineId()}:${buildNumber}`;
+}
+
+function readBuildCacheValue(values: any, buildNumber: number) {
+  if (!values || typeof values !== 'object') return null;
+  return values[buildCacheKey(buildNumber)]
+    || (currentProductLineId() === 'nn' ? values[String(buildNumber)] : null)
+    || null;
+}
+
 function readBuildFailureAnalysisCache() {
-  const cache = readJsonFile(BUILD_FAILURE_ANALYSIS_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(BUILD_FAILURE_ANALYSIS_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { analyses: {} };
 }
 
 function getSavedBuildFailureAnalysis(buildNumber: number) {
   const cache = readBuildFailureAnalysisCache();
-  return cache?.analyses?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.analyses, buildNumber);
 }
 
 function saveBuildFailureAnalysis(buildNumber: number, analysis: any, context: any = {}) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const cache = readBuildFailureAnalysisCache();
+  const key = buildCacheKey(buildNumber);
   const nextCache = {
     ...cache,
     analyses: {
       ...(cache.analyses || {}),
-      [String(buildNumber)]: {
+      [key]: {
+        productLineId: currentProductLineId(),
         analysis,
         context,
         updatedAt: new Date().toISOString(),
       },
     },
   };
-  const tmpPath = `${BUILD_FAILURE_ANALYSIS_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(BUILD_FAILURE_ANALYSIS_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
-  fs.renameSync(tmpPath, BUILD_FAILURE_ANALYSIS_CACHE_PATH);
-  return nextCache.analyses[String(buildNumber)];
+  fs.renameSync(tmpPath, cachePath);
+  return nextCache.analyses[key];
 }
 
 function readBuildDsymSyncCache() {
-  const cache = readJsonFile(BUILD_DSYM_SYNC_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(BUILD_DSYM_SYNC_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { builds: {} };
 }
 
 function getSavedBuildDsymSync(buildNumber: number) {
   const cache = readBuildDsymSyncCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function saveBuildDsymSync(buildNumber: number, sync: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const cache = readBuildDsymSyncCache();
+  const key = buildCacheKey(buildNumber);
   const nextCache = {
     ...cache,
     builds: {
       ...(cache.builds || {}),
-      [String(buildNumber)]: {
+      [key]: {
         ...sync,
+        productLineId: currentProductLineId(),
         updatedAt: new Date().toISOString(),
       },
     },
   };
-  const tmpPath = `${BUILD_DSYM_SYNC_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(BUILD_DSYM_SYNC_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
-  fs.renameSync(tmpPath, BUILD_DSYM_SYNC_CACHE_PATH);
-  return nextCache.builds[String(buildNumber)];
+  fs.renameSync(tmpPath, cachePath);
+  return nextCache.builds[key];
 }
 
 function readPackageSizeAnalysisCache() {
-  const cache = readJsonFile(PACKAGE_SIZE_ANALYSIS_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(PACKAGE_SIZE_ANALYSIS_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { builds: {} };
 }
 
 function getSavedPackageSizeAnalysis(buildNumber: number) {
   const cache = readPackageSizeAnalysisCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function savePackageSizeAnalysis(buildNumber: number, analysis: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const cache = readPackageSizeAnalysisCache();
+  const key = buildCacheKey(buildNumber);
   const updatedAt = new Date().toISOString();
   const nextCache = {
     ...cache,
     builds: {
       ...(cache.builds || {}),
-      [String(buildNumber)]: {
+      [key]: {
         ...analysis,
+        productLineId: currentProductLineId(),
         cached: false,
         updatedAt,
       },
     },
   };
-  const tmpPath = `${PACKAGE_SIZE_ANALYSIS_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(PACKAGE_SIZE_ANALYSIS_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
-  fs.renameSync(tmpPath, PACKAGE_SIZE_ANALYSIS_CACHE_PATH);
-  return nextCache.builds[String(buildNumber)];
+  fs.renameSync(tmpPath, cachePath);
+  return nextCache.builds[key];
 }
 
 function readTestFlightDistributionCache() {
-  const cache = readJsonFile(TESTFLIGHT_DISTRIBUTION_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(TESTFLIGHT_DISTRIBUTION_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { builds: {} };
 }
 
 function getSavedTestFlightDistribution(buildNumber: number) {
   const cache = readTestFlightDistributionCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function saveTestFlightDistribution(buildNumber: number, distribution: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const cache = readTestFlightDistributionCache();
-  const previous = cache?.builds?.[String(buildNumber)] || {};
+  const key = buildCacheKey(buildNumber);
+  const previous = readBuildCacheValue(cache?.builds, buildNumber) || {};
   const nextCache = {
     ...cache,
     builds: {
       ...(cache.builds || {}),
-      [String(buildNumber)]: {
+      [key]: {
         ...previous,
         ...distribution,
+        productLineId: currentProductLineId(),
         updatedAt: new Date().toISOString(),
       },
     },
   };
-  const tmpPath = `${TESTFLIGHT_DISTRIBUTION_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(TESTFLIGHT_DISTRIBUTION_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
-  fs.renameSync(tmpPath, TESTFLIGHT_DISTRIBUTION_CACHE_PATH);
-  const nextDistribution = nextCache.builds[String(buildNumber)];
+  fs.renameSync(tmpPath, cachePath);
+  const nextDistribution = nextCache.builds[key];
   const distributionStatus = String(nextDistribution?.status || '');
   const eventStatus = distributionStatus === 'distributed'
     ? 'success'
@@ -1185,25 +1259,25 @@ function saveTestFlightDistribution(buildNumber: number, distribution: any) {
 }
 
 function readAppStoreReleaseCache() {
-  const cache = readJsonFile(APPSTORE_RELEASE_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(APPSTORE_RELEASE_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { builds: {} };
 }
 
 function getSavedAppStoreRelease(buildNumber: number) {
   const cache = readAppStoreReleaseCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function saveAppStoreRelease(buildNumber: number, release: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const cache = readAppStoreReleaseCache();
-  const previous = cache?.builds?.[String(buildNumber)] || {};
+  const key = buildCacheKey(buildNumber);
+  const previous = readBuildCacheValue(cache?.builds, buildNumber) || {};
   const updatedAt = new Date().toISOString();
   const nextRelease = {
     ...previous,
     ...release,
+    productLineId: currentProductLineId(),
     updatedAt,
   };
   const shouldNotifyApproved = shouldNotifyAppStoreReleaseApproved(previous, nextRelease);
@@ -1214,12 +1288,13 @@ function saveAppStoreRelease(buildNumber: number, release: any) {
     ...cache,
     builds: {
       ...(cache.builds || {}),
-      [String(buildNumber)]: nextRelease,
+      [key]: nextRelease,
     },
   };
-  const tmpPath = `${APPSTORE_RELEASE_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(APPSTORE_RELEASE_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(nextCache, null, 2));
-  fs.renameSync(tmpPath, APPSTORE_RELEASE_CACHE_PATH);
+  fs.renameSync(tmpPath, cachePath);
   const nextStatus = String(nextRelease?.status || '');
   const eventStatus = ['ready_for_sale', 'ready_for_distribution'].includes(nextStatus)
     ? 'success'
@@ -1244,21 +1319,20 @@ function saveAppStoreRelease(buildNumber: number, release: any) {
   if (shouldNotifyApproved) {
     notifyAppStoreReleaseApproved(buildNumber, nextRelease);
   }
-  return nextCache.builds[String(buildNumber)];
+  return nextCache.builds[key];
 }
 
 function readReleaseRequestCache() {
-  const cache = readJsonFile(RELEASE_REQUEST_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(RELEASE_REQUEST_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { requests: [], builds: {} };
 }
 
 function writeReleaseRequestCache(cache: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  const tmpPath = `${RELEASE_REQUEST_CACHE_PATH}.tmp`;
+  ensureProductLineDataDir();
+  const cachePath = productLineDataPath(RELEASE_REQUEST_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(cache, null, 2));
-  fs.renameSync(tmpPath, RELEASE_REQUEST_CACHE_PATH);
+  fs.renameSync(tmpPath, cachePath);
 }
 
 function saveReleaseRequestArchive(request: any) {
@@ -1266,6 +1340,7 @@ function saveReleaseRequestArchive(request: any) {
   const requests = Array.isArray(cache.requests) ? cache.requests : [];
   const nextRequest = {
     id: crypto.randomUUID(),
+    productLineId: currentProductLineId(),
     branch: normalizeBranchName(String(request.branch || '')),
     deployTarget: normalizeDeployTarget(String(request.deployTarget || '')),
     releaseNotes: normalizeTestFlightWhatsNew(request.releaseNotes),
@@ -1283,14 +1358,14 @@ function saveReleaseRequestArchive(request: any) {
 
 function getArchivedReleaseRequestForBuild(buildNumber: number) {
   const cache = readReleaseRequestCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function matchReleaseRequestForBuild(build: any, branchName: string, publishChannel: string) {
   const buildNumber = Number(build?.number);
   if (!Number.isFinite(buildNumber) || buildNumber <= 0) return null;
   const cache = readReleaseRequestCache();
-  const existing = cache?.builds?.[String(buildNumber)];
+  const existing = readBuildCacheValue(cache?.builds, buildNumber);
   if (existing) return existing;
 
   const normalizedBranch = normalizeBranchName(branchName || '');
@@ -1323,24 +1398,23 @@ function matchReleaseRequestForBuild(build: any, branchName: string, publishChan
     requests: nextRequests,
     builds: {
       ...(cache.builds || {}),
-      [String(buildNumber)]: archived,
+      [buildCacheKey(buildNumber)]: archived,
     },
   });
   return archived;
 }
 
 function readReleaseOrderCache() {
-  const cache = readJsonFile(RELEASE_ORDER_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(RELEASE_ORDER_CACHE_FILE));
   return cache && typeof cache === 'object' ? cache : { orders: [], builds: {} };
 }
 
 function writeReleaseOrderCache(cache: any) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  const tmpPath = `${RELEASE_ORDER_CACHE_PATH}.tmp`;
+  ensureProductLineDataDir();
+  const cachePath = productLineDataPath(RELEASE_ORDER_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(cache, null, 2));
-  fs.renameSync(tmpPath, RELEASE_ORDER_CACHE_PATH);
+  fs.renameSync(tmpPath, cachePath);
 }
 
 function releaseOrderEvent(type: string, title: string, status: string, detail?: string, payload?: any) {
@@ -1361,6 +1435,7 @@ function createReleaseOrder(input: any) {
   const normalizedBranch = normalizeBranchName(String(input.branch || ''));
   const releaseOrder = {
     id: crypto.randomUUID(),
+    productLineId: currentProductLineId(),
     branch: normalizedBranch,
     deployTarget: normalizedDeployTarget,
     appVersion: String(input.appVersion || appVersionFromReleaseBranch(normalizedBranch) || '').trim(),
@@ -1415,7 +1490,7 @@ function saveReleaseOrder(orderId: string, patch: any = {}, event?: any) {
   if (!updatedOrder) return null;
   const nextBuilds = { ...(cache.builds || {}) };
   if (updatedOrder.jenkinsBuildNumber) {
-    nextBuilds[String(updatedOrder.jenkinsBuildNumber)] = updatedOrder;
+    nextBuilds[buildCacheKey(Number(updatedOrder.jenkinsBuildNumber))] = updatedOrder;
   }
   writeReleaseOrderCache({
     ...cache,
@@ -1427,7 +1502,7 @@ function saveReleaseOrder(orderId: string, patch: any = {}, event?: any) {
 
 function getReleaseOrderForBuild(buildNumber: number) {
   const cache = readReleaseOrderCache();
-  return cache?.builds?.[String(buildNumber)] || null;
+  return readBuildCacheValue(cache?.builds, buildNumber);
 }
 
 function latestUnlinkedReleaseOrder(branchName: string, deployTarget: string, buildTimestamp: number) {
@@ -1498,22 +1573,21 @@ function updateReleaseOrderByBuild(buildNumber: number, patch: any, event?: any)
 }
 
 function readBranchCache() {
-  const cache = readJsonFile(JENKINS_BRANCH_CACHE_PATH);
+  const cache = readJsonFile(readableProductLineDataPath(JENKINS_BRANCH_CACHE_FILE));
   const branches = Array.isArray(cache?.branches) ? cache.branches : [];
   return branches.map((item: any) => normalizeBranchName(String(item || ''))).filter(Boolean);
 }
 
 function saveBranchCache(branches: string[]) {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  ensureProductLineDataDir();
   const uniqueBranches = Array.from(new Set(branches.map(normalizeBranchName).filter(Boolean))).sort(compareBranchOptions);
-  const tmpPath = `${JENKINS_BRANCH_CACHE_PATH}.tmp`;
+  const cachePath = productLineDataPath(JENKINS_BRANCH_CACHE_FILE);
+  const tmpPath = `${cachePath}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify({
     branches: uniqueBranches,
     updatedAt: new Date().toISOString(),
   }, null, 2));
-  fs.renameSync(tmpPath, JENKINS_BRANCH_CACHE_PATH);
+  fs.renameSync(tmpPath, cachePath);
   return uniqueBranches;
 }
 
@@ -2121,7 +2195,7 @@ function scheduleTestFlightDistribution(build: any, options: { attempt?: number 
   if (normalizeDeployTarget(build?.publishChannel) !== 'TestFlight') return;
   if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') return;
 
-  const cacheKey = String(buildNumber);
+  const cacheKey = `${currentProductLineId()}:${buildNumber}`;
   const saved = getSavedTestFlightDistribution(buildNumber);
   if (saved?.status === 'distributed' && saved?.externalBuildState === 'IN_BETA_TESTING') return;
   if (TESTFLIGHT_DISTRIBUTION_RUNNING.has(cacheKey)) return;
@@ -2258,7 +2332,7 @@ function scheduleAppStoreRelease(build: any, options: { attempt?: number } = {})
   if (normalizeDeployTarget(build?.publishChannel) !== 'AppStore') return;
   if (build?.building || String(build?.result || '').toUpperCase() !== 'SUCCESS') return;
 
-  const cacheKey = String(buildNumber);
+  const cacheKey = `${currentProductLineId()}:${buildNumber}`;
   const saved = getSavedAppStoreRelease(buildNumber);
   if (saved?.status === 'ready_for_sale' && saved?.reviewApprovalNotifiedAt) return;
   if (APPSTORE_RELEASE_RUNNING.has(cacheKey)) return;
@@ -2419,8 +2493,11 @@ function normalizeDSYMVersion(value?: string) {
   return String(value || '').trim();
 }
 
-function isMainAppDSYMName(appName: string) {
-  return ['NNIM', 'nnios', 'NN'].includes(String(appName || '').trim()) || /NNIM/i.test(appName);
+function defaultProcessName() {
+  const productLine = authService.findProductLine(currentProductLineId());
+  const configuredTarget = productLineConfigService.podxConfig(currentProductLineId()).targetName.trim();
+  const bundleProcessName = String(productLine?.bundleId || '').split('.').filter(Boolean).pop() || '';
+  return configuredTarget || bundleProcessName || String(productLine?.name || '').trim() || (currentProductLineId() === 'nn' ? 'NNIM' : '');
 }
 
 async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: string) {
@@ -2442,7 +2519,7 @@ async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: s
   const archiveDSYMPath = await fileHandler.identifyAndExtractDSYM(archivePath);
   const uuid = await fileHandler.extractUUID(archiveDSYMPath);
   const appInfo = await fileHandler.extractAppInfo(archiveDSYMPath);
-  const appName = isMainAppDSYMName(appInfo.appName) ? 'NNIM' : appInfo.appName;
+  const appName = appInfo.appName;
   const version = desiredVersion || appInfo.version;
   const existingByUuid = await storage.findByUUID(uuid);
   if (existingByUuid) {
@@ -2538,7 +2615,7 @@ async function linkExistingComponentDSYMsToAppVersion(dependencies: ThirdSdkDepe
 }
 
 async function syncAppStoreBuildDsyms(buildNumber: number, options: { force?: boolean } = {}) {
-  const cacheKey = String(buildNumber);
+  const cacheKey = `${currentProductLineId()}:${buildNumber}`;
   const existing = getSavedBuildDsymSync(buildNumber);
   if (!options.force && existing && ['success', 'partial', 'running'].includes(String(existing.status || ''))) {
     return existing;
@@ -2657,7 +2734,7 @@ function normalizeUuid(value?: string) {
 
 function findMainAppImage(report: any) {
   const images = Array.isArray(report?.usedImages) ? report.usedImages : [];
-  const procName = String(report?.procName || report?.app_name || 'NNIM');
+  const procName = String(report?.procName || report?.app_name || defaultProcessName());
   return images.find((image: any) => {
     const name = usedImageName(image);
     const imagePath = String(image?.path || '');
@@ -2769,7 +2846,7 @@ async function resolveSourceArchivePath(summary: any) {
 
 async function analyzeIpsHangStack(ipsPath: string, summary: any) {
   const stat = fs.statSync(ipsPath);
-  const cacheKey = `${ipsPath}:${stat.mtimeMs}:${summary?.sourceBuildNumber || ''}`;
+  const cacheKey = `${currentProductLineId()}:${ipsPath}:${stat.mtimeMs}:${summary?.sourceBuildNumber || ''}`;
   if (QUALITY_HANG_ANALYSIS_CACHE.has(cacheKey)) return QUALITY_HANG_ANALYSIS_CACHE.get(cacheKey);
 
   const report = parseIpsJson(fs.readFileSync(ipsPath, 'utf-8'));
@@ -2825,7 +2902,7 @@ async function analyzeIpsHangStack(ipsPath: string, summary: any) {
     event: terminationReasons.find((reason: string) => /WatchdogEvent/i.test(reason))?.replace(/^WatchdogEvent:\s*/i, '') || 'scene-update',
     reason: terminationReasons.find((reason: string) => /watchdog transgression|exhausted real/i.test(reason)) || '',
     captureTime: report?.captureTime || report?.timestamp || '',
-    process: report?.procName || report?.app_name || 'NNIM',
+    process: report?.procName || report?.app_name || defaultProcessName(),
     bundleId: report?.bundleID || report?.bundleId || '',
     version: report?.bundleShortVersion || report?.app_version || '',
     buildVersion: report?.bundleVersion || report?.build_version || '',
@@ -3495,8 +3572,8 @@ function extractErrorMessage(error: any, fallback: string) {
 
 function getGitCredentials() {
   return {
-    username: process.env.GIT_USERNAME || undefined,
-    password: process.env.GIT_PASSWORD || undefined,
+    username: productLineConfigService.get('GIT_USERNAME') || undefined,
+    password: productLineConfigService.get('GIT_PASSWORD') || undefined,
   };
 }
 
@@ -4736,8 +4813,9 @@ async function loadReleaseBuildForSync(jobPath: string, build: any) {
 }
 
 async function syncRecentReleaseBuilds(reason = 'timer') {
-  if (RELEASE_SYNC_RUNNING) return { skipped: true, reason: 'running' };
-  RELEASE_SYNC_RUNNING = true;
+  const productLineId = currentProductLineId();
+  if (RELEASE_SYNC_RUNNING.has(productLineId)) return { skipped: true, reason: 'running' };
+  RELEASE_SYNC_RUNNING.add(productLineId);
   const startedAt = Date.now();
   try {
     const jobPath = encodeJobPath(defaultJobName());
@@ -4787,17 +4865,28 @@ async function syncRecentReleaseBuilds(reason = 'timer') {
       syncedAt: new Date().toISOString(),
     };
   } finally {
-    RELEASE_SYNC_RUNNING = false;
+    RELEASE_SYNC_RUNNING.delete(productLineId);
   }
+}
+
+async function syncAllProductLineReleaseBuilds(reason: string) {
+  const productLines = authService.listProductLines();
+  await Promise.allSettled(productLines.map((productLine) => runWithProductLine({
+    id: productLine.id,
+    key: productLine.key,
+    name: productLine.name,
+    projectId: productLine.projectId,
+    role: 'admin',
+  }, () => syncRecentReleaseBuilds(reason))));
 }
 
 function startReleaseStatusSyncer() {
   if (String(process.env.JENKINS_RELEASE_SYNC_DISABLED || '').toLowerCase() === 'true') return;
   setTimeout(() => {
-    void syncRecentReleaseBuilds('startup');
+    void syncAllProductLineReleaseBuilds('startup');
   }, 5000).unref?.();
   setInterval(() => {
-    void syncRecentReleaseBuilds('timer');
+    void syncAllProductLineReleaseBuilds('timer');
   }, RELEASE_SYNC_INTERVAL_MS).unref?.();
 }
 
@@ -6077,7 +6166,8 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
     const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
     const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';
     const productLineId = currentProductLineId();
-    const repoDir = getNniosRepoLocalDir();
+    const repoDir = getMainRepoLocalDir();
+    const mainRepoName = productLineConfigService.podxConfig(productLineId).publishMainRepo || '主仓库';
 
     if (!targetBranch) {
       res.status(400).json({
@@ -6096,7 +6186,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
     if (!fs.existsSync(path.join(repoDir, '.git'))) {
       res.status(400).json({
         success: false,
-        error: `nnios 工作区不存在或不是 Git 仓库：${repoDir}`,
+        error: `${mainRepoName} 工作区不存在或不是 Git 仓库：${repoDir}`,
       });
       return;
     }
@@ -6178,7 +6268,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
   } catch (error: any) {
     res.status(502).json({
       success: false,
-      error: extractErrorMessage(error, '拉取 nnios 新分支失败'),
+      error: extractErrorMessage(error, '拉取主仓库新分支失败'),
     });
   }
 });
@@ -6318,8 +6408,16 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     }
     const forceInstalledProductionApp = publishChannel === 'TestFlight' || publishChannel === 'AppStore';
     const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
-    const defaultAppBundleId = skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im';
+    const productBundleId = authService.findProductLine(currentProductLineId())?.bundleId;
+    const defaultAppBundleId = productBundleId || (currentProductLineId() === 'nn' ? (skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im') : '');
     const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
+    if (!appBundleId) {
+      res.status(400).json({
+        success: false,
+        error: `当前产品线 ${currentProductLineId()} 未配置 Bundle ID，无法触发自动质检`,
+      });
+      return;
+    }
     const packageUrl = skipInstall ? `skip-install:${appBundleId}` : rawPackageUrl;
     if (!QA_TEST_SUITES.has(testSuite)) {
       res.status(400).json({
@@ -6392,8 +6490,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, businessFlowPlan },
     });
     const crumb = await getCrumb();
-    const monkeyBusinessMapPath = getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH')
-      || path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json');
+    const monkeyBusinessMapPath = requireProductLineBusinessMap(testSuite);
     const params = new URLSearchParams({
       SOURCE_JOB: defaultJobName(),
       SOURCE_BUILD_NUMBER: buildNumber,

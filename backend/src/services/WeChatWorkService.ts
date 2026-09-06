@@ -1,5 +1,7 @@
 import axios from 'axios';
 import logger from '../utils/logger';
+import { productLineConfigService } from './ProductLineConfigService';
+import { currentProductLineId } from './ProductLineContext';
 
 interface WeChatWorkConfig {
   corpId: string;
@@ -19,15 +21,13 @@ interface CrashReportMessage {
 }
 
 export class WeChatWorkService {
-  private config: WeChatWorkConfig;
-  private accessToken: string | null = null;
-  private tokenExpireTime: number = 0;
+  private tokenCache = new Map<string, { accessToken: string; expireTime: number }>();
 
-  constructor() {
-    this.config = {
-      corpId: process.env.WECHAT_WORK_CORP_ID || '',
-      agentId: process.env.WECHAT_WORK_AGENT_ID || '',
-      secret: process.env.WECHAT_WORK_SECRET || '',
+  private getConfig(): WeChatWorkConfig {
+    return {
+      corpId: productLineConfigService.get('WECHAT_WORK_CORP_ID'),
+      agentId: productLineConfigService.get('WECHAT_WORK_AGENT_ID'),
+      secret: productLineConfigService.get('WECHAT_WORK_SECRET'),
     };
   }
 
@@ -35,28 +35,35 @@ export class WeChatWorkService {
    * 获取企业微信 Access Token
    */
   private async getAccessToken(): Promise<string> {
+    const productLineId = currentProductLineId();
+    const cached = this.tokenCache.get(productLineId);
     // 如果 token 还有效，直接返回
-    if (this.accessToken && Date.now() < this.tokenExpireTime) {
-      return this.accessToken;
+    if (cached?.accessToken && Date.now() < cached.expireTime) {
+      return cached.accessToken;
     }
 
     try {
+      const config = this.getConfig();
+      if (!config.corpId || !config.secret) throw new Error('当前产品线企业微信 Corp ID 或 Secret 未配置');
       const response = await axios.get(
         `https://qyapi.weixin.qq.com/cgi-bin/gettoken`,
         {
           params: {
-            corpid: this.config.corpId,
-            corpsecret: this.config.secret,
+            corpid: config.corpId,
+            corpsecret: config.secret,
           },
         }
       );
 
       if (response.data.errcode === 0) {
-        this.accessToken = response.data.access_token;
-        // 提前 5 分钟过期
-        this.tokenExpireTime = Date.now() + (response.data.expires_in - 300) * 1000;
-        logger.info('企业微信 Access Token 获取成功');
-        return this.accessToken!;
+        const accessToken = String(response.data.access_token || '');
+        this.tokenCache.set(productLineId, {
+          accessToken,
+          // 提前 5 分钟过期
+          expireTime: Date.now() + (response.data.expires_in - 300) * 1000,
+        });
+        logger.info('企业微信 Access Token 获取成功', { productLineId });
+        return accessToken;
       } else {
         throw new Error(`获取 Access Token 失败: ${response.data.errmsg}`);
       }
@@ -77,13 +84,14 @@ export class WeChatWorkService {
   ): Promise<void> {
     try {
       const token = await this.getAccessToken();
+      const config = this.getConfig();
 
       const message = {
         touser: toUser || '@all',
         toparty: toParty,
         totag: toTag,
         msgtype: 'text',
-        agentid: this.config.agentId,
+        agentid: config.agentId,
         text: {
           content,
         },
@@ -120,13 +128,14 @@ export class WeChatWorkService {
   ): Promise<void> {
     try {
       const token = await this.getAccessToken();
+      const config = this.getConfig();
 
       // 构建文本卡片消息
       const message = {
         touser: toUser || '@all',
         toparty: toParty,
         msgtype: 'textcard',
-        agentid: this.config.agentId,
+        agentid: config.agentId,
         textcard: {
           title: `🔴 崩溃报告 - ${this.getSeverityText(report.severity)}`,
           description: this.buildCardDescription(report),
@@ -165,6 +174,7 @@ export class WeChatWorkService {
   ): Promise<void> {
     try {
       const token = await this.getAccessToken();
+      const config = this.getConfig();
 
       const markdown = this.buildMarkdownContent(report);
 
@@ -172,7 +182,7 @@ export class WeChatWorkService {
         touser: toUser || '@all',
         toparty: toParty,
         msgtype: 'markdown',
-        agentid: this.config.agentId,
+        agentid: config.agentId,
         markdown: {
           content: markdown,
         },
@@ -286,7 +296,8 @@ export class WeChatWorkService {
    * 检查配置是否完整
    */
   isConfigured(): boolean {
-    return !!(this.config.corpId && this.config.agentId && this.config.secret);
+    const config = this.getConfig();
+    return !!(config.corpId && config.agentId && config.secret);
   }
 }
 

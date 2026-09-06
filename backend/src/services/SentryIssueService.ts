@@ -11,6 +11,8 @@ import {
 } from './SentryCookieJar';
 import logger from '../utils/logger';
 import { crashGovernanceService } from './CrashGovernanceService';
+import { productLineConfigService } from './ProductLineConfigService';
+import { currentProductLineId, getProductLineContext } from './ProductLineContext';
 
 type SentryHTTPResponse = {
   statusCode: number;
@@ -58,13 +60,26 @@ export interface SentryOriginalCrashFile {
 }
 
 export class SentryIssueService {
-  private readonly target = (process.env.SENTRY_PROXY_TARGET || 'http://172.31.2.239:9000').replace(/\/+$/, '');
-  private readonly autoLogin = process.env.SENTRY_AUTO_LOGIN === 'true';
-  private readonly username = process.env.SENTRY_LOGIN_USERNAME || '';
-  private readonly password = process.env.SENTRY_LOGIN_PASSWORD || '';
-  private loginPromise: Promise<void> | null = null;
-  private lastLoginAt = 0;
+  private loginStates = new Map<string, { loginPromise: Promise<void> | null; lastLoginAt: number }>();
   private readonly sessionTtlMs = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
+
+  private configValue(key: 'SENTRY_PROXY_TARGET' | 'SENTRY_ORG' | 'SENTRY_PROJECT' | 'SENTRY_AUTO_LOGIN' | 'SENTRY_LOGIN_USERNAME' | 'SENTRY_LOGIN_PASSWORD', legacyFallback = '') {
+    return productLineConfigService.get(key) || (currentProductLineId() === 'nn' ? legacyFallback : '');
+  }
+
+  private target() {
+    return this.configValue('SENTRY_PROXY_TARGET', process.env.SENTRY_PROXY_TARGET || 'http://172.31.2.239:9000').replace(/\/+$/, '');
+  }
+
+  private loginState() {
+    const productLineId = currentProductLineId();
+    let state = this.loginStates.get(productLineId);
+    if (!state) {
+      state = { loginPromise: null, lastLoginAt: 0 };
+      this.loginStates.set(productLineId, state);
+    }
+    return state;
+  }
 
   async listNewIssues(options: {
     organization?: string;
@@ -76,8 +91,9 @@ export class SentryIssueService {
   } = {}): Promise<SentryIssueSummary[]> {
     await this.ensureLogin();
 
-    const organization = options.organization || process.env.SENTRY_ORG || 'sentry';
-    const project = options.project || process.env.SENTRY_PROJECT || 'nn-ios';
+    const organization = options.organization || this.configValue('SENTRY_ORG', process.env.SENTRY_ORG || 'sentry');
+    const project = options.project || this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'nn-ios');
+    if (!organization || !project) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Sentry Organization 或 Project`);
     const period = options.period || '24h';
     const limit = Math.min(Math.max(options.limit || 5, 1), 20);
     const query = options.query || this.buildDefaultIssueQuery();
@@ -222,8 +238,9 @@ export class SentryIssueService {
       return issueId;
     }
 
-    const organization = process.env.SENTRY_ORG || 'sentry';
-    const project = process.env.SENTRY_PROJECT || 'nn-ios';
+    const organization = this.configValue('SENTRY_ORG', process.env.SENTRY_ORG || 'sentry');
+    const project = this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'nn-ios');
+    if (!organization || !project) return issueId;
     const queryCandidates = [
       `issue:${issueId}`,
       `shortId:${issueId}`,
@@ -332,7 +349,10 @@ export class SentryIssueService {
     const release = this.tagValue(event, 'release') || issue.maxAppVersion || issue.appVersionRange || '';
     const dist = this.tagValue(event, 'dist') || '';
     const bundleId = this.tagValue(event, 'bundle_id') || '';
-    const processName = bundleId.split('.').pop() || 'NNIM';
+    const processName = bundleId.split('.').pop()
+      || productLineConfigService.podxConfig().targetName
+      || getProductLineContext()?.name
+      || 'App';
     const osName = osContext.name || this.tagValue(event, 'os.name') || 'iOS';
     const osVersion = osContext.version || this.tagValue(event, 'os')?.replace(/^iOS\s+/i, '') || '';
     const osBuild = osContext.build || '';
@@ -662,19 +682,23 @@ export class SentryIssueService {
   }
 
   private async ensureLogin() {
-    if (!this.autoLogin || !this.username || !this.password) {
+    const autoLogin = this.configValue('SENTRY_AUTO_LOGIN', process.env.SENTRY_AUTO_LOGIN || '') === 'true';
+    const username = this.configValue('SENTRY_LOGIN_USERNAME', process.env.SENTRY_LOGIN_USERNAME || '');
+    const password = this.configValue('SENTRY_LOGIN_PASSWORD', process.env.SENTRY_LOGIN_PASSWORD || '');
+    if (!autoLogin || !username || !password) {
       return;
     }
+    const state = this.loginState();
 
     const isFresh =
       hasSentryCookie('sentrysid') &&
-      Date.now() - Math.max(this.lastLoginAt, getSentryCookieJarUpdatedAt()) < this.sessionTtlMs;
+      Date.now() - Math.max(state.lastLoginAt, getSentryCookieJarUpdatedAt()) < this.sessionTtlMs;
     if (isFresh) {
       return;
     }
 
-    if (!this.loginPromise) {
-      this.loginPromise = this.performLogin()
+    if (!state.loginPromise) {
+      state.loginPromise = this.performLogin(username, password)
         .catch((error) => {
           clearSentryCookieJar();
           logger.warn('Sentry issue API 自动登录失败', {
@@ -683,14 +707,14 @@ export class SentryIssueService {
           throw error;
         })
         .finally(() => {
-          this.loginPromise = null;
+          state.loginPromise = null;
         });
     }
 
-    await this.loginPromise;
+    await state.loginPromise;
   }
 
-  private async performLogin() {
+  private async performLogin(username: string, password: string) {
     clearSentryCookieJar();
     const loginPage = await this.request('/auth/login/sentry/');
     const csrfToken = this.extractCSRFToken(loginPage.body.toString('utf8'));
@@ -699,30 +723,32 @@ export class SentryIssueService {
     }
 
     const form = new URLSearchParams();
-    form.set('op', this.username);
-    form.set('password', this.password);
+    form.set('op', username);
+    form.set('password', password);
     form.set('csrfmiddlewaretoken', csrfToken);
 
     await this.request('/auth/login/sentry/', {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
-        origin: new URL(this.target).origin,
-        referer: `${this.target}/auth/login/sentry/`,
+        origin: new URL(this.target()).origin,
+        referer: `${this.target()}/auth/login/sentry/`,
       },
       body: form.toString(),
     });
 
-    this.lastLoginAt = Date.now();
+    this.loginState().lastLoginAt = Date.now();
     if (!hasSentryCookie('sentrysid')) {
       throw new Error('Sentry login session cookie missing');
     }
   }
 
   private request(path: string, options: { method?: string; headers?: Record<string, string>; body?: string } = {}) {
-    const baseURL = new URL(this.target);
+    const target = this.target();
+    if (!target) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Sentry 服务地址`);
+    const baseURL = new URL(target);
     const targetBasePath = baseURL.pathname.replace(/\/+$/, '');
-    const targetURL = new URL(this.target);
+    const targetURL = new URL(target);
     const queryIndex = path.indexOf('?');
     const requestPath = queryIndex >= 0 ? path.substring(0, queryIndex) : path;
     targetURL.pathname = `${targetBasePath}${requestPath.startsWith('/') ? requestPath : `/${requestPath}`}`;

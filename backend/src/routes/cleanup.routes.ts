@@ -1,8 +1,12 @@
 import { Router, Request, Response } from 'express';
 import cleanupService from '../services/CleanupService';
+import { adminMiddleware } from '../middleware/auth';
 import logger from '../utils/logger';
 
 const router = Router();
+
+// 临时文件目录属于平台共享基础设施，只允许平台管理员查看和清理。
+router.use(adminMiddleware);
 
 /**
  * GET /api/cleanup/stats

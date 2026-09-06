@@ -9,6 +9,7 @@ import {
 } from './DeviceReplayFlowExecutionService';
 import { ReplayFlowAsset, ReplayFlowAssetService, replayFlowAssetService } from './ReplayFlowAssetService';
 import logger from '../utils/logger';
+import { currentProjectId } from './ProductLineContext';
 
 export type ReplayFlowChainPhase = 'pre' | 'main' | 'post';
 export type ReplayFlowChainPhaseStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'skipped';
@@ -29,6 +30,7 @@ export interface ReplayFlowChainPhaseRun {
 
 export interface ReplayFlowChainRun {
   id: string;
+  projectId: string;
   mainAssetId: string;
   mainAssetName: string;
   owner: string;
@@ -74,7 +76,7 @@ function phaseStatus(run: ReplayFlowRun): ReplayFlowChainPhaseStatus {
 export class ReplayFlowChainExecutionService {
   private runs = new Map<string, InternalReplayFlowChainRun>();
   private completions = new Map<string, Promise<void>>();
-  private activeChainRunId = '';
+  private activeChainRunIds = new Map<string, string>();
 
   constructor(
     private assets: ReplayFlowAssetService = replayFlowAssetService,
@@ -82,17 +84,24 @@ export class ReplayFlowChainExecutionService {
     private runRoot = path.resolve(process.env.REPLAY_FLOW_CHAIN_RUN_DIR || path.join(process.cwd(), '../nn-ios-platform-data/replay-flow-chain-runs')),
   ) {}
 
+  private currentRunRoot() {
+    const projectId = currentProjectId();
+    return projectId === 'nn-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+  }
+
   start(mainAssetId: string, suppliedInputs: Record<string, unknown>, actor: string, isAdmin: boolean) {
-    const active = this.activeChainRunId ? this.runs.get(this.activeChainRunId) : undefined;
+    const projectId = currentProjectId();
+    const activeChainRunId = this.activeChainRunIds.get(projectId) || '';
+    const active = activeChainRunId ? this.runs.get(activeChainRunId) : undefined;
     if (active && (active.status === 'queued' || active.status === 'running')) {
       throw new DeviceControlError(`真机正在执行任务 ${active.mainAssetName}`, 409);
     }
-    this.activeChainRunId = '';
+    this.activeChainRunIds.delete(projectId);
     const main = this.executableAsset(mainAssetId, '主流程');
     const pre = main.preFlowAssetId ? this.executableAsset(main.preFlowAssetId, '前置流程') : undefined;
     const post = main.postFlowAssetId ? this.executableAsset(main.postFlowAssetId, '后置流程') : undefined;
     const id = crypto.randomUUID();
-    const directory = path.join(this.runRoot, id);
+    const directory = path.join(this.currentRunRoot(), id);
     fs.mkdirSync(directory, { recursive: true });
     const phases: ReplayFlowChainPhaseRun[] = [];
     if (pre) phases.push(this.pendingPhase('pre', pre));
@@ -100,6 +109,7 @@ export class ReplayFlowChainExecutionService {
     if (post) phases.push(this.pendingPhase('post', post));
     const run: InternalReplayFlowChainRun = {
       id,
+      projectId,
       mainAssetId: main.id,
       mainAssetName: main.name,
       owner: actor,
@@ -112,7 +122,7 @@ export class ReplayFlowChainExecutionService {
       isAdmin,
     };
     this.runs.set(id, run);
-    this.activeChainRunId = id;
+    this.activeChainRunIds.set(projectId, id);
     this.persist(run);
     const completion = Promise.resolve()
       .then(() => this.execute(run))
@@ -121,7 +131,7 @@ export class ReplayFlowChainExecutionService {
       });
     this.completions.set(id, completion);
     completion.finally(() => {
-      if (this.activeChainRunId === id) this.activeChainRunId = '';
+      if (this.activeChainRunIds.get(projectId) === id) this.activeChainRunIds.delete(projectId);
     });
     return publicRun(run);
   }
@@ -131,7 +141,7 @@ export class ReplayFlowChainExecutionService {
     const status = String(filters.status || '');
     const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
     return [...this.runs.values()]
-      .filter((run) => (isAdmin || run.owner === actor) && (!status || status === 'all' || run.status === status))
+      .filter((run) => run.projectId === currentProjectId() && (isAdmin || run.owner === actor) && (!status || status === 'all' || run.status === status))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       .slice(0, limit)
       .map(publicRun);
@@ -292,21 +302,24 @@ export class ReplayFlowChainExecutionService {
   }
 
   private loadPersistedRuns() {
-    if (!fs.existsSync(this.runRoot)) return;
-    for (const entry of fs.readdirSync(this.runRoot, { withFileTypes: true })) {
+    const runRoot = this.currentRunRoot();
+    if (!fs.existsSync(runRoot)) return;
+    for (const entry of fs.readdirSync(runRoot, { withFileTypes: true })) {
       if (entry.isDirectory() && !this.runs.has(entry.name)) this.findRun(entry.name);
     }
   }
 
   private findRun(runId: string) {
     const cached = this.runs.get(runId);
-    if (cached) return cached;
+    if (cached) return cached.projectId === currentProjectId() ? cached : undefined;
     if (!/^[A-Za-z0-9_-]{8,128}$/.test(runId)) return undefined;
-    const directory = path.join(this.runRoot, runId);
+    const directory = path.join(this.currentRunRoot(), runId);
     const file = path.join(directory, 'run.json');
     if (!fs.existsSync(file)) return undefined;
     try {
       const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as ReplayFlowChainRun;
+      stored.projectId ||= currentProjectId();
+      if (stored.projectId !== currentProjectId()) return undefined;
       if (stored.status === 'queued' || stored.status === 'running') {
         stored.status = 'failed';
         stored.result = 'failure';

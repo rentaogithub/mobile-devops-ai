@@ -3,16 +3,21 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { getDatabase } from '../database';
+import { getDatabase, getDatabasePath } from '../database';
+import { DEFAULT_REPOS } from './GitBranchService';
 import { currentProductLineId } from './ProductLineContext';
 
 export const PRODUCT_LINE_CONFIG_KEYS = [
   'JENKINS_USER', 'JENKINS_TOKEN', 'JENKINS_NN_JOB', 'JENKINS_NN_QA_JOB', 'JENKINS_NN_REPO_URL',
   'PODX_TARGET_NAME', 'PODX_PRIVATE_SOURCE', 'PODX_GIT_BASE_URL',
   'PODX_PUBLISH_REPOS', 'PODX_PUBLISH_MAIN_REPO', 'PODX_PUBLISH_WORK_DIR', 'PODX_PUBLISH_BASE_BRANCH',
+  'PODS_NEXUS_BASE_URL', 'PODS_NEXUS_USER', 'PODS_NEXUS_PASSWORD',
+  'GIT_USERNAME', 'GIT_PASSWORD',
+  'NNRTC_JENKINS_BASE_URL', 'NNRTC_JENKINS_JOB', 'NNRTC_JENKINS_USER', 'NNRTC_JENKINS_TOKEN',
+  'SENTRY_PROXY_TARGET', 'SENTRY_ORG', 'SENTRY_PROJECT', 'SENTRY_AUTO_LOGIN', 'SENTRY_LOGIN_USERNAME', 'SENTRY_LOGIN_PASSWORD',
   'PGYER_API_KEY', 'PGYER_APP_KEY', 'PGYER_SHORTCUT_URL',
   'APP_STORE_CONNECT_API_KEY_ID', 'APP_STORE_CONNECT_API_ISSUER_ID', 'APP_STORE_CONNECT_API_PRIVATE_KEY', 'APP_STORE_CONNECT_APP_ID', 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS',
-  'WECHAT_WEBHOOK_URL',
+  'WECHAT_WEBHOOK_URL', 'WECHAT_WORK_CORP_ID', 'WECHAT_WORK_AGENT_ID', 'WECHAT_WORK_SECRET',
 ] as const;
 
 export type ProductLineConfigKey = typeof PRODUCT_LINE_CONFIG_KEYS[number];
@@ -53,11 +58,15 @@ interface ProductLineRecord {
 
 const SECRET_KEYS = new Set<ProductLineConfigKey>([
   'JENKINS_TOKEN', 'PGYER_API_KEY', 'PGYER_APP_KEY',
-  'APP_STORE_CONNECT_API_PRIVATE_KEY', 'WECHAT_WEBHOOK_URL',
+  'APP_STORE_CONNECT_API_PRIVATE_KEY', 'WECHAT_WEBHOOK_URL', 'PODS_NEXUS_PASSWORD',
+  'GIT_PASSWORD',
+  'WECHAT_WORK_SECRET',
+  'NNRTC_JENKINS_TOKEN',
+  'SENTRY_LOGIN_PASSWORD',
 ]);
 
 const URL_KEYS = new Set<ProductLineConfigKey>([
-  'PGYER_SHORTCUT_URL', 'WECHAT_WEBHOOK_URL',
+  'PGYER_SHORTCUT_URL', 'WECHAT_WEBHOOK_URL', 'PODS_NEXUS_BASE_URL', 'NNRTC_JENKINS_BASE_URL', 'SENTRY_PROXY_TARGET',
 ]);
 
 function now() {
@@ -131,6 +140,30 @@ function appStorePrivateKeySource(productLineId: string) {
   return fs.existsSync(resolvedPath) ? path.basename(resolvedPath) : '';
 }
 
+function appStorePrivateKeyStorage(productLineId: string) {
+  try {
+    const row = getDatabase().prepare(`
+      SELECT value FROM platform_product_line_configs
+      WHERE product_line_id = ? AND key = 'APP_STORE_CONNECT_API_PRIVATE_KEY'
+    `).get(productLineId) as { value?: string } | undefined;
+    if (row?.value) {
+      return `平台数据库：${getDatabasePath()}（platform_product_line_configs，产品线 ${productLineId}，加密存储）`;
+    }
+  } catch {
+    // 数据库未初始化时继续检查 nn 的历史配置来源。
+  }
+  if (productLineId !== 'nn') return '';
+  if (String(process.env.APP_STORE_CONNECT_API_PRIVATE_KEY || '').trim()) {
+    return '进程环境变量：APP_STORE_CONNECT_API_PRIVATE_KEY（不落盘）';
+  }
+  const repoDir = legacyJenkinsRepoDir();
+  const buildConfigPath = path.join(repoDir, 'cicd/jenkins/build_config.sh');
+  const configuredPath = String(process.env.APP_STORE_CONNECT_API_KEY_PATH || readShellConfigValue(buildConfigPath, 'APP_STORE_CONNECT_API_KEY_PATH') || '').trim();
+  if (!configuredPath) return '';
+  const resolvedPath = path.isAbsolute(configuredPath) ? configuredPath : path.resolve(repoDir, configuredPath);
+  return fs.existsSync(resolvedPath) ? resolvedPath : '';
+}
+
 function weChatWebhookSource(productLineId: string) {
   try {
     const row = getDatabase().prepare(`
@@ -151,6 +184,22 @@ function weChatWebhookSource(productLineId: string) {
 
 function trimTrailingSlash(value: string) {
   return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function gitLocationFromRepoUrl(repoUrl: string) {
+  try {
+    const parsed = new URL(trimTrailingSlash(repoUrl));
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length < 2) return { targetName: '', gitBaseUrl: '' };
+    const targetName = segments.at(-2) || '';
+    const basePath = segments.slice(0, -2).join('/');
+    return {
+      targetName,
+      gitBaseUrl: `${parsed.origin}${basePath ? `/${basePath}` : ''}`,
+    };
+  } catch {
+    return { targetName: '', gitBaseUrl: '' };
+  }
 }
 
 function splitList(value: string) {
@@ -221,6 +270,19 @@ class ProductLineConfigService {
     return String(process.env[key] || '').trim() || legacyNNConfigValue(key);
   }
 
+  private hasStoredConfig(key: ProductLineConfigKey, productLineId: string) {
+    try {
+      const row = getDatabase().prepare(`
+        SELECT 1 FROM platform_product_line_configs WHERE product_line_id = ? AND key = ?
+      `).get(productLineId, key);
+      if (row) return true;
+    } catch {
+      // 数据库尚未初始化时继续检查 nn 的历史配置。
+    }
+    return productLineId === 'nn'
+      && Boolean(String(process.env[key] || '').trim() || legacyNNConfigValue(key));
+  }
+
   setMany(productLineId: string, values: Partial<Record<ProductLineConfigKey, unknown>>, updatedBy?: string) {
     const db = getDatabase();
     const productLine = db.prepare('SELECT id FROM platform_product_lines WHERE id = ?').get(productLineId);
@@ -254,8 +316,10 @@ class ProductLineConfigService {
     const values: Record<string, string | boolean> = {};
     for (const key of PRODUCT_LINE_CONFIG_KEYS) {
       const value = this.get(key, productLineId);
-      if (SECRET_KEYS.has(key)) values[`${key}Configured`] = Boolean(value);
-      else values[key] = value;
+      if (SECRET_KEYS.has(key)) {
+        values[`${key}Configured`] = Boolean(value);
+        if (key === 'JENKINS_TOKEN' || key === 'PGYER_API_KEY') values[key] = value;
+      } else values[key] = value;
     }
     if (productLineId === 'nn') {
       values.JENKINS_NN_JOB ||= 'nn';
@@ -265,8 +329,18 @@ class ProductLineConfigService {
         values.JENKINS_USER = 'anonymous';
       }
     }
+    const resolvedPodxConfig = this.podxConfig(productLineId);
+    values.PODX_PRIVATE_SOURCE ||= resolvedPodxConfig.privateSource;
+    values.PODX_PUBLISH_MAIN_REPO ||= resolvedPodxConfig.publishMainRepo;
+    if (!this.hasStoredConfig('PODX_PUBLISH_REPOS', productLineId)) {
+      values.PODX_PUBLISH_REPOS = resolvedPodxConfig.publishRepos
+        .filter((repo) => repoNameFromUrl(repo).toLowerCase() !== resolvedPodxConfig.publishMainRepo.toLowerCase())
+        .join('\n');
+    }
+    values.PODX_PUBLISH_BASE_BRANCH ||= resolvedPodxConfig.publishBaseBranch;
     if (values.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured) {
       values.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE = appStorePrivateKeySource(productLineId) || '已安全加载';
+      values.APP_STORE_CONNECT_API_PRIVATE_KEY_STORAGE = appStorePrivateKeyStorage(productLineId) || '已安全存储';
     }
     if (values.WECHAT_WEBHOOK_URLConfigured) {
       const webhook = this.get('WECHAT_WEBHOOK_URL', productLineId);
@@ -280,16 +354,32 @@ class ProductLineConfigService {
     const productLine = this.findProductLine(productLineId);
     const jenkinsRepoUrl = this.get('JENKINS_NN_REPO_URL', productLineId)
       || (productLineId === 'nn' ? 'http://git.leigod.top/nn_ios/nnios.git' : '');
+    const configuredPrivateSource = this.get('PODX_PRIVATE_SOURCE', productLineId);
+    const privateSourceLocation = gitLocationFromRepoUrl(configuredPrivateSource);
+    const mainRepoLocation = gitLocationFromRepoUrl(jenkinsRepoUrl);
     const targetName = this.get('PODX_TARGET_NAME', productLineId)
+      || privateSourceLocation.targetName
+      || mainRepoLocation.targetName
       || (productLineId === 'nn' ? 'nn_ios' : productLine?.key || productLineId);
     const gitBaseUrl = this.get('PODX_GIT_BASE_URL', productLineId)
+      || privateSourceLocation.gitBaseUrl
+      || mainRepoLocation.gitBaseUrl
       || this.gitBaseUrlFromRepoUrl(jenkinsRepoUrl, targetName)
       || (productLineId === 'nn' ? 'http://git.leigod.top' : '');
-    const privateSource = this.get('PODX_PRIVATE_SOURCE', productLineId)
+    const privateSource = configuredPrivateSource
       || (gitBaseUrl && targetName ? `${trimTrailingSlash(gitBaseUrl)}/${targetName}/nnspec.git` : '');
-    const publishRepos = splitList(this.get('PODX_PUBLISH_REPOS', productLineId));
-    const publishMainRepo = this.get('PODX_PUBLISH_MAIN_REPO', productLineId)
-      || (jenkinsRepoUrl ? repoNameFromUrl(jenkinsRepoUrl) : '');
+    const publishMainRepo = (jenkinsRepoUrl ? repoNameFromUrl(jenkinsRepoUrl) : '')
+      || repoNameFromUrl(this.get('PODX_PUBLISH_MAIN_REPO', productLineId));
+    const hasConfiguredComponentRepos = this.hasStoredConfig('PODX_PUBLISH_REPOS', productLineId);
+    const configuredComponentRepos = splitList(this.get('PODX_PUBLISH_REPOS', productLineId));
+    const componentRepos = hasConfiguredComponentRepos
+      ? configuredComponentRepos
+      : productLineId === 'nn'
+        ? DEFAULT_REPOS
+          .map(repoNameFromUrl)
+          .filter((repo) => repo.toLowerCase() !== publishMainRepo.toLowerCase())
+        : [];
+    const publishRepos = Array.from(new Set([publishMainRepo, ...componentRepos].filter(Boolean)));
     const publishRepoUrls = this.publishRepoUrlsFromConfig(publishRepos, gitBaseUrl, targetName);
 
     return {
@@ -369,7 +459,7 @@ class ProductLineConfigService {
     const config = this.podxConfig(productLineId);
     const repoUrl = config.jenkinsRepoUrl || this.mainRepoUrlFromConfig(config);
     const projectDirectory = this.resolveMainProjectDirectory(config, repoUrl, requestedProjectDirectory);
-    const cloned = this.ensureMainProjectDirectory(projectDirectory, repoUrl, Boolean(requestedProjectDirectory));
+    const cloned = this.ensureMainProjectDirectory(projectDirectory, repoUrl, Boolean(requestedProjectDirectory), productLineId);
     const configPath = path.join(projectDirectory, 'podx.config.yml');
     fs.writeFileSync(configPath, this.podxConfigYaml(productLineId), 'utf8');
     return {
@@ -383,6 +473,12 @@ class ProductLineConfigService {
 
   publishRepoUrls(productLineId = currentProductLineId()): string[] {
     return this.podxConfig(productLineId).publishRepoUrls;
+  }
+
+  mainProjectDirectory(productLineId = currentProductLineId()): string {
+    const config = this.podxConfig(productLineId);
+    const repoUrl = config.jenkinsRepoUrl || this.mainRepoUrlFromConfig(config);
+    return this.resolveMainProjectDirectory(config, repoUrl, '');
   }
 
   private findProductLine(productLineId: string): ProductLineRecord | undefined {
@@ -428,10 +524,13 @@ class ProductLineConfigService {
     if (requested) return path.resolve(requested);
     const repoName = repoNameFromUrl(repoUrl || config.publishMainRepo || config.productLineId);
     if (!repoName) throw new Error('未配置主工程仓库，无法同步 podx.config.yml');
-    return path.join(defaultGitWorkspaceDir(), repoName);
+    const root = defaultGitWorkspaceDir();
+    return config.productLineId === 'nn'
+      ? path.join(root, repoName)
+      : path.join(root, config.productLineId.replace(/[^a-zA-Z0-9_-]/g, '_'), repoName);
   }
 
-  private ensureMainProjectDirectory(projectDirectory: string, repoUrl: string, explicitDirectory: boolean) {
+  private ensureMainProjectDirectory(projectDirectory: string, repoUrl: string, explicitDirectory: boolean, productLineId: string) {
     if (fs.existsSync(path.join(projectDirectory, '.git'))) return false;
     if (fs.existsSync(projectDirectory) && fs.readdirSync(projectDirectory).length > 0) {
       throw new Error(`目标目录不是 Git 仓库：${projectDirectory}`);
@@ -441,8 +540,13 @@ class ProductLineConfigService {
       return false;
     }
     if (!repoUrl) throw new Error('未配置主工程仓库地址，无法自动 clone');
+    const username = this.get('GIT_USERNAME', productLineId);
+    const password = this.get('GIT_PASSWORD', productLineId);
+    const cloneUrl = username && password && /^https?:\/\//i.test(repoUrl)
+      ? repoUrl.replace(/^(https?:\/\/)(?:[^@/]+@)?/i, `$1${encodeURIComponent(username)}:${encodeURIComponent(password)}@`)
+      : repoUrl;
     fs.mkdirSync(path.dirname(projectDirectory), { recursive: true });
-    execFileSync('git', ['clone', repoUrl, projectDirectory], {
+    execFileSync('git', ['clone', cloneUrl, projectDirectory], {
       stdio: 'pipe',
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
     });

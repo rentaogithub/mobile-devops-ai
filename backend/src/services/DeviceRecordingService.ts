@@ -4,6 +4,7 @@ import path from 'path';
 import { DeviceControlError, DeviceControlStatus, deviceControlService } from './DeviceControlService';
 import { enrichRecordingAction, RecordingAction, resolveReplayTapPoint, screenSizeFromSource } from './DeviceRecordingLocator';
 import logger from '../utils/logger';
+import { currentProjectId } from './ProductLineContext';
 
 export type RecordingStepOrigin = 'platform' | 'annotated';
 export type RecordingStepStatus = 'pending' | 'ready' | 'failed';
@@ -79,6 +80,7 @@ interface InternalRecordingObservation extends Omit<RecordingObservation, 'befor
 
 export interface DeviceRecording {
   id: string;
+  projectId: string;
   title: string;
   owner: string;
   status: 'recording' | 'stopped';
@@ -332,13 +334,15 @@ export function recordingObservationSuggestion(
 
 export class DeviceRecordingService {
   private recordings = new Map<string, InternalDeviceRecording>();
-  private currentRecordingId = '';
+  private currentRecordingIds = new Map<string, string>();
   private captureQueue: Promise<void> = Promise.resolve();
 
   private rootDirectory() {
-    return path.resolve(
+    const base = path.resolve(
       process.env.DEVICE_RECORDING_DIR || path.join(process.cwd(), '../nn-ios-platform-data/device-recordings'),
     );
+    const projectId = currentProjectId();
+    return projectId === 'nn-ios' ? base : path.join(base, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
   }
 
   async start(title: string, actor: string, isAdmin: boolean) {
@@ -358,6 +362,7 @@ export class DeviceRecordingService {
     fs.mkdirSync(path.join(directory, 'snapshots'), { recursive: true });
     const recording: InternalDeviceRecording = {
       id,
+      projectId: currentProjectId(),
       title: String(title || '').trim().slice(0, 100) || `真机路径 ${new Date().toLocaleString('zh-CN')}`,
       owner: actor,
       status: 'recording',
@@ -369,7 +374,7 @@ export class DeviceRecordingService {
       observations: [],
     };
     this.recordings.set(id, recording);
-    this.currentRecordingId = id;
+    this.currentRecordingIds.set(currentProjectId(), id);
     try {
       const initial = await this.captureSnapshot(recording, actor, isAdmin);
       recording.initialSnapshotId = initial.id;
@@ -377,7 +382,7 @@ export class DeviceRecordingService {
       this.persist(recording);
     } catch (error) {
       this.recordings.delete(id);
-      this.currentRecordingId = '';
+      this.currentRecordingIds.delete(currentProjectId());
       throw error;
     }
     logger.info('真机路径录制已开始', { recordingId: id, owner: actor, device: deviceStatus.device.udid });
@@ -390,7 +395,7 @@ export class DeviceRecordingService {
     recording.status = 'stopped';
     recording.stoppedAt = new Date().toISOString();
     this.persist(recording);
-    this.currentRecordingId = '';
+    this.currentRecordingIds.delete(currentProjectId());
     logger.info('真机路径录制已停止', { recordingId: recording.id, owner: actor, steps: recording.steps.length });
     return this.publicRecording(recording);
   }
@@ -909,6 +914,7 @@ export class DeviceRecordingService {
     });
     return {
       id: recording.id,
+      projectId: recording.projectId,
       title: recording.title,
       owner: recording.owner,
       status: recording.status,
@@ -955,7 +961,9 @@ export class DeviceRecordingService {
   }
 
   private currentRecording() {
-    return this.currentRecordingId ? this.recordings.get(this.currentRecordingId) : undefined;
+    const id = this.currentRecordingIds.get(currentProjectId());
+    const recording = id ? this.recordings.get(id) : undefined;
+    return recording?.projectId === currentProjectId() ? recording : undefined;
   }
 
   private requireCurrent(actor: string, isAdmin: boolean) {
@@ -993,7 +1001,7 @@ export class DeviceRecordingService {
 
   private findRecording(id: string) {
     const cached = this.recordings.get(id);
-    if (cached) return cached;
+    if (cached) return cached.projectId === currentProjectId() ? cached : undefined;
     const directory = path.join(this.rootDirectory(), id);
     const file = path.join(directory, 'recording.json');
     if (!fs.existsSync(file)) return undefined;
@@ -1005,6 +1013,7 @@ export class DeviceRecordingService {
       const legacyDeviceSteps = rawRecording.steps.filter((step) => step.origin === 'device');
       const recording: InternalDeviceRecording = {
         ...rawRecording,
+        projectId: rawRecording.projectId || currentProjectId(),
         directory,
         steps: rawRecording.steps
         .filter((step) => step.origin !== 'device')
@@ -1027,6 +1036,7 @@ export class DeviceRecordingService {
           included: observation.included ?? !observation.noiseLikely,
         })),
       };
+      if (recording.projectId !== currentProjectId()) return undefined;
       this.reindexSteps(recording);
       this.reindexObservations(recording);
       this.recordings.set(id, recording);

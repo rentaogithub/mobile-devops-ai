@@ -1,9 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
+import { currentProductLineId } from './ProductLineContext';
 
 export interface PairingSession {
   pairingId: string;
+  productLineId: string;
   token: string;
   status: 'waiting' | 'paired' | 'expired';
   deviceInfo?: {
@@ -47,6 +49,7 @@ class PairingService {
 
     const session: PairingSession = {
       pairingId,
+      productLineId: currentProductLineId(),
       token,
       status: 'waiting',
       createdAt: Date.now(),
@@ -118,12 +121,12 @@ class PairingService {
     return this.sessions.get(pairingId) || null;
   }
 
-  listSessions(): PairingSession[] {
+  listSessions(productLineId = currentProductLineId()): PairingSession[] {
     const uniqueSessions = new Map<string, PairingSession>();
     const sessionsWithoutIdentity: PairingSession[] = [];
 
     Array.from(this.sessions.values())
-      .filter((session) => session.status === 'paired')
+      .filter((session) => session.productLineId === productLineId && session.status === 'paired')
       .forEach((session) => {
         const identity = this.deviceIdentity(session.deviceInfo);
         if (!identity) {
@@ -159,9 +162,15 @@ class PairingService {
     };
   }
 
-  deleteSession(pairingId: string): void {
+  deleteSession(pairingId: string, productLineId?: string): void {
+    const session = this.sessions.get(pairingId);
+    if (productLineId && session?.productLineId !== productLineId) return;
     this.sessions.delete(pairingId);
-    this.db.prepare('DELETE FROM realtime_log_pairing_sessions WHERE pairing_id = ?').run(pairingId);
+    if (productLineId) {
+      this.db.prepare('DELETE FROM realtime_log_pairing_sessions WHERE pairing_id = ? AND product_line_id = ?').run(pairingId, productLineId);
+    } else {
+      this.db.prepare('DELETE FROM realtime_log_pairing_sessions WHERE pairing_id = ?').run(pairingId);
+    }
   }
 
   private cleanup(): void {
@@ -193,7 +202,7 @@ class PairingService {
     const removedIds: string[] = [];
     for (const [id, session] of this.sessions) {
       if (id === currentSession.pairingId || session.status !== 'paired') continue;
-      if (this.deviceIdentity(session.deviceInfo) !== currentIdentity) continue;
+      if (session.productLineId !== currentSession.productLineId || this.deviceIdentity(session.deviceInfo) !== currentIdentity) continue;
       this.deleteSession(id);
       removedIds.push(id);
     }
@@ -234,6 +243,7 @@ class PairingService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
         pairing_id TEXT PRIMARY KEY,
+        product_line_id TEXT NOT NULL DEFAULT 'nn',
         token TEXT NOT NULL,
         status TEXT NOT NULL,
         device_info TEXT,
@@ -245,15 +255,21 @@ class PairingService {
       CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_status ON realtime_log_pairing_sessions(status);
       CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_last_active_at ON realtime_log_pairing_sessions(last_active_at DESC);
     `);
+    const columns = this.db.prepare('PRAGMA table_info(realtime_log_pairing_sessions)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'product_line_id')) {
+      this.db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pairing_sessions(product_line_id, status, last_active_at DESC)');
   }
 
   private loadSessions(): void {
     const rows = this.db.prepare(`
-      SELECT pairing_id, token, status, device_info, created_at, paired_at, last_active_at
+      SELECT pairing_id, product_line_id, token, status, device_info, created_at, paired_at, last_active_at
       FROM realtime_log_pairing_sessions
       WHERE status IN ('waiting', 'paired')
     `).all() as Array<{
       pairing_id: string;
+      product_line_id: string;
       token: string;
       status: PairingSession['status'];
       device_info: string | null;
@@ -265,6 +281,7 @@ class PairingService {
     rows.forEach((row) => {
       const session: PairingSession = {
         pairingId: row.pairing_id,
+        productLineId: row.product_line_id || 'nn',
         token: row.token,
         status: row.status,
         deviceInfo: this.parseDeviceInfo(row.device_info),
@@ -288,11 +305,12 @@ class PairingService {
   private saveSession(session: PairingSession): void {
     this.db.prepare(`
       INSERT INTO realtime_log_pairing_sessions (
-        pairing_id, token, status, device_info, created_at, paired_at, last_active_at, updated_at
+        pairing_id, product_line_id, token, status, device_info, created_at, paired_at, last_active_at, updated_at
       ) VALUES (
-        @pairingId, @token, @status, @deviceInfo, @createdAt, @pairedAt, @lastActiveAt, @updatedAt
+        @pairingId, @productLineId, @token, @status, @deviceInfo, @createdAt, @pairedAt, @lastActiveAt, @updatedAt
       )
       ON CONFLICT(pairing_id) DO UPDATE SET
+        product_line_id = excluded.product_line_id,
         token = excluded.token,
         status = excluded.status,
         device_info = excluded.device_info,
@@ -302,6 +320,7 @@ class PairingService {
         updated_at = excluded.updated_at
     `).run({
       pairingId: session.pairingId,
+      productLineId: session.productLineId,
       token: session.token,
       status: session.status,
       deviceInfo: session.deviceInfo ? JSON.stringify(session.deviceInfo) : null,

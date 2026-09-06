@@ -39,9 +39,20 @@ function emitAuthStateChanged() {
   window.dispatchEvent(new Event('auth-state-changed'));
 }
 
+function persistActiveProductLineCookie(productLineId?: string) {
+  document.cookie = productLineId
+    ? `active_product_line_id=${encodeURIComponent(productLineId)}; Path=/; SameSite=Lax`
+    : 'active_product_line_id=; Path=/; Max-Age=0; SameSite=Lax';
+}
+
 export const authUtils = {
   setUser: (user: AuthUser) => {
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(normalizeUser(user)));
+    const selectedId = localStorage.getItem(ACTIVE_PRODUCT_LINE_KEY);
+    const active = user.productLines.find((item) => item.id === selectedId)
+      || user.productLines.find((item) => item.id === 'nn')
+      || user.productLines[0];
+    if (active) persistActiveProductLineCookie(active.id);
     emitAuthStateChanged();
   },
 
@@ -57,6 +68,7 @@ export const authUtils = {
   clearUser: () => {
     localStorage.removeItem(AUTH_USER_KEY);
     localStorage.removeItem(ACTIVE_PRODUCT_LINE_KEY);
+    persistActiveProductLineCookie();
     emitAuthStateChanged();
   },
 
@@ -81,6 +93,7 @@ export const authUtils = {
     const user = authUtils.getUser();
     if (!user?.productLines.some((item) => item.id === productLineId)) return false;
     localStorage.setItem(ACTIVE_PRODUCT_LINE_KEY, productLineId);
+    persistActiveProductLineCookie(productLineId);
     emitAuthStateChanged();
     window.dispatchEvent(new Event('product-line-changed'));
     return true;

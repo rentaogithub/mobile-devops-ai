@@ -9,11 +9,16 @@ import { StorageService } from './StorageService';
 import { WorkflowService } from './WorkflowService';
 import { getJenkinsBaseUrl, getJenkinsConfig } from '../config/externalServices';
 import { productLineConfigService } from './ProductLineConfigService';
+import { CrashGovernanceService } from './CrashGovernanceService';
+import { SymbolicationCacheService } from './SymbolicationCacheService';
+import { buildSentryCookieHeader, updateSentryCookieJar } from './SentryCookieJar';
 
 describe('product line isolation', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-product-lines-'));
   const auth = new AuthService();
   const workflow = new WorkflowService();
+  const crashGovernance = new CrashGovernanceService();
+  const symbolicationCache = new SymbolicationCacheService();
   let storage: StorageService;
 
   beforeAll(() => {
@@ -101,11 +106,9 @@ describe('product line isolation', () => {
         JENKINS_TOKEN: 'alpha-token',
         JENKINS_NN_JOB: 'alpha/app-build',
         JENKINS_NN_QA_JOB: 'alpha/app-quality',
-        JENKINS_NN_REPO_URL: 'https://git.example.com/alpha/ios.git',
-        PODX_TARGET_NAME: 'alpha_ios',
+        JENKINS_NN_REPO_URL: 'https://git.example.com/alpha_ios/alpha-ios.git',
         PODX_PRIVATE_SOURCE: 'https://git.example.com/alpha_ios/nnspec.git',
-        PODX_GIT_BASE_URL: 'https://git.example.com',
-        PODX_PUBLISH_REPOS: 'alpha-ios, alpha-core',
+        PODX_PUBLISH_REPOS: 'alpha-core',
         PODX_PUBLISH_MAIN_REPO: 'alpha-ios',
         PODX_PUBLISH_WORK_DIR: '.mgit-publish/alpha',
         PODX_PUBLISH_BASE_BRANCH: 'develop',
@@ -121,7 +124,7 @@ describe('product line isolation', () => {
           token: 'alpha-token',
           jobName: 'alpha/app-build',
           qualityJobName: 'alpha/app-quality',
-          repoUrl: 'https://git.example.com/alpha/ios.git',
+          repoUrl: 'https://git.example.com/alpha_ios/alpha-ios.git',
         }));
         expect(productLineConfigService.podxConfig()).toEqual(expect.objectContaining({
           targetName: 'alpha_ios',
@@ -183,13 +186,15 @@ describe('product line isolation', () => {
       const adminView = productLineConfigService.adminView(alpha.id) as Record<string, unknown>;
       expect(adminView.JENKINS_TOKENConfigured).toBe(true);
       expect(adminView.PGYER_API_KEYConfigured).toBe(true);
+      expect(adminView.PGYER_API_KEY).toBe('alpha-pgyer-key');
       expect(adminView.APP_STORE_CONNECT_API_PRIVATE_KEYConfigured).toBe(true);
       expect(adminView.APP_STORE_CONNECT_API_PRIVATE_KEY_SOURCE).toBe('产品线加密配置');
+      expect(adminView.APP_STORE_CONNECT_API_PRIVATE_KEY_STORAGE).toEqual(expect.stringContaining('platform_product_line_configs'));
+      expect(adminView.APP_STORE_CONNECT_API_PRIVATE_KEY_STORAGE).toEqual(expect.stringContaining('platform.sqlite'));
       expect(adminView.WECHAT_WEBHOOK_URLConfigured).toBe(true);
       expect(adminView.WECHAT_WEBHOOK_URL).toBe('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=alpha-webhook-secret');
       expect(adminView.WECHAT_WEBHOOK_URL_SOURCE).toBe('产品线加密配置');
-      expect(adminView).not.toHaveProperty('JENKINS_TOKEN');
-      expect(adminView).not.toHaveProperty('PGYER_API_KEY');
+      expect(adminView.JENKINS_TOKEN).toBe('alpha-token');
       expect(adminView).not.toHaveProperty('APP_STORE_CONNECT_API_PRIVATE_KEY');
 
       const encryptedRows = getDatabase().prepare(`
@@ -228,9 +233,77 @@ describe('product line isolation', () => {
     expect(config.JENKINS_NN_JOB).toBe('nn');
     expect(config.JENKINS_NN_QA_JOB).toBe('nn-auto-quality');
     expect(config.JENKINS_NN_REPO_URL).toBe('http://git.leigod.top/nn_ios/nnios.git');
+    expect(config.PODX_PRIVATE_SOURCE).toBe('http://git.leigod.top/nn_ios/nnspec.git');
+    expect(config.PODX_PUBLISH_MAIN_REPO).toBe('nnios');
+    expect(config.PODX_PUBLISH_BASE_BRANCH).toBe('develop');
+    expect(String(config.PODX_PUBLISH_REPOS).split('\n')).toHaveLength(11);
+    expect(String(config.PODX_PUBLISH_REPOS)).not.toContain('nnios');
+    expect(productLineConfigService.podxConfig('nn').publishRepos).toHaveLength(12);
     if (!process.env.JENKINS_USER && !process.env.JENKINS_TOKEN) {
       expect(config.JENKINS_USER).toBe('anonymous');
       expect(config.JENKINS_TOKENConfigured).toBe(false);
     }
+  });
+
+  it('keeps an explicitly emptied component repository list instead of restoring defaults', () => {
+    productLineConfigService.setMany('nn', { PODX_PUBLISH_REPOS: '' }, 'test-admin');
+
+    const config = productLineConfigService.adminView('nn') as Record<string, unknown>;
+    expect(config.PODX_PUBLISH_REPOS).toBe('');
+    expect(productLineConfigService.podxConfig('nn').publishRepos).toEqual(['nnios']);
+  });
+
+  it('isolates Crash records, Sentry cookies and symbolication cache between product lines', async () => {
+    const lineA = auth.createProductLine({ key: 'isolation-a', name: 'Isolation A' })!;
+    const lineB = auth.createProductLine({ key: 'isolation-b', name: 'Isolation B' })!;
+    const contextA = { ...lineA, role: 'admin' as const };
+    const contextB = { ...lineB, role: 'admin' as const };
+
+    await runWithProductLine(contextA, async () => {
+      crashGovernance.upsertSentryIssue({ id: 'shared-sentry-id', title: 'A 产品线崩溃', level: 'error' });
+      updateSentryCookieJar('sentrysid=line-a-session; Path=/');
+      symbolicationCache.set('same crash log', ['same-uuid'], 'line-a-symbolicated');
+      expect(crashGovernance.list({ keyword: 'A 产品线崩溃' })).toHaveLength(1);
+    });
+
+    await runWithProductLine(contextB, async () => {
+      crashGovernance.upsertSentryIssue({ id: 'shared-sentry-id', title: 'B 产品线崩溃', level: 'error' });
+      expect(crashGovernance.list({ keyword: 'A 产品线崩溃' })).toHaveLength(0);
+      expect(crashGovernance.list({ keyword: 'B 产品线崩溃' })).toHaveLength(1);
+      expect(buildSentryCookieHeader()).toBeUndefined();
+      expect(symbolicationCache.get('same crash log', ['same-uuid'])).toBeNull();
+      updateSentryCookieJar('sentrysid=line-b-session; Path=/');
+      symbolicationCache.set('same crash log', ['same-uuid'], 'line-b-symbolicated');
+    });
+
+    await runWithProductLine(contextA, async () => {
+      expect(buildSentryCookieHeader()).toContain('line-a-session');
+      expect(buildSentryCookieHeader()).not.toContain('line-b-session');
+      expect(symbolicationCache.get('same crash log', ['same-uuid'])?.symbolicatedLog).toBe('line-a-symbolicated');
+      symbolicationCache.clear();
+    });
+
+    await runWithProductLine(contextB, async () => {
+      expect(buildSentryCookieHeader()).toContain('line-b-session');
+      expect(symbolicationCache.get('same crash log', ['same-uuid'])?.symbolicatedLog).toBe('line-b-symbolicated');
+    });
+  });
+
+  it('rejects explicit Workflow IDs that are already owned by another product line', async () => {
+    const lineA = auth.createProductLine({ key: 'workflow-a', name: 'Workflow A' })!;
+    const lineB = auth.createProductLine({ key: 'workflow-b', name: 'Workflow B' })!;
+
+    await runWithProductLine({ ...lineA, role: 'admin' }, async () => {
+      workflow.createArtifact({ id: 'shared-artifact-id', artifactType: 'ios_app', name: 'A Artifact' });
+      workflow.recordEvent({ id: 'shared-event-id', eventType: 'test', entityType: 'artifact', entityId: 'shared-artifact-id' });
+    });
+
+    await runWithProductLine({ ...lineB, role: 'admin' }, async () => {
+      expect(() => workflow.createArtifact({ id: 'shared-artifact-id', artifactType: 'ios_app', name: 'B Artifact' }))
+        .toThrow('Artifact ID 已被其他产品线占用');
+      expect(() => workflow.recordEvent({ id: 'shared-event-id', eventType: 'test', entityType: 'artifact', entityId: 'shared-artifact-id' }))
+        .toThrow('Workflow 事件 ID 已被其他产品线占用');
+      expect(workflow.getArtifact('shared-artifact-id')).toBeNull();
+    });
   });
 });

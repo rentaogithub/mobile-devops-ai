@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Alert, Button, Collapse, Empty, Space, Tag, Typography, message } from 'antd';
 import { JenkinsQualityBuild, dsymApi, jenkinsApi, symbolicateApi } from '../../services/api';
 import type { DSYMInfo, SymbolicationResult } from '../../types';
+import { isComponentDSYM, isMainAppDSYM } from '../../utils/dsym';
 
 const { Text } = Typography;
 
@@ -80,9 +81,9 @@ function selectCrashDsymUUIDs(content: string, dsyms: DSYMInfo[]) {
     return { uuids: [] as string[], metadata, matchType: 'none' as const };
   }
 
-  const mainApp = dsyms.find((dsym) => dsym.appName.toUpperCase() === 'NNIM' && dsym.version.trim() === metadata.version && appearsInResourceStack(dsym));
+  const mainApp = dsyms.find((dsym) => isMainAppDSYM(dsym, metadata.version) && dsym.version.trim() === metadata.version && appearsInResourceStack(dsym));
   const relatedComponents = dsyms.filter((dsym) => (
-    dsym.appName.toUpperCase() !== 'NNIM' &&
+    isComponentDSYM(dsym, metadata.version) &&
     dsym.relatedAppVersions?.map((version) => version.trim()).includes(metadata.version) &&
     appearsInResourceStack(dsym)
   ));

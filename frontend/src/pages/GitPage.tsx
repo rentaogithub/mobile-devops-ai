@@ -412,7 +412,7 @@ function BatchCreateBranchPanel() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="批量为指定仓库基于基准分支创建新分支，nnios 会自动修改 Podfile 的 branch 引用并提交"
+        message="批量为指定仓库基于基准分支创建新分支，发布主仓库会自动修改 Podfile 的 branch 引用并提交"
         description={
           baseDir ? (
             <span>
@@ -475,7 +475,7 @@ function BatchCreateBranchPanel() {
                   </Form.Item>
                 </Col>
                 <Col span={12}>
-                  <Form.Item label="修改 nnios Podfile" name="modifyPodfile" valuePropName="checked">
+                  <Form.Item label="修改发布主仓库 Podfile" name="modifyPodfile" valuePropName="checked">
                     <Switch />
                   </Form.Item>
                 </Col>
@@ -1078,7 +1078,7 @@ function PodDepsModal({
     >
       {state.loading ? (
         <div style={{ textAlign: 'center', padding: 48 }}>
-          <Spin tip="正在克隆 nnios 与目标仓库并解析依赖..." />
+          <Spin tip="正在克隆发布主仓库与目标仓库并解析依赖..." />
         </div>
       ) : state.error ? (
         <Alert type="error" showIcon message="分析失败" description={state.error} />
@@ -1092,7 +1092,7 @@ function PodDepsModal({
                 已解析 {resolvedCount} / {totalCount}
               </Tag>
               <Text type="secondary">
-                版本来源：nnios 仓库 <Tag>{state.nniosInfo?.branch}</Tag> 分支的 Podfile 与
+                版本来源：发布主仓库 <Tag>{state.nniosInfo?.branch}</Tag> 分支的 Podfile 与
                 third_sdk.rb
               </Text>
             </Space>
@@ -1100,7 +1100,7 @@ function PodDepsModal({
               <Alert
                 type="warning"
                 showIcon
-                message={`nnios 仓库未找到：${state.nniosInfo.missingFiles.join(', ')}`}
+                message={`发布主仓库未找到：${state.nniosInfo.missingFiles.join(', ')}`}
               />
             )}
             {state.result.specFiles.length > 0 && (
@@ -1183,7 +1183,7 @@ function PodDepsModal({
               expandedRowRender: (record) => (
                 <div>
                   <Paragraph style={{ marginBottom: 8 }}>
-                    <Text strong>nnios 中的原始声明：</Text>
+                    <Text strong>发布主仓库中的原始声明：</Text>
                   </Paragraph>
                   <pre
                     style={{

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { requireRole, sessionAuthMiddleware, verifyPassword } from '../middleware/auth';
 import { authService } from '../services/AuthService';
+import { appStoreConnectService } from '../services/AppStoreConnectService';
 import { platformConfigService } from '../services/PlatformConfigService';
 import { productLineConfigService } from '../services/ProductLineConfigService';
 
@@ -83,6 +84,38 @@ router.get('/product-lines/:id/services', sessionAuthMiddleware, requireRole('ad
     res.json({ success: true, data: productLineConfigService.adminView(req.params.id) });
   } catch (error: any) {
     res.status(400).json({ success: false, error: error?.message || '读取产品线服务配置失败' });
+  }
+});
+
+router.get('/product-lines/:id/app-store/testflight-groups', sessionAuthMiddleware, requireRole('admin'), async (req, res) => {
+  try {
+    if (!authService.findProductLine(req.params.id)) return res.status(404).json({ success: false, error: '产品线不存在' });
+    const groups = await appStoreConnectService.listTestFlightGroups(req.params.id);
+    res.json({ success: true, data: groups });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '获取 TestFlight 测试组失败' });
+  }
+});
+
+router.get('/product-lines/:id/component-repositories', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try {
+    const productLine = authService.findProductLine(req.params.id);
+    if (!productLine) return res.status(404).json({ success: false, error: '产品线不存在' });
+
+    const config = productLineConfigService.podxConfig(req.params.id);
+    const candidates = config.publishRepoUrls;
+    const mainRepoName = config.publishMainRepo.toLowerCase();
+    const repositories = Array.from(new Map(candidates.map((url) => {
+      const normalizedUrl = String(url || '').trim();
+      const name = normalizedUrl.replace(/\/+$/, '').split('/').pop()?.replace(/\.git$/i, '') || normalizedUrl;
+      return [name.toLowerCase(), { name, url: normalizedUrl }];
+    })).values())
+      .filter((repository) => repository.name.toLowerCase() !== mainRepoName)
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    res.json({ success: true, data: repositories });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '读取组件仓库列表失败' });
   }
 });
 
