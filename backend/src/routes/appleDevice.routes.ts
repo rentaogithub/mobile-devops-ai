@@ -88,10 +88,6 @@ function publicBaseUrl(req: Request) {
   return `${req.protocol}://${req.get('host')}`;
 }
 
-function platformPageUrl(req: Request) {
-  return publicBaseUrl(req).replace(/:3000$/, ':5173');
-}
-
 function normalizeUdid(value: unknown) {
   return String(value || '').trim().toUpperCase();
 }
@@ -417,40 +413,6 @@ function appleConfigStatus() {
     '',
   ].filter(Boolean);
   return { configured: missing.length === 0, missing, warnings, keyId, issuerId, productLineId: currentProductLineId(), ...keyInfo };
-}
-
-function markdownEscape(value: unknown) {
-  return String(value || '').replace(/\r?\n/g, ' ').trim();
-}
-
-async function notifyAppleDeviceApproval(req: Request, request: RegistrationRequest) {
-  const webhookUrl = productLineConfigService.get('WECHAT_WEBHOOK_URL')
-    || (currentProductLineId() === 'nn' ? String(process.env.APPLE_DEVICE_APPROVAL_WEBHOOK_URL || '').trim() : '');
-  if (!webhookUrl) return;
-  const approvalUrl = `${platformPageUrl(req)}/cicd/devices`;
-  const sourceText = [request.source?.product, request.source?.version, request.source?.serial]
-    .filter(Boolean)
-    .map(markdownEscape)
-    .join(' / ') || '-';
-  const content = [
-    '### iOS 设备注册申请待审批',
-    `> 设备名称：${markdownEscape(request.name)}`,
-    `> UDID：\`${markdownEscape(request.udid)}\``,
-    `> 设备信息：${sourceText}`,
-    `> 平台：${markdownEscape(request.platform)}`,
-    `> 申请时间：${new Date(request.createdAt).toLocaleString('zh-CN', { hour12: false })}`,
-    '',
-    `[打开平台审批](${approvalUrl})`,
-  ].join('\n');
-  try {
-    await axios.post(webhookUrl, {
-      msgtype: 'markdown',
-      markdown: { content },
-    }, { timeout: 10000 });
-    logger.info('Apple 设备注册申请审批通知已发送', { requestId: request.id, udid: request.udid });
-  } catch (error: any) {
-    logger.warn('发送 Apple 设备注册申请审批通知失败', { error: error?.message, requestId: request.id, udid: request.udid });
-  }
 }
 
 function appleDeviceApiErrorMessage(error: any, fallback: string) {
@@ -1109,7 +1071,6 @@ router.post('/registration-requests', express.json({ limit: '1mb' }), async (req
       message: '已提交 Apple 设备注册申请，等待管理员审批',
     };
     saveRegistrationRequest(request);
-    await notifyAppleDeviceApproval(req, request);
     res.json({
       success: true,
       data: {

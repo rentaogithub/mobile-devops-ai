@@ -28,7 +28,7 @@
    - App Store：填写 Issuer ID、上传未改名的 Apple 原始 `.p8` 私钥、填写数字 App ID；保存后从 Apple API 获取并勾选 TestFlight 自动分发测试组。
    - 业务感知质检：使用 Monkey 或业务编排前，在 `config/product-lines/<产品线 ID>/business-map.json` 准备该 App 的业务地图；可选在同目录增加 `business-flow-presets.json`。默认 `nn` 产品线继续使用 `config/nnios-business-map.json` 和 `config/nnios-business-flow-presets.json`。
 9. 在“Sentry”中填写该产品线的服务地址、Organization、Project；需要平台代登录时再开启自动登录并填写账号密码。
-10. 按需在“通知”中填写该产品线的企业微信机器人 Webhook，或填写企业微信自建应用的 Corp ID、Agent ID 和 Secret。
+10. 按需在“通知”中填写该产品线的企业微信机器人 Webhook，仅用于 CI/CD 发布通知；需要手动分享崩溃报告时，再填写企业微信自建应用的 Corp ID、Agent ID 和 Secret。
 11. 进入“用户角色”，为用户添加新产品线，并设置该产品线下的游客、测试、研发或产品运营角色。
 12. 在页面顶部切换到新产品线，确认菜单、权限和业务数据已切换到对应上下文。
 13. 进入新产品线主工程根目录执行：
@@ -59,7 +59,7 @@
 - 蒲公英：API Key 和应用短链。
 - App Store：Issuer ID、Apple 原始 `.p8` 私钥和数字 App ID。Key ID 从原始私钥文件名自动识别；TestFlight 测试组通过 Apple API 获取并支持多选。
 - Sentry：服务地址、Organization、Project 和可选自动登录账号。
-- 通知：企业微信机器人 Webhook，或企业微信自建应用的 Corp ID、Agent ID 和 Secret。
+- 通知：仅用于 CI/CD 发布通知的企业微信机器人 Webhook；用于手动分享崩溃报告的企业微信自建应用 Corp ID、Agent ID 和 Secret。
 
 除 `nn` 为兼容旧部署可回退历史环境变量外，新产品线未配置的专属服务会保持“未配置”，不会继承 `nn` 或平台进程里的 Jenkins、蒲公英、App Store Connect、TestFlight 和企业微信凭据。
 

@@ -716,7 +716,7 @@ export default function DevOpsPage() {
           <li><Text strong>同步工程配置：</Text>保存后平台自动将扁平结构的 podx.config.yml 写入主工程根目录；失败时点击“重新同步 podx.config.yml”。</li>
           <li><Text strong>首次创建 overlay：</Text>进入主工程根目录执行 podx --create-overlay-file，生成与 Podfile 同级的 Podfile.overlay；空 overlay 表示全部组件使用远端依赖。</li>
           <li><Text strong>配置发布渠道（可选）：</Text>按需填写蒲公英 API Key/短链，或 App Store Issuer ID、原始 .p8 私钥和数字 App ID，再从 Apple 获取 TestFlight 测试组。</li>
-          <li><Text strong>配置通知（可选）：</Text>填写该产品线使用的企业微信机器人 Webhook。</li>
+          <li><Text strong>配置通知（可选）：</Text>填写该产品线用于 CI/CD 发布通知的企业微信机器人 Webhook；Crash、设备审批等消息不会发送到该群。</li>
           <li><Text strong>分配成员权限：</Text>进入“用户角色”，为用户添加该产品线并设置游客、测试、研发或产品运营角色。</li>
           <li><Text strong>验证接入：</Text>顶部切换到新产品线确认数据与菜单隔离；进入主工程执行 podx doctor、podx install 和 mgit status。</li>
         </ol>

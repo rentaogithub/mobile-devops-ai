@@ -1338,8 +1338,8 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                       <Alert
                         type="info"
                         showIcon
-                        message="企业微信机器人用于当前产品线的构建、发布和审核结果通知"
-                        description="在目标企业微信群中添加群机器人后复制完整 Webhook 地址。当前完整地址仅在管理员产品线配置页显示。"
+                        message="企业微信机器人仅用于当前产品线的 CI/CD 发布通知"
+                        description="Crash、设备审批等非发布消息不会发送到这个群。在目标企业微信群中添加群机器人后复制完整 Webhook 地址。"
                       />
                       <div>
                         <Space size={6} style={{ marginBottom: 6 }}>

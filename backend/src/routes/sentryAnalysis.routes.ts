@@ -9,9 +9,8 @@ import { extractVersionFromCrashLog } from '../utils/versionExtractor';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
-import { crashGovernanceService, CrashGovernanceRecord, CrashGovernanceStatus } from '../services/CrashGovernanceService';
+import { crashGovernanceService, CrashGovernanceStatus } from '../services/CrashGovernanceService';
 import { dsymMatcherService, isMainAppDSYM } from '../services/DSYMMatcherService';
-import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { currentProductLineId } from '../services/ProductLineContext';
@@ -303,88 +302,6 @@ function assertSentryCrashLogSymbolicatable(crashLog: string, issue: any, eventI
   );
 }
 
-function getCrashGovernanceWebhookUrl() {
-  return productLineConfigService.get('WECHAT_WEBHOOK_URL')
-    || (currentProductLineId() === 'nn' ? String(process.env.CRASH_GOVERNANCE_WEBHOOK_URL || '').trim() : '');
-}
-
-function isHighRiskCrash(record: CrashGovernanceRecord) {
-  const level = String(record.level || '').toLowerCase();
-  return ['fatal', 'critical', 'error'].includes(level) || record.eventCount >= 20 || record.userCount >= 5;
-}
-
-function getNotificationTypes(record: CrashGovernanceRecord): string[] {
-  const types: string[] = [];
-  if (isHighRiskCrash(record)) {
-    types.push('high_risk');
-  }
-  if (record.governanceStatus === 'regression') {
-    types.push('regression');
-  }
-  if (record.dsymCoverageStatus === 'missing') {
-    types.push('dsym_missing');
-  }
-  return types;
-}
-
-function buildCrashGovernanceNotification(record: CrashGovernanceRecord, type: string) {
-  const baseUrl = process.env.BASE_URL || process.env.FRONTEND_BASE_URL || '';
-  const detailUrl = baseUrl ? `${baseUrl.replace(/\/+$/, '')}/sentry-service` : '';
-  const typeLabel = type === 'regression'
-    ? '疑似回归 Crash'
-    : type === 'dsym_missing'
-      ? 'Crash dSYM 缺失'
-      : '高风险 Crash';
-  return [
-    `【${typeLabel}】${record.shortId || record.sourceIssueId}`,
-    `标题：${record.title}`,
-    `版本：${record.appVersion || record.appVersionRange || '-'}`,
-    `事件/用户：${record.eventCount || 0}/${record.userCount || 0}`,
-    `状态：${record.governanceStatus}，符号化：${record.symbolicationStatus}，dSYM：${record.dsymCoverageStatus}`,
-    record.crashModule ? `模块：${record.crashModule}` : '',
-    record.crashLocation ? `位置：${record.crashLocation}` : '',
-    record.symbolicationError ? `符号化失败：${record.symbolicationError}` : '',
-    record.lastSyncError ? `同步失败：${record.lastSyncError}` : '',
-    detailUrl ? `平台详情：${detailUrl}` : '',
-    record.permalink ? `Sentry：${record.permalink}` : '',
-  ].filter(Boolean).join('\n');
-}
-
-async function notifyCrashGovernanceRecords(records: CrashGovernanceRecord[]) {
-  const webhookUrl = getCrashGovernanceWebhookUrl();
-  if (!webhookUrl) {
-    return;
-  }
-
-  for (const record of records) {
-    for (const type of getNotificationTypes(record)) {
-      if (crashGovernanceService.wasNotificationSent(record.id, type)) {
-        continue;
-      }
-      try {
-        await axios.post(webhookUrl, {
-          msgtype: 'text',
-          text: {
-            content: buildCrashGovernanceNotification(record, type),
-          },
-        }, { timeout: 15000 });
-        crashGovernanceService.markNotificationSent(record.id, type);
-        logger.info('Crash 治理企业微信通知已发送', {
-          recordId: record.id,
-          type,
-          sourceIssueId: record.sourceIssueId,
-        });
-      } catch (error: any) {
-        logger.warn('Crash 治理企业微信通知发送失败', {
-          recordId: record.id,
-          type,
-          error: error.message,
-        });
-      }
-    }
-  }
-}
-
 async function syncGovernanceIssue(issue: any) {
   const normalizedIssue = sentryIssueService.normalizeIssueSummary(issue);
   const record = crashGovernanceService.upsertSentryIssue(normalizedIssue);
@@ -428,7 +345,6 @@ async function syncGovernanceIssues(options: {
   for (const issue of issues) {
     records.push(await syncGovernanceIssue(issue));
   }
-  await notifyCrashGovernanceRecords(records);
   return {
     period: options.period || '24h',
     query: options.query || defaultSentryIssueQuery,
@@ -522,7 +438,7 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
         }
 
         upsertSentryIssueHistory(normalizedIssue, existingHistory.id);
-        const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+        crashGovernanceService.upsertSentryIssue(normalizedIssue, {
           eventId: event?.id,
           historyId: existingHistory.id,
           symbolicationStatus: 'success',
@@ -530,7 +446,6 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
           analysis: existingHistory.aiAnalysis,
         });
         await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
-        await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
         return {
           issue: normalizedIssue,
           eventId: event?.id,
@@ -564,14 +479,13 @@ async function symbolicateAndSaveSentryIssue(issue: any, requestedAppVersion = '
       });
 
       upsertSentryIssueHistory(normalizedIssue, savedRecord.id);
-      const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+      crashGovernanceService.upsertSentryIssue(normalizedIssue, {
         eventId: event?.id,
         historyId: savedRecord.id,
         symbolicationStatus: 'success',
         analysisStatus: 'pending',
       });
       await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
-      await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
       return {
         issue: normalizedIssue,
         eventId: event?.id,
@@ -890,13 +804,10 @@ router.post('/governance/issues/:id/analyze', (req: Request, res: Response) => {
           history.appVersion || record.appVersion,
         );
         await historyService.updateAIAnalysis(history.id, analysis);
-        const nextRecord = crashGovernanceService.markAnalysisByRecordId(record.id, {
+        crashGovernanceService.markAnalysisByRecordId(record.id, {
           status: 'success',
           analysis,
         });
-        if (nextRecord) {
-          await notifyCrashGovernanceRecords([nextRecord]);
-        }
       } catch (error: any) {
         crashGovernanceService.markAnalysisByRecordId(record.id, {
           status: 'failed',
@@ -1507,7 +1418,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         { ...normalizedIssue, eventId: event?.id, appVersion: existingHistory.appVersion || recordAppVersion },
         aiAnalysis,
       );
-      const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+      crashGovernanceService.upsertSentryIssue(normalizedIssue, {
         eventId: event?.id,
         historyId: existingHistory.id,
         symbolicationStatus: 'success',
@@ -1516,7 +1427,6 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
         analysis: aiAnalysis,
       });
       await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
-      await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
 
       res.json({
         success: true,
@@ -1588,7 +1498,7 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       { ...normalizedIssue, eventId: event?.id, appVersion: recordAppVersion },
       aiAnalysis,
     );
-    const governanceRecord = crashGovernanceService.upsertSentryIssue(normalizedIssue, {
+    crashGovernanceService.upsertSentryIssue(normalizedIssue, {
       eventId: event?.id,
       historyId: savedRecord.id,
       symbolicationStatus: 'success',
@@ -1597,7 +1507,6 @@ router.post('/symbolicate-and-analyze', async (req: Request, res: Response) => {
       analysis: aiAnalysis,
     });
     await crashGovernanceService.refreshCoverageForRecord(normalizedIssue.id, crashLog);
-    await notifyCrashGovernanceRecords([crashGovernanceService.getById(governanceRecord.id) || governanceRecord]);
 
     res.json({
       success: true,
