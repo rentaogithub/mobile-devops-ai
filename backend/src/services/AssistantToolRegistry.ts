@@ -17,6 +17,7 @@ import { operationalLogService } from './OperationalLogService';
 import { platformConfigService } from './PlatformConfigService';
 import { isMainAppDSYM } from './DSYMMatcherService';
 import { extractVersionFromCrashLog } from '../utils/versionExtractor';
+import { assistantCapabilityDatasetService } from './AssistantCapabilityDatasetService';
 
 export type AssistantRiskLevel = 'read' | 'confirm' | 'high';
 
@@ -134,6 +135,20 @@ async function symbolicateAttachment(args: { attachmentId: string; uuids?: strin
 
 const tools: AssistantTool[] = [
   {
+    name: 'assistant_capability_search', domain: 'platform', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
+    description: '查询 AI 会话执行中心已同步的全服务能力目录，返回能力名称、服务域、权限、风险、入参、输出、来源和同步状态。',
+    parameters: objectSchema({
+      keyword: { type: 'string' },
+      domain: { type: 'string' },
+      limit: { type: 'number', minimum: 1, maximum: 100 },
+    }),
+    execute: (args) => assistantCapabilityDatasetService.searchCapabilities(
+      String(args.keyword || ''),
+      args.limit || 30,
+      args.domain ? [String(args.domain) as any] : undefined,
+    ),
+  },
+  {
     name: 'platform_cross_system_diagnosis', domain: 'platform', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 180_000,
     description: '跨系统诊断用户或版本问题：输入 UID、DeviceID、构建号或版本，自动关联 Sentry、Jenkins、质检、反馈日志和发布门禁，输出证据、可能原因与处理建议。',
     parameters: objectSchema({
@@ -157,9 +172,15 @@ const tools: AssistantTool[] = [
   },
   {
     name: 'routes_search', domain: 'api', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 30_000,
-    description: '用自然语言搜索当前产品线主仓库中的 App 路由、Scheme、Universal Link 和 JSBridge 入口，返回源码位置、模块与跨端兼容性提示。',
+    description: '用自然语言查询 App 路由、Scheme、Universal Link 和页面跳转能力说明，返回功能边界、适用场景、输入输出和验证建议。',
     parameters: objectSchema({ keyword: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 100 } }, ['keyword']),
     execute: (args) => apiRouteSearchService.searchRoutes(args.keyword, args.limit || 30),
+  },
+  {
+    name: 'cross_platform_search', domain: 'api', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 30_000,
+    description: '用自然语言查询跨端能力、JSBridge、WebView、H5 容器、Scheme 与 Universal Link 能力说明，返回功能边界、适用场景、输入输出和联调建议。',
+    parameters: objectSchema({ keyword: { type: 'string' }, limit: { type: 'number', minimum: 1, maximum: 100 } }),
+    execute: (args) => apiRouteSearchService.searchCrossPlatform(args.keyword || '', args.limit || 30),
   },
   {
     name: 'pods_analyze_impact', domain: 'pods', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 60_000,
@@ -504,6 +525,39 @@ function validateType(value: unknown, type: string) {
 }
 
 export class AssistantToolRegistry {
+  syncCapabilityDataset() {
+    const items = tools.map((tool) => {
+      const schema = tool.parameters as any;
+      const properties = Object.keys(schema?.properties || {});
+      const required = Array.isArray(schema?.required) ? schema.required : [];
+      return {
+        domain: tool.domain,
+        capability: tool.name,
+        toolName: tool.name,
+        cardType: tool.riskLevel === 'read' ? 'query_result' : 'action_confirmation',
+        role: tool.role,
+        riskLevel: tool.riskLevel,
+        category: tool.domain,
+        description: tool.description,
+        scenario: tool.description,
+        usage: tool.riskLevel === 'read'
+          ? '可在 AI 会话中直接查询并展示结果卡片。'
+          : `该能力需要 ${tool.approvalsRequired || 1} 次确认后执行。`,
+        aliases: [
+          tool.name,
+          tool.domain,
+          tool.description,
+          ...tool.name.split('_'),
+        ],
+        parameters: properties,
+        inputs: properties,
+        outputs: [tool.riskLevel === 'read' ? '查询结果卡片' : '审批预览与执行结果'],
+        status: required.length > 0 ? `必填参数：${required.join('、')}` : '无必填参数',
+      };
+    });
+    return assistantCapabilityDatasetService.syncCapabilities({ source: 'assistant-tools', replace: true, items });
+  }
+
   listForUser(user: PlatformUser) {
     return tools.filter((tool) => hasToolRole(user, tool));
   }

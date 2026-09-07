@@ -72,7 +72,13 @@ export class AssistantService {
     const messages = this.normalizeMessages(rawMessages);
     const tools = assistantToolRegistry.listForUser(user);
     if (tools.length === 0) throw new Error('当前账号没有可用能力');
-    const result = await assistantModelGateway.start(messages, tools);
+    let result: AssistantModelResult;
+    try {
+      result = await assistantModelGateway.start(messages, tools);
+    } catch (error: any) {
+      this.emitGuidance(user, messages, tools, emit, error);
+      return;
+    }
     await this.processModelResult(user, result, emit, 0);
   }
 
@@ -171,7 +177,9 @@ export class AssistantService {
           ? previous.result
           : { status: 'already_in_progress', actionId: previous.id, actionStatus: previous.status };
         emit({ type: 'tool.completed', actionId: previous.id, toolName: tool.name, status: 'deduplicated', result: duplicateResult });
-        const next = await assistantModelGateway.continue(initial.state, call.callId, duplicateResult, assistantToolRegistry.listForUser(user));
+        const availableTools = assistantToolRegistry.listForUser(user);
+        const next = await this.continueModelOrGuide(user, this.latestMessagesFromState(initial.state), availableTools, initial.state, call.callId, duplicateResult, emit);
+        if (!next) return;
         await this.processModelResult(user, next, emit, iteration + 1);
         return;
       }
@@ -200,7 +208,9 @@ export class AssistantService {
     }
 
     const output = await this.executeAudited(audit.id, tool, args, context, emit);
-    const next = await assistantModelGateway.continue(initial.state, call.callId, output, assistantToolRegistry.listForUser(user));
+    const availableTools = assistantToolRegistry.listForUser(user);
+    const next = await this.continueModelOrGuide(user, this.latestMessagesFromState(initial.state), availableTools, initial.state, call.callId, output, emit);
+    if (!next) return;
     await this.processModelResult(user, next, emit, iteration + 1);
   }
 
@@ -238,6 +248,106 @@ export class AssistantService {
     for (let index = 0; index < text.length; index += 24) {
       emit({ type: 'assistant.delta', delta: text.slice(index, index + 24) });
     }
+  }
+
+  private async continueModelOrGuide(
+    user: PlatformUser,
+    messages: AssistantInputMessage[],
+    tools: AssistantTool[],
+    state: AssistantModelState,
+    callId: string,
+    output: unknown,
+    emit: (event: AssistantEvent) => void,
+  ) {
+    try {
+      return await assistantModelGateway.continue(state, callId, output, tools);
+    } catch (error: any) {
+      this.emitGuidance(user, messages, tools, emit, error);
+      return undefined;
+    }
+  }
+
+  private latestMessagesFromState(state: AssistantModelState): AssistantInputMessage[] {
+    if (state.style !== 'chat_completions') return [];
+    return state.messages
+      .filter((message) => message?.role === 'user' || message?.role === 'assistant')
+      .map((message): AssistantInputMessage => ({
+        role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: String(message.content || ''),
+      }))
+      .filter((message) => message.content);
+  }
+
+  private emitGuidance(user: PlatformUser, messages: AssistantInputMessage[], tools: AssistantTool[], emit: (event: AssistantEvent) => void, error?: any) {
+    const latestInput = String([...messages].reverse().find((message) => message.role === 'user')?.content || '').trim();
+    const suggestions = this.guidanceSuggestions(tools, user.role);
+    emit({
+      type: 'tool.completed',
+      toolName: 'assistant_guidance',
+      domain: 'platform',
+      status: 'completed',
+      result: {
+        kind: 'assistant_guidance',
+        title: '我还没匹配到明确的平台能力',
+        summary: latestInput
+          ? `这句话暂时没有稳定匹配到可执行能力：${latestInput}`
+          : '这次输入暂时没有稳定匹配到可执行能力。',
+        hints: [
+          '可以补充对象类型，例如 UID、构建号、版本号、Issue ID、API 名称或 JSBridge 方法名。',
+          '可以加上动作，例如查询、分析、对比、验证、创建、重跑、发布。',
+          '跨端能力可以直接说“获取 token 的 jsbridge”或“跳转到其它 H5 页面”。',
+        ],
+        suggestions,
+        reason: this.friendlyModelError(error),
+      },
+    });
+    emit({ type: 'assistant.completed', status: 'completed' });
+  }
+
+  private guidanceSuggestions(tools: AssistantTool[], role: PlatformUser['role']) {
+    const toolNames = new Set(tools.map((tool) => tool.name));
+    const toolDomains = new Set(tools.map((tool) => tool.domain));
+    const suggestions = [
+      { text: '查看 AI 会话执行中心有哪些能力', toolName: 'assistant_capability_search' },
+      { text: '查询平台已同步的服务能力目录', toolName: 'assistant_capability_search' },
+      { text: '查询获取 token 的 jsbridge', toolName: 'cross_platform_search' },
+      { text: 'getCommunityChannelInfo 是什么', toolName: 'cross_platform_search' },
+      { text: '跳转到其它 H5 页面的能力', toolName: 'cross_platform_search' },
+      { text: '搜索登录相关 API 定义和使用', toolName: 'api_search' },
+      { text: '搜索社区频道相关 API 定义', toolName: 'api_search' },
+      { text: '查询打开私聊页面的路由说明', toolName: 'routes_search' },
+      { text: '查询社区大厅闲聊的路由定义', toolName: 'routes_search' },
+      { text: '查询 UID 131088950 最近的 Sentry 崩溃', toolName: 'sentry_find_user_issues' },
+      { text: '查询最近 24 小时新增线上 Crash', toolName: 'sentry_list_issues' },
+      { text: '查询用户 131088950 的最近反馈日志', toolName: 'logs_search' },
+      { text: '查看质量中心概览、最新任务和最新问题', toolName: 'workflow_overview' },
+      { text: '查询质量中心高风险未关闭 Issue', toolName: 'workflow_list_issues' },
+      { text: '查询最近 Jenkins 主工程构建', toolName: 'cicd_list_builds' },
+      { text: '分析构建 #12345 失败原因', toolName: 'cicd_analyze_build_failure' },
+      { text: '生成过去 24 小时移动端质量日报', toolName: 'quality_daily_report', roles: ['tester', 'developer', 'admin'] },
+      { text: '分析 NNRtc 组件升级影响范围', toolName: 'pods_analyze_impact', domains: ['pods'] },
+    ];
+    return this.sampleSuggestions(suggestions
+      .filter((item) => (toolNames.has(item.toolName) || item.domains?.some((domain) => toolDomains.has(domain as any)))
+        && (!item.roles || item.roles.includes(role)))
+      .map((item) => item.text), 6);
+  }
+
+  private sampleSuggestions(items: string[], limit: number) {
+    return Array.from(new Set(items))
+      .map((text) => ({ text, sort: Math.random() }))
+      .sort((left, right) => left.sort - right.sort)
+      .slice(0, limit)
+      .map((item) => item.text);
+  }
+
+  private friendlyModelError(error?: any) {
+    const message = String(error?.message || error || '');
+    if (!message) return undefined;
+    if (/status code 5\d\d|HTTP\s*5\d\d|ECONN|timeout|timed out|network/i.test(message)) {
+      return '外部 AI 服务暂时不可用，已切换为平台能力引导。';
+    }
+    return '当前语义没有命中稳定能力，已给出可执行问法。';
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number) {

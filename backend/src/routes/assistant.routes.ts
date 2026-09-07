@@ -5,7 +5,9 @@ import { requireRole } from '../middleware/auth';
 import { assistantAttachmentService } from '../services/AssistantAttachmentService';
 import { assistantAuditService } from '../services/AssistantAuditService';
 import { AssistantEvent, assistantService } from '../services/AssistantService';
+import { assistantCapabilityDatasetService } from '../services/AssistantCapabilityDatasetService';
 import { authService, PlatformUser } from '../services/AuthService';
+import { businessSemanticService } from '../services/BusinessSemanticService';
 import { jenkinsAssistantService } from '../services/JenkinsAssistantService';
 import logger from '../utils/logger';
 
@@ -191,6 +193,35 @@ router.post('/attachments', sameOrigin, upload.single('file'), (req, res) => {
 
 router.get('/audits', requireRole('admin'), (req, res) => {
   res.json({ success: true, data: assistantAuditService.list(Number(req.query.limit) || 100) });
+});
+
+router.get('/semantic/stats', requireRole('admin'), (req, res) => {
+  res.json({ success: true, data: businessSemanticService.semanticStats(Number(req.query.limit) || 50) });
+});
+
+router.get('/datasets/capabilities/status', requireRole('admin'), (_req, res) => {
+  res.json({ success: true, data: assistantCapabilityDatasetService.status() });
+});
+
+router.post('/datasets/capabilities/sync', requireRole('admin'), (req, res) => {
+  try {
+    const result = assistantCapabilityDatasetService.syncCapabilities(req.body);
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(400).json({ success: false, error: error?.message || '同步能力数据集失败' });
+  }
+});
+
+router.post('/datasets/capabilities/sync-from-entrances', requireRole('admin'), async (req, res) => {
+  try {
+    const result = await assistantCapabilityDatasetService.syncFromEntrances({
+      routesUrl: typeof req.body?.routesUrl === 'string' ? req.body.routesUrl : undefined,
+      crossPlatformUrl: typeof req.body?.crossPlatformUrl === 'string' ? req.body.crossPlatformUrl : undefined,
+    });
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    res.status(502).json({ success: false, error: error?.message || '从能力入口同步数据集失败' });
+  }
 });
 
 export default router;

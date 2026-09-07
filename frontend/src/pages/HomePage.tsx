@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Alert,
@@ -20,17 +20,23 @@ import {
   message,
 } from 'antd';
 import {
+  ApiOutlined,
+  ApartmentOutlined,
   BugOutlined,
   CheckOutlined,
   CheckCircleOutlined,
   CloseOutlined,
+  DatabaseOutlined,
   DownloadOutlined,
+  ExperimentOutlined,
   EyeOutlined,
+  FileSearchOutlined,
   LinkOutlined,
   PaperClipOutlined,
   ReloadOutlined,
   RobotOutlined,
   SendOutlined,
+  ToolOutlined,
   UserOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -75,15 +81,121 @@ interface UploadedAttachment {
   expiresAt: string;
 }
 
-const suggestions: Array<{ text: string; roles?: AuthUser['role'][] }> = [
+interface AssistantCapability {
+  name: string;
+  domain: ToolEvent['domain'];
+  description: string;
+  role: AuthUser['role'];
+  riskLevel: string;
+  approvalsRequired: number;
+}
+
+const fallbackSuggestions: Array<{ text: string; roles?: AuthUser['role'][]; toolName?: string; domain?: string }> = [
   { text: '按 UID 跨系统查询最近的 Crash、日志和相关任务' },
-  { text: '搜索登录相关 API 和 App 路由' },
+  { text: '搜索登录相关 API 定义和使用' },
+  { text: '查询获取 token 的 jsbridge', toolName: 'cross_platform_search', domain: 'api' },
+  { text: '查询打开私聊页面的路由说明', toolName: 'routes_search', domain: 'api' },
+  { text: '查询社区大厅闲聊的路由定义', toolName: 'routes_search', domain: 'api' },
+  { text: '查看 AI 会话执行中心有哪些能力', toolName: 'assistant_capability_search', domain: 'platform' },
+  { text: '查询 UID 131088950 最近的 Sentry 崩溃', toolName: 'sentry_find_user_issues', domain: 'crash' },
+  { text: '查询用户 131088950 的最近反馈日志', toolName: 'logs_search', domain: 'logs' },
+  { text: '查询最近 24 小时新增线上 Crash', toolName: 'sentry_list_issues', domain: 'crash' },
+  { text: '查看质量中心概览、最新任务和最新问题', toolName: 'workflow_overview', domain: 'workflow' },
+  { text: '查询质量中心高风险未关闭 Issue', toolName: 'workflow_list_issues', domain: 'workflow' },
+  { text: '查询最近 Jenkins 主工程构建', toolName: 'cicd_list_builds', domain: 'cicd' },
   { text: '分析最近一次 Jenkins 失败构建，并给出修复和重建建议', roles: ['tester', 'developer', 'admin'] },
   { text: '生成过去 24 小时移动端质量日报', roles: ['tester', 'developer', 'admin'] },
+  { text: '分析 NNRtc 组件升级影响范围', toolName: 'pods_analyze_impact', domain: 'pods', roles: ['developer', 'admin'] },
 ];
+
+const roleLabels: Record<string, string> = {
+  guest: '游客',
+  tester: '测试',
+  developer: '研发',
+  product: '产品',
+  admin: '管理员',
+};
+
+const domainMeta: Record<string, { title: string; icon: ReactNode; color: string; prompt: string }> = {
+  platform: { title: '跨系统诊断', icon: <ApartmentOutlined />, color: 'blue', prompt: '按 UID 跨系统查询最近的 Crash、日志和相关任务' },
+  crash: { title: 'Crash / Sentry', icon: <BugOutlined />, color: 'red', prompt: '查询最近 24 小时新增 Crash，并按影响用户排序' },
+  cicd: { title: 'CI/CD 构建', icon: <ReloadOutlined />, color: 'purple', prompt: '分析最近一次 Jenkins 失败构建，并给出修复和重建建议' },
+  quality: { title: '自动质检', icon: <ExperimentOutlined />, color: 'green', prompt: '生成过去 24 小时移动端质量日报' },
+  workflow: { title: '质量中心', icon: <ToolOutlined />, color: 'gold', prompt: '查看质量中心高风险 Issue 和未完成任务' },
+  logs: { title: '反馈日志', icon: <FileSearchOutlined />, color: 'cyan', prompt: '按 UID 查询最近反馈日志，并定位异常关键词' },
+  api: { title: 'API / 路由', icon: <ApiOutlined />, color: 'geekblue', prompt: '搜索登录相关 API 定义和使用' },
+  pods: { title: 'Pods 依赖', icon: <DatabaseOutlined />, color: 'lime', prompt: '分析指定 CocoaPods 组件升级影响范围' },
+};
+
+const toolPromptExamples: Record<string, string[]> = {
+  assistant_capability_search: ['查看 AI 会话执行中心有哪些能力', '查询平台已同步的服务能力目录'],
+  platform_cross_system_diagnosis: ['按 UID 跨系统查询最近的 Crash、日志和相关任务', '诊断 UID 131088950 最近的崩溃、反馈日志和任务'],
+  logs_search: ['按 UID 查询最近反馈日志，并定位异常关键词', '查询用户 131088950 的最近反馈日志'],
+  api_search: ['搜索登录相关 API 定义和使用', '查询获取用户信息相关 API 文档', '搜索社区频道相关 API 定义'],
+  routes_search: ['查询登录相关路由能力说明', '查询打开私聊页面的路由说明', '查询社区大厅闲聊的路由定义', '查询带玩主页的路由'],
+  cross_platform_search: ['查询登录相关跨端能力说明', '查询获取 token 的 jsbridge', '查询跳转到其它 H5 页面的跨端能力', 'getCommunityChannelInfo 是什么'],
+  pods_analyze_impact: ['分析 NNRtc 组件升级影响范围', '分析指定 CocoaPods 组件升级影响和验证范围'],
+  workflow_overview: ['查看质量中心概览、最新任务和最新问题', '查看质量中心今日风险概览'],
+  workflow_list_issues: ['查询质量中心高风险未关闭 Issue', '查询最近质量中心 P0/P1 问题'],
+  workflow_list_tasks: ['查询最近构建、质检和回归任务', '查看最近自动化回归任务状态'],
+  workflow_verify_task: ['验证指定 Workflow 任务是否通过', '检查 Workflow 任务 #12345 的验证结果'],
+  workflow_change_impact: ['分析当前变更影响范围并建议验证策略', '按变更内容生成回归验证建议'],
+  workflow_release_gate_preview: ['预览指定构建的发布质量门禁', '检查版本发布前质量门禁风险'],
+  workflow_verify_release_health: ['验证指定版本发布后是否健康', '查看指定版本发布后的 Crash 和质量状态'],
+  task_track: ['跟踪构建、质检或 Workflow 任务状态', '继续跟踪 Workflow 任务 #12345'],
+  workflow_create_regression_candidate: ['将指定 Issue 转换为回归候选', '为质量中心 Issue 生成回归候选'],
+  workflow_generate_xcuitest: ['根据回归候选生成 XCUITest 代码', '为指定回归候选生成自动化用例'],
+  crash_list_history: ['查询指定版本的 Crash 符号化历史', '查看最近 Crash 符号化记录'],
+  crash_get_history: ['读取指定 Crash 历史详情和日志', '查看 Crash 历史 #123 的详情'],
+  crash_analyze_history: ['对指定 Crash 历史执行 AI 分析', '分析 Crash 历史 #123 的根因和修复建议'],
+  crash_symbolicate_attachment: ['符号化本次上传的 crash/ips 附件', '上传 ips 日志后执行符号化分析'],
+  crash_compare_versions: ['对比两个 App 版本的 Crash 趋势', '对比 1.2.0 和 1.2.1 的 Crash 变化'],
+  dsym_diagnose_missing: ['按 UUID 或版本诊断 dSYM 是否缺失', '诊断指定 UUID 是否缺少 dSYM'],
+  sentry_list_issues: ['查询最近 24 小时新增线上 Crash', '查看线上 Crash Top 风险'],
+  sentry_find_user_issues: ['按 UID 精确查询最近 Sentry 崩溃', '查询 UID 131088950 最近的 Sentry 崩溃'],
+  sentry_get_issue_context: ['读取指定 Sentry Issue 的诊断上下文', '查看 Sentry Issue NN-IOS-123 的上下文'],
+  cicd_list_builds: ['查询最近 Jenkins 主工程构建', '查看 develop 分支最近构建结果'],
+  cicd_get_build_log: ['读取指定 Jenkins 构建日志尾部', '查看 Jenkins 构建 #12345 的失败日志'],
+  cicd_analyze_build_failure: ['分析指定失败构建的根因', '分析构建 #12345 失败原因'],
+  cicd_verify_build: ['验证指定构建或质检任务最新状态', '检查构建 #12345 是否完成归档'],
+  cicd_trigger_build: ['为 develop 分支触发一次 Pgyer 构建', '触发 develop 分支测试包构建'],
+  cicd_retry_build: ['重试指定失败构建', '重试 Jenkins 构建 #12345'],
+  cicd_trigger_release: ['触发指定分支的受控发布', '触发 release 分支受控发布'],
+  cicd_stop_build: ['停止指定 Jenkins 构建', '停止 Jenkins 构建 #12345'],
+  quality_list_tasks: ['查询最近自动质检任务', '查看最近 smoke 自动质检任务'],
+  quality_daily_report: ['生成过去 24 小时移动端质量日报', '生成今日移动端质量日报'],
+  quality_create_task: ['基于指定构建创建 smoke 质检任务', '为构建 #12345 创建 smoke 质检任务'],
+  quality_retry_task: ['重跑指定失败质检任务', '重跑失败的自动质检任务'],
+  quality_stop_task: ['停止指定自动质检任务', '停止自动质检任务 #12345'],
+};
 
 function uid(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isHttpServiceError(message: string) {
+  return /HTTP\s*5\d\d|status code 5\d\d|502|503|ECONN|Failed to fetch|NetworkError/i.test(message);
+}
+
+function assistantGuidanceResult(rawInput = '', reason?: string) {
+  return {
+    kind: 'assistant_guidance',
+    title: '我还没匹配到明确的平台能力',
+    summary: rawInput ? `这句话暂时没有稳定匹配到可执行能力：${rawInput}` : '这次输入暂时没有稳定匹配到可执行能力。',
+    reason: reason || '可以换一种更明确的业务说法，我会继续匹配平台能力。',
+    hints: [
+      '补充对象类型，例如 UID、构建号、版本号、Issue ID、API 名称或 JSBridge 方法名。',
+      '补充动作，例如查询、分析、对比、验证、创建、重跑、发布。',
+      '跨端能力可以直接说“获取 token 的 jsbridge”或“跳转到其它 H5 页面”。',
+    ],
+    suggestions: [
+      '查询获取 token 的 jsbridge',
+      '跳转到其它 H5 页面',
+      '搜索登录相关 API 定义和使用',
+      '查询 UID 131088950 最近的 Sentry 崩溃',
+      '查询用户 131088950 的最近反馈日志',
+    ],
+  };
 }
 
 async function readSSE(response: Response, onEvent: (event: ToolEvent & { delta?: string }) => void) {
@@ -94,7 +206,10 @@ async function readSSE(response: Response, onEvent: (event: ToolEvent & { delta?
       const parsed = JSON.parse(body);
       errorMessage = parsed.error || parsed.message || body;
     } catch { /* 非 JSON 响应按原文展示 */ }
-    throw new Error(errorMessage || `HTTP ${response.status}`);
+    const message = errorMessage || `HTTP ${response.status}`;
+    throw new Error(isHttpServiceError(message) || response.status >= 500
+      ? '服务暂时不可用，已切换为引导提示。'
+      : message);
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -120,8 +235,114 @@ function resultPath(event: ToolEvent) {
   if (event.domain === 'crash') return (event.result as any)?.historyId ? '/history' : '/sentry-service';
   if (event.domain === 'logs') return '/logs';
   if (event.domain === 'pods') return '/pods';
-  if (event.domain === 'api') return event.toolName === 'routes_search' ? '/routes' : '/api-docs';
+  if (event.domain === 'api') return event.toolName === 'api_search' ? '/api-docs' : null;
   return null;
+}
+
+function seededValue(text: string, seed: number) {
+  let hash = seed || 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function samplePrompts(items: string[], seed: number, limit: number) {
+  return Array.from(new Set(items))
+    .map((text) => ({ text, sort: seededValue(text, seed) }))
+    .sort((left, right) => left.sort - right.sort)
+    .slice(0, limit)
+    .map((item) => item.text);
+}
+
+function promptExamplesForTool(toolName: string) {
+  return toolPromptExamples[toolName] || [];
+}
+
+function firstPromptForTool(toolName: string) {
+  return promptExamplesForTool(toolName)[0];
+}
+
+function capabilityPromptOptions(capabilities: AssistantCapability[], currentRole: AuthUser['role'], seed: number) {
+  const availableNames = new Set(capabilities.map((capability) => capability.name));
+  const availableDomains = new Set(capabilities.map((capability) => capability.domain || 'platform'));
+  const dynamicPrompts = capabilities.flatMap((capability) => promptExamplesForTool(capability.name));
+  const fallbackPrompts = fallbackSuggestions
+    .filter((suggestion) => (!suggestion.roles || suggestion.roles.includes(currentRole))
+      && (!suggestion.toolName || availableNames.size === 0 || availableNames.has(suggestion.toolName) || (suggestion.domain && availableDomains.has(suggestion.domain))))
+    .map((suggestion) => suggestion.text);
+  return samplePrompts([...dynamicPrompts, ...fallbackPrompts], seed, 8);
+}
+
+function capabilityGroups(capabilities: AssistantCapability[]) {
+  const grouped = new Map<string, AssistantCapability[]>();
+  capabilities.forEach((capability) => {
+    const key = capability.domain || 'platform';
+    grouped.set(key, [...(grouped.get(key) || []), capability]);
+  });
+  return Array.from(grouped.entries()).sort(([left], [right]) => {
+    const order = Object.keys(domainMeta);
+    return (order.indexOf(left) === -1 ? 99 : order.indexOf(left)) - (order.indexOf(right) === -1 ? 99 : order.indexOf(right));
+  });
+}
+
+function pickSummaryFields(result: Record<string, unknown>) {
+  const blocked = new Set(['kind', 'rows', 'items', 'issues', 'tasks', 'events', 'relations', 'logs', 'matches', 'quickActions', 'originalLog', 'symbolicatedLog', 'analysisLog']);
+  return Object.entries(result)
+    .filter(([key, value]) => !blocked.has(key) && !Array.isArray(value) && (typeof value !== 'object' || value === null))
+    .slice(0, 6)
+    .map(([label, value]) => ({ label: resultColumnLabels[label] || label, value }));
+}
+
+function firstArrayResult(result: Record<string, unknown>) {
+  const entry = Object.entries(result).find(([, value]) => Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null);
+  if (!entry) return null;
+  const [key, value] = entry as [string, Record<string, unknown>[]];
+  const preferred = ['id', 'number', 'title', 'status', 'severity', 'suite', 'source', 'branch', 'appVersion', 'count', 'updatedAt', 'createdAt'];
+  const available = Array.from(new Set(value.slice(0, 10).flatMap((row) => Object.keys(row).filter((item) => row[item] !== undefined && row[item] !== null && row[item] !== ''))));
+  return {
+    title: resultColumnLabels[key] || key,
+    rows: value,
+    keys: [
+      ...preferred.filter((item) => available.includes(item)),
+      ...available.filter((item) => !preferred.includes(item) && !['url', 'parameters', 'actions', 'config', 'result'].includes(item)),
+    ].slice(0, 7),
+  };
+}
+
+function renderStructuredFallback(event: ToolEvent) {
+  const result = event.result as Record<string, unknown>;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const meta = domainMeta[event.domain || ''] || { title: event.toolName || '执行结果', icon: <RobotOutlined />, color: 'blue', prompt: '' };
+  const facts = pickSummaryFields(result);
+  const arrayResult = firstArrayResult(result);
+  const statusText = String(result.status || result.result || '').trim();
+  const failed = /fail|error|block|critical|missing/i.test(statusText);
+  const successful = /success|pass|healthy|available|completed/i.test(statusText);
+  return (
+    <div className={`assistant-closure-card ${failed ? 'assistant-closure-danger' : successful ? 'assistant-closure-success' : ''}`}>
+      <div className="assistant-closure-title">
+        {meta.icon}
+        <Text strong>{String(result.title || result.name || meta.title)}</Text>
+        {Boolean(result.kind) && <Tag color={meta.color}>{String(result.kind)}</Tag>}
+        {statusText && <Tag color={failed ? 'red' : successful ? 'green' : 'blue'}>{statusText}</Tag>}
+      </div>
+      {String(result.summary || result.conclusion || result.description || '').trim() && (
+        <div className="assistant-closure-highlight">{String(result.summary || result.conclusion || result.description)}</div>
+      )}
+      {facts.length > 0 && (
+        <div className="assistant-closure-facts assistant-generic-facts">
+          {facts.map((item) => <span key={item.label}>{item.label}<strong>{resultCell(item.value, 'value')}</strong></span>)}
+        </div>
+      )}
+      {arrayResult && arrayResult.keys.length > 0 && (
+        <div>
+          <Text type="secondary">{arrayResult.title}</Text>
+          {compactTable(arrayResult.rows, arrayResult.keys, { scrollX: 900 })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function markdownCells(line: string) {
@@ -188,12 +409,12 @@ function renderAssistantContent(content: string) {
 const resultColumnLabels: Record<string, string> = {
   id: 'Issue', number: '构建号', result: '状态', status: '状态', branch: '分支', branchName: '分支',
   suite: '测试套件', title: '标题', severity: '严重等级', source: '来源',
-  timestamp: '开始时间', duration: '耗时', description: '备注', displayName: '名称',
+  timestamp: '开始时间', duration: '耗时', description: '说明', displayName: '名称',
   deployTarget: '渠道', sourceBuildNumber: '源构建', appVersion: '版本', commitHash: 'Commit',
   appVersionRange: '影响版本', count: '发生次数', userCount: '影响用户', lastSeen: '最近发生',
   channelQrUrl: '安装二维码', progress: '进度', updatedAt: '更新时间', createdAt: '创建时间',
-  service: '服务', serviceTitle: '服务名称', method: '方法', path: '路径', summary: '用途', operationId: 'Operation ID', tag: '分组', parameterCount: '参数数', sampleCount: '调用样本',
-  file: '文件', line: '行号', route: '路由', module: '模块/负责人', compatibility: '跨端兼容', snippet: '代码位置',
+  service: '服务', serviceTitle: '服务名称', method: '方法', path: '路径', fullPath: '路径', summary: '用途', definition: 'API 定义', usage: '使用方式', operationId: 'Operation ID', tag: '分组', parameterCount: '参数数', sampleCount: '调用样本',
+  api: 'API / 能力', file: '文件', line: '行号', route: '能力/入口', module: '服务模块', compatibility: '跨端兼容', snippet: '代码位置', url: '入口', detailUrl: '详情',
   archiveId: '日志包', archiveTime: '日志时间', content: '日志内容', matchCount: '命中数', fileCount: '文件数', type: '类型',
   version: '版本', issueCount: 'Issue 数', eventCount: '事件数', affectedUsers: '影响用户', topIssue: '首要问题',
   uuid: 'UUID', appName: '应用/组件', buildNumber: '构建号', architecture: '架构', uploadTime: '上传时间',
@@ -243,6 +464,28 @@ function resultCell(value: unknown, key: string) {
   if (key === 'commitHash') return String(value).slice(0, 12);
   if (typeof value === 'object') return JSON.stringify(value).slice(0, 160);
   return String(value);
+}
+
+function summarizeApiFields(value: unknown, type: 'parameters' | 'responses') {
+  if (!Array.isArray(value) || value.length === 0) return '-';
+  return (
+    <Space size={[4, 4]} wrap>
+      {value.slice(0, 4).map((item: any, index) => {
+        const label = type === 'parameters'
+          ? `${item.name || '-'}${item.required ? '*' : ''}`
+          : `${item.code || '-'}`;
+        const tooltip = type === 'parameters'
+          ? [item.in, item.type, item.description].filter(Boolean).join(' · ')
+          : item.description;
+        return (
+          <Tooltip key={`${label}-${index}`} title={tooltip || label}>
+            <Tag>{label}</Tag>
+          </Tooltip>
+        );
+      })}
+      {value.length > 4 && <Tag>+{value.length - 4}</Tag>}
+    </Space>
+  );
 }
 
 function renderClosureResult(
@@ -484,19 +727,182 @@ function renderClosureResult(
     );
   }
 
-  if (result.kind === 'api_search' || result.kind === 'route_search') {
+  if (result.kind === 'assistant_guidance') {
+    const hints: unknown[] = Array.isArray(result.hints) ? result.hints : [];
+    const suggestions: unknown[] = Array.isArray(result.suggestions) ? result.suggestions : [];
+    return (
+      <div className="assistant-closure-card assistant-closure-warning">
+        <div className="assistant-closure-title">
+          <WarningOutlined />
+          <Text strong>{String(result.title || '需要更明确的指令')}</Text>
+        </div>
+        {result.summary && <div className="assistant-closure-highlight">{resultCell(result.summary, 'summary')}</div>}
+        {result.reason && <Text type="secondary">{resultCell(result.reason, 'reason')}</Text>}
+        {hints.length > 0 && (
+          <ul>
+            {hints.map((item, index) => <li key={`${String(item)}-${index}`}>{String(item)}</li>)}
+          </ul>
+        )}
+        {suggestions.length > 0 && (
+          <div className="assistant-guidance-examples">
+            <Text type="secondary">可以这样问</Text>
+            <Space wrap>
+              {suggestions.map((item, index) => <Tag key={`${String(item)}-${index}`}>{String(item)}</Tag>)}
+            </Space>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (result.kind === 'assistant_capability_search') {
     const rows = Array.isArray(result.rows) ? result.rows : [];
-    const isApi = result.kind === 'api_search';
+    const dataset = result.dataset && typeof result.dataset === 'object' ? result.dataset as Record<string, unknown> : {};
     return (
       <div className="assistant-closure-card">
         <div className="assistant-closure-title">
-          <Text strong>{isApi ? 'API 查询' : 'App 路由查询'} · {result.keyword}</Text>
+          <DatabaseOutlined />
+          <Text strong>全服务能力目录 · {result.keyword || '全部'}</Text>
+          <Tag color="blue">{result.total || rows.length} 条</Tag>
+          {typeof dataset.total === 'number' && <Tag>目录 {dataset.total} 项</Tag>}
+        </div>
+        {rows.length > 0
+          ? (
+            <div className="assistant-bridge-card-list">
+              {rows.map((row: Record<string, unknown>, index: number) => (
+                <div className="assistant-bridge-card" key={`${String(row.toolName || row.capability || index)}-${index}`}>
+                  <div className="assistant-bridge-card-title">
+                    <Text strong>{resultCell(row.capability, 'capability')}</Text>
+                    {Boolean(row.domain) && <Tag color="processing">{String(row.domain)}</Tag>}
+                    {Boolean(row.riskLevel) && <Tag color={row.riskLevel === 'high' ? 'red' : row.riskLevel === 'confirm' ? 'gold' : 'green'}>{String(row.riskLevel)}</Tag>}
+                  </div>
+                  <Text type="secondary">{resultCell(row.description || row.scenario, 'description')}</Text>
+                  {Boolean(row.toolName) && <pre className="assistant-bridge-code">{String(row.toolName)}</pre>}
+                  {(Array.isArray(row.inputs) || Array.isArray(row.outputs)) && (
+                    <div className="assistant-bridge-meta">
+                      {Array.isArray(row.inputs) && row.inputs.length > 0 && (
+                        <span>入参 <strong>{row.inputs.slice(0, 6).map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                      {Array.isArray(row.outputs) && row.outputs.length > 0 && (
+                        <span>输出 <strong>{row.outputs.map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                      {Boolean(row.source) && <span>来源 <strong>{String(row.source)}</strong></span>}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+          : <div className="assistant-result-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未找到匹配能力" /></div>}
+        {result.note && <Text type="secondary">{result.note}</Text>}
+      </div>
+    );
+  }
+
+  if (result.kind === 'cross_platform_search') {
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    return (
+      <div className="assistant-closure-card">
+        <div className="assistant-closure-title">
+          <Text strong>跨端能力说明 · {result.keyword || '全部'}</Text>
           <Tag color="blue">{result.total || rows.length} 条</Tag>
         </div>
         {rows.length > 0
-          ? compactTable(rows, isApi
-            ? ['serviceTitle', 'method', 'path', 'summary', 'tag', 'parameterCount', 'sampleCount']
-            : ['route', 'module', 'compatibility', 'file', 'line', 'snippet'], { scrollX: isApi ? 1100 : 1200 })
+          ? (
+            <div className="assistant-bridge-card-list">
+              {rows.map((row: Record<string, unknown>, index: number) => (
+                <div className="assistant-bridge-card" key={`${String(row.methodName || row.capability || index)}-${index}`}>
+                  <div className="assistant-bridge-card-title">
+                    <Text strong>{resultCell(row.capability, 'capability')}</Text>
+                    {Boolean(row.methodName) && <Tag color="processing">{String(row.methodName)}</Tag>}
+                  </div>
+                  <Text type="secondary">{resultCell(row.description || row.scenario, 'description')}</Text>
+                  {Boolean(row.codeSnippet) && <pre className="assistant-bridge-code">{String(row.codeSnippet)}</pre>}
+                  {!row.codeSnippet && Boolean(row.usage) && <div className="assistant-closure-highlight">{resultCell(row.usage, 'usage')}</div>}
+                  {(Array.isArray(row.inputs) || Array.isArray(row.outputs)) && (
+                    <div className="assistant-bridge-meta">
+                      {Array.isArray(row.inputs) && row.inputs.length > 0 && (
+                        <span>入参 <strong>{row.inputs.map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                      {Array.isArray(row.outputs) && row.outputs.length > 0 && (
+                        <span>返回 <strong>{row.outputs.map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+          : <div className="assistant-result-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未找到匹配说明" /></div>}
+        {result.note && <Text type="secondary">{result.note}</Text>}
+      </div>
+    );
+  }
+
+  if (result.kind === 'route_search') {
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    return (
+      <div className="assistant-closure-card">
+        <div className="assistant-closure-title">
+          <Text strong>路由能力说明 · {result.keyword || '全部'}</Text>
+          <Tag color="blue">{result.total || rows.length} 条</Tag>
+        </div>
+        {rows.length > 0
+          ? (
+            <div className="assistant-bridge-card-list">
+              {rows.map((row: Record<string, unknown>, index: number) => (
+                <div className="assistant-bridge-card" key={`${String(row.codeSnippet || row.capability || index)}-${index}`}>
+                  <div className="assistant-bridge-card-title">
+                    <Text strong>{resultCell(row.capability, 'capability')}</Text>
+                    {Boolean(row.category) && <Tag color="green">{String(row.category)}</Tag>}
+                    {Boolean(row.methodName) && <Tag color="processing">{String(row.methodName)}</Tag>}
+                  </div>
+                  <Text type="secondary">{resultCell(row.description || row.scenario, 'description')}</Text>
+                  {Boolean(row.codeSnippet) && <pre className="assistant-bridge-code">{String(row.codeSnippet)}</pre>}
+                  {Boolean(row.usage) && <div className="assistant-closure-highlight">{resultCell(row.usage, 'usage')}</div>}
+                  {(Array.isArray(row.inputs) || Array.isArray(row.outputs)) && (
+                    <div className="assistant-bridge-meta">
+                      {Array.isArray(row.inputs) && row.inputs.length > 0 && (
+                        <span>入参 <strong>{row.inputs.map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                      {Array.isArray(row.outputs) && row.outputs.length > 0 && (
+                        <span>输出 <strong>{row.outputs.map((item) => String(item)).join('、')}</strong></span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+          : <div className="assistant-result-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未找到匹配说明" /></div>}
+        {result.note && <Text type="secondary">{result.note}</Text>}
+      </div>
+    );
+  }
+
+  if (result.kind === 'api_search') {
+    const rows = Array.isArray(result.rows) ? result.rows : [];
+    const tableKeys = ['serviceTitle', 'method', 'fullPath', 'definition', 'parameters', 'responses', 'usage', 'detailUrl'];
+    return (
+      <div className="assistant-closure-card">
+        <div className="assistant-closure-title">
+          <Text strong>API 定义与使用 · {result.keyword || '全部'}</Text>
+          <Tag color="blue">{result.total || rows.length} 条</Tag>
+        </div>
+        {rows.length > 0
+          ? compactTable(rows, tableKeys, {
+              scrollX: 1500,
+              render: (key, value) => {
+                if (key === 'parameters') return summarizeApiFields(value, 'parameters');
+                if (key === 'responses') return summarizeApiFields(value, 'responses');
+                if ((key === 'url' || key === 'detailUrl') && value) return (
+                <a href={String(value)} target="_blank" rel="noopener noreferrer">
+                  <LinkOutlined /> 打开
+                </a>
+                );
+                return undefined;
+              },
+            })
           : <div className="assistant-result-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="未找到匹配结果" /></div>}
         {result.note && <Text type="secondary">{result.note}</Text>}
       </div>
@@ -627,7 +1033,7 @@ function renderToolResult(
   const closureResult = renderClosureResult(event, openSentryIssue, openBuildDetail);
   if (closureResult) return closureResult;
   if (!Array.isArray(event.result)) {
-    return <pre className="assistant-json">{JSON.stringify(event.result, null, 2).slice(0, 12_000)}</pre>;
+    return renderStructuredFallback(event) || <pre className="assistant-json">{JSON.stringify(event.result, null, 2).slice(0, 12_000)}</pre>;
   }
   const rows = event.result as Record<string, unknown>[];
   if (rows.length === 0) {
@@ -751,7 +1157,7 @@ function renderToolResult(
 }
 
 function hasTabularResult(event: ToolEvent) {
-  return (Array.isArray(event.result) && event.result.length > 0) || Boolean(event.result && typeof event.result === 'object' && !Array.isArray(event.result) && (event.result as any).kind);
+  return (Array.isArray(event.result) && event.result.length > 0) || Boolean(event.result && typeof event.result === 'object' && !Array.isArray(event.result));
 }
 
 function renderToolPreview(event: ToolEvent) {
@@ -808,10 +1214,17 @@ export default function HomePage() {
   const [crashDetail, setCrashDetail] = useState<SentryOriginalCrashResult | null>(null);
   const [crashDetailError, setCrashDetailError] = useState('');
   const [secretValues, setSecretValues] = useState<Record<string, Record<string, string>>>({});
+  const [capabilities, setCapabilities] = useState<AssistantCapability[]>([]);
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(false);
+  const [suggestionSeed, setSuggestionSeed] = useState(() => Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const buildTrackingTimers = useRef<Map<string, number>>(new Map());
-  const currentRole = authUtils.getActiveRole() || 'guest';
-  const visibleSuggestions = suggestions.filter((suggestion) => !suggestion.roles || suggestion.roles.includes(currentRole));
+  const currentRole = (authUtils.getActiveRole() || 'guest') as AuthUser['role'];
+  const visibleSuggestions = useMemo(
+    () => capabilityPromptOptions(capabilities, currentRole, suggestionSeed),
+    [capabilities, currentRole, suggestionSeed],
+  );
+  const groupedCapabilities = capabilityGroups(capabilities);
 
   useEffect(() => {
     if (entries.length === 0) return;
@@ -822,6 +1235,27 @@ export default function HomePage() {
     for (const timer of buildTrackingTimers.current.values()) window.clearTimeout(timer);
     buildTrackingTimers.current.clear();
   }, []);
+
+  useEffect(() => {
+    let alive = true;
+    setCapabilitiesLoading(true);
+    fetch('/api/assistant/capabilities', { credentials: 'include' })
+      .then(async (response) => {
+        const body = await response.json();
+        if (!response.ok || !body.success) throw new Error(body.error || '读取能力失败');
+        if (alive) {
+          setCapabilities(Array.isArray(body.data) ? body.data : []);
+          setSuggestionSeed(Date.now());
+        }
+      })
+      .catch(() => {
+        if (alive) setCapabilities([]);
+      })
+      .finally(() => {
+        if (alive) setCapabilitiesLoading(false);
+      });
+    return () => { alive = false; };
+  }, [currentRole]);
 
   const updateAssistant = (id: string, updater: (entry: ChatEntry) => ChatEntry) => {
     setEntries((previous) => previous.map((entry) => entry.id === id ? updater(entry) : entry));
@@ -874,7 +1308,20 @@ export default function HomePage() {
     }
     if (event.type === 'assistant.completed') return;
     if (event.type === 'tool.failed' && !event.actionId) {
-      updateAssistant(assistantId, (entry) => ({ ...entry, content: `${entry.content}${entry.content ? '\n\n' : ''}执行失败：${event.error || '未知错误'}` }));
+      updateAssistant(assistantId, (entry) => ({
+        ...entry,
+        events: [
+          ...entry.events,
+          {
+            type: 'tool.completed',
+            actionId: uid('guidance'),
+            toolName: 'assistant_guidance',
+            domain: 'platform',
+            status: 'completed',
+            result: assistantGuidanceResult('', String(event.error || '当前语义没有命中稳定能力，已给出可执行问法。')),
+          },
+        ],
+      }));
       return;
     }
     updateAssistant(assistantId, (entry) => {
@@ -913,13 +1360,23 @@ export default function HomePage() {
     setEntries([...requestEntries, assistantEntry]);
     setInput('');
     setAttachment(null);
+    setSuggestionSeed(Date.now());
     setLoading(true);
     try {
       await consume('/api/assistant/turn', {
         messages: requestEntries.map(({ role, content }) => ({ role, content })),
       }, assistantEntry.id);
     } catch (error: any) {
-      applyEvent(assistantEntry.id, { type: 'tool.failed', error: error?.message || '会话请求失败' });
+      applyEvent(assistantEntry.id, {
+        type: 'tool.completed',
+        actionId: uid('guidance'),
+        toolName: 'assistant_guidance',
+        domain: 'platform',
+        status: 'completed',
+        result: assistantGuidanceResult(text, isHttpServiceError(String(error?.message || ''))
+          ? '服务暂时不可用，已切换为引导提示。'
+          : String(error?.message || '会话请求失败')),
+      });
     } finally {
       setLoading(false);
     }
@@ -998,10 +1455,39 @@ export default function HomePage() {
           <div className="assistant-empty">
             <Empty image={<RobotOutlined className="assistant-empty-icon" />} description={false}>
               <Title level={3}>直接告诉我你想完成什么</Title>
-              <Paragraph type="secondary">我可以查询 Crash、构建、质检和质量中心，并在你确认后执行受控操作。</Paragraph>
+              <Paragraph type="secondary">当前角色：{roleLabels[currentRole] || currentRole}。我会按服务能力返回诊断、列表、验证、提交、日报等不同结果卡片。</Paragraph>
+              {groupedCapabilities.length > 0 && (
+                <div className="assistant-capability-grid">
+                  {groupedCapabilities.map(([domain, items]) => {
+                    const meta = domainMeta[domain] || { title: domain, icon: <RobotOutlined />, color: 'blue', prompt: '' };
+                    const writableCount = items.filter((item) => item.riskLevel !== 'read').length;
+                    const example = items.map((item) => firstPromptForTool(item.name)).find(Boolean) || meta.prompt;
+                    return (
+                      <button
+                        type="button"
+                        className={`assistant-capability-card assistant-capability-${items.some((item) => item.riskLevel === 'high') ? 'high' : writableCount > 0 ? 'confirm' : 'read'}`}
+                        key={domain}
+                        onClick={() => example && void send(example)}
+                      >
+                        <span className="assistant-capability-icon">{meta.icon}</span>
+                        <span className="assistant-capability-main">
+                          <span className="assistant-capability-title">
+                            {meta.title}
+                            <Tag color={meta.color}>{items.length} 项</Tag>
+                          </span>
+                          <span className="assistant-capability-desc">
+                            {items.slice(0, 3).map((item) => item.description.replace(/[；。].*$/, '')).join(' / ')}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {capabilitiesLoading && <Spin size="small" />}
               <Space wrap className="assistant-suggestions">
                 {visibleSuggestions.map((suggestion) => (
-                  <Button key={suggestion.text} onClick={() => void send(suggestion.text)}>{suggestion.text}</Button>
+                  <Button key={suggestion} onClick={() => void send(suggestion)}>{suggestion}</Button>
                 ))}
               </Space>
             </Empty>

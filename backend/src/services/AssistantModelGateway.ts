@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { AssistantTool } from './AssistantToolRegistry';
+import { businessSemanticService } from './BusinessSemanticService';
 import { platformConfigService } from './PlatformConfigService';
 
 export interface AssistantInputMessage {
@@ -38,7 +39,7 @@ const SYSTEM_PROMPT = `你是 iOS 移动管理平台的执行助手。你的职�
 9. 用户按 UID 或 DeviceID 查询崩溃时必须使用 sentry_find_user_issues，不能把 UID/DeviceID 直接放入 sentry_list_issues.query。
 10. 故障闭环遵循“先查询状态，再定位原因，再提出需要确认的执行操作，执行后调用验证工具”；不要在未定位原因前直接重试。
 11. 同时给出 UID、DeviceID、构建号或版本并要求排障时，优先使用 platform_cross_system_diagnosis；需要查看某个时间点附近的客户端证据时使用 logs_search。
-12. 用户比较版本 Crash 使用 crash_compare_versions；排查缺失符号表使用 dsym_diagnose_missing；Pods 升级影响使用 pods_analyze_impact；接口与 App 路由分别使用 api_search 和 routes_search。
+12. 用户比较版本 Crash 使用 crash_compare_versions；排查缺失符号表使用 dsym_diagnose_missing；Pods 升级影响使用 pods_analyze_impact；后端 API 接口使用 api_search，App 路由使用 routes_search，跨端能力、JSBridge、WebView、Scheme、Universal Link 兼容入口使用 cross_platform_search。
 13. 用户要求日报/今日质量情况时使用 quality_daily_report；异步任务状态使用 task_track。工具结果含 quickActions 时，用一句话提示用户可继续执行，但不要把按钮内容重复成列表。
 14. 用户说“发包”、“打包”、“发布某分支的包”且未指定 Apple 渠道时，必须使用 cicd_trigger_build 触发普通 Pgyer 构建，不得用 cicd_list_builds 代替执行。
 15. 发布到 TestFlight/App Store 前必须先查询成功构建并预览门禁，参数确认后再调用受控发布工具；发布提交后继续跟踪构建并验证发布健康度。
@@ -63,8 +64,22 @@ export class AssistantModelGateway {
   }
 
   async start(messages: AssistantInputMessage[], tools: AssistantTool[]): Promise<AssistantModelResult> {
+    const latestUserInput = String([...messages].reverse().find((message) => message.role === 'user')?.content || '').trim();
     const localResult = this.matchDeterministicAction(messages, tools);
-    if (localResult) return localResult;
+    if (localResult) {
+      businessSemanticService.recordAssistantResolution({
+        rawInput: latestUserInput,
+        mode: 'deterministic',
+        toolName: localResult.calls[0]?.name,
+        availableToolCount: tools.length,
+      });
+      return localResult;
+    }
+    businessSemanticService.recordAssistantResolution({
+      rawInput: latestUserInput,
+      mode: 'model_fallback',
+      availableToolCount: tools.length,
+    });
     if (this.style === 'chat_completions') return this.startChat(messages, tools);
     return this.startResponses(messages, tools);
   }
@@ -86,29 +101,13 @@ export class AssistantModelGateway {
 
   private matchDeterministicAction(messages: AssistantInputMessage[], tools: AssistantTool[]): AssistantModelResult | undefined {
     const content = String([...messages].reverse().find((message) => message.role === 'user')?.content || '').trim();
-    const feedbackUid = content.match(/(?:用户|uid)\s*[:：#]?\s*(\d{6,12})/i)?.[1];
-    const feedbackLogIntent = /(反馈日志|用户.{0,20}日志|日志.{0,20}用户)/i.test(content)
-      && !/(崩溃|crash|jenkins|构建|后端日志)/i.test(content);
-    const explicitTimeRange = /(\d{4}[-/年]\d{1,2}|今天|昨天|前天|过去\s*\d+\s*(?:小时|天)|近\s*\d+\s*(?:小时|天))/i.test(content);
-    if (feedbackUid && feedbackLogIntent && !explicitTimeRange && tools.some((tool) => tool.name === 'logs_search')) {
-      return {
-        text: '',
-        calls: [{ callId: 'local_logs_search', name: 'logs_search', arguments: JSON.stringify({ uid: feedbackUid, limit: 10 }) }],
-        state: { style: 'local', completionText: `已查询用户 ${feedbackUid} 最新可用的反馈日志。` },
-      };
-    }
-
-    if (!tools.some((tool) => tool.name === 'cicd_trigger_build')) return undefined;
-    if (!content || /test\s*flight|app\s*store|苹果商店/i.test(content)) return undefined;
-    if (/查询|查看|历史|最近|列表|状态|日志|详情/.test(content)) return undefined;
-    if (!/(发包|打包|出包|构建|发布)/.test(content)) return undefined;
-    const branchMatch = content.match(/(?:origin\/)?(develop|master|main|(?:release|feature|hotfix|bugfix)\/[A-Za-z0-9._/-]+)/i);
-    if (!branchMatch) return undefined;
-    return {
+    const localCall = (name: string, args: Record<string, unknown>, completionText: string): AssistantModelResult => ({
       text: '',
-      calls: [{ callId: 'local_cicd_trigger_build', name: 'cicd_trigger_build', arguments: JSON.stringify({ branch: branchMatch[1] }) }],
-      state: { style: 'local', completionText: `已提交 ${branchMatch[1]} 分支的 Pgyer 构建任务，可继续跟踪构建状态。` },
-    };
+      calls: [{ callId: `local_${name}`, name, arguments: JSON.stringify(args) }],
+      state: { style: 'local', completionText },
+    });
+    const action = businessSemanticService.resolveAssistantAction(content, tools.map((tool) => tool.name));
+    return action ? localCall(action.toolName, action.args, action.completionText) : undefined;
   }
 
   private toolSchemas(tools: AssistantTool[]) {

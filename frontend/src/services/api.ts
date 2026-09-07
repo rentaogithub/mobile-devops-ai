@@ -562,6 +562,57 @@ export interface ServiceAccessSummary {
   topPaths: ServiceAccessPathStat[];
 }
 
+export interface AssistantSemanticResolution {
+  rawInput: string;
+  mode: 'deterministic' | 'model_fallback';
+  toolName?: string;
+  availableToolCount?: number;
+  productLineId?: string;
+  createdAt: string;
+}
+
+export interface AssistantSemanticSearchMiss {
+  toolName: string;
+  rawQuery: string;
+  cleanedQuery: string;
+  tokens: string[];
+  productLineId?: string;
+  createdAt: string;
+}
+
+export interface AssistantSemanticStats {
+  totals: {
+    resolutions: number;
+    deterministic: number;
+    modelFallback: number;
+    searchMisses: number;
+  };
+  topTools: Array<{ toolName: string; count: number }>;
+  recentResolutions: AssistantSemanticResolution[];
+  recentSearchMisses: AssistantSemanticSearchMiss[];
+}
+
+export interface AssistantCapabilityDatasetStatus {
+  datasetDir: string;
+  files: number;
+  total: number;
+  byDomain: Record<string, number>;
+  sources: Record<string, number>;
+}
+
+export interface AssistantCapabilitySyncResult {
+  syncedAt: string;
+  totalSynced: number;
+  results: Array<{
+    source: string;
+    syncedAt: string;
+    received: number;
+    synced: number;
+    total: number;
+    datasetPath: string;
+  }>;
+}
+
 export interface OpFeedbackLogInfo {
   id?: string;
   userId?: string | number;
@@ -989,6 +1040,26 @@ export const accessStatsApi = {
       recentVisitors: [],
       topPaths: [],
     };
+  },
+};
+
+export const assistantInsightsApi = {
+  semanticStats: async (limit = 50): Promise<AssistantSemanticStats> => {
+    const response = await api.get<ApiResponse<AssistantSemanticStats>>('/assistant/semantic/stats', { params: { limit } });
+    return response.data.data || {
+      totals: { resolutions: 0, deterministic: 0, modelFallback: 0, searchMisses: 0 },
+      topTools: [],
+      recentResolutions: [],
+      recentSearchMisses: [],
+    };
+  },
+  capabilityDatasetStatus: async (): Promise<AssistantCapabilityDatasetStatus> => {
+    const response = await api.get<ApiResponse<AssistantCapabilityDatasetStatus>>('/assistant/datasets/capabilities/status');
+    return response.data.data || { datasetDir: '', files: 0, total: 0, byDomain: {}, sources: {} };
+  },
+  syncCapabilityEntrances: async (): Promise<AssistantCapabilitySyncResult> => {
+    const response = await api.post<ApiResponse<AssistantCapabilitySyncResult>>('/assistant/datasets/capabilities/sync-from-entrances');
+    return response.data.data || { syncedAt: '', totalSynced: 0, results: [] };
   },
 };
 

@@ -13,12 +13,18 @@ function getLocalAddresses() {
 function getBackendCandidates() {
   const explicit = process.env.VITE_BACKEND_TARGET || process.env.BACKEND_TARGET;
   const addresses = getLocalAddresses();
-  const candidates = [
-    explicit,
+  const defaultCandidates = [
     'http://127.0.0.1:3001',
     ...addresses.map((address) => `http://${address}:3001`),
     'http://127.0.0.1:3000',
     ...addresses.map((address) => `http://${address}:3000`),
+  ];
+  const candidates = [
+    ...(explicit ? [explicit] : [
+      'http://127.0.0.1:3000',
+      ...addresses.map((address) => `http://${address}:3000`),
+    ]),
+    ...defaultCandidates,
   ].filter((target): target is string => Boolean(target));
 
   return Array.from(new Set(candidates));

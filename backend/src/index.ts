@@ -40,6 +40,7 @@ import { platformOperationsService } from './services/PlatformOperationsService'
 import { clearOpAccessToken, getOpAccessToken, isOpAccessTokenUsable, updateOpAccessToken } from './services/OpCookieJar';
 import logger from './utils/logger';
 import { authService } from './services/AuthService';
+import { assistantToolRegistry } from './services/AssistantToolRegistry';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -50,6 +51,7 @@ app.set('trust proxy', true);
 initializeDatabase();
 authService.initializeBootstrapUser();
 podService.initTable();
+assistantToolRegistry.syncCapabilityDataset();
 
 // Middleware
 app.use(cors());

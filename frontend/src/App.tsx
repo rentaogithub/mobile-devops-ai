@@ -16,6 +16,7 @@ import RoutesPage from './pages/RoutesPage';
 import LoginPage from './pages/LoginPage';
 import SentryServicePage from './pages/SentryServicePage';
 import AccessStatsPage from './pages/AccessStatsPage';
+import AssistantInsightsPage from './pages/AssistantInsightsPage';
 import ApiDocsPage from './pages/ApiDocsPage';
 import CrossPlatformPage from './pages/CrossPlatformPage';
 import WorkflowPage from './pages/WorkflowPage';
@@ -96,6 +97,8 @@ function App() {
             <Route path="workflow" element={<WorkflowPage />} />
             {/* 访问统计 */}
             <Route path="access-stats" element={<AccessStatsPage />} />
+            {/* AI 提效看板 */}
+            <Route path="assistant-insights" element={<AssistantInsightsPage />} />
           </Route>
           <Route path="/login" element={<LoginPage onLogin={handleLogin} />} />
         </Routes>

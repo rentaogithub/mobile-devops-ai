@@ -73,6 +73,7 @@ describe('assistant identity, permissions and audit', () => {
       'pods_analyze_impact',
       'api_search',
       'routes_search',
+      'cross_platform_search',
       'task_track',
     ]));
     expect(viewerTools).not.toContain('workflow_overview');
@@ -184,6 +185,30 @@ describe('assistant identity, permissions and audit', () => {
     jest.restoreAllMocks();
   });
 
+  it('returns guidance instead of raw 5xx model errors', async () => {
+    const service = new AssistantService();
+    const events: AssistantEvent[] = [];
+    jest.spyOn(assistantModelGateway, 'start').mockRejectedValueOnce(new Error('Request failed with status code 503'));
+
+    await service.turn(guest, [{ role: 'user', content: '随便说个系统理解不了的话' }], (event) => events.push(event));
+
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'tool.completed',
+        toolName: 'assistant_guidance',
+        result: expect.objectContaining({
+          kind: 'assistant_guidance',
+          reason: '外部 AI 服务暂时不可用，已切换为平台能力引导。',
+        }),
+      }),
+      expect.objectContaining({ type: 'assistant.completed', status: 'completed' }),
+    ]));
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool.failed', error: expect.stringContaining('503') }),
+    ]));
+    jest.restoreAllMocks();
+  });
+
   it('requires one confirmation for tester writes and can reject safely', async () => {
     const service = new AssistantService();
     const events: AssistantEvent[] = [];
@@ -224,6 +249,136 @@ describe('assistant identity, permissions and audit', () => {
       expect.objectContaining({ name: 'logs_search', arguments: '{"uid":"131088950","limit":10}' }),
     ]);
     expect(result.state.style).toBe('local');
+  });
+
+  it('routes explicit assistant semantics to the matching service capabilities', async () => {
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '查询 UID 131088950 最近的 Sentry 崩溃' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'sentry_find_user_issues', arguments: '{"identifier":"131088950","identifierType":"uid","period":"7d","limit":20}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '帮我排查用户131088950 崩溃日志和构建相关问题' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'platform_cross_system_diagnosis', arguments: '{"uid":"131088950"}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '对比 5.14.0 和 5.15.0 的 Crash 趋势' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'crash_compare_versions', arguments: '{"versionA":"5.14.0","versionB":"5.15.0","period":"24h"}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '分析构建 #12345 失败原因' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cicd_analyze_build_failure', arguments: '{"buildNumber":12345}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '基于构建 12345 创建登录质检' }],
+      registry.listForUser(tester),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'quality_create_task', arguments: '{"sourceBuildNumber":12345,"suite":"login"}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '搜索登录相关 API 文档' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'api_search', arguments: '{"keyword":"登录","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '查询下进房的接口' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'api_search', arguments: '{"keyword":"进房","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '查询登录相关跨端能力和 JSBridge 兼容入口' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cross_platform_search', arguments: '{"keyword":"登录","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: 'AI 会话执行中心有哪些能力' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'assistant_capability_search', arguments: '{"keyword":"","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '搜索登录的bridge' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cross_platform_search', arguments: '{"keyword":"登录","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '查询获取token的jsbridge' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cross_platform_search', arguments: '{"keyword":"获取token","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: 'getCommunityChannelInfo是什么' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cross_platform_search', arguments: '{"keyword":"getCommunityChannelInfo","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '跳转到其它 H5 页面' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'cross_platform_search', arguments: '{"keyword":"跳转到其它 页面","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '查找登录页面跳转路由' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'routes_search', arguments: '{"keyword":"登录","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '带玩主页' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'routes_search', arguments: '{"keyword":"带玩主页","limit":30}' })],
+      state: { style: 'local' },
+    });
+
+    await expect(assistantModelGateway.start(
+      [{ role: 'user', content: '打开明明鼠聊天的路由' }],
+      registry.listForUser(guest),
+    )).resolves.toMatchObject({
+      calls: [expect.objectContaining({ name: 'routes_search', arguments: '{"keyword":"打开明明鼠聊天","limit":30}' })],
+      state: { style: 'local' },
+    });
   });
 
   it('requires two confirmations before a high-risk admin action', async () => {

@@ -17,6 +17,7 @@ import {
   ApartmentOutlined,
   UserOutlined,
   TeamOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import { authUtils } from '../utils/auth';
 import { authApi } from '../services/api';
@@ -39,6 +40,7 @@ export default function MainLayout() {
   const canAccessQualityCenter = isAdmin;
   const canAccessRoleManagement = isAdmin;
   const canAccessAccessStats = isAdmin;
+  const canAccessAssistantInsights = isAdmin;
   const roleLabelMap = {
     guest: '游客',
     tester: '测试',
@@ -95,8 +97,13 @@ export default function MainLayout() {
     }
     if (!canAccessAccessStats && path.startsWith('/access-stats')) {
       navigate('/', { replace: true });
+      return;
+    }
+    if (!canAccessAssistantInsights && path.startsWith('/assistant-insights')) {
+      navigate('/', { replace: true });
     }
   }, [
+    canAccessAssistantInsights,
     canAccessAccessStats,
     canAccessCrashTools,
     canAccessQualityCenter,
@@ -223,6 +230,11 @@ export default function MainLayout() {
       key: '/access-stats',
       icon: <BarChartOutlined />,
       label: '访问统计',
+    }] : []),
+    ...(canAccessAssistantInsights ? [{
+      key: '/assistant-insights',
+      icon: <RobotOutlined />,
+      label: 'AI 提效看板',
     }] : []),
   ];
 
