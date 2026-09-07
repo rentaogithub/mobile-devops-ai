@@ -1202,7 +1202,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               </Button>
               <Popconfirm
                 title="清理旧日志"
-                description="设备端 nnLog、nnRtc、nnimsdklogs 将各自只保留最新文件，确认继续？"
+                description="远程清理当前设备旧日志，确认继续?"
                 okText="清理"
                 cancelText="取消"
                 okButtonProps={{ danger: true }}
