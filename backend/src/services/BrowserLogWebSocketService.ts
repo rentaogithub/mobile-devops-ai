@@ -184,7 +184,7 @@ class BrowserLogWebSocketService {
       return;
     }
 
-    if (this.isLogArchiveMessage(parsed)) {
+    if (this.isAppCommandResultMessage(parsed)) {
       this.broadcastToBrowsers(client.pairingId, parsed);
       return;
     }
@@ -209,22 +209,37 @@ class BrowserLogWebSocketService {
         this.sendJSON(client, { type: 'status', status: 'waiting_app' });
         return;
       }
-      this.sendJSON(client, {
-        type: 'logArchiveFailed',
-        requestId: payload.requestId,
-        message: 'App 未连接，无法下载日志',
-      });
+      this.sendJSON(client, this.commandFailureMessage(payload.command, payload.requestId));
     }
   }
 
-  private isLogArchiveMessage(parsed: any): boolean {
+  private isAppCommandResultMessage(parsed: any): boolean {
     return [
       'logArchivePreparing',
       'logArchiveStart',
       'logArchiveChunk',
       'logArchiveFinished',
       'logArchiveFailed',
+      'oldLogsClearPreparing',
+      'oldLogsClearFinished',
+      'oldLogsClearFailed',
     ].includes(parsed?.type);
+  }
+
+  private commandFailureMessage(command: unknown, requestId: string): object {
+    if (command === 'clearOldLogs') {
+      return {
+        type: 'oldLogsClearFailed',
+        requestId,
+        message: 'App 未连接，无法清理旧日志',
+      };
+    }
+
+    return {
+      type: 'logArchiveFailed',
+      requestId,
+      message: 'App 未连接，无法下载日志',
+    };
   }
 
   private appendLog(pairingId: string, line: string, channel: LogChannel): void {

@@ -203,6 +203,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [isDownloadingLogs, setIsDownloadingLogs] = useState(false);
   const [isAnalyzingDownloadedLogs, setIsAnalyzingDownloadedLogs] = useState(false);
+  const [isClearingOldLogs, setIsClearingOldLogs] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [centerSuccessText, setCenterSuccessText] = useState('');
   const [qrModalOpen, setQrModalOpen] = useState(false);
@@ -540,6 +541,22 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
           }));
           return;
         }
+        if (data.type === 'oldLogsClearPreparing') {
+          setIsClearingOldLogs(true);
+          message.info('正在清理设备旧日志...');
+          return;
+        }
+        if (data.type === 'oldLogsClearFinished') {
+          setIsClearingOldLogs(false);
+          const removedCount = Number(data.removedCount || 0);
+          message.success(`旧日志清理完成，已删除 ${removedCount} 个文件`);
+          return;
+        }
+        if (data.type === 'oldLogsClearFailed') {
+          setIsClearingOldLogs(false);
+          message.error(data.message || '旧日志清理失败');
+          return;
+        }
         if (data.type === 'logArchivePreparing') {
           setIsDownloadingLogs(true);
           setDownloadProgress(0);
@@ -636,6 +653,20 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       type: 'command',
       command: 'downloadLogs',
       requestId,
+    }));
+  };
+
+  const requestClearOldLogs = () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      message.warning('日志流未连接，无法清理旧日志');
+      return;
+    }
+    setIsClearingOldLogs(true);
+    ws.send(JSON.stringify({
+      type: 'command',
+      command: 'clearOldLogs',
+      requestId: makeRequestId(),
     }));
   };
 
@@ -1169,6 +1200,23 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               >
                 {isDownloadingLogs ? `下载中 ${downloadProgress}%` : isAnalyzingDownloadedLogs ? '分析中' : '下载 NN 日志'}
               </Button>
+              <Popconfirm
+                title="清理旧日志"
+                description="设备端 nnLog、nnRtc、nnimsdklogs 将各自只保留最新文件，确认继续？"
+                okText="清理"
+                cancelText="取消"
+                okButtonProps={{ danger: true }}
+                onConfirm={requestClearOldLogs}
+              >
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  loading={isClearingOldLogs}
+                >
+                  清理旧日志
+                </Button>
+              </Popconfirm>
               <Button
                 size="small"
                 icon={<FileSearchOutlined />}
