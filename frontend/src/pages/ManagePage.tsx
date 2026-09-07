@@ -1378,16 +1378,6 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           查看企业微信机器人配置说明
                         </Button>
                       </Space>
-                      <Card size="small" title="企业微信自建应用（崩溃报告分享）">
-                        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                          <Text type="secondary">用于把当前产品线的崩溃报告发送给指定成员或部门。Corp ID、Agent ID 和 Secret 必须属于同一个企业微信应用。</Text>
-                          <div style={productLineFormGridStyle}>
-                            <div><Text strong>Corp ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.WECHAT_WORK_CORP_ID} onChange={(event) => updateProductLineService('WECHAT_WORK_CORP_ID', event.target.value)} placeholder="企业 ID" /></div>
-                            <div><Text strong>Agent ID</Text><Input style={{ marginTop: 6 }} value={productLineServices.WECHAT_WORK_AGENT_ID} onChange={(event) => updateProductLineService('WECHAT_WORK_AGENT_ID', event.target.value)} placeholder="应用 AgentId" /></div>
-                          </div>
-                          {renderServiceSecret('WECHAT_WORK_SECRET', '应用 Secret', productLineServices.WECHAT_WORK_SECRETConfigured, '输入企业微信应用 Secret')}
-                        </Space>
-                      </Card>
                       {renderTabActions('通知')}
                     </Space>
                   ),
