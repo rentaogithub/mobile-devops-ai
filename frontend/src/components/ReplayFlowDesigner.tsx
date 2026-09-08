@@ -732,11 +732,11 @@ export default function ReplayFlowDesigner({
                 ))}
               </Space>
               <Divider />
-              <Title level={5}>流程</Title>
+              <Title level={5}>回放任务信息</Title>
               <Input
                 disabled={readOnly}
                 value={flow.name}
-                placeholder="流程名称"
+                placeholder="回放任务名称"
                 onChange={(event) => { setFlow({ ...flow, name: event.target.value }); setValidation(null); }}
               />
               <Input.TextArea

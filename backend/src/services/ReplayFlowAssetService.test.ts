@@ -179,42 +179,110 @@ describe('ReplayFlowAssetService', () => {
     expect(service.list({ status: 'archived' })[0].id).toBe(created.id);
   });
 
-  test('配置前置和后置流程引用', () => {
+  test('发布不可变版本并配置前置和后置版本引用', () => {
     const pre = service.createFromRecording(namedRecording('recording-pre', '登录准备'), 'admin');
     const main = service.createFromRecording(namedRecording('recording-main', '搜索社区'), 'admin');
     const post = service.createFromRecording(namedRecording('recording-post', '退出清理'), 'admin');
+    const preVersion = service.publish(pre.id, 'admin', { expectedRevision: pre.draft.revision, releaseNotes: '登录基线' }).version;
+    const postVersion = service.publish(post.id, 'admin', { expectedRevision: post.draft.revision }).version;
 
     const updated = service.updateExecutionChain(main.id, 'admin', {
-      preFlowAssetId: pre.id,
-      postFlowAssetId: post.id,
+      preFlowVersionId: preVersion.id,
+      postFlowVersionId: postVersion.id,
     });
 
     expect(updated).toMatchObject({
+      preFlowVersionId: preVersion.id,
       preFlowAssetId: pre.id,
       preFlowAssetName: pre.name,
+      preFlowVersionNumber: 1,
+      postFlowVersionId: postVersion.id,
       postFlowAssetId: post.id,
       postFlowAssetName: post.name,
+      postFlowVersionNumber: 1,
     });
     expect(service.list().find((asset) => asset.id === main.id)).toMatchObject({
-      preFlowAssetId: pre.id,
-      postFlowAssetId: post.id,
+      preFlowVersionId: preVersion.id,
+      postFlowVersionId: postVersion.id,
     });
+    expect(service.getVersion(preVersion.id)).toMatchObject({ assetId: pre.id, versionNumber: 1, releaseNotes: '登录基线' });
   });
 
-  test('拒绝自引用、循环引用和不可用流程', () => {
+  test('拒绝草稿、自引用、循环引用和不可用流程', () => {
     const first = service.createFromRecording(namedRecording('recording-first', '流程 A'), 'admin');
     const second = service.createFromRecording(namedRecording('recording-second', '流程 B'), 'admin');
     const creating = service.createFromRecording(namedRecording('recording-creating', '创建中'), 'admin', { creationMode: true });
+    const firstVersion = service.publish(first.id, 'admin', { expectedRevision: first.draft.revision }).version;
+    const secondVersion = service.publish(second.id, 'admin', { expectedRevision: second.draft.revision }).version;
 
-    expect(() => service.updateExecutionChain(first.id, 'admin', { preFlowAssetId: first.id }))
+    expect(() => service.updateExecutionChain(first.id, 'admin', { preFlowVersionId: firstVersion.id }))
       .toThrow(expect.objectContaining({ code: 'FLOW_CHAIN_SELF_REFERENCE' }));
-    expect(() => service.updateExecutionChain(first.id, 'admin', { preFlowAssetId: creating.id }))
-      .toThrow(expect.objectContaining({ code: 'FLOW_CHAIN_REFERENCE_UNAVAILABLE' }));
+    expect(() => service.updateExecutionChain(first.id, 'admin', { preFlowVersionId: creating.id }))
+      .toThrow(expect.objectContaining({ code: 'FLOW_VERSION_NOT_FOUND' }));
 
-    service.updateExecutionChain(first.id, 'admin', { preFlowAssetId: second.id });
-    expect(() => service.updateExecutionChain(second.id, 'admin', { postFlowAssetId: first.id }))
+    service.updateExecutionChain(first.id, 'admin', { preFlowVersionId: secondVersion.id });
+    expect(() => service.updateExecutionChain(second.id, 'admin', { postFlowVersionId: firstVersion.id }))
       .toThrow(expect.objectContaining({ code: 'FLOW_CHAIN_CYCLE' }));
     expect(() => service.setArchived(second.id, 'admin', true))
       .toThrow(expect.objectContaining({ code: 'FLOW_CHAIN_REFERENCE_IN_USE' }));
+  });
+
+  test('发布版本不会被后续草稿修改', () => {
+    const created = service.createFromRecording(namedRecording('recording-versioned', '稳定登录'), 'admin');
+    const publishedName = created.draft.flow.name;
+    const published = service.publish(created.id, 'admin', { expectedRevision: created.draft.revision }).version;
+    const edited = service.saveDraft(created.id, 'admin', { expectedRevision: created.draft.revision, name: '稳定登录-草稿修改' });
+    const second = service.publish(created.id, 'admin', { expectedRevision: edited.draft.revision }).version;
+
+    expect(service.getVersion(published.id).flow.name).toBe(publishedName);
+    expect(service.get(created.id).draft.flow.name).toBe('稳定登录-草稿修改');
+    expect(second.versionNumber).toBe(2);
+    expect(service.listPublishedVersions().map((version) => version.versionNumber)).toEqual([2, 1]);
+    expect(() => service.publish(created.id, 'admin', { expectedRevision: created.draft.revision }))
+      .toThrow(expect.objectContaining({ code: 'FLOW_DRAFT_CONFLICT' }));
+  });
+
+  test('从不可变历史版本复制为新的回放任务', () => {
+    const created = service.createFromRecording(namedRecording('recording-copy-version', '登录基线'), 'admin');
+    const version = service.publish(created.id, 'admin', { expectedRevision: created.draft.revision }).version;
+    service.saveDraft(created.id, 'admin', { expectedRevision: created.draft.revision, name: '登录基线-未发布修改' });
+
+    const copied = service.copyVersion(version.id, 'tester', '登录基线 v1 复制任务');
+
+    expect(copied).toMatchObject({ name: '登录基线 v1 复制任务', status: 'draft', creationCompleted: true });
+    expect(copied.id).not.toBe(created.id);
+    expect(copied.draft.flow.nodes).toEqual(version.flow.nodes);
+    expect(copied.draft.flow.name).toBe('登录基线 v1 复制任务');
+    expect(copied.auditEvents[0]).toMatchObject({
+      eventType: 'flow.version_copied',
+      actor: 'tester',
+      payload: { sourceAssetId: created.id, sourceVersionId: version.id, sourceVersionNumber: 1 },
+    });
+  });
+
+  test('回滚历史版本只生成新草稿且不修改已发布版本', () => {
+    const created = service.createFromRecording(namedRecording('recording-rollback', '社区搜索 v1'), 'admin');
+    const first = service.publish(created.id, 'admin', { expectedRevision: created.draft.revision }).version;
+    const edited = service.saveDraft(created.id, 'developer', {
+      expectedRevision: created.draft.revision,
+      name: '社区搜索 v2 草稿',
+    });
+    const second = service.publish(created.id, 'developer', { expectedRevision: edited.draft.revision }).version;
+
+    const rolledBack = service.rollbackToVersion(first.id, 'developer', edited.draft.revision);
+
+    expect(rolledBack.draft.revision).toBe(edited.draft.revision + 1);
+    expect(rolledBack.name).toBe(first.flow.name);
+    expect(rolledBack.draft.flow).toEqual(first.flow);
+    expect(rolledBack.latestVersionId).toBe(second.id);
+    expect(service.getVersion(first.id).flow).toEqual(first.flow);
+    expect(service.getVersion(second.id).flow).toEqual(second.flow);
+    expect(rolledBack.auditEvents[0]).toMatchObject({
+      eventType: 'flow.version_rolled_back_to_draft',
+      actor: 'developer',
+      payload: { sourceVersionId: first.id, sourceVersionNumber: 1, revision: edited.draft.revision + 1 },
+    });
+    expect(() => service.rollbackToVersion(first.id, 'developer', edited.draft.revision))
+      .toThrow(expect.objectContaining({ code: 'FLOW_DRAFT_CONFLICT' }));
   });
 });

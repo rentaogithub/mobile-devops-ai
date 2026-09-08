@@ -32,8 +32,8 @@ export function progressElapsedSeconds(build: JenkinsQualityBuild) {
   const progressStatusValue = String(progress?.status || build.qualitySummary?.status || '').toLowerCase();
   const isTerminal = progressPercentValue >= 100 ||
     ['passed', 'success', 'failed', 'unstable', 'canceled', 'cancelled', 'aborted'].includes(progressStatusValue);
-  if (requestedDuration > 0 && isTerminal) {
-    return requestedDuration;
+  if (isTerminal && !build.building && build.duration > 0) {
+    return Math.round(build.duration / 1000);
   }
   if (build.building && progress?.updatedAt && progressElapsed >= 0) {
     const sinceUpdate = Math.max(0, Math.floor((Date.now() - Number(progress.updatedAt)) / 1000));
@@ -201,6 +201,8 @@ const QUALITY_PHASE_LABELS: Record<string, string> = {
   coldstart: '冷启动阶段',
   cold_start: '冷启动阶段',
   performance: '性能采样阶段',
+  replayflow: '回放执行阶段',
+  replay_flow: '回放执行阶段',
   monkey: 'Monkey 执行阶段',
   report: '报告生成阶段',
   cleanup: '清理阶段',

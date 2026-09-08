@@ -277,16 +277,23 @@ THE System SHALL treat Monkey output as exploratory evidence and candidates, not
 
 ### Requirement BRR-021: Composable Single-run Execution Chain
 
-THE System SHALL allow a replay Flow Asset to reference an optional pre-flow and an optional post-flow and SHALL execute the resulting chain once in the deterministic order `pre -> main -> post`.
+THE System SHALL allow a replay Flow Asset to reference an optional published pre-flow version and an optional published post-flow version and SHALL execute the resulting chain once in the deterministic order `pre -> main -> post`.
 
-The references SHALL point to independent Flow Assets and MUST NOT copy their DSL nodes into the main flow. Loop count, concurrency, device-pool allocation, and Jenkins scheduling MUST remain Quality Task properties.
+The references SHALL point to exact immutable Flow Versions, MUST NOT follow later publications automatically, and MUST NOT copy their DSL nodes into the main flow. Loop count, concurrency, device-pool allocation, and Jenkins scheduling MUST remain Quality Task properties.
 
 #### Scenario: Reject an invalid chain reference
 
 - **GIVEN** a Flow Asset execution-chain configuration
-- **WHEN** the pre-flow or post-flow references the main flow itself, creates a transitive cycle, belongs to another project, is archived, or has not completed creation
+- **WHEN** the pre-flow or post-flow references the main flow itself, creates a transitive cycle, belongs to another project, is archived, is a draft, or does not identify a published version
 - **THEN** the System SHALL reject the configuration
 - **AND** MUST NOT overwrite the previously saved execution chain
+
+#### Scenario: Keep a chain pinned to the selected version
+
+- **GIVEN** a main flow references pre-flow version v1
+- **WHEN** that pre-flow later saves a draft or publishes v2
+- **THEN** the main flow SHALL continue executing v1
+- **AND** SHALL switch versions only after an explicit execution-chain update
 
 #### Scenario: Pre-flow fails
 
@@ -309,3 +316,43 @@ The references SHALL point to independent Flow Assets and MUST NOT copy their DS
 - **WHEN** the chain run is persisted
 - **THEN** the System SHALL store the main asset, phase asset references, device, statuses, duration, and runtime input names
 - **AND** MUST NOT persist runtime input values
+
+### Requirement BRR-022: Replay Flow Quality Task
+
+THE System SHALL provide an independent `replay_flow` quality suite that selects a published Replay Center task and executes an immutable `pre -> main -> post` version manifest repeatedly for the configured **业务编排时长**.
+
+The duration SHALL belong to the quality task rather than the Replay Flow Asset. The legacy feature-checkbox `business_flow` suite SHALL remain separate and MUST NOT execute Replay Flow DSL.
+
+#### Scenario: Create a replay quality task
+
+- **GIVEN** a published Replay Center task and a selected published main version
+- **WHEN** the user creates a `replay_flow` quality task
+- **THEN** the System SHALL resolve and persist the exact pre, main, and post version IDs in an immutable execution manifest
+- **AND** later draft, publication, or execution-chain changes MUST NOT alter the created quality task
+- **AND** runtime input values MUST NOT be sent as Jenkins parameters or written to Jenkins logs
+
+#### Scenario: Execute for the configured duration
+
+- **GIVEN** a replay quality task with a configured business orchestration duration
+- **WHEN** Jenkins executes the task
+- **THEN** the runner SHALL start complete chain iterations while the soft deadline has not elapsed
+- **AND** SHALL finish the current iteration, including post-flow cleanup, after the deadline is reached
+- **AND** SHALL stop starting new iterations after the first failed iteration when `stopOnFailure` is enabled
+
+#### Scenario: Use an app already installed on the device
+
+- **GIVEN** the quality task enables **使用设备上已安装的 App**
+- **WHEN** the runner prepares the assigned device
+- **THEN** the System SHALL require the user to select `com.nndev.im` or `com.nnhuyu.im`, defaulting the selection from the build channel
+- **AND** SHALL verify that exact Bundle ID is installed before starting the quality path
+- **AND** SHALL launch the App before starting or connecting WDA
+- **AND** MAY start WDA and use WDA activation as a fallback when the native launch channel is unavailable
+- **AND** SHALL report the installed NN Bundle IDs when the selected Bundle ID is absent
+
+#### Scenario: Main flow fails during an iteration
+
+- **GIVEN** an iteration with a post-flow
+- **WHEN** the main flow fails
+- **THEN** the runner SHALL still execute the post-flow
+- **AND** SHALL report the iteration as failed
+- **AND** SHALL preserve per-phase node results, screenshots, and WDA Source evidence in `replay-flow-report.json`

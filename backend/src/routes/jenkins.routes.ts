@@ -27,6 +27,7 @@ import { requireAnyRole, requireRole, requireAppStoreRelease } from '../middlewa
 import { currentProductLineId, currentProjectId, runWithProductLine } from '../services/ProductLineContext';
 import { PRODUCT_LINE_CONFIG_KEYS, productLineConfigService } from '../services/ProductLineConfigService';
 import { authService } from '../services/AuthService';
+import { replayFlowQualityService, ReplayFlowQualityConfiguration } from '../services/ReplayFlowQualityService';
 
 const router = Router();
 const execFileAsync = promisify(execFile);
@@ -68,9 +69,10 @@ function defaultRepoUrl() {
   return value;
 }
 const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
-const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'business_flow', 'full']);
+const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'business_flow', 'replay_flow', 'full']);
 const QA_STUTTER_SCENARIOS = new Set(['community', 'im', 'voice_room']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
+const INSTALLED_APP_BUNDLE_IDS = new Set(['com.nndev.im', 'com.nnhuyu.im']);
 const RELEASE_BUILD_LIST_LIMIT = Math.min(
   200,
   Math.max(20, Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 50) || 50),
@@ -251,6 +253,7 @@ function normalizeQualitySuite(value?: string) {
   if (/monkey|随机|猴子/i.test(text)) return 'monkey';
   if (/卡顿|stutter|hitch|jank/i.test(text)) return 'stutter';
   if (/business[_-]?flow|业务.*编排|自定义.*质检|自定义.*测试/i.test(text)) return 'business_flow';
+  if (/replay[_-]?flow|回放.*质检|回放任务/i.test(text)) return 'replay_flow';
   if (/冒烟|smoke/i.test(text)) return 'smoke';
   if (/^im$|im\s*基础/i.test(text)) return 'im';
   if (/^rtc$|rtc\s*基础/i.test(text)) return 'rtc';
@@ -849,7 +852,13 @@ async function syncQualityJenkinsJobConfig() {
 const REQUIRED_QUALITY_JOB_CONFIG_MARKERS = [
   '<name>BUSINESS_FLOW_PLAN_JSON</name>',
   '<name>PLATFORM_TASK_ID</name>',
+  '<name>REPLAY_FLOW_ASSET_ID</name>',
+  '<name>REPLAY_FLOW_VERSION_ID</name>',
+  '<name>REPLAY_FLOW_EXECUTION_MANIFEST_ID</name>',
+  '<name>REPLAY_FLOW_DURATION_SECONDS</name>',
+  '<name>REPLAY_FLOW_STOP_ON_FAILURE</name>',
   'business_flow',
+  'replay_flow',
 ];
 
 async function ensureQualityJenkinsJobConfigFresh() {
@@ -2955,6 +2964,7 @@ function buildLocalQualityArtifactLinks(summaryFile: string, summary: any) {
     processesUrl: artifactUrl(summary?.artifacts?.processes || 'processes.json'),
     monkeyReportUrl: artifactUrl(summary?.artifacts?.monkeyReport),
     businessFlowReportUrl: artifactUrl(summary?.artifacts?.businessFlowReport),
+    replayFlowReportUrl: artifactUrl(summary?.artifacts?.replayFlowReport),
     performanceSamplesUrl: firstArtifactUrl(summary?.artifacts?.performanceSamples, 'performance-samples.jsonl'),
     performanceStuttersUrl: firstArtifactUrl(summary?.artifacts?.performanceStutters, 'performance-stutters.json'),
     performanceStacksUrl: firstArtifactUrl(summary?.artifacts?.performanceStacks, 'performance-stack-analysis.json'),
@@ -4138,6 +4148,7 @@ async function fetchQualitySummary(jobPath: string, build: any) {
           processesUrl: artifactUrl(summary.artifacts?.processes || 'processes.json'),
           monkeyReportUrl: artifactUrl(summary.artifacts?.monkeyReport),
           businessFlowReportUrl: artifactUrl(summary.artifacts?.businessFlowReport),
+          replayFlowReportUrl: artifactUrl(summary.artifacts?.replayFlowReport),
                     performanceSamplesUrl: artifactUrl(summary.artifacts?.performanceSamples || 'performance-samples.jsonl'),
                     performanceStuttersUrl: artifactUrl(summary.artifacts?.performanceStutters || 'performance-stutters.json'),
                     performanceStacksUrl: artifactUrl(summary.artifacts?.performanceStacks || 'performance-stack-analysis.json'),
@@ -6255,6 +6266,7 @@ router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Re
 });
 
 router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+  let replayFlowConfiguration: ReplayFlowQualityConfiguration | null = null;
   try {
     const jobPath = encodeJobPath(defaultQaJobName());
     const buildNumber = String(req.body?.buildNumber || '').trim();
@@ -6287,9 +6299,24 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
         return;
       }
     }
-    const timedQualitySuite = testSuite === 'monkey' || testSuite === 'stutter' || testSuite === 'business_flow';
+    if (testSuite === 'replay_flow') {
+      try {
+        replayFlowConfiguration = replayFlowQualityService.createConfiguration(req.body?.replayFlow || req.body?.replay_flow || {});
+      } catch (error: any) {
+        res.status(Number(error?.statusCode) || 400).json({
+          success: false,
+          error: error?.message || '回放任务质检配置无效',
+          ...(error?.code ? { code: error.code } : {}),
+        });
+        return;
+      }
+    }
+    const timedQualitySuite = testSuite === 'monkey' || testSuite === 'stutter' || testSuite === 'business_flow' || testSuite === 'replay_flow';
+    const requestedDurationSeconds = testSuite === 'replay_flow'
+      ? String(replayFlowConfiguration?.manifest.durationSeconds || '')
+      : rawMonkeyDurationSeconds;
     const monkeyDurationSeconds = timedQualitySuite
-      ? (rawMonkeyDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400')
+      ? (requestedDurationSeconds || getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400')
       : (getRuntimeEnv('QA_MONKEY_DURATION_SECONDS') || '14400');
 
     if (!buildNumber) {
@@ -6312,11 +6339,22 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
     const productBundleId = authService.findProductLine(currentProductLineId())?.bundleId;
     const defaultAppBundleId = productBundleId || (currentProductLineId() === 'nn' ? (skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im') : '');
-    const appBundleId = String(req.body?.appBundleId || req.body?.bundleId || getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId).trim();
+    const appBundleId = String(
+      req.body?.appBundleId
+      || req.body?.bundleId
+      || (skipInstall ? defaultAppBundleId : (getRuntimeEnv('QA_APP_BUNDLE_ID') || defaultAppBundleId)),
+    ).trim();
     if (!appBundleId) {
       res.status(400).json({
         success: false,
         error: `当前产品线 ${currentProductLineId()} 未配置 Bundle ID，无法触发自动质检`,
+      });
+      return;
+    }
+    if (skipInstall && currentProductLineId() === 'nn' && !INSTALLED_APP_BUNDLE_IDS.has(appBundleId)) {
+      res.status(400).json({
+        success: false,
+        error: `使用设备已安装 App 时，请选择 ${Array.from(INSTALLED_APP_BUNDLE_IDS).join(' 或 ')}`,
       });
       return;
     }
@@ -6331,11 +6369,11 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     if (timedQualitySuite && !QA_MONKEY_DURATION_SECONDS.has(monkeyDurationSeconds)) {
       res.status(400).json({
         success: false,
-        error: `执行时长无效：${rawMonkeyDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
+        error: `执行时长无效：${requestedDurationSeconds || '-'}，可选值：5分钟、0.5小时、1小时、4小时、8小时`,
       });
       return;
     }
-    if (testSuite === 'business_flow') {
+    if (testSuite === 'business_flow' || testSuite === 'replay_flow') {
       try {
         await ensureQualityJenkinsJobConfigFresh();
       } catch (error: any) {
@@ -6389,8 +6427,14 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       branch,
       deviceUdid: deviceKey,
       progress: 0,
-      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, businessFlowPlan },
+      config: {
+        testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, appBundleId, businessFlowPlan,
+        ...(replayFlowConfiguration ? { replayFlowExecution: { manifest: replayFlowConfiguration.manifest } } : {}),
+      },
     });
+    if (replayFlowConfiguration) {
+      replayFlowQualityService.persistRuntimeInputs(replayFlowConfiguration.manifest.id, replayFlowConfiguration.inputs);
+    }
     const crumb = await getCrumb();
     const monkeyBusinessMapPath = requireProductLineBusinessMap(testSuite);
     const params = new URLSearchParams({
@@ -6410,8 +6454,8 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       DEVICE_UDID: deviceKey,
       DEVICE_SELECTOR: deviceKey,
       DEVICE_CLOUD: 'LocalMac',
-      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : (testSuite === 'stutter' ? 'local-ios-device-stutter' : (testSuite === 'business_flow' ? 'local-ios-device-business-flow' : 'local-ios-device')),
-      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : (testSuite === 'stutter' ? 'local-usb-stutter' : (testSuite === 'business_flow' ? 'local-usb-business-flow' : 'local-usb')),
+      QUALITY_RUNNER: testSuite === 'monkey' ? 'local-ios-device-monkey' : (testSuite === 'stutter' ? 'local-ios-device-stutter' : (testSuite === 'business_flow' ? 'local-ios-device-business-flow' : (testSuite === 'replay_flow' ? 'local-ios-device-replay-flow' : 'local-ios-device'))),
+      QA_RUNNER_MODE: testSuite === 'monkey' ? 'local-usb-monkey' : (testSuite === 'stutter' ? 'local-usb-stutter' : (testSuite === 'business_flow' ? 'local-usb-business-flow' : (testSuite === 'replay_flow' ? 'local-usb-replay-flow' : 'local-usb'))),
       APP_BUNDLE_ID: appBundleId,
       SKIP_APP_INSTALL: skipInstall ? '1' : '0',
       COLD_START_DETECT_SCREEN: testSuite === 'stutter' ? '0' : (getRuntimeEnv('QA_COLD_START_DETECT_SCREEN') || '1'),
@@ -6447,6 +6491,11 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       MONKEY_BUSINESS_DOMAINS: businessFlowPlan?.targetDomains?.join(',') || getRuntimeEnv('QA_MONKEY_BUSINESS_DOMAINS') || 'login,im,community,voice_room,profile,playwith',
       MONKEY_GUARDED_ACTION_POLICY: businessFlowPlan?.riskPolicy || getRuntimeEnv('QA_MONKEY_GUARDED_ACTION_POLICY') || 'read_only',
       BUSINESS_FLOW_PLAN_JSON: businessFlowPlan ? JSON.stringify(businessFlowPlan) : '',
+      REPLAY_FLOW_ASSET_ID: replayFlowConfiguration?.manifest.mainAssetId || '',
+      REPLAY_FLOW_VERSION_ID: replayFlowConfiguration?.manifest.phases.find((phase) => phase.phase === 'main')?.versionId || '',
+      REPLAY_FLOW_EXECUTION_MANIFEST_ID: replayFlowConfiguration?.manifest.id || '',
+      REPLAY_FLOW_DURATION_SECONDS: replayFlowConfiguration ? String(replayFlowConfiguration.manifest.durationSeconds) : '',
+      REPLAY_FLOW_STOP_ON_FAILURE: replayFlowConfiguration?.manifest.stopOnFailure ? '1' : '0',
       MONKEY_BUSINESS_WEIGHT_CORE: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_CORE') || '40',
       MONKEY_BUSINESS_WEIGHT_EXPAND: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_EXPAND') || '25',
       MONKEY_BUSINESS_WEIGHT_RECOVERY: getRuntimeEnv('QA_MONKEY_BUSINESS_WEIGHT_RECOVERY') || '20',
@@ -6500,7 +6549,10 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       branch,
       deviceUdid: deviceKey,
       progress: 0,
-      config: { testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, businessFlowPlan },
+      config: {
+        testSuite, devicePool, deviceKey, publishChannel, appVersion, skipInstall, appBundleId, businessFlowPlan,
+        ...(replayFlowConfiguration ? { replayFlowExecution: { manifest: replayFlowConfiguration.manifest } } : {}),
+      },
     });
 
     res.json({
@@ -6515,6 +6567,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       }),
     });
   } catch (error: any) {
+    if (replayFlowConfiguration) replayFlowQualityService.removeRuntimeInputs(replayFlowConfiguration.manifest.id);
     res.status(502).json({
       success: false,
       error: extractErrorMessage(error, '触发 Jenkins 自动质检失败'),

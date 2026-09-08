@@ -7,7 +7,7 @@ import {
   SaveOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
-import { Alert, Button, Descriptions, List, Modal, Result, Space, Spin, Steps, Tag, Typography, message } from 'antd';
+import { Alert, Button, Descriptions, Input, List, Modal, Result, Space, Spin, Steps, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import ReplayFlowDesigner from '../components/ReplayFlowDesigner';
@@ -77,6 +77,10 @@ export default function ReplayFlowEditorPage() {
   const [sourcePreviewLoading, setSourcePreviewLoading] = useState(false);
   const [sourcePreviewError, setSourcePreviewError] = useState('');
   const [resettingSource, setResettingSource] = useState(false);
+  const [saveCreationOpen, setSaveCreationOpen] = useState(false);
+  const [creationName, setCreationName] = useState('');
+  const [creationDescription, setCreationDescription] = useState('');
+  const [finishingCreation, setFinishingCreation] = useState(false);
   const revisionRef = useRef(0);
   const savedFlowRef = useRef('');
   const workingFlowRef = useRef<DeviceReplayFlowDsl | null>(null);
@@ -225,6 +229,11 @@ export default function ReplayFlowEditorPage() {
   }, [navigate, persistFlow, saveState]);
 
   const finishCreation = useCallback(async () => {
+    const name = creationName.trim();
+    if (!name) {
+      message.warning('请输入回放任务名称');
+      return;
+    }
     if (saveState === 'saving') {
       message.info('草稿正在保存，请稍候');
       return;
@@ -233,20 +242,27 @@ export default function ReplayFlowEditorPage() {
       message.warning('请先处理草稿版本冲突');
       return;
     }
-    if (saveState === 'dirty' || saveState === 'error') {
-      const saved = await persistFlow(workingFlowRef.current, true);
-      if (!saved) return;
-    }
+    const currentFlow = workingFlowRef.current;
+    if (!currentFlow) return;
+    const flowToSave = { ...currentFlow, name, description: creationDescription.trim() };
+    workingFlowRef.current = flowToSave;
+    setWorkingFlow(flowToSave);
+    setFinishingCreation(true);
     try {
+      const saved = await persistFlow(flowToSave);
+      if (!saved) return;
       const response = await deviceControlApi.completeReplayFlowCreation(assetId);
       if (!response.success || !response.data?.asset) throw new Error(response.error || '完成创建失败');
       setAsset(response.data.asset);
-      message.success('回放流程已保存到流程库');
+      setSaveCreationOpen(false);
+      message.success(`回放任务「${response.data.asset.name}」已保存到回放中心`);
       navigate('/cicd/replay');
     } catch (error) {
       message.error(errorMessage(error));
+    } finally {
+      setFinishingCreation(false);
     }
-  }, [assetId, navigate, persistFlow, saveState]);
+  }, [assetId, creationDescription, creationName, navigate, persistFlow, saveState]);
 
   const resetFromRecording = useCallback(() => {
     if (!asset || !sourcePreview || resettingSource) return;
@@ -331,9 +347,14 @@ export default function ReplayFlowEditorPage() {
           type="primary"
           disabled={archived || saveState === 'conflict'}
           loading={saveState === 'saving'}
-          onClick={() => void finishCreation()}
+          onClick={() => {
+            const flow = workingFlowRef.current || asset.draft.flow;
+            setCreationName(flow.name || asset.name);
+            setCreationDescription(flow.description || asset.description || '');
+            setSaveCreationOpen(true);
+          }}
         >
-          完成创建
+          保存回放任务
         </Button>
       )}
     </Space>
@@ -376,6 +397,54 @@ export default function ReplayFlowEditorPage() {
         onReload={loadAsset}
         onClose={closeEditor}
       />
+
+      <Modal
+        open={saveCreationOpen}
+        title="保存回放任务"
+        okText="保存到回放中心"
+        cancelText="继续编辑"
+        confirmLoading={finishingCreation}
+        closable={!finishingCreation}
+        maskClosable={!finishingCreation}
+        onOk={() => void finishCreation()}
+        onCancel={() => setSaveCreationOpen(false)}
+        destroyOnClose
+      >
+        <Alert
+          showIcon
+          type="info"
+          message="给这条回放任务一个容易辨认的名字"
+          description="名称会显示在回放中心，保存后仍可在编辑器的“回放任务信息”中修改。"
+          style={{ marginBottom: 16 }}
+        />
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <div>
+            <Text strong>回放任务名称</Text>
+            <Input
+              value={creationName}
+              onChange={(event) => setCreationName(event.target.value)}
+              maxLength={160}
+              showCount
+              autoFocus
+              placeholder="例如：登录后搜索并切换社区"
+              style={{ marginTop: 8 }}
+              onPressEnter={() => void finishCreation()}
+            />
+          </div>
+          <div>
+            <Text strong>任务描述（可选）</Text>
+            <Input.TextArea
+              value={creationDescription}
+              onChange={(event) => setCreationDescription(event.target.value)}
+              maxLength={1000}
+              showCount
+              autoSize={{ minRows: 3, maxRows: 6 }}
+              placeholder="说明适用场景、前置条件或预期结果"
+              style={{ marginTop: 8 }}
+            />
+          </div>
+        </Space>
+      </Modal>
 
       <Modal
         open={sourcePreviewOpen}

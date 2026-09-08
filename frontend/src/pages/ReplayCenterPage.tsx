@@ -7,6 +7,8 @@ import {
   InboxOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RollbackOutlined,
+  RocketOutlined,
   StopOutlined,
 } from '@ant-design/icons';
 import {
@@ -41,10 +43,13 @@ import {
   ReplayFlowAsset,
   ReplayFlowAssetStatus,
   ReplayFlowAssetSummary,
+  ReplayFlowVersion,
+  ReplayFlowVersionSummary,
   ReplayFlowChainPhase,
   ReplayFlowChainRun,
   ReplayFlowChainRunStatus,
 } from '../services/api';
+import { authUtils } from '../utils/auth';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -90,6 +95,22 @@ function phaseLabel(phase?: ReplayFlowChainPhase) {
   return '主回放';
 }
 
+function auditEventLabel(eventType: string) {
+  const labels: Record<string, string> = {
+    'flow.created_from_recording': '从录制创建',
+    'flow.creation_completed': '完成创建',
+    'flow.draft_saved': '保存草稿',
+    'flow.published': '发布版本',
+    'flow.version_copied': '从版本复制',
+    'flow.version_rolled_back_to_draft': '回滚为新草稿',
+    'flow.reset_from_recording': '从录制重置',
+    'flow.execution_chain_updated': '更新执行链',
+    'flow.archived': '归档',
+    'flow.restored': '恢复',
+  };
+  return labels[eventType] || eventType;
+}
+
 interface ExecutionInputField {
   name: string;
   required: boolean;
@@ -100,7 +121,9 @@ interface ExecutionInputField {
 
 export default function ReplayCenterPage() {
   const navigate = useNavigate();
+  const canManageVersions = authUtils.hasAnyRole(['developer', 'admin']);
   const [assets, setAssets] = useState<ReplayFlowAssetSummary[]>([]);
+  const [publishedVersions, setPublishedVersions] = useState<ReplayFlowVersionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<ReplayFlowAssetStatus | 'creating' | 'all'>('all');
@@ -108,9 +131,17 @@ export default function ReplayCenterPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionId, setActionId] = useState('');
   const [activeTab, setActiveTab] = useState('flows');
-  const [preFlowAssetId, setPreFlowAssetId] = useState<string>();
-  const [postFlowAssetId, setPostFlowAssetId] = useState<string>();
+  const [preFlowVersionId, setPreFlowVersionId] = useState<string>();
+  const [postFlowVersionId, setPostFlowVersionId] = useState<string>();
   const [chainSaving, setChainSaving] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
+  const [releaseNotes, setReleaseNotes] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [versionDetail, setVersionDetail] = useState<ReplayFlowVersion | null>(null);
+  const [versionDetailLoadingId, setVersionDetailLoadingId] = useState('');
+  const [versionActionId, setVersionActionId] = useState('');
+  const [copyVersionTarget, setCopyVersionTarget] = useState<ReplayFlowVersionSummary | null>(null);
+  const [copyVersionName, setCopyVersionName] = useState('');
   const [runs, setRuns] = useState<ReplayFlowChainRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runStatus, setRunStatus] = useState<ReplayFlowChainRunStatus | 'all'>('all');
@@ -127,8 +158,12 @@ export default function ReplayCenterPage() {
   const loadAssets = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await deviceControlApi.listReplayFlowAssets({ search, status: 'all' });
-      setAssets(response.data?.assets || []);
+      const [assetResponse, versionResponse] = await Promise.all([
+        deviceControlApi.listReplayFlowAssets({ search, status: 'all' }),
+        deviceControlApi.listPublishedReplayFlowVersions(),
+      ]);
+      setAssets(assetResponse.data?.assets || []);
+      setPublishedVersions(versionResponse.data?.versions || []);
     } catch (error) {
       message.error(errorMessage(error));
     } finally {
@@ -179,11 +214,14 @@ export default function ReplayCenterPage() {
     archived: assets.filter((asset) => asset.status === 'archived').length,
   }), [assets]);
 
-  const chainOptions = useMemo(() => assets
-    .filter((asset) => asset.id !== detail?.id && asset.status !== 'archived' && asset.creationCompleted)
-    .map((asset) => ({ value: asset.id, label: asset.name })), [assets, detail?.id]);
+  const chainOptions = useMemo(() => publishedVersions
+    .filter((version) => version.assetId !== detail?.id)
+    .map((version) => ({
+      value: version.id,
+      label: `${version.assetName} · v${version.versionNumber}`,
+    })), [detail?.id, publishedVersions]);
   const chainDirty = Boolean(detail) && (
-    preFlowAssetId !== detail?.preFlowAssetId || postFlowAssetId !== detail?.postFlowAssetId
+    preFlowVersionId !== detail?.preFlowVersionId || postFlowVersionId !== detail?.postFlowVersionId
   );
 
   const displayedRuns = useMemo(() => runs.filter((run) => runStatus === 'all' || run.status === runStatus), [runStatus, runs]);
@@ -195,8 +233,8 @@ export default function ReplayCenterPage() {
       const response = await deviceControlApi.getReplayFlowAsset(assetId);
       const asset = response.data?.asset || null;
       setDetail(asset);
-      setPreFlowAssetId(asset?.preFlowAssetId);
-      setPostFlowAssetId(asset?.postFlowAssetId);
+      setPreFlowVersionId(asset?.preFlowVersionId);
+      setPostFlowVersionId(asset?.postFlowVersionId);
     } catch (error) {
       message.error(errorMessage(error));
     } finally {
@@ -209,8 +247,8 @@ export default function ReplayCenterPage() {
     setChainSaving(true);
     try {
       const response = await deviceControlApi.updateReplayFlowExecutionChain(detail.id, {
-        preFlowAssetId: preFlowAssetId || null,
-        postFlowAssetId: postFlowAssetId || null,
+        preFlowVersionId: preFlowVersionId || null,
+        postFlowVersionId: postFlowVersionId || null,
       });
       setDetail(response.data?.asset || detail);
       message.success('执行链配置已保存');
@@ -222,27 +260,103 @@ export default function ReplayCenterPage() {
     }
   };
 
+  const publishFlow = async () => {
+    if (!detail) return;
+    setPublishing(true);
+    try {
+      const response = await deviceControlApi.publishReplayFlowAsset(detail.id, {
+        expectedRevision: detail.draft.revision,
+        releaseNotes,
+      });
+      const asset = response.data!.asset;
+      setDetail(asset);
+      setPublishOpen(false);
+      setReleaseNotes('');
+      message.success(`已发布 ${asset.name} v${response.data!.version.versionNumber}`);
+      await loadAssets();
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const openVersionDetail = async (versionId: string) => {
+    setVersionDetailLoadingId(versionId);
+    try {
+      const response = await deviceControlApi.getReplayFlowVersion(versionId);
+      setVersionDetail(response.data?.version || null);
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setVersionDetailLoadingId('');
+    }
+  };
+
+  const copyVersion = async () => {
+    if (!copyVersionTarget) return;
+    const name = copyVersionName.trim();
+    if (!name) {
+      message.warning('请输入新回放任务名称');
+      return;
+    }
+    setVersionActionId(copyVersionTarget.id);
+    try {
+      const response = await deviceControlApi.copyReplayFlowVersion(copyVersionTarget.id, name);
+      const asset = response.data?.asset;
+      if (!asset) throw new Error('复制历史版本失败');
+      setCopyVersionTarget(null);
+      setDetail(null);
+      message.success(`已从 v${copyVersionTarget.versionNumber} 创建「${asset.name}」`);
+      navigate(`/cicd/replay/${asset.id}/edit`);
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setVersionActionId('');
+    }
+  };
+
+  const rollbackVersion = async (version: ReplayFlowVersionSummary) => {
+    if (!detail) return;
+    setVersionActionId(version.id);
+    try {
+      const response = await deviceControlApi.rollbackReplayFlowVersion(version.id, detail.draft.revision);
+      const asset = response.data?.asset;
+      if (!asset) throw new Error('回滚历史版本失败');
+      setDetail(null);
+      message.success(`已基于 v${version.versionNumber} 生成草稿 r${asset.draft.revision}`);
+      navigate(`/cicd/replay/${asset.id}/edit`);
+    } catch (error) {
+      message.error(errorMessage(error));
+    } finally {
+      setVersionActionId('');
+    }
+  };
+
   const prepareExecution = async (asset: ReplayFlowAsset) => {
     setExecutionPreparing(true);
     try {
-      const referenceIds = [asset.preFlowAssetId, asset.postFlowAssetId].filter(Boolean) as string[];
+      const referenceIds = [asset.preFlowVersionId, asset.postFlowVersionId].filter(Boolean) as string[];
       const references = await Promise.all(referenceIds.map(async (id) => {
-        const response = await deviceControlApi.getReplayFlowAsset(id);
-        return response.data!.asset;
+        const response = await deviceControlApi.getReplayFlowVersion(id);
+        return response.data!.version;
       }));
       const byId = new Map(references.map((item) => [item.id, item]));
-      const chain = [asset.preFlowAssetId ? byId.get(asset.preFlowAssetId) : undefined, asset, asset.postFlowAssetId ? byId.get(asset.postFlowAssetId) : undefined]
-        .filter(Boolean) as ReplayFlowAsset[];
+      const chain = [
+        asset.preFlowVersionId ? byId.get(asset.preFlowVersionId) : undefined,
+        { id: asset.id, assetName: asset.name, flow: asset.draft.flow },
+        asset.postFlowVersionId ? byId.get(asset.postFlowVersionId) : undefined,
+      ].filter(Boolean) as Array<{ id: string; assetName: string; flow: ReplayFlowAsset['draft']['flow'] }>;
       const fields = new Map<string, ExecutionInputField>();
       chain.forEach((item) => {
-        Object.entries(item.draft.flow.inputs || {}).forEach(([name, definition]) => {
+        Object.entries(item.flow.inputs || {}).forEach(([name, definition]) => {
           const current = fields.get(name);
           fields.set(name, {
             name,
             required: Boolean(definition.required || current?.required),
             defaultValue: current?.defaultValue ?? definition.default,
             description: current?.description || definition.description,
-            usedBy: [...(current?.usedBy || []), item.name],
+            usedBy: [...(current?.usedBy || []), item.assetName],
           });
         });
       });
@@ -345,7 +459,7 @@ export default function ReplayCenterPage() {
 
   const columns: TableColumnsType<ReplayFlowAssetSummary> = [
     {
-      title: '回放流程',
+      title: '回放任务名称',
       dataIndex: 'name',
       width: 280,
       render: (_, asset) => (
@@ -368,7 +482,9 @@ export default function ReplayCenterPage() {
     {
       title: '版本',
       width: 110,
-      render: (_, asset) => <Text>{asset.creationCompleted ? '草稿' : '未完成'} r{asset.revision}{asset.versionCount ? ` · ${asset.versionCount} 版` : ''}</Text>,
+      render: (_, asset) => (
+        <Text>{asset.latestVersionNumber ? `v${asset.latestVersionNumber} · ` : ''}{asset.creationCompleted ? '草稿' : '未完成'} r{asset.revision}</Text>
+      ),
     },
     { title: '创建人', dataIndex: 'owner', width: 100 },
     { title: '更新时间', dataIndex: 'updatedAt', width: 170, render: dateTime },
@@ -423,7 +539,9 @@ export default function ReplayCenterPage() {
           {run.phases.map((phase, index) => (
             <span key={`${phase.phase}-${phase.assetId}`}>
               {index > 0 && <Text type="secondary"> → </Text>}
-              <Tag color={phase.phase === 'main' ? 'blue' : undefined}>{phaseLabel(phase.phase)}：{phase.assetName}</Tag>
+              <Tag color={phase.phase === 'main' ? 'blue' : undefined}>
+                {phaseLabel(phase.phase)}：{phase.assetName}{phase.versionNumber ? ` v${phase.versionNumber}` : ''}
+              </Tag>
             </span>
           ))}
         </Space>
@@ -469,7 +587,7 @@ export default function ReplayCenterPage() {
         <Space wrap style={{ marginBottom: 16 }}>
           <Input.Search
             allowClear
-            placeholder="搜索流程名称、描述或录制 ID"
+            placeholder="搜索回放任务名称、描述或录制 ID"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             onSearch={() => void loadAssets()}
@@ -583,6 +701,16 @@ export default function ReplayCenterPage() {
         onClose={() => setDetail(null)}
         extra={(
           <Space>
+            {detail?.creationCompleted && detail.status !== 'archived' && (
+              <Button
+                icon={<RocketOutlined />}
+                disabled={!detail.draft.validation.valid || !canManageVersions}
+                title={!canManageVersions ? '发布需要研发或管理员权限' : undefined}
+                onClick={() => setPublishOpen(true)}
+              >
+                {detail.latestVersionNumber ? '发布新版本' : '发布'}
+              </Button>
+            )}
             {detail?.status !== 'archived' && (
               <Button
                 type="primary"
@@ -604,19 +732,114 @@ export default function ReplayCenterPage() {
               <Descriptions.Item label="来源录制"><Text copyable>{detail.sourceRecordingId || '-'}</Text></Descriptions.Item>
               <Descriptions.Item label="来源指纹"><Text copyable>{detail.sourceFingerprint}</Text></Descriptions.Item>
               <Descriptions.Item label="草稿 revision">r{detail.draft.revision}</Descriptions.Item>
+              <Descriptions.Item label="最新发布版本">{detail.latestVersionNumber ? `v${detail.latestVersionNumber}` : '尚未发布'}</Descriptions.Item>
               <Descriptions.Item label="节点数量">{detail.nodeCount}</Descriptions.Item>
               <Descriptions.Item label="创建时间">{dateTime(detail.createdAt)}</Descriptions.Item>
               <Descriptions.Item label="更新时间">{dateTime(detail.updatedAt)}</Descriptions.Item>
               <Descriptions.Item label="描述" span={2}>{detail.description || '-'}</Descriptions.Item>
             </Descriptions>
+            <Card size="small" title="发布历史">
+              {detail.versions.length ? (
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  dataSource={detail.versions}
+                  columns={[
+                    { title: '版本', dataIndex: 'versionNumber', width: 90, render: (value: number) => <Tag color="green">v{value}</Tag> },
+                    { title: '发布说明', dataIndex: 'releaseNotes', render: (value?: string) => value || '-' },
+                    { title: '发布人', dataIndex: 'createdBy', width: 120 },
+                    { title: '发布时间', dataIndex: 'createdAt', width: 180, render: dateTime },
+                    {
+                      title: '操作',
+                      width: 250,
+                      render: (_, version) => (
+                        <Space size="small">
+                          <Button
+                            size="small"
+                            icon={<EyeOutlined />}
+                            loading={versionDetailLoadingId === version.id}
+                            onClick={() => void openVersionDetail(version.id)}
+                          >
+                            查看
+                          </Button>
+                          <Button
+                            size="small"
+                            icon={<CopyOutlined />}
+                            loading={versionActionId === version.id}
+                            onClick={() => {
+                              setCopyVersionTarget(version);
+                              setCopyVersionName(`${version.assetName} v${version.versionNumber} 副本`);
+                            }}
+                          >
+                            复制
+                          </Button>
+                          <Popconfirm
+                            title={`基于 v${version.versionNumber} 生成新的可编辑草稿？`}
+                            description="历史版本和当前已发布版本不会被修改。"
+                            okText="生成回滚草稿"
+                            cancelText="取消"
+                            disabled={!canManageVersions}
+                            onConfirm={() => void rollbackVersion(version)}
+                          >
+                            <Button
+                              size="small"
+                              icon={<RollbackOutlined />}
+                              loading={versionActionId === version.id}
+                              disabled={!canManageVersions}
+                              title={!canManageVersions ? '回滚需要研发或管理员权限' : undefined}
+                            >
+                              回滚
+                            </Button>
+                          </Popconfirm>
+                        </Space>
+                      ),
+                    },
+                  ]}
+                  scroll={{ x: 900 }}
+                />
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="尚未发布版本" />
+              )}
+            </Card>
+            <Card size="small" title="操作审计">
+              {detail.auditEvents.length ? (
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={{ pageSize: 10, showSizeChanger: false }}
+                  dataSource={detail.auditEvents}
+                  columns={[
+                    { title: '操作', dataIndex: 'eventType', width: 180, render: auditEventLabel },
+                    { title: '操作人', dataIndex: 'actor', width: 120 },
+                    {
+                      title: '记录',
+                      dataIndex: 'payload',
+                      render: (payload: Record<string, unknown>) => (
+                        <Text type="secondary" ellipsis={{ tooltip: JSON.stringify(payload) }} style={{ maxWidth: 460 }}>
+                          {Object.keys(payload).length ? JSON.stringify(payload) : '-'}
+                        </Text>
+                      ),
+                    },
+                    { title: '时间', dataIndex: 'createdAt', width: 180, render: dateTime },
+                  ]}
+                  scroll={{ x: 900 }}
+                />
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无操作记录" />
+              )}
+            </Card>
             <Card size="small" title="执行链配置">
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <Alert
                   showIcon
                   type="info"
                   message="每次只执行一条确定性链路"
-                  description="前置失败会跳过主回放；无论前置或主回放是否失败，都会尝试执行后置清理。"
+                  description="前置和后置只能绑定已发布的不可变版本。前置失败会跳过主回放；无论前置或主回放是否失败，都会尝试执行后置清理。"
                 />
+                {!chainOptions.length && (
+                  <Alert showIcon type="warning" message="暂无可引用的已发布流程，请先发布准备流程或清理流程。" />
+                )}
                 <Row gutter={[12, 12]} align="middle">
                   <Col xs={24} md={7}>
                     <Text strong>前置准备（可选）</Text>
@@ -624,10 +847,10 @@ export default function ReplayCenterPage() {
                       allowClear
                       showSearch
                       optionFilterProp="label"
-                      value={preFlowAssetId}
-                      onChange={setPreFlowAssetId}
+                      value={preFlowVersionId}
+                      onChange={setPreFlowVersionId}
                       options={chainOptions}
-                      placeholder="例如：登录、切换测试环境"
+                      placeholder="选择已发布的准备流程版本"
                       style={{ width: '100%', marginTop: 8 }}
                       disabled={!detail.creationCompleted || detail.status === 'archived'}
                     />
@@ -644,10 +867,10 @@ export default function ReplayCenterPage() {
                       allowClear
                       showSearch
                       optionFilterProp="label"
-                      value={postFlowAssetId}
-                      onChange={setPostFlowAssetId}
+                      value={postFlowVersionId}
+                      onChange={setPostFlowVersionId}
                       options={chainOptions}
-                      placeholder="例如：退出登录、恢复初始状态"
+                      placeholder="选择已发布的清理流程版本"
                       style={{ width: '100%', marginTop: 8 }}
                       disabled={!detail.creationCompleted || detail.status === 'archived'}
                     />
@@ -671,7 +894,7 @@ export default function ReplayCenterPage() {
                     连接真机后执行一次
                   </Button>
                   {chainDirty && <Text type="warning">请先保存执行链，再启动回放。</Text>}
-                  <Text type="secondary">当前阶段执行有效草稿；发布版本接入后将固定到不可变版本。</Text>
+                  <Text type="secondary">主回放用于草稿调试；前置和后置固定执行所选的不可变发布版本。</Text>
                 </Space>
               </Space>
             </Card>
@@ -768,6 +991,126 @@ export default function ReplayCenterPage() {
       </Drawer>
 
       <Modal
+        title={`发布流程：${detail?.name || ''}`}
+        open={publishOpen}
+        okText={detail?.latestVersionNumber ? `发布 v${detail.latestVersionNumber + 1}` : '发布 v1'}
+        cancelText="取消"
+        confirmLoading={publishing}
+        onOk={() => void publishFlow()}
+        onCancel={() => {
+          setPublishOpen(false);
+          setReleaseNotes('');
+        }}
+        destroyOnClose
+      >
+        <Alert
+          showIcon
+          type="info"
+          message="发布后生成不可变版本"
+          description="前置流程、后置流程和后续正式质检将固定引用该版本；之后修改草稿不会改变已经发布的内容。"
+          style={{ marginBottom: 16 }}
+        />
+        {detail?.draft.validation.warnings.length ? (
+          <Alert
+            showIcon
+            type="warning"
+            message={`当前草稿有 ${detail.draft.validation.warnings.length} 条校验警告`}
+            description={(
+              <Space direction="vertical" size={2}>
+                {detail.draft.validation.warnings.map((warning) => (
+                  <Text key={`${warning.code}-${warning.path || warning.nodeId || ''}`}>
+                    {warning.nodeId ? `${warning.nodeId}：` : ''}{warning.message}
+                  </Text>
+                ))}
+              </Space>
+            )}
+            style={{ marginBottom: 16 }}
+          />
+        ) : (
+          <Alert showIcon type="success" message="草稿校验通过，无警告" style={{ marginBottom: 16 }} />
+        )}
+        <Input.TextArea
+          value={releaseNotes}
+          onChange={(event) => setReleaseNotes(event.target.value)}
+          rows={4}
+          maxLength={1000}
+          showCount
+          placeholder="填写本次发布说明（可选）"
+        />
+      </Modal>
+
+      <Modal
+        title={versionDetail ? `${versionDetail.assetName} · v${versionDetail.versionNumber}` : '版本详情'}
+        open={Boolean(versionDetail)}
+        width="min(92vw, 980px)"
+        footer={<Button onClick={() => setVersionDetail(null)}>关闭</Button>}
+        onCancel={() => setVersionDetail(null)}
+      >
+        {versionDetail && (
+          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+            <Alert
+              showIcon
+              type="success"
+              message="这是不可变发布版本"
+              description="查看、复制或回滚都不会修改该版本保存的 DSL 与编译执行图。"
+            />
+            <Descriptions bordered size="small" column={2}>
+              <Descriptions.Item label="版本">v{versionDetail.versionNumber}</Descriptions.Item>
+              <Descriptions.Item label="发布人">{versionDetail.createdBy}</Descriptions.Item>
+              <Descriptions.Item label="发布时间">{dateTime(versionDetail.createdAt)}</Descriptions.Item>
+              <Descriptions.Item label="入口节点">
+                {String((versionDetail.compiled as { entryNodeId?: string })?.entryNodeId || '-')}
+              </Descriptions.Item>
+              <Descriptions.Item label="来源指纹" span={2}><Text copyable>{versionDetail.sourceFingerprint}</Text></Descriptions.Item>
+              <Descriptions.Item label="发布说明" span={2}>{versionDetail.releaseNotes || '-'}</Descriptions.Item>
+            </Descriptions>
+            <Tabs
+              items={[
+                {
+                  key: 'dsl',
+                  label: 'DSL 快照',
+                  children: <pre style={{ maxHeight: 520, overflow: 'auto', background: '#0f172a', color: '#e2e8f0', padding: 16, borderRadius: 8 }}>{JSON.stringify(versionDetail.flow, null, 2)}</pre>,
+                },
+                {
+                  key: 'compiled',
+                  label: '编译执行图',
+                  children: <pre style={{ maxHeight: 520, overflow: 'auto', background: '#0f172a', color: '#e2e8f0', padding: 16, borderRadius: 8 }}>{JSON.stringify(versionDetail.compiled, null, 2)}</pre>,
+                },
+              ]}
+            />
+          </Space>
+        )}
+      </Modal>
+
+      <Modal
+        title={copyVersionTarget ? `复制 ${copyVersionTarget.assetName} · v${copyVersionTarget.versionNumber}` : '复制历史版本'}
+        open={Boolean(copyVersionTarget)}
+        okText="创建回放任务"
+        cancelText="取消"
+        confirmLoading={Boolean(copyVersionTarget && versionActionId === copyVersionTarget.id)}
+        onOk={() => void copyVersion()}
+        onCancel={() => setCopyVersionTarget(null)}
+        destroyOnClose
+      >
+        <Alert
+          showIcon
+          type="info"
+          message="将使用该发布版本的不可变 DSL 创建一条全新的可编辑任务"
+          style={{ marginBottom: 16 }}
+        />
+        <Text strong>新回放任务名称</Text>
+        <Input
+          value={copyVersionName}
+          onChange={(event) => setCopyVersionName(event.target.value)}
+          maxLength={160}
+          showCount
+          autoFocus
+          style={{ marginTop: 8 }}
+          onPressEnter={() => void copyVersion()}
+        />
+      </Modal>
+
+      <Modal
         title={`执行一次：${executionAsset?.name || ''}`}
         open={executionOpen}
         okText="启动单次回放"
@@ -785,9 +1128,9 @@ export default function ReplayCenterPage() {
           style={{ marginBottom: 16 }}
         />
         <Space wrap>
-          {executionAsset?.preFlowAssetName && <Tag>前置：{executionAsset.preFlowAssetName}</Tag>}
+          {executionAsset?.preFlowAssetName && <Tag>前置：{executionAsset.preFlowAssetName} v{executionAsset.preFlowVersionNumber}</Tag>}
           <Tag color="blue">主回放：{executionAsset?.name}</Tag>
-          {executionAsset?.postFlowAssetName && <Tag>后置：{executionAsset.postFlowAssetName}</Tag>}
+          {executionAsset?.postFlowAssetName && <Tag>后置：{executionAsset.postFlowAssetName} v{executionAsset.postFlowVersionNumber}</Tag>}
         </Space>
         <Divider />
         {executionInputs.length ? (

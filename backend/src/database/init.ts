@@ -332,9 +332,19 @@ function migrateDatabase(): void {
       db.exec('ALTER TABLE replay_flow_assets ADD COLUMN post_flow_asset_id TEXT');
       console.log('Migration completed: replay flow post-flow reference added');
     }
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'pre_flow_version_id')) {
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN pre_flow_version_id TEXT');
+      console.log('Migration completed: replay flow published pre-flow version reference added');
+    }
+    if (replayFlowAssetColumns.length > 0 && !replayFlowAssetColumns.some((column) => column.name === 'post_flow_version_id')) {
+      db.exec('ALTER TABLE replay_flow_assets ADD COLUMN post_flow_version_id TEXT');
+      console.log('Migration completed: replay flow published post-flow version reference added');
+    }
     db.exec(`
       CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_pre_flow ON replay_flow_assets(pre_flow_asset_id);
       CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_post_flow ON replay_flow_assets(post_flow_asset_id);
+      CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_pre_version ON replay_flow_assets(pre_flow_version_id);
+      CREATE INDEX IF NOT EXISTS idx_replay_flow_assets_post_version ON replay_flow_assets(post_flow_version_id);
     `);
   } catch (error) {
     console.error('Migration error:', error);

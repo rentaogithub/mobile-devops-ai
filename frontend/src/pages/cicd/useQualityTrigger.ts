@@ -1,7 +1,7 @@
 import { message } from 'antd';
 
 import { JenkinsBuild, JenkinsQualityListResult, JenkinsQualitySuite, QualityDevicePool, jenkinsApi } from '../../services/api';
-import { PRODUCTION_BUNDLE_ID } from './qualityOptions';
+import { InstalledAppBundleId } from './qualityOptions';
 
 type QualityDevice = NonNullable<QualityDevicePool['devices']>[number];
 
@@ -13,7 +13,12 @@ interface QualityTriggerForm {
   durationSeconds: number;
   stutterScenario: string;
   businessFlowFeatures: string[];
+  replayFlowAssetId: string;
+  replayFlowVersionId: string;
+  replayFlowInputs: Record<string, string>;
+  replayFlowRequiredInputNames: string[];
   skipInstall: boolean;
+  installedAppBundleId: InstalledAppBundleId;
 }
 
 interface UseQualityTriggerParams {
@@ -62,6 +67,17 @@ export function useQualityTrigger({
       message.warning('请至少选择一个业务功能');
       return;
     }
+    if (form.suite === 'replay_flow' && (!form.replayFlowAssetId || !form.replayFlowVersionId)) {
+      message.warning('请选择回放中心中已发布的回放任务和版本');
+      return;
+    }
+    if (form.suite === 'replay_flow') {
+      const missingInput = form.replayFlowRequiredInputNames.find((name) => !String(form.replayFlowInputs[name] || '').trim());
+      if (missingInput) {
+        message.warning(`请填写回放参数 ${missingInput}`);
+        return;
+      }
+    }
     onSubmittingChange(true);
     onSubmitMessageChange('正在提交 Jenkins 质检任务...');
     const previousLatestQualityBuild = qualityData?.builds?.[0]?.number;
@@ -91,8 +107,17 @@ export function useQualityTrigger({
               stopOnFailure: true,
             }
           : undefined,
+        replayFlow: form.suite === 'replay_flow'
+          ? {
+              assetId: form.replayFlowAssetId,
+              versionId: form.replayFlowVersionId,
+              inputs: form.replayFlowInputs,
+              durationSeconds: form.durationSeconds,
+              stopOnFailure: true,
+            }
+          : undefined,
         skipInstall: form.skipInstall,
-        appBundleId: form.skipInstall ? PRODUCTION_BUNDLE_ID : undefined,
+        appBundleId: form.skipInstall ? form.installedAppBundleId : undefined,
       });
       onSubmitMessageChange('已提交，正在等待 Jenkins 创建任务并刷新列表...');
       message.success(`已触发自动质检任务：#${form.build.number}`);

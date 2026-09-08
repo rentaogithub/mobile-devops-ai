@@ -50,7 +50,7 @@
         <hudson.model.StringParameterDefinition>
           <name>TEST_SUITE</name>
           <defaultValue>smoke</defaultValue>
-          <description>质检套件：smoke、im、rtc、monkey、stutter、business_flow、full。stutter 为独立卡顿检测，不执行 Monkey 随机操作。</description>
+          <description>质检套件：smoke、im、rtc、monkey、stutter、business_flow、replay_flow、full。replay_flow 执行回放中心的固化发布版本链。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -76,6 +76,36 @@
           <defaultValue></defaultValue>
           <description>business_flow 自定义业务编排 JSON，由平台生成。</description>
         </hudson.model.TextParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REPLAY_FLOW_ASSET_ID</name>
+          <defaultValue></defaultValue>
+          <description>回放中心主任务 ID。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REPLAY_FLOW_VERSION_ID</name>
+          <defaultValue></defaultValue>
+          <description>固化的主流程发布版本 ID。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REPLAY_FLOW_EXECUTION_MANIFEST_ID</name>
+          <defaultValue></defaultValue>
+          <description>平台质检任务中的不可变执行清单 ID。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REPLAY_FLOW_DURATION_SECONDS</name>
+          <defaultValue></defaultValue>
+          <description>回放任务质检的业务编排时长（秒）。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>REPLAY_FLOW_STOP_ON_FAILURE</name>
+          <defaultValue>1</defaultValue>
+          <description>1=首次迭代失败后停止启动新迭代，但仍完成当前后置清理。</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>PLATFORM_TASK_ID</name>
           <defaultValue></defaultValue>
@@ -369,7 +399,11 @@
   <concurrentBuild>true</concurrentBuild>
   <builders>
     <hudson.tasks.Shell>
-      <command>set -e
+      <command>#!/bin/bash
+set -e
+export PATH="/opt/homebrew/bin:$HOME/.appium/node_modules/.bin:$PATH"
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
 PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
 if [ -z "$PLATFORM_DIR" ] &amp;&amp; [ -n "${WORKSPACE:-}" ] &amp;&amp; [ -f "$WORKSPACE/scripts/ios/ios-quality.sh" ]; then
   PLATFORM_DIR="$WORKSPACE"

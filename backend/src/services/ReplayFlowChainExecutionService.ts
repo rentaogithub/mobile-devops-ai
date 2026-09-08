@@ -7,7 +7,8 @@ import {
   ReplayFlowRun,
   deviceReplayFlowExecutionService,
 } from './DeviceReplayFlowExecutionService';
-import { ReplayFlowAsset, ReplayFlowAssetService, replayFlowAssetService } from './ReplayFlowAssetService';
+import { ReplayFlowAsset, ReplayFlowAssetService, ReplayFlowVersion, replayFlowAssetService } from './ReplayFlowAssetService';
+import { DeviceReplayFlowDsl, validateDeviceReplayFlow } from './DeviceReplayFlow';
 import logger from '../utils/logger';
 import { currentProjectId } from './ProductLineContext';
 
@@ -19,6 +20,8 @@ export interface ReplayFlowChainPhaseRun {
   phase: ReplayFlowChainPhase;
   assetId: string;
   assetName: string;
+  versionId?: string;
+  versionNumber?: number;
   status: ReplayFlowChainPhaseStatus;
   replayRunId?: string;
   startedAt?: string;
@@ -98,15 +101,15 @@ export class ReplayFlowChainExecutionService {
     }
     this.activeChainRunIds.delete(projectId);
     const main = this.executableAsset(mainAssetId, '主流程');
-    const pre = main.preFlowAssetId ? this.executableAsset(main.preFlowAssetId, '前置流程') : undefined;
-    const post = main.postFlowAssetId ? this.executableAsset(main.postFlowAssetId, '后置流程') : undefined;
+    const pre = main.preFlowVersionId ? this.executableVersion(main.preFlowVersionId, '前置流程') : undefined;
+    const post = main.postFlowVersionId ? this.executableVersion(main.postFlowVersionId, '后置流程') : undefined;
     const id = crypto.randomUUID();
     const directory = path.join(this.currentRunRoot(), id);
     fs.mkdirSync(directory, { recursive: true });
     const phases: ReplayFlowChainPhaseRun[] = [];
-    if (pre) phases.push(this.pendingPhase('pre', pre));
-    phases.push(this.pendingPhase('main', main));
-    if (post) phases.push(this.pendingPhase('post', post));
+    if (pre) phases.push(this.pendingVersionPhase('pre', pre));
+    phases.push(this.pendingAssetPhase('main', main));
+    if (post) phases.push(this.pendingVersionPhase('post', post));
     const run: InternalReplayFlowChainRun = {
       id,
       projectId,
@@ -191,8 +194,11 @@ export class ReplayFlowChainExecutionService {
           continue;
         }
         try {
-          const asset = this.executableAsset(phase.assetId, phase.phase === 'pre' ? '前置流程' : phase.phase === 'post' ? '后置流程' : '主流程');
-          await this.executePhase(run, phase, asset);
+          const label = phase.phase === 'pre' ? '前置流程' : phase.phase === 'post' ? '后置流程' : '主流程';
+          const flow = phase.versionId
+            ? this.executableVersion(phase.versionId, label).flow
+            : this.executableAsset(phase.assetId, label).draft.flow;
+          await this.executePhase(run, phase, flow);
         } catch (error: any) {
           phase.status = run.stopRequestedAt ? 'cancelled' : 'failed';
           phase.errorCode = error?.code || 'CHAIN_PHASE_UNAVAILABLE';
@@ -236,13 +242,13 @@ export class ReplayFlowChainExecutionService {
     }
   }
 
-  private async executePhase(run: InternalReplayFlowChainRun, phase: ReplayFlowChainPhaseRun, asset: ReplayFlowAsset) {
+  private async executePhase(run: InternalReplayFlowChainRun, phase: ReplayFlowChainPhaseRun, flow: DeviceReplayFlowDsl) {
     phase.status = 'running';
     phase.startedAt = new Date().toISOString();
     run.currentPhase = phase.phase;
     this.persist(run);
     try {
-      const started = this.replayExecutor.start(asset.draft.flow, run.inputs, run.owner, run.isAdmin);
+      const started = this.replayExecutor.start(flow, run.inputs, run.owner, run.isAdmin);
       phase.replayRunId = started.id;
       run.activeReplayRunId = started.id;
       run.device = run.device || started.device;
@@ -273,8 +279,32 @@ export class ReplayFlowChainExecutionService {
     return asset;
   }
 
-  private pendingPhase(phase: ReplayFlowChainPhase, asset: ReplayFlowAsset): ReplayFlowChainPhaseRun {
+  private executableVersion(versionId: string, label: string) {
+    const version = this.assets.getVersion(versionId);
+    const asset = this.assets.get(version.assetId);
+    if (asset.status !== 'published') {
+      throw new DeviceControlError(`${label}「${asset.name}」不是可用的已发布流程`, 409);
+    }
+    const validation = validateDeviceReplayFlow(version.flow);
+    if (!validation.valid) {
+      throw new DeviceControlError(`${label}「${asset.name}」发布版本校验未通过`, 422);
+    }
+    return version;
+  }
+
+  private pendingAssetPhase(phase: ReplayFlowChainPhase, asset: ReplayFlowAsset): ReplayFlowChainPhaseRun {
     return { phase, assetId: asset.id, assetName: asset.name, status: 'pending' };
+  }
+
+  private pendingVersionPhase(phase: ReplayFlowChainPhase, version: ReplayFlowVersion): ReplayFlowChainPhaseRun {
+    return {
+      phase,
+      assetId: version.assetId,
+      assetName: version.assetName,
+      versionId: version.id,
+      versionNumber: version.versionNumber,
+      status: 'pending',
+    };
   }
 
   private skipPhase(phase: ReplayFlowChainPhaseRun, reason: string) {

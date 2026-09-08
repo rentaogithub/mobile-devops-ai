@@ -42,12 +42,14 @@ function recording(id: string, title: string): DeviceRecording {
 class FakeReplayExecutor {
   sequence = 0;
   order: string[] = [];
+  flowNames: string[] = [];
   failedFlowIds = new Set<string>();
   runs = new Map<string, ReplayFlowRun>();
 
   start(flow: any, _inputs: Record<string, unknown>, actor: string) {
     const id = `run-${++this.sequence}`;
     this.order.push(flow.id);
+    this.flowNames.push(flow.name);
     const failed = this.failedFlowIds.has(flow.id);
     const run: ReplayFlowRun = {
       id,
@@ -109,8 +111,10 @@ describe('ReplayFlowChainExecutionService', () => {
     const pre = assets.createFromRecording(recording('recording-pre', '登录准备'), 'admin');
     const main = assets.createFromRecording(recording('recording-main', '社区搜索'), 'admin');
     const post = assets.createFromRecording(recording('recording-post', '退出清理'), 'admin');
-    assets.updateExecutionChain(main.id, 'admin', { preFlowAssetId: pre.id, postFlowAssetId: post.id });
-    return { pre, main, post };
+    const preVersion = assets.publish(pre.id, 'admin', { expectedRevision: pre.draft.revision }).version;
+    const postVersion = assets.publish(post.id, 'admin', { expectedRevision: post.draft.revision }).version;
+    assets.updateExecutionChain(main.id, 'admin', { preFlowVersionId: preVersion.id, postFlowVersionId: postVersion.id });
+    return { pre, main, post, preVersion, postVersion };
   }
 
   test('按前置、主流程、后置顺序执行并且不持久化参数值', async () => {
@@ -150,5 +154,17 @@ describe('ReplayFlowChainExecutionService', () => {
     expect(run.status).toBe('failed');
     expect(executor.order).toEqual([pre.id, main.id, post.id]);
     expect(run.phases[2]).toMatchObject({ phase: 'post', status: 'succeeded' });
+  });
+
+  test('前置和后置执行固定发布版本而不是后续草稿', async () => {
+    const { pre, main, preVersion } = configuredAssets();
+    const publishedName = preVersion.flow.name;
+    assets.saveDraft(pre.id, 'admin', { expectedRevision: pre.draft.revision, name: '登录准备-未发布修改' });
+    const service = new ReplayFlowChainExecutionService(assets, executor, runDirectory);
+
+    await service.waitForCompletion(service.start(main.id, {}, 'admin', true).id);
+
+    expect(executor.flowNames[0]).toBe(publishedName);
+    expect(executor.flowNames[0]).not.toBe('登录准备-未发布修改');
   });
 });

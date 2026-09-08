@@ -6,9 +6,15 @@ import {
 } from '../../services/api';
 
 export type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
-export type QualityReportKind = 'monkey' | 'stutter' | 'business_flow' | 'generic';
+export type QualityReportKind = 'monkey' | 'stutter' | 'business_flow' | 'replay_flow' | 'generic';
 
 export const PRODUCTION_BUNDLE_ID = 'com.nnhuyu.im';
+export const DEVELOPMENT_BUNDLE_ID = 'com.nndev.im';
+export type InstalledAppBundleId = typeof DEVELOPMENT_BUNDLE_ID | typeof PRODUCTION_BUNDLE_ID;
+export const INSTALLED_APP_BUNDLE_OPTIONS: Array<{ label: string; value: InstalledAppBundleId }> = [
+  { label: `开发环境（${DEVELOPMENT_BUNDLE_ID}）`, value: DEVELOPMENT_BUNDLE_ID },
+  { label: `生产环境（${PRODUCTION_BUNDLE_ID}）`, value: PRODUCTION_BUNDLE_ID },
+];
 export const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：nn-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称。';
 
 export const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
@@ -35,6 +41,7 @@ export const QUALITY_SUITE_OPTIONS: { label: string; value: JenkinsQualitySuite 
   { label: 'Monkey 测试', value: 'monkey' },
   { label: '卡顿检测', value: 'stutter' },
   { label: '自定义业务编排', value: 'business_flow' },
+  { label: '回放任务质检', value: 'replay_flow' },
   { label: '冒烟测试', value: 'smoke' },
   { label: 'IM 基础链路', value: 'im' },
   { label: 'RTC 基础链路', value: 'rtc' },
@@ -48,11 +55,15 @@ export const QUALITY_SUITE_GROUPS: { title: string; options: { label: string; va
   },
   {
     title: '业务核心链路压测：',
-    options: QUALITY_SUITE_OPTIONS.filter((option) => !['monkey', 'stutter', 'business_flow'].includes(option.value)),
+    options: QUALITY_SUITE_OPTIONS.filter((option) => !['monkey', 'stutter', 'business_flow', 'replay_flow'].includes(option.value)),
   },
   {
     title: '自定义业务编排：',
     options: QUALITY_SUITE_OPTIONS.filter((option) => option.value === 'business_flow'),
+  },
+  {
+    title: '回放中心任务：',
+    options: QUALITY_SUITE_OPTIONS.filter((option) => option.value === 'replay_flow'),
   },
 ];
 
@@ -130,11 +141,16 @@ export function shouldUseInstalledProductionApp(build?: JenkinsBuild | null) {
   return build?.publishChannel === 'TestFlight' || build?.publishChannel === 'AppStore';
 }
 
+export function installedAppBundleIdForBuild(build?: JenkinsBuild | null): InstalledAppBundleId {
+  return shouldUseInstalledProductionApp(build) ? PRODUCTION_BUNDLE_ID : DEVELOPMENT_BUNDLE_ID;
+}
+
 export function getQualityReportKind(build?: JenkinsQualityBuild | null): QualityReportKind {
   const suite = String(build?.qualitySummary?.testSuite || '').trim().toLowerCase();
   if (suite === 'stutter') return 'stutter';
   if (suite === 'monkey') return 'monkey';
   if (suite === 'business_flow') return 'business_flow';
+  if (suite === 'replay_flow') return 'replay_flow';
   return 'generic';
 }
 
@@ -143,6 +159,7 @@ export function getQualityReportTitle(build?: JenkinsQualityBuild | null) {
   if (kind === 'stutter') return '卡顿检测报告';
   if (kind === 'monkey') return 'Monkey 质检报告';
   if (kind === 'business_flow') return '业务编排质检报告';
+  if (kind === 'replay_flow') return '回放任务质检报告';
   return '质检汇总';
 }
 
@@ -154,6 +171,7 @@ export function qualitySuiteLabel(summary?: JenkinsQualityBuild['qualitySummary'
   }
   if (suite === 'monkey') return 'Monkey';
   if (suite === 'business_flow') return '业务编排';
+  if (suite === 'replay_flow') return '回放任务质检';
   return summary?.testSuite || '-';
 }
 

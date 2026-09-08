@@ -19,6 +19,7 @@ import logger from '../utils/logger';
 const router = Router();
 
 router.use(authMiddleware, requireAnyRole(['tester', 'developer', 'admin']));
+const requireFlowPublisher = requireAnyRole(['developer', 'admin']);
 
 function actorOf(req: any) {
   return String(req.authUser?.username || 'local');
@@ -137,6 +138,16 @@ router.get('/replay-flow-assets/:assetId', route(async (req, res) => {
   res.json({ success: true, data: { asset } });
 }));
 
+router.get('/replay-flow-versions/:versionId', route(async (req, res) => {
+  const version = replayFlowAssetService.getVersion(String(req.params.versionId));
+  res.json({ success: true, data: { version } });
+}));
+
+router.get('/replay-flow-versions', route(async (_req, res) => {
+  const versions = replayFlowAssetService.listPublishedVersions();
+  res.json({ success: true, data: { versions } });
+}));
+
 router.get('/replay-flow-assets/:assetId/source-preview', route(async (req, res) => {
   const asset = replayFlowAssetService.get(String(req.params.assetId));
   if (!asset.sourceRecordingId) throw new ReplayFlowAssetError('当前流程没有可读取的录制来源', 404, 'FLOW_SOURCE_RECORDING_NOT_FOUND');
@@ -171,9 +182,31 @@ router.post('/replay-flow-assets/:assetId/reset-from-recording', route(async (re
 
 router.put('/replay-flow-assets/:assetId/execution-chain', route(async (req, res) => {
   const asset = replayFlowAssetService.updateExecutionChain(String(req.params.assetId), actorOf(req), {
-    preFlowAssetId: req.body?.preFlowAssetId,
-    postFlowAssetId: req.body?.postFlowAssetId,
+    preFlowVersionId: req.body?.preFlowVersionId,
+    postFlowVersionId: req.body?.postFlowVersionId,
   });
+  res.json({ success: true, data: { asset } });
+}));
+
+router.post('/replay-flow-assets/:assetId/publish', requireFlowPublisher, route(async (req, res) => {
+  const result = replayFlowAssetService.publish(String(req.params.assetId), actorOf(req), {
+    expectedRevision: Number(req.body?.expectedRevision),
+    releaseNotes: req.body?.releaseNotes,
+  });
+  res.status(201).json({ success: true, data: result });
+}));
+
+router.post('/replay-flow-versions/:versionId/copy', route(async (req, res) => {
+  const asset = replayFlowAssetService.copyVersion(String(req.params.versionId), actorOf(req), req.body?.name);
+  res.status(201).json({ success: true, data: { asset } });
+}));
+
+router.post('/replay-flow-versions/:versionId/rollback', requireFlowPublisher, route(async (req, res) => {
+  const asset = replayFlowAssetService.rollbackToVersion(
+    String(req.params.versionId),
+    actorOf(req),
+    Number(req.body?.expectedRevision),
+  );
   res.json({ success: true, data: { asset } });
 }));
 

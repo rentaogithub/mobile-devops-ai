@@ -39,6 +39,16 @@ export function QualityReportHeader({
               步骤 {build.qualitySummary.businessFlow.passedSteps || 0}/{build.qualitySummary.businessFlow.totalSteps || 0}
             </Tag>
           )}
+          {build.qualitySummary?.testSuite === 'replay_flow' && build.qualitySummary?.replayFlow && (
+            <Tag color="blue">
+              {build.qualitySummary.replayFlow.name || '回放任务'} · {build.qualitySummary.replayFlow.iterationCount || 0} 轮
+            </Tag>
+          )}
+          {build.qualitySummary?.testSuite === 'replay_flow' && build.qualitySummary?.artifacts?.replayFlowReportUrl && (
+            <Button type="link" size="small" onClick={() => onOpenUrl(build.qualitySummary?.artifacts?.replayFlowReportUrl)}>
+              回放证据 JSON
+            </Button>
+          )}
           <Tag>耗时 {formatQualityDuration(build)}</Tag>
           {build.qualitySummary?.monkeyStatus && (
             <Tag color={build.qualitySummary.monkeyStatus === 'passed' ? 'green' : 'red'}>

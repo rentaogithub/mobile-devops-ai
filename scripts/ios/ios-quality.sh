@@ -65,6 +65,7 @@ DEVICE_LOG_FILE="${RESULT_DIR}/device.log"
 PROCESS_FILE="${RESULT_DIR}/processes.json"
 MONKEY_REPORT_FILE="${RESULT_DIR}/monkey-report.json"
 BUSINESS_FLOW_REPORT_FILE="${RESULT_DIR}/business-flow-report.json"
+REPLAY_FLOW_REPORT_FILE="${RESULT_DIR}/replay-flow-report.json"
 PERFORMANCE_SAMPLE_FILE="${RESULT_DIR}/performance-samples.jsonl"
 PERFORMANCE_STUTTER_FILE="${RESULT_DIR}/performance-stutters.json"
 PERFORMANCE_STACK_FILE="${RESULT_DIR}/performance-stack-analysis.json"
@@ -139,6 +140,11 @@ MONKEY_BUSINESS_WEIGHT_RECOVERY="${MONKEY_BUSINESS_WEIGHT_RECOVERY:-20}"
 MONKEY_BUSINESS_WEIGHT_POPUP="${MONKEY_BUSINESS_WEIGHT_POPUP:-10}"
 MONKEY_BUSINESS_WEIGHT_RANDOM="${MONKEY_BUSINESS_WEIGHT_RANDOM:-5}"
 BUSINESS_FLOW_PLAN_JSON="${BUSINESS_FLOW_PLAN_JSON:-}"
+REPLAY_FLOW_ASSET_ID="${REPLAY_FLOW_ASSET_ID:-}"
+REPLAY_FLOW_VERSION_ID="${REPLAY_FLOW_VERSION_ID:-}"
+REPLAY_FLOW_EXECUTION_MANIFEST_ID="${REPLAY_FLOW_EXECUTION_MANIFEST_ID:-}"
+REPLAY_FLOW_DURATION_SECONDS="${REPLAY_FLOW_DURATION_SECONDS:-${MONKEY_DURATION_SECONDS}}"
+REPLAY_FLOW_STOP_ON_FAILURE="${REPLAY_FLOW_STOP_ON_FAILURE:-1}"
 MONKEY_SEED="${MONKEY_SEED:-}"
 MONKEY_STATUS="skipped"
 MONKEY_MESSAGE=""
@@ -148,6 +154,9 @@ BUSINESS_FLOW_STATUS=""
 BUSINESS_FLOW_MESSAGE=""
 BUSINESS_FLOW_PASSED_STEPS="0"
 BUSINESS_FLOW_TOTAL_STEPS="0"
+REPLAY_FLOW_STATUS=""
+REPLAY_FLOW_MESSAGE=""
+REPLAY_FLOW_ITERATIONS="0"
 PERFORMANCE_SAMPLING="${PERFORMANCE_SAMPLING:-1}"
 PERFORMANCE_SAMPLER="${PERFORMANCE_SAMPLER:-auto}"
 PERFORMANCE_SAMPLE_TYPES="${PERFORMANCE_SAMPLE_TYPES:-cpu,memory}"
@@ -447,6 +456,14 @@ fail() {
   log "ERROR: ${message}"
   if type stop_performance_sampling >/dev/null 2>&1; then
     stop_performance_sampling || true
+  fi
+  if [ -n "${SELECTED_DEVICE:-}" ]; then
+    if type capture_device_log >/dev/null 2>&1; then
+      capture_device_log || true
+    fi
+    if type collect_crash_reports >/dev/null 2>&1; then
+      collect_crash_reports || true
+    fi
   fi
   write_quality_progress "failed" "failed" "${message}" "" "${MONKEY_EXECUTED_EVENTS:-}" "" ""
   write_summary "failed" "${message}" || true
@@ -1194,6 +1211,7 @@ data = {
         "processes": rel(process_file) if os.path.exists(process_file) else "",
         "monkeyReport": rel(monkey_report_file) if os.path.exists(monkey_report_file) else "",
         "businessFlowReport": rel(os.path.join(result_dir, "business-flow-report.json")) if os.path.exists(os.path.join(result_dir, "business-flow-report.json")) else "",
+        "replayFlowReport": rel(os.path.join(result_dir, "replay-flow-report.json")) if os.path.exists(os.path.join(result_dir, "replay-flow-report.json")) else "",
         "performanceSamples": rel(performance_sample_file) if os.path.exists(performance_sample_file) else "",
         "performanceStutters": rel(os.path.join(result_dir, "performance-stutters.json")) if os.path.exists(os.path.join(result_dir, "performance-stutters.json")) else "",
         "performanceStacks": rel(os.path.join(result_dir, "performance-stack-analysis.json")) if os.path.exists(os.path.join(result_dir, "performance-stack-analysis.json")) else "",
@@ -1223,6 +1241,22 @@ if os.path.exists(business_flow_report_path):
         "targetDomains": business_flow_report.get("targetDomains") or [],
         "steps": business_flow_report.get("steps") or [],
         "issues": business_flow_report.get("issues") or [],
+    }
+replay_flow_report_path = os.path.join(result_dir, "replay-flow-report.json")
+if os.path.exists(replay_flow_report_path):
+    try:
+        replay_flow_report = json.load(open(replay_flow_report_path, encoding="utf-8"))
+    except Exception:
+        replay_flow_report = {}
+    manifest = replay_flow_report.get("manifest") or {}
+    data["replayFlow"] = {
+        "name": manifest.get("mainAssetName") or "回放任务质检",
+        "status": replay_flow_report.get("status") or "",
+        "iterationCount": replay_flow_report.get("iterationCount") or 0,
+        "durationSeconds": replay_flow_report.get("durationSeconds") or 0,
+        "stopOnFailure": replay_flow_report.get("stopOnFailure") is not False,
+        "manifestId": manifest.get("id") or "",
+        "phases": manifest.get("phases") or [],
     }
 thresholds = {
     "coldStartWarnMs": to_float(cold_start_warn_ms, 8000),
@@ -1951,6 +1985,75 @@ PY
   return 0
 }
 
+verify_installed_app() {
+  local bundle_id="$1"
+  local apps_json="${RESULT_DIR}/installed-apps.json"
+  local appinfo_json="${RESULT_DIR}/installed-app-${bundle_id}.json"
+  local inspected="0"
+  local parsed=""
+  INSTALLED_APP_CANDIDATES=""
+  rm -f "${apps_json}" "${appinfo_json}"
+
+  if command -v xcrun >/dev/null 2>&1 && xcrun devicectl --help >/dev/null 2>&1; then
+    xcrun devicectl device info apps --device "${SELECTED_DEVICE}" --json-output "${apps_json}" --quiet >>"${LOG_FILE}" 2>&1 || true
+    if [ -s "${apps_json}" ]; then
+      inspected="1"
+      parsed="$(python3 - "${apps_json}" "${bundle_id}" <<'PY'
+import json
+import sys
+
+path, target = sys.argv[1:3]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    raise SystemExit(2)
+
+bundle_ids = []
+def walk(value):
+    if isinstance(value, dict):
+        bundle_id = str(value.get("bundleIdentifier") or value.get("CFBundleIdentifier") or "").strip()
+        if bundle_id:
+            bundle_ids.append(bundle_id)
+        for child in value.values():
+            walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            walk(child)
+walk(data)
+candidates = sorted({item for item in bundle_ids if item.startswith("com.nn")})
+print(("1" if target in bundle_ids else "0") + "\t" + ",".join(candidates))
+PY
+)" || parsed=""
+      local found
+      IFS=$'\t' read -r found INSTALLED_APP_CANDIDATES <<< "${parsed}"
+      if [ "${found:-0}" = "1" ]; then
+        log "已确认设备安装 App: ${bundle_id}"
+        return 0
+      fi
+    fi
+  fi
+
+  if "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" appinfo --json "${bundle_id}" >"${appinfo_json}" 2>>"${LOG_FILE}" && [ -s "${appinfo_json}" ]; then
+    inspected="1"
+    if python3 - "${appinfo_json}" "${bundle_id}" <<'PY' >/dev/null 2>&1
+import json
+import sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+actual = str(data.get("CFBundleIdentifier") or data.get("bundleIdentifier") or "")
+raise SystemExit(0 if actual == sys.argv[2] else 1)
+PY
+    then
+      log "已通过 tidevice 确认设备安装 App: ${bundle_id}"
+      return 0
+    fi
+  fi
+
+  if [ "${inspected}" = "1" ]; then
+    return 1
+  fi
+  return 2
+}
+
 launch_app() {
   local bundle_id="$1"
   local launch_output="${RESULT_DIR}/launch-${bundle_id}.log"
@@ -2055,8 +2158,9 @@ PY
 }
 
 ensure_target_app_foreground_for_evidence() {
+  local force_launch="${1:-0}"
   local bundle_id="${LAUNCH_BUNDLE_ID:-${DETECTED_BUNDLE_ID:-${APP_BUNDLE_ID:-}}}"
-  if [ "${MONKEY_ENFORCE_TARGET_APP:-1}" != "1" ] || [ -z "${bundle_id}" ]; then
+  if { [ "${MONKEY_ENFORCE_TARGET_APP:-1}" != "1" ] && [ "${force_launch}" != "1" ]; } || [ -z "${bundle_id}" ]; then
     return 0
   fi
   if ! check_wda_ready "${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"; then
@@ -3605,7 +3709,10 @@ collect_crash_reports() {
   local crash_log="${RESULT_DIR}/crashreport-collect.log"
   : > "${crash_log}"
   local status=1
-  if "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" crashreport -o "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
+  if command -v idevicecrashreport >/dev/null 2>&1 \
+    && idevicecrashreport --udid "${SELECTED_DEVICE}" --keep "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
+    status=0
+  elif "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" crashreport -o "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
     status=0
   elif "${TIDEVICE_CMD}" --udid "${SELECTED_DEVICE}" crashreport "${CRASH_REPORT_DIR}" >>"${crash_log}" 2>&1; then
     status=0
@@ -7532,6 +7639,79 @@ PY
   IFS=$'\t' read -r BUSINESS_FLOW_STATUS BUSINESS_FLOW_MESSAGE BUSINESS_FLOW_PASSED_STEPS BUSINESS_FLOW_TOTAL_STEPS <<< "${parsed}"
 }
 
+run_replay_flow_test() {
+  rm -f "${REPLAY_FLOW_REPORT_FILE}"
+  local missing_replay_parameters=()
+  if [ -z "${PLATFORM_TASK_ID:-}" ]; then
+    missing_replay_parameters+=("PLATFORM_TASK_ID")
+  fi
+  if [ -z "${REPLAY_FLOW_EXECUTION_MANIFEST_ID:-}" ]; then
+    missing_replay_parameters+=("REPLAY_FLOW_EXECUTION_MANIFEST_ID")
+  fi
+  if [ "${#missing_replay_parameters[@]}" -gt 0 ]; then
+    REPLAY_FLOW_MESSAGE="Jenkins 未传入回放质检参数：${missing_replay_parameters[*]}。请同步 nn-auto-quality Job 配置后重试。"
+    log "${REPLAY_FLOW_MESSAGE}"
+    return 2
+  fi
+  local backend_tsx_bin="${PLATFORM_ROOT_DIR}/backend/node_modules/.bin/tsx"
+  local workspace_tsx_bin="${PLATFORM_ROOT_DIR}/node_modules/.bin/tsx"
+  local tsx_bin="${backend_tsx_bin}"
+  local runner="${PLATFORM_ROOT_DIR}/backend/src/cli/runReplayFlowQuality.ts"
+  if [ ! -x "${tsx_bin}" ] && [ -x "${workspace_tsx_bin}" ]; then
+    tsx_bin="${workspace_tsx_bin}"
+  fi
+  if [ ! -f "${runner}" ]; then
+    REPLAY_FLOW_MESSAGE="回放质检执行器源码不存在：${runner}"
+    log "${REPLAY_FLOW_MESSAGE}"
+    return 2
+  fi
+  if [ ! -x "${tsx_bin}" ]; then
+    REPLAY_FLOW_MESSAGE="回放质检缺少 tsx 执行器，已检查 ${backend_tsx_bin} 和 ${workspace_tsx_bin}。请在平台项目根目录执行 npm install。"
+    log "${REPLAY_FLOW_MESSAGE}"
+    return 2
+  fi
+  log "回放质检执行器: ${tsx_bin}"
+  export REPLAY_FLOW_REPORT_FILE
+  export REPLAY_FLOW_RUN_DIR="${RESULT_DIR}/replay-flow-runs"
+  export REPLAY_FLOW_DURATION_SECONDS
+  export REPLAY_FLOW_STOP_ON_FAILURE
+  export REPLAY_FLOW_EXECUTION_MANIFEST_ID
+  export PLATFORM_TASK_ID
+  export QUALITY_PROGRESS_FILE="${PROGRESS_FILE}"
+  export WDA_URL="${MONKEY_RUNTIME_WDA_URL:-${WDA_URL}}"
+  export DEVICE_UDID="${SELECTED_DEVICE:-${DEVICE_UDID:-}}"
+  write_quality_progress "running" "replayFlow" "执行回放中心固化版本链" 0 "0" "0" "${REPLAY_FLOW_DURATION_SECONDS}"
+  "${tsx_bin}" "${runner}"
+}
+
+load_replay_flow_result() {
+  if [ ! -f "${REPLAY_FLOW_REPORT_FILE}" ]; then
+    return
+  fi
+  local parsed
+  parsed="$(python3 - "${REPLAY_FLOW_REPORT_FILE}" <<'PY'
+import json
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    data = {}
+
+status = str(data.get("status") or "")
+message = str(data.get("error") or "")
+if not message:
+    message = "回放任务质检完成" if status == "passed" else "回放任务质检失败"
+print("\t".join([
+    status,
+    message.replace("\t", " ").replace("\n", " "),
+    str(data.get("iterationCount") or len(data.get("iterations") or [])),
+]))
+PY
+)"
+  IFS=$'\t' read -r REPLAY_FLOW_STATUS REPLAY_FLOW_MESSAGE REPLAY_FLOW_ITERATIONS <<< "${parsed}"
+}
+
 resolve_business_flow_plan_json() {
   if [ -n "${BUSINESS_FLOW_PLAN_JSON:-}" ]; then
     printf '%s\n' "${BUSINESS_FLOW_PLAN_JSON}"
@@ -7694,8 +7874,17 @@ if [ "${SKIP_APP_INSTALL}" = "1" ]; then
   fi
   DETECTED_BUNDLE_ID="${APP_BUNDLE_ID}"
   LAUNCH_BUNDLE_ID="${APP_BUNDLE_ID}"
-  log "跳过 IPA 获取和安装，直接测试设备上已安装 App: ${LAUNCH_BUNDLE_ID}"
-  write_quality_progress "running" "install" "跳过安装，使用已安装 App" 1.0
+  log "已选择使用设备上已安装 App，先校验 Bundle ID: ${LAUNCH_BUNDLE_ID}"
+  write_quality_progress "running" "install" "检查设备已安装 App：${LAUNCH_BUNDLE_ID}" 0.9
+  installed_app_status=0
+  verify_installed_app "${LAUNCH_BUNDLE_ID}" || installed_app_status=$?
+  if [ "${installed_app_status}" = "1" ]; then
+    fail "设备上未安装 ${LAUNCH_BUNDLE_ID}。已检测到的 NN App：${INSTALLED_APP_CANDIDATES:-无}。请核对构建渠道与 Bundle ID，或取消“使用设备上已安装的 App”。"
+  elif [ "${installed_app_status}" = "2" ]; then
+    fail "无法读取设备已安装应用列表，不能确认 ${LAUNCH_BUNDLE_ID} 是否安装。请确认 iPhone 已解锁、已信任打包机且 USB 连接稳定。"
+  fi
+  log "已确认目标 App 存在，跳过 IPA 获取和安装: ${LAUNCH_BUNDLE_ID}"
+  write_quality_progress "running" "install" "已确认设备安装 ${LAUNCH_BUNDLE_ID}" 1.0
 else
   write_quality_progress "running" "package" "获取 IPA 包" 0.4
   download_status=0
@@ -7751,7 +7940,8 @@ if [ -n "${APP_BUNDLE_ID}" ] && [ -n "${DETECTED_BUNDLE_ID}" ] && [ "${APP_BUNDL
   log "配置的 APP_BUNDLE_ID=${APP_BUNDLE_ID} 与安装包 Bundle ID=${DETECTED_BUNDLE_ID} 不一致，按配置启动。"
 fi
 
-if [ "${COLD_START_DETECT_SCREEN}" = "1" ]; then
+WDA_READY_AFTER_LAUNCH="0"
+if [ "${COLD_START_DETECT_SCREEN}" = "1" ] && [ "${SKIP_APP_INSTALL}" != "1" ]; then
   log "预热 WDA，用于冷启动首屏内容检测..."
   write_quality_progress "running" "wda" "预热 WDA，用于冷启动检测" 1.1
   if ! ensure_wda_ready; then
@@ -7762,11 +7952,34 @@ fi
 if [ -n "${LAUNCH_BUNDLE_ID}" ]; then
   write_quality_progress "running" "launch" "启动 App" 1.5
   if ! launch_app "${LAUNCH_BUNDLE_ID}"; then
-    fail "安装成功但启动失败：${LAUNCH_BUNDLE_ID}。如果日志包含 DeveloperImage not found，请在打包机安装匹配当前 iOS 版本的 Xcode，或确认 xcrun devicectl 可用。"
+    if [ "${SKIP_APP_INSTALL}" = "1" ]; then
+      log "本机启动通道失败，启动 WDA 后使用 WDA 激活已安装 App。"
+      write_quality_progress "running" "wda" "启动 WDA，准备激活已安装 App" 1.3
+      if ! ensure_wda_ready; then
+        fail "已确认设备安装 ${LAUNCH_BUNDLE_ID}，但本机启动通道和 WDA 均不可用：${WDA_READY_ERROR:-unknown}"
+      fi
+      WDA_READY_AFTER_LAUNCH="1"
+      LAUNCH_STARTED_AT_MS="$(now_ms)"
+      if ! ensure_target_app_foreground_for_evidence 1; then
+        fail "WDA 已启动，但无法激活设备上已安装的 App：${LAUNCH_BUNDLE_ID}"
+      fi
+      mark_launch_finished "wda"
+    else
+      fail "App 安装成功但启动失败：${LAUNCH_BUNDLE_ID}。如果日志包含 DeveloperImage not found，请在打包机安装匹配当前 iOS 版本的 Xcode，或确认 xcrun devicectl 可用。"
+    fi
   fi
 fi
 
-write_quality_progress "running" "coldStart" "等待首屏内容稳定" 1.6
+if [ "${SKIP_APP_INSTALL}" = "1" ] && [ "${WDA_READY_AFTER_LAUNCH}" != "1" ]; then
+  log "App 已启动，开始启动/连接 WDA。"
+  write_quality_progress "running" "wda" "App 已启动，准备 WDA" 1.6
+  if ! ensure_wda_ready; then
+    fail "App ${LAUNCH_BUNDLE_ID} 已启动，但 WDA 启动失败：${WDA_READY_ERROR:-unknown}"
+  fi
+  WDA_READY_AFTER_LAUNCH="1"
+fi
+
+write_quality_progress "running" "coldStart" "等待首屏内容稳定" 1.7
 wait_cold_start_ready || true
 write_quality_progress "running" "coldStart" "首屏内容已稳定" 1.8
 write_quality_progress "running" "performance" "启动性能采样" 1.9
@@ -7792,6 +8005,16 @@ if [ "${REQUESTED_TEST_SUITE}" = "business_flow" ]; then
   if [ "${business_flow_status}" != "0" ]; then
     fail "业务编排测试失败：${BUSINESS_FLOW_MESSAGE:-请查看 ${BUSINESS_FLOW_REPORT_FILE}}"
   fi
+fi
+if [ "${REQUESTED_TEST_SUITE}" = "replay_flow" ]; then
+  replay_flow_status=0
+  run_replay_flow_test || replay_flow_status=$?
+  load_replay_flow_result
+  log "回放任务质检结果: ${REPLAY_FLOW_STATUS:-unknown}，完成 ${REPLAY_FLOW_ITERATIONS:-0} 轮，${REPLAY_FLOW_MESSAGE:-}"
+  if [ "${replay_flow_status}" != "0" ]; then
+    fail "回放任务质检失败：${REPLAY_FLOW_MESSAGE:-请查看 ${REPLAY_FLOW_REPORT_FILE}}"
+  fi
+  write_quality_progress "passed" "replayFlow" "回放任务质检完成" 100 "${REPLAY_FLOW_ITERATIONS:-0}" "" 0
 fi
 if [ "${REQUESTED_TEST_SUITE}" = "monkey" ] || [ "${RUN_MONKEY:-}" = "1" ] || [[ "${QA_RUNNER_MODE:-}" == *"monkey"* ]] || [[ "${QUALITY_RUNNER:-}" == *"monkey"* ]]; then
   monkey_status=0
@@ -7826,6 +8049,8 @@ if [ "${REQUESTED_TEST_SUITE}" = "stutter" ]; then
   write_summary "passed" "自动场景卡顿检测完成，场景 ${STUTTER_SCENARIO}，已采集 ${MONKEY_DURATION_SECONDS:-300} 秒性能 Trace"
 elif [ "${REQUESTED_TEST_SUITE}" = "business_flow" ]; then
   write_summary "passed" "自定义业务编排完成，通过 ${BUSINESS_FLOW_PASSED_STEPS:-0}/${BUSINESS_FLOW_TOTAL_STEPS:-0} 个业务步骤"
+elif [ "${REQUESTED_TEST_SUITE}" = "replay_flow" ]; then
+  write_summary "passed" "回放任务质检完成，在业务编排时长内完成 ${REPLAY_FLOW_ITERATIONS:-0} 轮"
 elif [ "${MONKEY_STATUS}" = "passed" ]; then
   if [ "${MONKEY_DURATION_SECONDS:-0}" != "0" ]; then
     write_summary "passed" "安装、启动、Monkey 测试完成，冷启动首屏耗时 ${COLD_START_READY_MS:-N/A}ms，Monkey 持续 ${MONKEY_DURATION_SECONDS} 秒，执行 ${MONKEY_EXECUTED_EVENTS} 次通过"

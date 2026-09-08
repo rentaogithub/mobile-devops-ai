@@ -1,6 +1,6 @@
 import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool } from '../../services/api';
 import { defaultQualityDeviceUdids } from './devicePoolUtils';
-import { shouldUseInstalledProductionApp } from './qualityOptions';
+import { installedAppBundleIdForBuild, shouldUseInstalledProductionApp } from './qualityOptions';
 
 export const DEFAULT_QUALITY_SUITE: JenkinsQualitySuite = 'monkey';
 export const DEFAULT_MONKEY_DURATION_SECONDS = 14400;
@@ -31,5 +31,6 @@ export function buildQualityModalDefaults(params: {
     devicePool,
     deviceUdids: defaultQualityDeviceUdids(params.pools, devicePool),
     skipInstall: shouldUseInstalledProductionApp(fallbackBuild),
+    installedAppBundleId: installedAppBundleIdForBuild(fallbackBuild),
   };
 }

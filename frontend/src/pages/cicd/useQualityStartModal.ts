@@ -8,6 +8,7 @@ import {
   DEFAULT_STUTTER_SCENARIO,
   buildQualityModalDefaults,
 } from './qualityFormDefaults';
+import { DEVELOPMENT_BUNDLE_ID, InstalledAppBundleId } from './qualityOptions';
 
 interface OpenQualityStartModalParams {
   selectedBuild?: JenkinsBuild;
@@ -24,9 +25,13 @@ export function useQualityStartModal() {
   const [durationSeconds, setDurationSeconds] = useState(DEFAULT_MONKEY_DURATION_SECONDS);
   const [stutterScenario, setStutterScenario] = useState(DEFAULT_STUTTER_SCENARIO);
   const [businessFlowFeatures, setBusinessFlowFeatures] = useState<string[]>(DEFAULT_BUSINESS_FLOW_FEATURES);
+  const [replayFlowAssetId, setReplayFlowAssetId] = useState('');
+  const [replayFlowVersionId, setReplayFlowVersionId] = useState('');
+  const [replayFlowInputs, setReplayFlowInputs] = useState<Record<string, string>>({});
   const [devicePool, setDevicePool] = useState('ios-default');
   const [deviceUdids, setDeviceUdids] = useState<string[]>([]);
   const [skipInstall, setSkipInstall] = useState(false);
+  const [installedAppBundleId, setInstalledAppBundleId] = useState<InstalledAppBundleId>(DEVELOPMENT_BUNDLE_ID);
 
   const openWithDefaults = ({ selectedBuild, builds, pools }: OpenQualityStartModalParams) => {
     const defaults = buildQualityModalDefaults({ build: selectedBuild, builds, pools });
@@ -36,9 +41,13 @@ export function useQualityStartModal() {
     setDurationSeconds(defaults.durationSeconds);
     setStutterScenario(defaults.stutterScenario);
     setBusinessFlowFeatures(defaults.businessFlowFeatures);
+    setReplayFlowAssetId('');
+    setReplayFlowVersionId('');
+    setReplayFlowInputs({});
     setDevicePool(defaults.devicePool);
     setDeviceUdids(defaults.deviceUdids);
     setSkipInstall(defaults.skipInstall);
+    setInstalledAppBundleId(defaults.installedAppBundleId);
     setOpen(true);
   };
 
@@ -56,9 +65,13 @@ export function useQualityStartModal() {
     durationSeconds,
     stutterScenario,
     businessFlowFeatures,
+    replayFlowAssetId,
+    replayFlowVersionId,
+    replayFlowInputs,
     devicePool,
     deviceUdids,
     skipInstall,
+    installedAppBundleId,
     setOpen,
     setSubmitting,
     setSubmitMessage,
@@ -67,9 +80,13 @@ export function useQualityStartModal() {
     setDurationSeconds,
     setStutterScenario,
     setBusinessFlowFeatures,
+    setReplayFlowAssetId,
+    setReplayFlowVersionId,
+    setReplayFlowInputs,
     setDevicePool,
     setDeviceUdids,
     setSkipInstall,
+    setInstalledAppBundleId,
     openWithDefaults,
     close,
   };

@@ -3,6 +3,8 @@ import { getDatabase } from '../database';
 import { currentProjectId } from './ProductLineContext';
 import { DeviceRecording } from './DeviceRecordingService';
 import {
+  compileDeviceReplayFlow,
+  CompiledDeviceReplayFlow,
   DeviceReplayFlowDsl,
   replayFlowTemplateFromRecording,
   validateDeviceReplayFlow,
@@ -41,10 +43,15 @@ export interface ReplayFlowAssetSummary {
   sourceFingerprint: string;
   currentDraftId?: string;
   latestVersionId?: string;
+  latestVersionNumber?: number;
+  preFlowVersionId?: string;
   preFlowAssetId?: string;
   preFlowAssetName?: string;
+  preFlowVersionNumber?: number;
+  postFlowVersionId?: string;
   postFlowAssetId?: string;
   postFlowAssetName?: string;
+  postFlowVersionNumber?: number;
   creationCompleted: boolean;
   completedAt?: string;
   revision: number;
@@ -57,13 +64,35 @@ export interface ReplayFlowAssetSummary {
 
 export interface ReplayFlowAsset extends ReplayFlowAssetSummary {
   draft: ReplayFlowDraft;
-  versions: Array<{
-    id: string;
-    versionNumber: number;
-    createdBy: string;
-    createdAt: string;
-    releaseNotes?: string;
-  }>;
+  versions: ReplayFlowVersionSummary[];
+  auditEvents: ReplayFlowAuditEvent[];
+}
+
+export interface ReplayFlowAuditEvent {
+  id: string;
+  assetId: string;
+  eventType: string;
+  actor: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ReplayFlowVersionSummary {
+  id: string;
+  assetId: string;
+  assetName: string;
+  versionNumber: number;
+  createdBy: string;
+  createdAt: string;
+  releaseNotes?: string;
+}
+
+export interface ReplayFlowVersion extends ReplayFlowVersionSummary {
+  projectId: string;
+  flow: DeviceReplayFlowDsl;
+  compiled: CompiledDeviceReplayFlow;
+  sourceRecordingId?: string;
+  sourceFingerprint: string;
 }
 
 export interface ReplayFlowSourcePreview {
@@ -199,10 +228,15 @@ function summaryFromRow(row: any): ReplayFlowAssetSummary {
     sourceFingerprint: row.source_fingerprint,
     currentDraftId: row.current_draft_id || undefined,
     latestVersionId: row.latest_version_id || undefined,
+    latestVersionNumber: row.latest_version_number === null || row.latest_version_number === undefined ? undefined : Number(row.latest_version_number),
+    preFlowVersionId: row.pre_flow_version_id || undefined,
     preFlowAssetId: row.pre_flow_asset_id || undefined,
     preFlowAssetName: row.pre_flow_asset_name || undefined,
+    preFlowVersionNumber: row.pre_flow_version_number === null || row.pre_flow_version_number === undefined ? undefined : Number(row.pre_flow_version_number),
+    postFlowVersionId: row.post_flow_version_id || undefined,
     postFlowAssetId: row.post_flow_asset_id || undefined,
     postFlowAssetName: row.post_flow_asset_name || undefined,
+    postFlowVersionNumber: row.post_flow_version_number === null || row.post_flow_version_number === undefined ? undefined : Number(row.post_flow_version_number),
     creationCompleted: row.creation_completed === undefined ? true : Boolean(row.creation_completed),
     completedAt: row.completed_at || undefined,
     revision: Number(row.revision) || 1,
@@ -216,13 +250,21 @@ function summaryFromRow(row: any): ReplayFlowAssetSummary {
 
 const ASSET_SELECT = `
   SELECT a.*, d.revision, d.dsl_json,
-    pre.name AS pre_flow_asset_name,
-    post.name AS post_flow_asset_name,
+    latest.version_number AS latest_version_number,
+    pre_version.asset_id AS pre_flow_asset_id,
+    pre_asset.name AS pre_flow_asset_name,
+    pre_version.version_number AS pre_flow_version_number,
+    post_version.asset_id AS post_flow_asset_id,
+    post_asset.name AS post_flow_asset_name,
+    post_version.version_number AS post_flow_version_number,
     (SELECT COUNT(*) FROM replay_flow_versions v WHERE v.asset_id = a.id) AS version_count
   FROM replay_flow_assets a
   JOIN replay_flow_drafts d ON d.id = a.current_draft_id
-  LEFT JOIN replay_flow_assets pre ON pre.id = a.pre_flow_asset_id
-  LEFT JOIN replay_flow_assets post ON post.id = a.post_flow_asset_id
+  LEFT JOIN replay_flow_versions latest ON latest.id = a.latest_version_id
+  LEFT JOIN replay_flow_versions pre_version ON pre_version.id = a.pre_flow_version_id
+  LEFT JOIN replay_flow_assets pre_asset ON pre_asset.id = pre_version.asset_id
+  LEFT JOIN replay_flow_versions post_version ON post_version.id = a.post_flow_version_id
+  LEFT JOIN replay_flow_assets post_asset ON post_asset.id = post_version.asset_id
 `;
 
 export class ReplayFlowAssetService {
@@ -367,16 +409,132 @@ export class ReplayFlowAssetService {
     if (!row) throw new ReplayFlowAssetError('回放流程不存在', 404, 'FLOW_ASSET_NOT_FOUND');
     const draftRow = getDatabase().prepare('SELECT * FROM replay_flow_drafts WHERE id = ?').get(row.current_draft_id) as any;
     const versions = (getDatabase().prepare(`
-      SELECT id, version_number, release_notes, created_by, created_at
-      FROM replay_flow_versions WHERE asset_id = ? ORDER BY version_number DESC
+      SELECT v.id, v.asset_id, a.name AS asset_name, v.version_number, v.dsl_json, v.release_notes, v.created_by, v.created_at
+      FROM replay_flow_versions v
+      JOIN replay_flow_assets a ON a.id = v.asset_id
+      WHERE v.asset_id = ? ORDER BY v.version_number DESC
     `).all(assetId) as any[]).map((item) => ({
       id: item.id,
+      assetId: item.asset_id,
+      assetName: parseJson<DeviceReplayFlowDsl>(item.dsl_json, { name: item.asset_name } as DeviceReplayFlowDsl).name || item.asset_name,
       versionNumber: Number(item.version_number),
       releaseNotes: item.release_notes || undefined,
       createdBy: item.created_by,
       createdAt: item.created_at,
     }));
-    return { ...summaryFromRow(row), draft: draftFromRow(draftRow), versions };
+    return { ...summaryFromRow(row), draft: draftFromRow(draftRow), versions, auditEvents: this.listAuditEvents(assetId) };
+  }
+
+  listAuditEvents(assetId: string, limit = 100): ReplayFlowAuditEvent[] {
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+    return (getDatabase().prepare(`
+      SELECT * FROM replay_flow_audit_events
+      WHERE asset_id = ?
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT ${safeLimit}
+    `).all(assetId) as any[]).map((row) => ({
+      id: row.id,
+      assetId: row.asset_id,
+      eventType: row.event_type,
+      actor: row.actor,
+      payload: parseJson<Record<string, unknown>>(row.payload_json, {}),
+      createdAt: row.created_at,
+    }));
+  }
+
+  getVersion(versionId: string): ReplayFlowVersion {
+    const row = getDatabase().prepare(`
+      SELECT v.*, a.name AS asset_name, a.project_id
+      FROM replay_flow_versions v
+      JOIN replay_flow_assets a ON a.id = v.asset_id
+      WHERE v.id = ?
+    `).get(versionId) as any;
+    if (!row) throw new ReplayFlowAssetError('回放流程发布版本不存在', 404, 'FLOW_VERSION_NOT_FOUND');
+    const flow = parseJson<DeviceReplayFlowDsl>(row.dsl_json, { schemaVersion: '1.0', id: row.asset_id, name: row.asset_name, nodes: [] });
+    return {
+      id: row.id,
+      assetId: row.asset_id,
+      assetName: flow.name || row.asset_name,
+      projectId: row.project_id,
+      versionNumber: Number(row.version_number),
+      flow,
+      compiled: parseJson<CompiledDeviceReplayFlow>(row.compiled_json, {} as CompiledDeviceReplayFlow),
+      sourceRecordingId: row.source_recording_id || undefined,
+      sourceFingerprint: row.source_fingerprint,
+      releaseNotes: row.release_notes || undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    };
+  }
+
+  listPublishedVersions(projectId = 'nn-ios'): ReplayFlowVersionSummary[] {
+    return (getDatabase().prepare(`
+      SELECT v.id, v.asset_id, a.name AS asset_name, v.version_number, v.dsl_json,
+             v.release_notes, v.created_by, v.created_at
+      FROM replay_flow_versions v
+      JOIN replay_flow_assets a ON a.id = v.asset_id
+      WHERE a.project_id = ? AND a.status = 'published'
+      ORDER BY a.name ASC, v.version_number DESC
+    `).all(projectId) as any[]).map((row) => ({
+      id: row.id,
+      assetId: row.asset_id,
+      assetName: parseJson<DeviceReplayFlowDsl>(row.dsl_json, { name: row.asset_name } as DeviceReplayFlowDsl).name || row.asset_name,
+      versionNumber: Number(row.version_number),
+      releaseNotes: row.release_notes || undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+    }));
+  }
+
+  publish(assetId: string, actor: string, input: { expectedRevision?: number; releaseNotes?: string } = {}) {
+    const asset = this.get(assetId);
+    if (asset.status === 'archived') {
+      throw new ReplayFlowAssetError('归档流程不能发布', 409, 'FLOW_ASSET_ARCHIVED');
+    }
+    if (!asset.creationCompleted) {
+      throw new ReplayFlowAssetError('请先完成流程创建再发布', 409, 'FLOW_CREATION_INCOMPLETE');
+    }
+    const expectedRevision = Number(input.expectedRevision);
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== asset.draft.revision) {
+      throw new ReplayFlowAssetError(`草稿版本已更新，当前 revision 为 ${asset.draft.revision}`, 409, 'FLOW_DRAFT_CONFLICT');
+    }
+    if (!asset.draft.validation.valid) {
+      throw new ReplayFlowAssetError('流程校验未通过，不能发布', 422, 'FLOW_VALIDATION_FAILED');
+    }
+    const compiled = compileDeviceReplayFlow(asset.draft.flow);
+    const versionId = `version_${randomUUID()}`;
+    const timestamp = now();
+    const releaseNotes = text(input.releaseNotes, 1000);
+    const db = getDatabase();
+    let versionNumber = 1;
+    db.transaction(() => {
+      const latest = db.prepare('SELECT COALESCE(MAX(version_number), 0) AS value FROM replay_flow_versions WHERE asset_id = ?').get(assetId) as any;
+      versionNumber = Number(latest?.value || 0) + 1;
+      db.prepare(`
+        INSERT INTO replay_flow_versions (
+          id, asset_id, version_number, dsl_json, compiled_json, source_recording_id,
+          source_fingerprint, release_notes, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        versionId,
+        assetId,
+        versionNumber,
+        JSON.stringify(asset.draft.flow),
+        JSON.stringify(compiled),
+        asset.draft.sourceRecordingId || null,
+        asset.draft.sourceFingerprint,
+        releaseNotes || null,
+        actor,
+        timestamp,
+      );
+      db.prepare(`
+        UPDATE replay_flow_assets
+        SET status = 'published', latest_version_id = ?, updated_at = ?
+        WHERE id = ?
+      `).run(versionId, timestamp, assetId);
+      this.recordAudit(assetId, 'flow.published', actor, { versionId, versionNumber, revision: asset.draft.revision });
+    })();
+    return { asset: this.get(assetId), version: this.getVersion(versionId) };
   }
 
   saveDraft(assetId: string, actor: string, input: { expectedRevision?: number; flow?: DeviceReplayFlowDsl; name?: string; description?: string }) {
@@ -468,7 +626,7 @@ export class ReplayFlowAssetService {
       getDatabase().prepare(`
         INSERT INTO replay_flow_assets (
           id, project_id, name, description, owner, status, source_recording_id,
-          source_fingerprint, current_draft_id, pre_flow_asset_id, post_flow_asset_id,
+          source_fingerprint, current_draft_id, pre_flow_version_id, post_flow_version_id,
           creation_completed, completed_at, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, NULL, ?, ?, 1, ?, ?, ?)
       `).run(
@@ -479,8 +637,8 @@ export class ReplayFlowAssetService {
         actor,
         source.sourceRecordingId || null,
         source.sourceFingerprint,
-        source.preFlowAssetId || null,
-        source.postFlowAssetId || null,
+        source.preFlowVersionId || null,
+        source.postFlowVersionId || null,
         timestamp,
         timestamp,
         timestamp,
@@ -508,6 +666,117 @@ export class ReplayFlowAssetService {
     return this.get(newAssetId);
   }
 
+  copyVersion(versionId: string, actor: string, requestedName?: string) {
+    const version = this.getVersion(versionId);
+    const newAssetId = `flow_${randomUUID()}`;
+    const newDraftId = `draft_${randomUUID()}`;
+    const timestamp = now();
+    const name = text(requestedName, 160) || `${version.assetName} v${version.versionNumber} 副本`;
+    const description = text(version.flow.description, 1000);
+    const flow: DeviceReplayFlowDsl = { ...version.flow, id: newAssetId, name, description };
+    const validation = validateDeviceReplayFlow(flow);
+    const db = getDatabase();
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO replay_flow_assets (
+          id, project_id, name, description, owner, status, source_recording_id,
+          source_fingerprint, current_draft_id, creation_completed, completed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'draft', ?, ?, NULL, 1, ?, ?, ?)
+      `).run(
+        newAssetId,
+        version.projectId,
+        name,
+        description || null,
+        actor,
+        version.sourceRecordingId || null,
+        version.sourceFingerprint,
+        timestamp,
+        timestamp,
+        timestamp,
+      );
+      db.prepare(`
+        INSERT INTO replay_flow_drafts (
+          id, asset_id, revision, dsl_json, validation_json, source_recording_id,
+          source_fingerprint, created_by, updated_by, created_at, updated_at
+        ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        newDraftId,
+        newAssetId,
+        JSON.stringify(flow),
+        JSON.stringify(validation),
+        version.sourceRecordingId || null,
+        version.sourceFingerprint,
+        actor,
+        actor,
+        timestamp,
+        timestamp,
+      );
+      db.prepare('UPDATE replay_flow_assets SET current_draft_id = ? WHERE id = ?').run(newDraftId, newAssetId);
+      this.recordAudit(newAssetId, 'flow.version_copied', actor, {
+        sourceAssetId: version.assetId,
+        sourceVersionId: version.id,
+        sourceVersionNumber: version.versionNumber,
+      });
+    })();
+    return this.get(newAssetId);
+  }
+
+  rollbackToVersion(versionId: string, actor: string, expectedRevision?: number) {
+    const version = this.getVersion(versionId);
+    const asset = this.get(version.assetId);
+    if (asset.status === 'archived') {
+      throw new ReplayFlowAssetError('归档流程不能回滚版本', 409, 'FLOW_ASSET_ARCHIVED');
+    }
+    if (!Number.isInteger(expectedRevision) || expectedRevision !== asset.draft.revision) {
+      throw new ReplayFlowAssetError(`草稿版本已更新，当前 revision 为 ${asset.draft.revision}`, 409, 'FLOW_DRAFT_CONFLICT');
+    }
+    const name = text(version.flow.name, 160) || asset.name;
+    const description = text(version.flow.description, 1000);
+    const flow: DeviceReplayFlowDsl = { ...version.flow, id: asset.id, name, description };
+    const validation = validateDeviceReplayFlow(flow);
+    if (!validation.valid) {
+      throw new ReplayFlowAssetError('历史版本校验未通过，不能生成回滚草稿', 422, 'FLOW_VALIDATION_FAILED');
+    }
+    const timestamp = now();
+    const nextRevision = asset.draft.revision + 1;
+    const db = getDatabase();
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE replay_flow_drafts
+        SET revision = ?, dsl_json = ?, validation_json = ?, source_recording_id = ?,
+            source_fingerprint = ?, updated_by = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        nextRevision,
+        JSON.stringify(flow),
+        JSON.stringify(validation),
+        version.sourceRecordingId || null,
+        version.sourceFingerprint,
+        actor,
+        timestamp,
+        asset.draft.id,
+      );
+      db.prepare(`
+        UPDATE replay_flow_assets
+        SET name = ?, description = ?, source_recording_id = ?, source_fingerprint = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        name,
+        description || null,
+        version.sourceRecordingId || null,
+        version.sourceFingerprint,
+        timestamp,
+        asset.id,
+      );
+      this.recordAudit(asset.id, 'flow.version_rolled_back_to_draft', actor, {
+        sourceVersionId: version.id,
+        sourceVersionNumber: version.versionNumber,
+        revision: nextRevision,
+      });
+    })();
+    return this.get(asset.id);
+  }
+
   completeCreation(assetId: string, actor: string) {
     const asset = this.get(assetId);
     if (asset.status === 'archived') {
@@ -527,7 +796,7 @@ export class ReplayFlowAssetService {
     return this.get(assetId);
   }
 
-  updateExecutionChain(assetId: string, actor: string, input: { preFlowAssetId?: string | null; postFlowAssetId?: string | null }) {
+  updateExecutionChain(assetId: string, actor: string, input: { preFlowVersionId?: string | null; postFlowVersionId?: string | null }) {
     const asset = this.get(assetId);
     if (asset.status === 'archived') {
       throw new ReplayFlowAssetError('归档流程不能配置执行链', 409, 'FLOW_ASSET_ARCHIVED');
@@ -535,29 +804,31 @@ export class ReplayFlowAssetService {
     if (!asset.creationCompleted) {
       throw new ReplayFlowAssetError('请先完成当前流程创建，再配置前置或后置流程', 409, 'FLOW_CREATION_INCOMPLETE');
     }
-    const preFlowAssetId = text(input.preFlowAssetId, 120) || undefined;
-    const postFlowAssetId = text(input.postFlowAssetId, 120) || undefined;
-    [preFlowAssetId, postFlowAssetId].forEach((referenceId) => {
-      if (!referenceId) return;
-      if (referenceId === assetId) {
+    const preFlowVersionId = text(input.preFlowVersionId, 120) || undefined;
+    const postFlowVersionId = text(input.postFlowVersionId, 120) || undefined;
+    const references = [preFlowVersionId, postFlowVersionId].map((versionId) => versionId ? this.getVersion(versionId) : undefined);
+    references.forEach((version) => {
+      if (!version) return;
+      if (version.assetId === assetId) {
         throw new ReplayFlowAssetError('前置或后置流程不能引用自己', 409, 'FLOW_CHAIN_SELF_REFERENCE');
       }
-      const reference = this.get(referenceId);
+      const reference = this.get(version.assetId);
       if (reference.projectId !== asset.projectId) {
         throw new ReplayFlowAssetError('只能引用同一项目的回放流程', 409, 'FLOW_CHAIN_PROJECT_MISMATCH');
       }
-      if (reference.status === 'archived' || !reference.creationCompleted) {
-        throw new ReplayFlowAssetError(`流程「${reference.name}」当前不可被引用`, 409, 'FLOW_CHAIN_REFERENCE_UNAVAILABLE');
+      if (reference.status !== 'published') {
+        throw new ReplayFlowAssetError(`流程「${reference.name}」不是可用的已发布流程`, 409, 'FLOW_CHAIN_REFERENCE_UNAVAILABLE');
       }
     });
-    this.assertAcyclic(assetId, preFlowAssetId, postFlowAssetId);
+    this.assertAcyclic(assetId, references[0]?.assetId, references[1]?.assetId);
     const timestamp = now();
     getDatabase().prepare(`
       UPDATE replay_flow_assets
-      SET pre_flow_asset_id = ?, post_flow_asset_id = ?, updated_at = ?
+      SET pre_flow_version_id = ?, post_flow_version_id = ?,
+          pre_flow_asset_id = NULL, post_flow_asset_id = NULL, updated_at = ?
       WHERE id = ?
-    `).run(preFlowAssetId || null, postFlowAssetId || null, timestamp, assetId);
-    this.recordAudit(assetId, 'flow.execution_chain_updated', actor, { preFlowAssetId, postFlowAssetId });
+    `).run(preFlowVersionId || null, postFlowVersionId || null, timestamp, assetId);
+    this.recordAudit(assetId, 'flow.execution_chain_updated', actor, { preFlowVersionId, postFlowVersionId });
     return this.get(assetId);
   }
 
@@ -565,8 +836,12 @@ export class ReplayFlowAssetService {
     const asset = this.get(assetId);
     if (archived) {
       const dependent = getDatabase().prepare(`
-        SELECT name FROM replay_flow_assets
-        WHERE project_id = ? AND status <> 'archived' AND id <> ? AND (pre_flow_asset_id = ? OR post_flow_asset_id = ?)
+        SELECT dependent.name
+        FROM replay_flow_assets dependent
+        LEFT JOIN replay_flow_versions pre ON pre.id = dependent.pre_flow_version_id
+        LEFT JOIN replay_flow_versions post ON post.id = dependent.post_flow_version_id
+        WHERE dependent.project_id = ? AND dependent.status <> 'archived' AND dependent.id <> ?
+          AND (pre.asset_id = ? OR post.asset_id = ?)
         LIMIT 1
       `).get(currentProjectId(), assetId, assetId, assetId) as any;
       if (dependent) {
@@ -584,8 +859,11 @@ export class ReplayFlowAssetService {
 
   private assertAcyclic(assetId: string, preFlowAssetId?: string, postFlowAssetId?: string) {
     const rows = getDatabase().prepare(`
-      SELECT id, pre_flow_asset_id, post_flow_asset_id FROM replay_flow_assets
-      WHERE project_id = ? AND status <> 'archived'
+      SELECT a.id, pre.asset_id AS pre_flow_asset_id, post.asset_id AS post_flow_asset_id
+      FROM replay_flow_assets a
+      LEFT JOIN replay_flow_versions pre ON pre.id = a.pre_flow_version_id
+      LEFT JOIN replay_flow_versions post ON post.id = a.post_flow_version_id
+      WHERE a.project_id = ? AND a.status <> 'archived'
     `).all(currentProjectId()) as Array<{ id: string; pre_flow_asset_id?: string; post_flow_asset_id?: string }>;
     const graph = new Map(rows.map((row) => [row.id, [row.pre_flow_asset_id, row.post_flow_asset_id].filter(Boolean) as string[]]));
     graph.set(assetId, [preFlowAssetId, postFlowAssetId].filter(Boolean) as string[]);

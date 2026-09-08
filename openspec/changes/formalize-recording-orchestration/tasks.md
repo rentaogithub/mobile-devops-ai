@@ -31,9 +31,9 @@ Execute increments in A → B → C order. The consolidated document retains des
 
 ## Increment C: Publish, History, and Quality Gates
 
-- [ ] 16. Implement transactional publish service that stores immutable DSL and compiled graph snapshots. `[BRR-015]`
-- [ ] 17. Implement version list, version detail, and create-draft-from-version APIs. `[BRR-015]`
-- [ ] 18. Implement publish and history UI, including release notes, warnings, copy, and rollback-to-new-draft. `[BRR-015]`
+- [x] 16. Implement transactional publish service that stores immutable DSL and compiled graph snapshots. `[BRR-015]`
+- [x] 17. Implement version list, version detail, and create-draft-from-version APIs. `[BRR-015]`
+- [x] 18. Implement publish and history UI, including release notes, warnings, copy, and rollback-to-new-draft. `[BRR-015]`
 - [ ] 19. Split debug runs and quality runs; require `flowVersionId` for quality execution. `[BRR-016]`
 - [ ] 20. Extend quality tasks to bind App build, environment, account mapping, device target, and published flow version. `[BRR-017]`
 - [ ] 21. Map quality run results to `passed`, `failed`, `infra_failed`, and `cancelled`. `[BRR-017]`
@@ -48,8 +48,16 @@ Execute increments in A → B → C order. The consolidated document retains des
 
 ## Composable Single-run Execution Chain
 
-- [x] 27. Add compatible Flow Asset migrations and model fields for optional pre-flow and post-flow references. `[BRR-021]`
-- [x] 28. Validate self-reference, transitive cycles, project scope, creation completion, archive state, and referenced-flow archival. `[BRR-021]`
-- [x] 29. Implement persistent `pre -> main -> post` single-run execution with cleanup-after-failure semantics and input-name-only persistence. `[BRR-021]`
-- [x] 30. Add Replay Center execution-chain configuration, runtime input confirmation, execution task list, and phase evidence report. `[BRR-021]`
+- [x] 27. Add compatible Flow Asset migrations and model fields for optional published pre-flow and post-flow version references. `[BRR-021]`
+- [x] 28. Validate exact published-version references, self-reference, transitive cycles, project scope, and referenced-flow archival. `[BRR-021]`
+- [x] 29. Implement persistent version-pinned `pre -> main -> post` single-run execution with cleanup-after-failure semantics and input-name-only persistence. `[BRR-021]`
+- [x] 30. Add Replay Center publish action, published-version-only execution-chain configuration, runtime input confirmation, execution task list, and phase evidence report. `[BRR-021]`
 - [x] 31. Complete real-device acceptance for a saved draft flow and verify its node screenshots and WDA Source evidence. `[BRR-016, BRR-021]`
+
+## Replay Center Quality Integration
+
+- [x] 32. Add the independent `replay_flow` quality-suite option while retaining the existing **业务编排时长** choices and legacy `business_flow` executor. `[BRR-022]`
+- [x] 33. Add published Replay Center task/version selection, pinned chain preview, and runtime input collection to quality-task creation. `[BRR-017, BRR-022]`
+- [x] 34. Persist an immutable pre/main/post execution manifest and keep runtime input values out of Jenkins parameters and logs. `[BRR-016, BRR-018, BRR-022]`
+- [x] 35. Add the Jenkins WDA replay runner with soft-deadline looping, stop-on-failure, post-cleanup-after-failure, and JSON evidence reporting. `[BRR-017, BRR-021, BRR-022]`
+- [ ] 36. Complete unlocked-device Jenkins acceptance for a `replay_flow` quality task and verify report/artifact links in Quality Center. `[BRR-017, BRR-022]`

@@ -317,6 +317,8 @@ CREATE TABLE IF NOT EXISTS replay_flow_assets (
   latest_version_id TEXT,
   pre_flow_asset_id TEXT,
   post_flow_asset_id TEXT,
+  pre_flow_version_id TEXT,
+  post_flow_version_id TEXT,
   creation_completed INTEGER NOT NULL DEFAULT 1,
   completed_at TEXT,
   created_at TEXT NOT NULL,

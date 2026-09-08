@@ -2770,7 +2770,7 @@ export interface JenkinsBuildFailureAnalysis {
   needsManualAction?: boolean;
 }
 
-export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'business_flow' | 'full';
+export type JenkinsQualitySuite = 'smoke' | 'im' | 'rtc' | 'monkey' | 'stutter' | 'business_flow' | 'replay_flow' | 'full';
 
 export interface JenkinsQualityBuild {
   number: number;
@@ -2815,6 +2815,21 @@ export interface JenkinsQualityBuild {
         lastAction?: string;
       }>;
       issues?: Array<{ severity?: string; message?: string; stepId?: string; path?: string }>;
+    };
+    replayFlow?: {
+      name?: string;
+      status?: string;
+      iterationCount?: number;
+      durationSeconds?: number;
+      stopOnFailure?: boolean;
+      manifestId?: string;
+      phases?: Array<{
+        phase?: 'pre' | 'main' | 'post';
+        assetId?: string;
+        assetName?: string;
+        versionId?: string;
+        versionNumber?: number;
+      }>;
     };
     devicePool?: string;
     devicePoolLabel?: string;
@@ -3065,6 +3080,7 @@ export interface JenkinsQualityBuild {
       processesUrl?: string;
       monkeyReportUrl?: string;
       businessFlowReportUrl?: string;
+      replayFlowReportUrl?: string;
       performanceSamplesUrl?: string;
       performanceStuttersUrl?: string;
       performanceStacksUrl?: string;
@@ -3454,6 +3470,13 @@ export const jenkinsApi = {
       riskPolicy?: string;
       stopOnFailure?: boolean;
       steps?: Array<Record<string, unknown>>;
+    };
+    replayFlow?: {
+      assetId: string;
+      versionId: string;
+      inputs?: Record<string, string>;
+      durationSeconds: number;
+      stopOnFailure: true;
     };
     skipInstall?: boolean;
     appBundleId?: string;
@@ -3903,10 +3926,15 @@ export interface ReplayFlowAssetSummary {
   sourceFingerprint: string;
   currentDraftId?: string;
   latestVersionId?: string;
+  latestVersionNumber?: number;
+  preFlowVersionId?: string;
   preFlowAssetId?: string;
   preFlowAssetName?: string;
+  preFlowVersionNumber?: number;
+  postFlowVersionId?: string;
   postFlowAssetId?: string;
   postFlowAssetName?: string;
+  postFlowVersionNumber?: number;
   creationCompleted: boolean;
   completedAt?: string;
   revision: number;
@@ -3933,13 +3961,35 @@ export interface ReplayFlowDraft {
 
 export interface ReplayFlowAsset extends ReplayFlowAssetSummary {
   draft: ReplayFlowDraft;
-  versions: Array<{
-    id: string;
-    versionNumber: number;
-    createdBy: string;
-    createdAt: string;
-    releaseNotes?: string;
-  }>;
+  versions: ReplayFlowVersionSummary[];
+  auditEvents: ReplayFlowAuditEvent[];
+}
+
+export interface ReplayFlowAuditEvent {
+  id: string;
+  assetId: string;
+  eventType: string;
+  actor: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ReplayFlowVersionSummary {
+  id: string;
+  assetId: string;
+  assetName: string;
+  versionNumber: number;
+  createdBy: string;
+  createdAt: string;
+  releaseNotes?: string;
+}
+
+export interface ReplayFlowVersion extends ReplayFlowVersionSummary {
+  projectId: string;
+  flow: DeviceReplayFlowDsl;
+  compiled: unknown;
+  sourceRecordingId?: string;
+  sourceFingerprint: string;
 }
 
 export interface ReplayFlowSourcePreview {
@@ -3976,6 +4026,8 @@ export interface ReplayFlowChainPhaseRun {
   phase: ReplayFlowChainPhase;
   assetId: string;
   assetName: string;
+  versionId?: string;
+  versionNumber?: number;
   status: ReplayFlowChainPhaseStatus;
   replayRunId?: string;
   startedAt?: string;
@@ -4175,6 +4227,42 @@ export const deviceControlApi = {
     return response.data;
   },
 
+  getReplayFlowVersion: async (versionId: string): Promise<ApiResponse<{ version: ReplayFlowVersion }>> => {
+    const response = await api.get<ApiResponse<{ version: ReplayFlowVersion }>>(
+      `/device-control/replay-flow-versions/${encodeURIComponent(versionId)}`,
+    );
+    return response.data;
+  },
+
+  listPublishedReplayFlowVersions: async (): Promise<ApiResponse<{ versions: ReplayFlowVersionSummary[] }>> => {
+    const response = await api.get<ApiResponse<{ versions: ReplayFlowVersionSummary[] }>>(
+      '/device-control/replay-flow-versions',
+    );
+    return response.data;
+  },
+
+  copyReplayFlowVersion: async (
+    versionId: string,
+    name?: string,
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-versions/${encodeURIComponent(versionId)}/copy`,
+      { name },
+    );
+    return response.data;
+  },
+
+  rollbackReplayFlowVersion: async (
+    versionId: string,
+    expectedRevision: number,
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset }>>(
+      `/device-control/replay-flow-versions/${encodeURIComponent(versionId)}/rollback`,
+      { expectedRevision },
+    );
+    return response.data;
+  },
+
   getReplayFlowSourcePreview: async (assetId: string): Promise<ApiResponse<{
     preview: ReplayFlowSourcePreview;
   }>> => {
@@ -4241,10 +4329,21 @@ export const deviceControlApi = {
 
   updateReplayFlowExecutionChain: async (
     assetId: string,
-    payload: { preFlowAssetId?: string | null; postFlowAssetId?: string | null },
+    payload: { preFlowVersionId?: string | null; postFlowVersionId?: string | null },
   ): Promise<ApiResponse<{ asset: ReplayFlowAsset }>> => {
     const response = await api.put<ApiResponse<{ asset: ReplayFlowAsset }>>(
       `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/execution-chain`,
+      payload,
+    );
+    return response.data;
+  },
+
+  publishReplayFlowAsset: async (
+    assetId: string,
+    payload: { expectedRevision: number; releaseNotes?: string },
+  ): Promise<ApiResponse<{ asset: ReplayFlowAsset; version: ReplayFlowVersion }>> => {
+    const response = await api.post<ApiResponse<{ asset: ReplayFlowAsset; version: ReplayFlowVersion }>>(
+      `/device-control/replay-flow-assets/${encodeURIComponent(assetId)}/publish`,
       payload,
     );
     return response.data;

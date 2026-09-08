@@ -7,6 +7,7 @@ import path from 'path';
 import { getJenkinsBaseUrl, getJenkinsConfig } from '../config/externalServices';
 import { workflowService } from '../services/WorkflowService';
 import { currentProductLineId, currentProjectId, getProductLineContext } from '../services/ProductLineContext';
+import { replayFlowQualityService } from '../services/ReplayFlowQualityService';
 import { crashGovernanceService } from '../services/CrashGovernanceService';
 import { authService } from '../services/AuthService';
 
@@ -32,6 +33,7 @@ const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
 const LOCAL_ARTIFACT_ROUTE = '/api/quality/artifacts/local';
 const ACTIVE_TASK_STATUSES = new Set(['created', 'queued', 'preparing', 'installing', 'running', 'collecting', 'analyzing', 'reporting', 'notifying']);
 const QUALITY_ORPHAN_TASK_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 10 * 60 * 1000);
+const INSTALLED_APP_BUNDLE_IDS = new Set(['com.nndev.im', 'com.nnhuyu.im']);
 
 const DEFAULT_QUALITY_DEVICE_POOLS = [
   { label: 'iOS 默认设备池', value: 'ios-default', description: '打包机当前可用 USB iOS 真机。' },
@@ -502,7 +504,7 @@ function selectAvailableDeviceFromPool(pool: any, fallback: string) {
   return { deviceKey: firstDeviceKey, activeTask: findActiveTaskOnDevice(firstDeviceKey), deviceKeys };
 }
 
-const SUPPORTED_QUALITY_SUITES = new Set(['monkey', 'stutter', 'business_flow', 'smoke', 'login', 'im', 'rtc', 'full']);
+const SUPPORTED_QUALITY_SUITES = new Set(['monkey', 'stutter', 'business_flow', 'replay_flow', 'smoke', 'login', 'im', 'rtc', 'full']);
 
 function suiteFromTaskType(taskType: string, payload: any) {
   const explicitSuite = String(payload.suite || payload.testSuite || '').trim().toLowerCase();
@@ -624,6 +626,30 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   }
   const durationMinutes = Number(monkey.duration_minutes || payload.durationMinutes || 120);
   const durationSeconds = Math.max(1, Math.round(durationMinutes * 60));
+  const replayFlowConfiguration = suite === 'replay_flow'
+    ? replayFlowQualityService.createConfiguration(payload.replayFlow || payload.replay_flow || {})
+    : null;
+  const persistedPayload = { ...payload };
+  delete persistedPayload.replayFlow;
+  delete persistedPayload.replay_flow;
+  const effectiveDurationSeconds = replayFlowConfiguration?.manifest.durationSeconds || durationSeconds;
+  const publishChannel = String(payload.publishChannel || app.publish_channel || app.publishChannel || '').trim();
+  const defaultInstalledAppBundleId = publishChannel === 'TestFlight' || publishChannel === 'AppStore'
+    ? 'com.nnhuyu.im'
+    : 'com.nndev.im';
+  const skipInstalledApp = app.skip_install === true
+    || String(app.skip_install || '').trim() === '1'
+    || payload.skipAppInstall === true
+    || String(payload.skipAppInstall || '').trim() === '1';
+  const installedAppBundleId = String(
+    app.bundle_id
+    || payload.appBundleId
+    || payload.bundleId
+    || defaultInstalledAppBundleId,
+  ).trim();
+  if (skipInstalledApp && !INSTALLED_APP_BUNDLE_IDS.has(installedAppBundleId)) {
+    throw new Error(`使用设备已安装 App 时，请选择 ${Array.from(INSTALLED_APP_BUNDLE_IDS).join(' 或 ')}`);
+  }
   const wdaUrl = buildWdaUrl(deviceKey, devicePool);
   const platformTask = workflowService.upsertTask({
     id: payload.platformTaskId,
@@ -636,8 +662,17 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     branch: payload.branch || app.branch,
     deviceUdid: deviceKey,
     progress: 0,
-    config: { ...payload, suite, devicePool, wdaUrl },
+    config: {
+      ...persistedPayload,
+      suite,
+      devicePool,
+      wdaUrl,
+      ...(replayFlowConfiguration ? { replayFlowExecution: { manifest: replayFlowConfiguration.manifest } } : {}),
+    },
   });
+  if (replayFlowConfiguration) {
+    replayFlowQualityService.persistRuntimeInputs(replayFlowConfiguration.manifest.id, replayFlowConfiguration.inputs);
+  }
   const jobPath = encodeJobPath(defaultQaJobName());
   const crumb = await getCrumb();
   const params = new URLSearchParams({
@@ -661,8 +696,10 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     QUALITY_RUNNER: `local-ios-device-${suite}`,
     QA_RUNNER_MODE: `local-usb-${suite}`,
     PLATFORM_TASK_ID: String(platformTask?.id || payload.platformTaskId || ''),
-    APP_BUNDLE_ID: appBundleId,
-    SKIP_APP_INSTALL: app.skip_install || payload.skipAppInstall ? '1' : '0',
+    APP_BUNDLE_ID: skipInstalledApp
+      ? installedAppBundleId
+      : appBundleId,
+    SKIP_APP_INSTALL: skipInstalledApp ? '1' : '0',
     WDA_URL: wdaUrl,
     WDA_AUTO_START: String(process.env.QA_WDA_AUTO_START || '1'),
     WDA_AUTO_INSTALL: String(process.env.QA_WDA_AUTO_INSTALL || '1'),
@@ -672,7 +709,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     WDA_BUNDLE_ID: String(process.env.QA_WDA_BUNDLE_ID || ''),
     WDA_DERIVED_DATA_PATH: path.join(localJenkinsWorkspaceDir(defaultQaJobName()), 'quality-cache', 'wda-derived-data', sanitizeToken(deviceKey || devicePool)),
     WDA_XCODEBUILD_EXTRA_ARGS: String(process.env.QA_WDA_XCODEBUILD_EXTRA_ARGS || ''),
-    MONKEY_DURATION_SECONDS: String(durationSeconds),
+    MONKEY_DURATION_SECONDS: String(effectiveDurationSeconds),
     MONKEY_EVENT_COUNT: String(monkey.max_actions || process.env.QA_MONKEY_EVENT_COUNT || '30'),
     MONKEY_SEED: monkey.seed ? String(monkey.seed) : '',
     MONKEY_INTERVAL_SECONDS: String(monkey.interval_seconds || process.env.QA_MONKEY_INTERVAL_SECONDS || '0.35'),
@@ -683,16 +720,27 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     MONKEY_BUSINESS_DOMAINS: String(monkey.business_domains || 'login,im,community,voice_room,profile,playwith'),
     MONKEY_GUARDED_ACTION_POLICY: 'read_only',
     BUSINESS_FLOW_PLAN_JSON: suite === 'business_flow' ? JSON.stringify(payload.businessFlowPlan || payload.business_flow_plan || {}) : '',
+    REPLAY_FLOW_ASSET_ID: replayFlowConfiguration?.manifest.mainAssetId || '',
+    REPLAY_FLOW_VERSION_ID: replayFlowConfiguration?.manifest.phases.find((phase) => phase.phase === 'main')?.versionId || '',
+    REPLAY_FLOW_EXECUTION_MANIFEST_ID: replayFlowConfiguration?.manifest.id || '',
+    REPLAY_FLOW_DURATION_SECONDS: replayFlowConfiguration ? String(replayFlowConfiguration.manifest.durationSeconds) : '',
+    REPLAY_FLOW_STOP_ON_FAILURE: replayFlowConfiguration?.manifest.stopOnFailure ? '1' : '0',
     STUTTER_SCENARIO: String(payload.stutter?.scenario || payload.stutterScenario || 'community'),
     NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
   });
 
-  const response = await axios.post(`${jenkinsBaseUrl()}/${jobPath}/buildWithParameters`, params.toString(), {
-    timeout: 30000,
-    headers: { ...crumb.headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-    validateStatus: (status) => status >= 200 && status < 400,
-    ...buildAuthConfig(),
-  });
+  let response;
+  try {
+    response = await axios.post(`${jenkinsBaseUrl()}/${jobPath}/buildWithParameters`, params.toString(), {
+      timeout: 30000,
+      headers: { ...crumb.headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+      validateStatus: (status) => status >= 200 && status < 400,
+      ...buildAuthConfig(),
+    });
+  } catch (error) {
+    if (replayFlowConfiguration) replayFlowQualityService.removeRuntimeInputs(replayFlowConfiguration.manifest.id);
+    throw error;
+  }
 
   const workflowTask = workflowService.upsertTask({
     id: platformTask?.id || payload.platformTaskId,
@@ -707,7 +755,13 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     branch: payload.branch || app.branch,
     deviceUdid: deviceKey,
     progress: 0,
-    config: { ...payload, suite, devicePool, wdaUrl },
+    config: {
+      ...persistedPayload,
+      suite,
+      devicePool,
+      wdaUrl,
+      ...(replayFlowConfiguration ? { replayFlowExecution: { manifest: replayFlowConfiguration.manifest } } : {}),
+    },
   });
 
   return {

@@ -1,9 +1,18 @@
-import { Alert, Checkbox, Modal, Radio, Select, Space, Tag, Typography } from 'antd';
-import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool } from '../../services/api';
+import { Alert, Checkbox, Input, Modal, Radio, Select, Space, Tag, Typography } from 'antd';
+import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool, ReplayFlowAssetSummary, ReplayFlowVersionSummary } from '../../services/api';
+import { InstalledAppBundleId } from './qualityOptions';
 
 const { Text } = Typography;
 
 type QualityDevice = NonNullable<QualityDevicePool['devices']>[number];
+
+export interface ReplayFlowQualityInputField {
+  name: string;
+  required: boolean;
+  defaultValue?: string;
+  description?: string;
+  usedBy: string[];
+}
 
 interface QualityStartModalProps {
   open: boolean;
@@ -19,7 +28,17 @@ interface QualityStartModalProps {
   stutterScenario: string;
   businessFlowFeatureGroups: Array<{ title: string; options: Array<{ label: string; value: string }> }>;
   businessFlowFeatures: string[];
+  replayFlowLoading: boolean;
+  replayFlowAssets: ReplayFlowAssetSummary[];
+  replayFlowVersions: ReplayFlowVersionSummary[];
+  replayFlowAssetId: string;
+  replayFlowVersionId: string;
+  replayFlowChainLabels: string[];
+  replayFlowInputFields: ReplayFlowQualityInputField[];
+  replayFlowInputs: Record<string, string>;
   skipInstall: boolean;
+  installedAppBundleId: InstalledAppBundleId;
+  installedAppBundleOptions: Array<{ label: string; value: InstalledAppBundleId }>;
   availableDevicePools: QualityDevicePool[];
   availableDevices: QualityDevice[];
   selectedDeviceUdids: string[];
@@ -30,7 +49,11 @@ interface QualityStartModalProps {
   onDurationChange: (seconds: number) => void;
   onStutterScenarioChange: (scenario: string) => void;
   onBusinessFlowFeaturesChange: (features: string[]) => void;
+  onReplayFlowAssetChange: (assetId: string) => void;
+  onReplayFlowVersionChange: (versionId: string) => void;
+  onReplayFlowInputChange: (name: string, value: string) => void;
   onSkipInstallChange: (value: boolean) => void;
+  onInstalledAppBundleIdChange: (value: InstalledAppBundleId) => void;
   onDeviceUdidsChange: (udids: string[]) => void;
   onSubmit: () => void;
   onClose: () => void;
@@ -50,7 +73,17 @@ export function QualityStartModal({
   stutterScenario,
   businessFlowFeatureGroups,
   businessFlowFeatures,
+  replayFlowLoading,
+  replayFlowAssets,
+  replayFlowVersions,
+  replayFlowAssetId,
+  replayFlowVersionId,
+  replayFlowChainLabels,
+  replayFlowInputFields,
+  replayFlowInputs,
   skipInstall,
+  installedAppBundleId,
+  installedAppBundleOptions,
   availableDevicePools,
   availableDevices,
   selectedDeviceUdids,
@@ -61,7 +94,11 @@ export function QualityStartModal({
   onDurationChange,
   onStutterScenarioChange,
   onBusinessFlowFeaturesChange,
+  onReplayFlowAssetChange,
+  onReplayFlowVersionChange,
+  onReplayFlowInputChange,
   onSkipInstallChange,
+  onInstalledAppBundleIdChange,
   onDeviceUdidsChange,
   onSubmit,
   onClose,
@@ -146,10 +183,10 @@ export function QualityStartModal({
             </Space>
           </Radio.Group>
         </div>
-        {(qualitySuite === 'monkey' || qualitySuite === 'stutter' || qualitySuite === 'business_flow') && (
+        {(qualitySuite === 'monkey' || qualitySuite === 'stutter' || qualitySuite === 'business_flow' || qualitySuite === 'replay_flow') && (
           <div>
             <Text strong>
-              {qualitySuite === 'stutter' ? '卡顿检测时长' : (qualitySuite === 'business_flow' ? '业务编排时长' : 'Monkey 执行时长')}
+              {qualitySuite === 'stutter' ? '卡顿检测时长' : (qualitySuite === 'business_flow' || qualitySuite === 'replay_flow' ? '业务编排时长' : 'Monkey 执行时长')}
             </Text>
             <Radio.Group
               optionType="button"
@@ -212,6 +249,63 @@ export function QualityStartModal({
             </Space>
           </div>
         )}
+        {qualitySuite === 'replay_flow' && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <div>
+              <Text strong>回放中心任务</Text>
+              <Select
+                loading={replayFlowLoading}
+                value={replayFlowAssetId || undefined}
+                disabled={submitting || replayFlowLoading}
+                placeholder="请选择已发布的回放任务"
+                style={{ marginTop: 8, width: '100%' }}
+                options={replayFlowAssets.map((asset) => ({
+                  value: asset.id,
+                  label: `${asset.name}${asset.latestVersionNumber ? ` · 最新 v${asset.latestVersionNumber}` : ''}`,
+                }))}
+                onChange={onReplayFlowAssetChange}
+              />
+            </div>
+            <div>
+              <Text strong>执行版本</Text>
+              <Select
+                value={replayFlowVersionId || undefined}
+                disabled={submitting || replayFlowLoading || !replayFlowAssetId}
+                placeholder="请选择发布版本"
+                style={{ marginTop: 8, width: '100%' }}
+                options={replayFlowVersions.map((version) => ({
+                  value: version.id,
+                  label: `v${version.versionNumber}${version.releaseNotes ? ` · ${version.releaseNotes}` : ''}`,
+                }))}
+                onChange={onReplayFlowVersionChange}
+              />
+            </div>
+            {replayFlowAssets.length === 0 && !replayFlowLoading && (
+              <Alert type="warning" showIcon message="回放中心暂无已发布任务" description="请先在回放中心完成流程发布。" />
+            )}
+            {replayFlowChainLabels.length > 0 && (
+              <Alert
+                type="info"
+                showIcon
+                message="本次质检将固化执行版本"
+                description={replayFlowChainLabels.join(' → ')}
+              />
+            )}
+            {replayFlowInputFields.map((field) => (
+              <div key={field.name}>
+                <Text strong>{field.name}{field.required ? ' *' : ''}</Text>
+                <Input.TextArea
+                  value={replayFlowInputs[field.name] ?? ''}
+                  disabled={submitting}
+                  placeholder={field.description || `用于 ${field.usedBy.join('、')}`}
+                  autoSize={{ minRows: 1, maxRows: 3 }}
+                  style={{ marginTop: 8 }}
+                  onChange={(event) => onReplayFlowInputChange(field.name, event.target.value)}
+                />
+              </div>
+            ))}
+          </Space>
+        )}
         <div>
           <Checkbox
             checked={skipInstall}
@@ -220,6 +314,18 @@ export function QualityStartModal({
           >
             使用设备上已安装的 App
           </Checkbox>
+          {skipInstall && (
+            <div style={{ marginTop: 8, paddingLeft: 24 }}>
+              <Text type="secondary">选择要启动的 App</Text>
+              <Radio.Group
+                value={installedAppBundleId}
+                disabled={submitting}
+                options={installedAppBundleOptions}
+                onChange={(event) => onInstalledAppBundleIdChange(event.target.value)}
+                style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}
+              />
+            </div>
+          )}
         </div>
         <div>
           <Text strong>设备池（空闲）</Text>
