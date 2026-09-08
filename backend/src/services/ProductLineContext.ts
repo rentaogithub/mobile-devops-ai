@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import type { PlatformRole } from './AuthService';
+import type { MobileApplication } from './ApplicationService';
 
 export interface ProductLineContextValue {
   id: string;
@@ -7,6 +8,7 @@ export interface ProductLineContextValue {
   name: string;
   projectId: string;
   role: PlatformRole;
+  application?: MobileApplication;
 }
 
 const productLineContext = new AsyncLocalStorage<ProductLineContextValue>();
@@ -24,5 +26,8 @@ export function currentProductLineId(): string {
 }
 
 export function currentProjectId(): string {
-  return getProductLineContext()?.projectId || 'nn-ios';
+  return getProductLineContext()?.application?.projectId || getProductLineContext()?.projectId || 'nn-ios';
 }
+
+export function currentApplication() { return getProductLineContext()?.application; }
+export function currentApplicationPlatform() { return currentApplication()?.platform || 'ios'; }

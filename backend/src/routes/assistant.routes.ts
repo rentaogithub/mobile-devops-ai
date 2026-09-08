@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
-import { requireRole } from '../middleware/auth';
+import { requireRole, requireApplicationPlatform } from '../middleware/auth';
 import { assistantAttachmentService } from '../services/AssistantAttachmentService';
 import { assistantAuditService } from '../services/AssistantAuditService';
 import { AssistantEvent, assistantService } from '../services/AssistantService';
@@ -149,7 +149,7 @@ router.post('/actions/:id/cancel', sameOrigin, (req, res) => {
   }
 });
 
-router.get('/actions/:id/status', sameOrigin, async (req, res) => {
+router.get('/actions/:id/status', sameOrigin, requireApplicationPlatform('ios'), async (req, res) => {
   try {
     const audit = assistantAuditService.get(req.params.id);
     if (!audit || audit.userId !== user(req).id) {

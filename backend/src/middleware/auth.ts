@@ -3,6 +3,10 @@ import logger from '../utils/logger';
 import { authService, PlatformRole, PlatformUser } from '../services/AuthService';
 import { runWithProductLine } from '../services/ProductLineContext';
 import { internalRequestToken } from '../services/InternalRequestAuth';
+import { applicationService, MobilePlatform } from '../services/ApplicationService';
+import { assertApplicationServices } from '../services/ApplicationCapabilityService';
+import { ApplicationServiceId, requiredServicesForApi } from '../services/ApplicationServiceCatalog';
+import { currentApplicationPlatform, currentProductLineId } from '../services/ProductLineContext';
 
 // 简单的密码认证中间件
 const AUTH_PASSWORD = process.env.AUTH_PASSWORD || '';
@@ -55,6 +59,11 @@ export const productLineContextMiddleware = (req: Request, res: Response, next: 
     return;
   }
   if (user) (req as any).authUser = user;
+  const cookieApplication = String(req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith('active_application_id='))?.slice('active_application_id='.length);
+  let requestedApplication = String(req.headers['x-application-id'] || cookieApplication || '');
+  try { requestedApplication = decodeURIComponent(requestedApplication); } catch { return res.status(400).json({ success: false, error: '应用上下文无效' }); }
+  const application = requestedApplication ? applicationService.get(requestedApplication, productLine.id) : applicationService.list(productLine.id)[0];
+  if (requestedApplication && (!application || !application.active)) return res.status(403).json({ success: false, error: '应用不属于当前产品线或已停用', code: 'APPLICATION_FORBIDDEN' });
   (req as any).productLine = productLine;
   (req as any).effectiveRole = productLine.role;
   (req as any).isAdmin = user?.role === 'admin';
@@ -64,7 +73,22 @@ export const productLineContextMiddleware = (req: Request, res: Response, next: 
     name: productLine.name,
     projectId: productLine.projectId,
     role: productLine.role,
+    application: application || undefined,
   }, next);
+};
+
+export const requireApplicationPlatform = (platform: MobilePlatform) => (_req: Request, res: Response, next: NextFunction) => {
+  if (currentApplicationPlatform() !== platform) return res.status(409).json({ success: false, code: 'APPLICATION_PLATFORM_MISMATCH', error: `当前应用不支持 ${platform} 专属服务` });
+  next();
+};
+
+export const requireApplicationServices = (...services: ApplicationServiceId[]) => (_req: Request, res: Response, next: NextFunction) => {
+  try { assertApplicationServices(...services); next(); }
+  catch (error: any) { res.status(409).json({ success: false, code: 'APPLICATION_SERVICE_DISABLED', error: error.message }); }
+};
+export const selectedServiceMiddleware = (req: Request, res: Response, next: NextFunction) => {
+  const path = req.originalUrl.split('?')[0].replace(/^\/api/, '');
+  return requireApplicationServices(...requiredServicesForApi(path))(req, res, next);
 };
 
 export const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
@@ -203,6 +227,16 @@ export function requireRole(role: PlatformRole) {
     next();
   };
 }
+
+export const requireAppStoreRelease = (req: Request, res: Response, next: NextFunction) => {
+  const user = ((req as any).authUser || authService.getSessionUser(req)) as PlatformUser | null;
+  if (!user || !authService.canReleaseAppStore(user.id, currentProductLineId())) {
+    res.status(403).json({ success: false, code: 'APP_STORE_RELEASE_FORBIDDEN', error: '苹果商店包发布需要产品运营或管理员权限，研发需获得当前产品线的单独授权' });
+    return;
+  }
+  (req as any).authUser = user;
+  next();
+};
 
 export function requireAnyRole(roles: PlatformRole[]) {
   return (req: Request, res: Response, next: NextFunction) => {

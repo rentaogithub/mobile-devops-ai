@@ -1,3 +1,4 @@
+import { componentLibraryService, currentComponentCatalogProductLineId } from './ComponentLibraryService';
 import { jenkinsAssistantService } from './JenkinsAssistantService';
 import { operationalLogService } from './OperationalLogService';
 import sentryIssueService from './SentryIssueService';
@@ -130,7 +131,7 @@ export class AssistantInsightService {
       SELECT * FROM pods_components
       WHERE product_line_id = ?
       ORDER BY upload_time DESC
-    `).all(currentProductLineId()) as any[];
+    `).all(currentComponentCatalogProductLineId()) as any[];
     const all = rows.map((row) => ({
       name: String(row.name || ''),
       version: String(row.version || ''),
@@ -150,6 +151,7 @@ export class AssistantInsightService {
     const latestVersion = versions[0] || target.version;
     return {
       kind: 'pods_impact',
+      componentLibrary: componentLibraryService.status(),
       component: { name: target.name, version: target.version, status: target.status, packageType: target.package_type, branch: target.nnios_branch },
       latestVersion,
       upgradeAvailable: latestVersion !== target.version,

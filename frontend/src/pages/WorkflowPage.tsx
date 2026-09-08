@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import DeliveryReadinessPanel from '../components/DeliveryReadinessPanel';
+import { authUtils } from '../utils/auth';
 import {
   Alert,
   Button,
@@ -77,6 +80,18 @@ function dateText(value?: string) {
 }
 
 export default function WorkflowPage() {
+  const [productId, setProductId] = useState(() => authUtils.getActiveProductLine()?.id || 'nn');
+  useEffect(() => {
+    const resetScope = () => setProductId(authUtils.getActiveProductLine()?.id || 'nn');
+    window.addEventListener('product-line-changed', resetScope);
+    return () => window.removeEventListener('product-line-changed', resetScope);
+  }, []);
+  return <WorkflowPageContent key={productId} />;
+}
+
+function WorkflowPageContent() {
+  const navigate = useNavigate();
+  const [activeTab, setActiveTab] = useState('delivery');
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [overview, setOverview] = useState<WorkflowOverview>();
@@ -597,14 +612,16 @@ export default function WorkflowPage() {
           description={loadError}
         />
       ) : null}
-      <Alert
-        showIcon
-        type="info"
-        style={{ marginBottom: 16 }}
-        message="当前实施范围"
-        description="已跳过安全底座；候选修复只生成建议，不创建 Commit/PR，也不自动执行修复验证闭环。"
-      />
-      <Tabs items={tabItems} />
+      <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
+        { key: 'delivery', label: '交付诊断', children: <DeliveryReadinessPanel onNavigate={(target, buildNumber) => {
+          if (target === 'cicd') navigate('/cicd');
+          else {
+            if (target === 'gate') gateForm.setFieldsValue({ buildNumber });
+            setActiveTab(target);
+          }
+        }} /> },
+        ...tabItems,
+      ]} />
       <Modal title={detailTitle} open={detailOpen} onCancel={() => setDetailOpen(false)} footer={null} width={1000}>
         <pre style={{ margin: 0, padding: 16, maxHeight: '70vh', overflow: 'auto', background: '#f6f8fa', borderRadius: 8, whiteSpace: 'pre-wrap' }}>{detailContent}</pre>
       </Modal>

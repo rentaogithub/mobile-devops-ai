@@ -1,3 +1,4 @@
+import { componentLibraryService, currentComponentCatalogProductLineId } from './ComponentLibraryService';
 import { getDatabase } from '../database';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -69,28 +70,28 @@ function scopedName(value: string) {
 }
 
 function nexusBaseUrl() {
-  const configured = productLineConfigService.get('PODS_NEXUS_BASE_URL');
-  const value = configured || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_BASE_URL : '');
-  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Pods Nexus 仓库地址`);
+  const configured = productLineConfigService.get('PODS_NEXUS_BASE_URL', currentComponentCatalogProductLineId());
+  const value = configured || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_BASE_URL : '');
+  if (!value) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置 Pods Nexus 仓库地址`);
   return value.replace(/\/+$/, '');
 }
 
 function nexusCredentials() {
-  const username = productLineConfigService.get('PODS_NEXUS_USER') || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_USER : '');
-  const password = productLineConfigService.get('PODS_NEXUS_PASSWORD') || (currentProductLineId() === 'nn' ? LEGACY_NEXUS_PASS : '');
-  if (!username || !password) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Pods Nexus 账号或密码`);
+  const username = productLineConfigService.get('PODS_NEXUS_USER', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_USER : '');
+  const password = productLineConfigService.get('PODS_NEXUS_PASSWORD', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_PASS : '');
+  if (!username || !password) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置 Pods Nexus 账号或密码`);
   return { username, password };
 }
 
 function specRepoUrl() {
-  const value = productLineConfigService.podxConfig().privateSource || (currentProductLineId() === 'nn' ? LEGACY_SPEC_REPO_URL : '');
-  if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置私有 Specs 源`);
+  const value = productLineConfigService.podxConfig(currentComponentCatalogProductLineId(), false).privateSource || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_SPEC_REPO_URL : '');
+  if (!value) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置私有 Specs 源`);
   return value;
 }
 
 function specRepoLocal() {
   const base = path.resolve(process.env.UPLOAD_DIR || '/tmp', '../pods-spec-repos');
-  return path.join(base, scopedName(currentProductLineId()));
+  return path.join(base, scopedName(currentComponentCatalogProductLineId()));
 }
 
 function mainRepoUrl() {
@@ -292,6 +293,7 @@ export class PodService {
    * 上传 zip 到 Nexus 仓库（带认证）
    */
   async uploadToNexus(filePath: string, name: string, version: string): Promise<string> {
+    if (await this.getOne(name, version)) componentLibraryService.assertVersionMutable();
     const targetUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
     const { username, password } = nexusCredentials();
 
@@ -478,6 +480,8 @@ ${sourceLine}
    * 同步 podspec 到 git 仓库
    */
   async syncToSpecRepo(name: string, version: string, podspecContent: string): Promise<void> {
+    const previous = await this.getOne(name, version);
+    if (previous && previous.podspec_content !== podspecContent) componentLibraryService.assertVersionMutable();
     logger.info('同步 podspec 到 spec 仓库', { name, version });
 
     try {
@@ -1058,7 +1062,7 @@ ${sourceLine}
   private getHighestComponentVersion(name: string): string {
     const rows = this.db
       .prepare('SELECT version FROM pods_components WHERE product_line_id = ? AND name = ?')
-      .all(currentProductLineId(), name) as Array<{ version: string }>;
+      .all(currentComponentCatalogProductLineId(), name) as Array<{ version: string }>;
     return rows
       .map((row) => String(row.version || '').trim())
       .filter(Boolean)
@@ -1283,7 +1287,7 @@ ${sourceLine}
       if (buildId) {
         this.db
           .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run(buildId, currentProductLineId(), 'NNRtc', version);
+          .run(buildId, currentComponentCatalogProductLineId(), 'NNRtc', version);
       }
     } finally {
       fs.rmSync(extracted.workDir, { recursive: true, force: true });
@@ -1354,13 +1358,13 @@ ${sourceLine}
       if (buildId) {
         this.db
           .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run(buildId, currentProductLineId(), 'NNRtc', version);
+          .run(buildId, currentComponentCatalogProductLineId(), 'NNRtc', version);
         component.build_id = buildId;
       }
       if (!shouldSyncDSYM) {
         this.db
           .prepare('UPDATE pods_components SET package_type = ?, nnios_branch = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run('test', targetBranch, currentProductLineId(), 'NNRtc', version);
+          .run('test', targetBranch, currentComponentCatalogProductLineId(), 'NNRtc', version);
         component.package_type = 'test';
         component.nnios_branch = targetBranch;
       }
@@ -1519,6 +1523,7 @@ ${sourceLine}
     // 已发布相同版本时，先清理服务器本机 podx 缓存，再继续覆盖发布。
     const existing = await this.getOne(name, version);
     if (existing) {
+      componentLibraryService.assertVersionMutable();
       this.cleanPodxCache(name);
     }
 
@@ -1635,6 +1640,7 @@ ${sourceLine}
 
     const existing = await this.getOne(name, version);
     if (existing) {
+      componentLibraryService.assertVersionMutable();
       this.cleanPodxCache(name);
     }
 
@@ -1689,6 +1695,7 @@ ${sourceLine}
     build_id?: string;
     nnios_branch?: string;
   }): PodComponent {
+    if (this.db.prepare('SELECT 1 FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?').get(currentComponentCatalogProductLineId(), data.name, data.version)) componentLibraryService.assertVersionMutable();
     // 使用 REPLACE 实现 upsert，覆盖同名同版本记录，刷新 upload_time
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO pods_components 
@@ -1697,7 +1704,7 @@ ${sourceLine}
     `);
 
     const result = stmt.run(
-      currentProductLineId(),
+      currentComponentCatalogProductLineId(),
       data.name,
       data.version,
       data.summary,
@@ -1713,7 +1720,7 @@ ${sourceLine}
 
     const row = this.db
       .prepare('SELECT * FROM pods_components WHERE id = ? AND product_line_id = ?')
-      .get(result.lastInsertRowid, currentProductLineId()) as any;
+      .get(result.lastInsertRowid, currentComponentCatalogProductLineId()) as any;
 
     return this.mapRow(row);
   }
@@ -1724,7 +1731,7 @@ ${sourceLine}
   async getAll(): Promise<PodComponent[]> {
     const rows = this.db
       .prepare('SELECT * FROM pods_components WHERE product_line_id = ? ORDER BY name ASC, upload_time DESC')
-      .all(currentProductLineId()) as any[];
+      .all(currentComponentCatalogProductLineId()) as any[];
     return rows.map(this.mapRow);
   }
 
@@ -1734,7 +1741,7 @@ ${sourceLine}
   async getVersions(name: string): Promise<PodComponent[]> {
     const rows = this.db
       .prepare('SELECT * FROM pods_components WHERE product_line_id = ? AND name = ? ORDER BY upload_time DESC')
-      .all(currentProductLineId(), name) as any[];
+      .all(currentComponentCatalogProductLineId(), name) as any[];
     return rows.map(this.mapRow);
   }
 
@@ -1744,7 +1751,7 @@ ${sourceLine}
   async getComponentNames(): Promise<string[]> {
     const rows = this.db
       .prepare('SELECT DISTINCT name FROM pods_components WHERE product_line_id = ? ORDER BY name ASC')
-      .all(currentProductLineId()) as any[];
+      .all(currentComponentCatalogProductLineId()) as any[];
     return rows.map((r: any) => r.name);
   }
 
@@ -1752,6 +1759,7 @@ ${sourceLine}
    * 删除 Nexus 上的 zip 文件
    */
   async deleteFromNexus(name: string, version: string): Promise<void> {
+    componentLibraryService.assertVersionMutable();
     const targetUrl = `${nexusBaseUrl()}/${name}/${version}.zip`;
     const { username, password } = nexusCredentials();
     logger.info('删除 Nexus 文件', { name, version, targetUrl });
@@ -1786,6 +1794,7 @@ ${sourceLine}
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
+    if (componentLibraryService.status().shared) return { canDelete: false, branch: targetBranch || '', currentVersion: null, reason: '组件库被多个产品线共用，已有版本不可删除；请发布新版本' };
     const isTestPackage = component.package_type === 'test' || (name === 'NNRtc' && isNNRtcTestVersion(version));
     const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
     if (!branch) {
@@ -1817,6 +1826,7 @@ ${sourceLine}
   }
 
   async deleteVersion(name: string, version: string, targetBranch?: string): Promise<{ fallbackVersion?: string; warning?: string }> {
+    componentLibraryService.assertVersionMutable();
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
@@ -1855,7 +1865,7 @@ ${sourceLine}
     }
 
     const stmt = this.db.prepare('DELETE FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?');
-    stmt.run(currentProductLineId(), name, version);
+    stmt.run(currentComponentCatalogProductLineId(), name, version);
 
     // 删除 Nexus 上的文件
     await this.deleteFromNexus(name, version);
@@ -1884,6 +1894,7 @@ ${sourceLine}
    * 删除整个组件（所有版本 + Nexus 文件）
    */
   async deleteComponent(name: string): Promise<{ deletedVersions: number; warning?: string }> {
+    componentLibraryService.assertVersionMutable();
     const versions = await this.getVersions(name);
     if (versions.length === 0) {
       throw new Error(`组件 ${name} 不存在`);
@@ -1905,7 +1916,7 @@ ${sourceLine}
 
     // 删除数据库记录
     const stmt = this.db.prepare('DELETE FROM pods_components WHERE product_line_id = ? AND name = ?');
-    const result = stmt.run(currentProductLineId(), name);
+    const result = stmt.run(currentComponentCatalogProductLineId(), name);
     logger.info('删除整个组件', { name, deletedVersions: result.changes });
 
     // 删除 spec 仓库中的整个组件目录（包含所有版本）
@@ -1930,7 +1941,7 @@ ${sourceLine}
   async getOne(name: string, version: string): Promise<PodComponent | null> {
     const row = this.db
       .prepare('SELECT * FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?')
-      .get(currentProductLineId(), name, version) as any;
+      .get(currentComponentCatalogProductLineId(), name, version) as any;
     return row ? this.mapRow(row) : null;
   }
 
@@ -1938,6 +1949,7 @@ ${sourceLine}
    * 更新已发布组件的 podspec 内容，并同步到远程仓库
    */
   async updatePodspec(name: string, version: string, podspecContent: string, targetBranch: string): Promise<PodComponent> {
+    componentLibraryService.assertVersionMutable();
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
@@ -1960,7 +1972,7 @@ ${sourceLine}
     // 2. 更新数据库
     this.db
       .prepare('UPDATE pods_components SET podspec_content = ?, status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-      .run(podspecContent, status, errorMessage || null, currentProductLineId(), name, version);
+      .run(podspecContent, status, errorMessage || null, currentComponentCatalogProductLineId(), name, version);
 
     logger.info('Podspec 更新成功', { name, version, targetBranch, status });
 
@@ -1978,6 +1990,7 @@ ${sourceLine}
     originalFileName: string,
     targetBranch: string
   ): Promise<PodComponent> {
+    componentLibraryService.assertVersionMutable();
     const component = await this.getOne(name, version);
     if (!component) {
       throw new Error(`组件 ${name}@${version} 不存在`);
@@ -2055,7 +2068,7 @@ ${sourceLine}
     // 9. 更新数据库
     this.db
       .prepare(`UPDATE pods_components SET source_zip_url = ?, podspec_content = ?, status = ?, error_message = ?, upload_time = datetime('now', 'localtime') WHERE product_line_id = ? AND name = ? AND version = ?`)
-      .run(sourceZipUrl, podspecContent, status, errorMessage || null, currentProductLineId(), name, version);
+      .run(sourceZipUrl, podspecContent, status, errorMessage || null, currentComponentCatalogProductLineId(), name, version);
 
     logger.info('zip 替换成功', { name, version, targetBranch, status });
 
@@ -2077,6 +2090,10 @@ ${sourceLine}
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
 
+    if (componentLibraryService.status().shared) {
+      await this.syncToSpecRepo(name, version, component.podspec_content);
+      return this.syncVersionToBranch(name, version, targetBranch);
+    }
     try {
       this.cleanPodxCache(name);
       await this.syncToSpecRepo(name, version, component.podspec_content);
@@ -2092,13 +2109,13 @@ ${sourceLine}
 
       this.db
         .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-        .run(status, errorMessage || null, currentProductLineId(), name, version);
+        .run(status, errorMessage || null, currentComponentCatalogProductLineId(), name, version);
 
       return { ...component, status, error_message: errorMessage };
     } catch (error: any) {
       this.db
         .prepare('UPDATE pods_components SET error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-        .run(error.message, currentProductLineId(), name, version);
+        .run(error.message, currentComponentCatalogProductLineId(), name, version);
       throw error;
     }
   }
@@ -2108,26 +2125,22 @@ ${sourceLine}
    */
   async syncVersionToBranch(name: string, version: string, targetBranch?: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);
-    if (!component) {
-      throw new Error(`组件 ${name}@${version} 不存在`);
-    }
+    if (!component) throw new Error(`组件 ${name}@${version} 不存在`);
+    const shared = componentLibraryService.status().shared;
     const isTestPackage = component.package_type === 'test' || isNNRtcTestVersion(component.version);
-    const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
-    if (!branch) {
-      throw new Error('请选择发布主仓库分支');
-    }
-
+    const branch = targetBranch || (!shared && isTestPackage ? component.nnios_branch : undefined);
+    if (!branch) throw new Error('请选择发布主仓库分支');
+    // A consuming project's branch result must not rewrite the shared artifact's status/provenance.
     try {
       this.syncVersionToNnios(name, version, branch);
-      this.db
+      if (!shared) this.db
         .prepare('UPDATE pods_components SET status = ?, error_message = NULL, nnios_branch = CASE WHEN ? THEN ? ELSE nnios_branch END WHERE product_line_id = ? AND name = ? AND version = ?')
-        .run('published', isTestPackage ? 1 : 0, branch, currentProductLineId(), name, version);
-
-      return { ...component, status: 'published', error_message: undefined, nnios_branch: isTestPackage ? branch : component.nnios_branch };
+        .run('published', isTestPackage ? 1 : 0, branch, currentComponentCatalogProductLineId(), name, version);
+      return shared ? component : { ...component, status: 'published', error_message: undefined, nnios_branch: isTestPackage ? branch : component.nnios_branch };
     } catch (error: any) {
-      this.db
+      if (!shared) this.db
         .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-        .run('failed', error.message, currentProductLineId(), name, version);
+        .run('failed', error.message, currentComponentCatalogProductLineId(), name, version);
       throw error;
     }
   }

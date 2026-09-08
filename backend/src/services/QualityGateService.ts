@@ -1,9 +1,10 @@
+import { hasCurrentApplicationServices } from './ApplicationCapabilityService';
 import { createHash } from 'crypto';
 import { workflowService } from './WorkflowService';
 import { currentProjectId } from './ProductLineContext';
 import { crashGovernanceService } from './CrashGovernanceService';
 
-interface GatePolicy {
+export interface GatePolicy {
   requireSuccessfulBuild: boolean;
   requiredSuites: string[];
   blockSeverities: string[];
@@ -33,9 +34,17 @@ function normalizeTaskStatus(value: unknown) {
   return String(value || '').trim().toLowerCase();
 }
 
+// Synchronizing an old run must not make it newer than a subsequent attempt.
+export function latestWorkflowTasks(tasks: any[]) {
+  const timestamp = (task: any) => Date.parse(String(task.startedAt || task.createdAt || task.finishedAt || task.updatedAt || task.updated_at || '')) || 0;
+  return [...tasks].sort((a, b) => timestamp(b) - timestamp(a) || String(b.id || '').localeCompare(String(a.id || '')));
+}
+
 export class QualityGateService {
   preview(input: Record<string, any>) {
-    return this.evaluateInternal(input, false);
+    const result = this.evaluateInternal(input, false);
+    if (!result || !('preview' in result)) throw new Error('门禁预览结果无效');
+    return result;
   }
 
   evaluate(input: Record<string, any>) {
@@ -67,11 +76,10 @@ export class QualityGateService {
     const blockers: any[] = [];
     const warnings: any[] = [];
     const passed: any[] = [];
-    const evaluatedTasks: any[] = [];
 
-    const buildStatus = normalizeTaskStatus(input.buildStatus || 'success');
+    const buildStatus = normalizeTaskStatus(input.buildStatus || 'unknown');
     if (policy.requireSuccessfulBuild && !['success', 'passed', 'stable'].includes(buildStatus)) {
-      blockers.push({ code: 'build_failed', message: `构建状态为 ${buildStatus || 'unknown'}` });
+      blockers.push({ code: buildStatus === 'unknown' ? 'build_status_missing' : 'build_failed', message: `构建状态为 ${buildStatus}` });
     } else {
       passed.push({ code: 'build_success', message: '构建状态通过' });
     }
@@ -82,11 +90,14 @@ export class QualityGateService {
         blockers.push({ code: 'required_suite_missing', suite, message: `缺少必需测试套件 ${suite}` });
         return;
       }
-      const latest = [...suiteTasks].sort((a: any, b: any) => String(b.updatedAt || b.updated_at || '').localeCompare(String(a.updatedAt || a.updated_at || '')))[0];
-      evaluatedTasks.push(latest);
+      const latest = latestWorkflowTasks(suiteTasks)[0];
       const status = normalizeTaskStatus(latest.status);
       const taskUpdatedAt = Date.parse(String(latest.finishedAt || latest.updatedAt || latest.updated_at || ''));
       const taskAgeHours = Number.isFinite(taskUpdatedAt) ? (Date.now() - taskUpdatedAt) / (60 * 60 * 1000) : null;
+      if (input.commitHash && !latest.commitHash) {
+        blockers.push({ code: 'suite_commit_missing', suite, taskId: latest.id, message: `${suite} 套件缺少 Commit，无法证明覆盖源构建` });
+        return;
+      }
       if (input.commitHash && latest.commitHash && String(latest.commitHash) !== String(input.commitHash)) {
         blockers.push({ code: 'suite_commit_mismatch', suite, taskId: latest.id, expected: input.commitHash, actual: latest.commitHash, message: `${suite} 套件 Commit 与源构建不一致` });
         return;
@@ -116,7 +127,13 @@ export class QualityGateService {
       else if (['high', 'medium'].includes(severity)) warnings.push(item);
     });
 
-    const thresholdTasks = evaluatedTasks.length > 0 ? evaluatedTasks : tasks;
+    // Optional suites are evidence too: a passing smoke run must not hide a Monkey crash.
+    const latestBySuite = new Map<string, any>();
+    latestWorkflowTasks(tasks).forEach((task: any) => {
+      const suite = String(task.suite || task.config?.suite || task.taskType || task.id || '').toLowerCase();
+      if (!latestBySuite.has(suite)) latestBySuite.set(suite, task);
+    });
+    const thresholdTasks = [...latestBySuite.values()];
     const crashCount = thresholdTasks.reduce((sum: number, task: any) => sum + Number(task.result?.crash_count || task.result?.crashCount || 0), 0);
     if (crashCount > policy.maxCrashCount) {
       blockers.push({ code: 'crash_threshold', value: crashCount, threshold: policy.maxCrashCount, message: `Crash 数 ${crashCount} 超过门限 ${policy.maxCrashCount}` });
@@ -153,7 +170,10 @@ export class QualityGateService {
       }
     });
 
-    if (policy.checkCrashGovernance && releaseVersion) {
+    if (policy.checkCrashGovernance && releaseVersion && !hasCurrentApplicationServices('sentry')) {
+      blockers.push({ code: 'crash_provider_unavailable', message: '当前崩溃服务未提供已接入的数据证据，不能判定线上 Crash 风险已清除' });
+    }
+    if (policy.checkCrashGovernance && releaseVersion && hasCurrentApplicationServices('sentry')) {
       const crashRisks = crashGovernanceService.listOpenRisksByVersion(releaseVersion, 50);
       const regressions = crashRisks.filter((record) => record.governanceStatus === 'regression');
       const highRisks = crashRisks.filter((record) =>
@@ -263,7 +283,8 @@ export class QualityGateService {
       ? 'critical'
       : anomalies.length || crashHealth.status === 'warning'
         ? 'warning'
-        : 'healthy';
+        : observations.length === 0 ? 'unknown' : 'healthy';
+    if (observations.length === 0) uniqueRecommendations.unshift('尚无发布观察指标，无法确认版本健康；请补充发布后的 Crash、启动和核心链路指标。');
     if (!uniqueRecommendations.length) uniqueRecommendations.push('当前观察指标正常，可按既定灰度节奏继续放量。');
     return {
       projectId,

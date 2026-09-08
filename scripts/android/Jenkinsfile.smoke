@@ -1,0 +1,21 @@
+// Requires Copy Artifact and Lockable Resources plugins, plus a pinned runner.
+// Grant this Job read access to the selected Android build Job only.
+pipeline {
+  agent { label 'android-device' }
+  options { timeout(time: 15, unit: 'MINUTES'); disableConcurrentBuilds(); skipDefaultCheckout(true); buildDiscarder(logRotator(numToKeepStr: '50')) }
+  parameters {
+    string(name: 'PLATFORM_REQUEST_ID'); string(name: 'APPLICATION_ID'); string(name: 'PACKAGE_ID'); string(name: 'COMMIT')
+    string(name: 'SOURCE_RUN_ID'); string(name: 'SOURCE_JOB'); string(name: 'SOURCE_BUILD')
+    string(name: 'APK_PATH'); string(name: 'APK_SHA256'); string(name: 'VERSION_CODE'); string(name: 'VERSION_NAME'); string(name: 'DEVICE_SERIAL')
+  }
+  stages {
+    stage('Copy immutable APK') { steps {
+      deleteDir()
+      copyArtifacts projectName: params.SOURCE_JOB, selector: specific(params.SOURCE_BUILD), filter: params.APK_PATH, target: 'source', fingerprintArtifacts: true
+    } }
+    stage('Install and launch Smoke') { steps {
+      lock(resource: "android-device-${params.DEVICE_SERIAL}") { sh 'python3 "$PLATFORM_ANDROID_RUNNER" smoke' }
+    } }
+  }
+  post { always { archiveArtifacts artifacts: 'mobile-quality.json,android-evidence/*.txt,android-evidence/*.png', allowEmptyArchive: true, fingerprint: true } }
+}

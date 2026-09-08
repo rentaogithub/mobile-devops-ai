@@ -24,10 +24,25 @@ function migrateDatabase(): void {
 
   try {
     const timestamp = new Date().toISOString();
+    const membershipColumns = db.prepare('PRAGMA table_info(platform_product_line_memberships)').all() as any[];
+    if (!membershipColumns.some((column) => column.name === 'app_store_release')) db.exec('ALTER TABLE platform_product_line_memberships ADD COLUMN app_store_release INTEGER NOT NULL DEFAULT 0 CHECK(app_store_release IN (0, 1))');
     db.prepare(`
       INSERT OR IGNORE INTO platform_product_lines (
         id, key, name, project_id, bundle_id, active, created_at, updated_at
       ) VALUES ('nn', 'nn', 'NN', 'nn-ios', NULL, 1, ?, ?)
+    `).run(timestamp, timestamp);
+    const applicationColumns = db.prepare('PRAGMA table_info(platform_applications)').all() as any[];
+    if (!applicationColumns.some((column) => column.name === 'services_json')) db.exec('ALTER TABLE platform_applications ADD COLUMN services_json TEXT');
+    if (!applicationColumns.some((column) => column.name === 'service_options_json')) db.exec("ALTER TABLE platform_applications ADD COLUMN service_options_json TEXT NOT NULL DEFAULT '{}'");
+    if (!applicationColumns.some((column) => column.name === 'component_library_id')) db.exec('ALTER TABLE platform_applications ADD COLUMN component_library_id TEXT REFERENCES component_libraries(id)');
+    db.exec("INSERT OR IGNORE INTO component_libraries (id, platform, config_product_line_id) SELECT 'ios:' || id, 'ios', id FROM platform_product_lines");
+    // Preserve the existing iOS Workflow namespace; adding Android never relabels old data.
+    db.prepare(`
+      INSERT OR IGNORE INTO platform_applications
+        (id, product_line_id, platform, name, package_id, workflow_project_id, created_at, updated_at)
+      SELECT id || ':ios', id, 'ios', name || ' iOS', COALESCE(bundle_id, ''), project_id, ?, ?
+      FROM platform_product_lines p
+      WHERE NOT EXISTS (SELECT 1 FROM platform_applications a WHERE a.product_line_id = p.id)
     `).run(timestamp, timestamp);
     const productLineColumns = db.prepare('PRAGMA table_info(platform_product_lines)').all() as any[];
     if (!productLineColumns.some((col: any) => col.name === 'jenkins_base_url')) {

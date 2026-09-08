@@ -9,6 +9,7 @@ import { initializeDatabase } from './database';
 import { errorHandler, notFoundHandler } from './middleware';
 import dsymRoutes from './routes/dsym.routes';
 import symbolicateRoutes from './routes/symbolicate.routes';
+import androidRoutes from './routes/android.routes';
 import authRoutes from './routes/auth.routes';
 import cleanupRoutes from './routes/cleanup.routes';
 import historyRoutes from './routes/history.routes';
@@ -32,7 +33,7 @@ import workflowRoutes from './routes/workflow.routes';
 import appleDeviceRoutes from './routes/appleDevice.routes';
 import assistantRoutes from './routes/assistant.routes';
 import deviceControlRoutes from './routes/deviceControl.routes';
-import { authMiddleware, productLineContextMiddleware } from './middleware/auth';
+import { authMiddleware, productLineContextMiddleware, requireApplicationPlatform, selectedServiceMiddleware, requireApplicationServices } from './middleware/auth';
 import cleanupService from './services/CleanupService';
 import podService from './services/PodService';
 import { browserLogWebSocketService } from './services/BrowserLogWebSocketService';
@@ -66,12 +67,12 @@ const sentryProxyPaths = [
   '/settings',
   '/api/0',
 ];
-sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, productLineContextMiddleware, sentryProxyRoutes));
-app.use('/op', opProxyRoutes);
-app.use('/jeecg-boot', opProxyRoutes);
-app.use('/sys', opProxyRoutes);
-app.use('/sonic-admin', sonicProxyRoutes);
-app.use('/sonic-api', sonicProxyRoutes);
+sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, productLineContextMiddleware, requireApplicationPlatform('ios'), requireApplicationServices('sentry'), sentryProxyRoutes));
+app.use('/op', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
+app.use('/jeecg-boot', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
+app.use('/sys', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
+app.use('/sonic-admin', productLineContextMiddleware, requireApplicationPlatform('ios'), requireApplicationServices('devices'), sonicProxyRoutes);
+app.use('/sonic-api', productLineContextMiddleware, requireApplicationPlatform('ios'), requireApplicationServices('devices'), sonicProxyRoutes);
 // iOS Profile Service 回调是签名/原始请求体，必须在全局 body parser 前处理。
 app.use('/api/apple-devices', appleDeviceRoutes);
 app.use(express.json({ limit: '10mb' }));
@@ -98,12 +99,12 @@ app.get('/health', (_req, res) => {
   res.status(readiness.ready ? 200 : 503).json({ status: readiness.ready ? 'ok' : 'error', ...readiness });
 });
 
-app.get('/api/health/dependencies', async (_req, res) => {
+app.get('/api/health/dependencies', productLineContextMiddleware, async (_req, res) => {
   const result = await platformOperationsService.dependencies();
   res.status(result.status === 'healthy' ? 200 : 207).json({ success: true, data: result });
 });
 
-app.post('/api/op-auth/sync', (req, res) => {
+app.post('/api/op-auth/sync', productLineContextMiddleware, requireApplicationServices('logs'), (req, res) => {
   const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
   if (!token || token.length < 16) {
     res.status(400).json({ success: false, error: '缺少有效 OP token' });
@@ -117,12 +118,12 @@ app.post('/api/op-auth/sync', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/op-auth/clear', (_req, res) => {
+app.post('/api/op-auth/clear', productLineContextMiddleware, requireApplicationServices('logs'), (_req, res) => {
   clearOpAccessToken();
   res.json({ success: true });
 });
 
-app.get('/api/op-auth/status', (_req, res) => {
+app.get('/api/op-auth/status', productLineContextMiddleware, requireApplicationServices('logs'), (_req, res) => {
   const token = getOpAccessToken();
   res.json({
     success: true,
@@ -212,27 +213,29 @@ app.get('/logs/view', (req, res) => {
 });
 
 // API Routes
+const applicationAccess = [productLineContextMiddleware, selectedServiceMiddleware];
 app.use('/api/auth', authRoutes);
-app.use('/api/dsym', productLineContextMiddleware, dsymRoutes);
-app.use('/api/symbolicate', productLineContextMiddleware, symbolicateRoutes);
-app.use('/api/history', productLineContextMiddleware, historyRoutes);
-app.use('/api/cleanup', productLineContextMiddleware, authMiddleware, cleanupRoutes);
-app.use('/api/config', productLineContextMiddleware, moduleRoutes);
-app.use('/api/wechat', productLineContextMiddleware, wechatRoutes);
-app.use('/api/pods', productLineContextMiddleware, podsRoutes);
-app.use('/api/git', productLineContextMiddleware, gitRoutes);
-app.use('/api/jenkins', productLineContextMiddleware, jenkinsRoutes);
-app.use('/api/quality', productLineContextMiddleware, qualityRoutes);
-app.use('/api/pairing', productLineContextMiddleware, pairingRoutes);
-app.use('/api/watermark', productLineContextMiddleware, authMiddleware, watermarkRoutes);
-app.use('/api/sentry-analysis', productLineContextMiddleware, sentryAnalysisRoutes);
-app.use('/api/user-query-records', productLineContextMiddleware, userQueryRecordsRoutes);
-app.use('/api/feedback-log', productLineContextMiddleware, feedbackLogRoutes);
-app.use('/api/access-stats', productLineContextMiddleware, accessStatsRoutes);
-app.use('/api/api-docs', productLineContextMiddleware, apiDocsRoutes);
-app.use('/api/workflow', productLineContextMiddleware, workflowRoutes);
-app.use('/api/assistant', productLineContextMiddleware, assistantRoutes);
-app.use('/api/device-control', productLineContextMiddleware, deviceControlRoutes);
+app.use('/api/android', applicationAccess, androidRoutes);
+app.use('/api/dsym', applicationAccess, requireApplicationPlatform('ios'), dsymRoutes);
+app.use('/api/symbolicate', applicationAccess, requireApplicationPlatform('ios'), symbolicateRoutes);
+app.use('/api/history', applicationAccess, requireApplicationPlatform('ios'), historyRoutes);
+app.use('/api/cleanup', applicationAccess, requireApplicationPlatform('ios'), authMiddleware, cleanupRoutes);
+app.use('/api/config', applicationAccess, requireApplicationPlatform('ios'), moduleRoutes);
+app.use('/api/wechat', applicationAccess, requireApplicationPlatform('ios'), wechatRoutes);
+app.use('/api/pods', applicationAccess, requireApplicationPlatform('ios'), podsRoutes);
+app.use('/api/git', applicationAccess, requireApplicationPlatform('ios'), gitRoutes);
+app.use('/api/jenkins', applicationAccess, requireApplicationPlatform('ios'), jenkinsRoutes);
+app.use('/api/quality', applicationAccess, requireApplicationPlatform('ios'), qualityRoutes);
+app.use('/api/pairing', applicationAccess, requireApplicationPlatform('ios'), pairingRoutes);
+app.use('/api/watermark', applicationAccess, requireApplicationPlatform('ios'), authMiddleware, watermarkRoutes);
+app.use('/api/sentry-analysis', applicationAccess, requireApplicationPlatform('ios'), sentryAnalysisRoutes);
+app.use('/api/user-query-records', applicationAccess, requireApplicationPlatform('ios'), userQueryRecordsRoutes);
+app.use('/api/feedback-log', applicationAccess, requireApplicationPlatform('ios'), feedbackLogRoutes);
+app.use('/api/access-stats', applicationAccess, accessStatsRoutes);
+app.use('/api/api-docs', applicationAccess, apiDocsRoutes);
+app.use('/api/workflow', applicationAccess, requireApplicationPlatform('ios'), workflowRoutes);
+app.use('/api/assistant', applicationAccess, assistantRoutes);
+app.use('/api/device-control', applicationAccess, requireApplicationPlatform('ios'), deviceControlRoutes);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

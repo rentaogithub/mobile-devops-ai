@@ -1,11 +1,28 @@
+import { componentLibraryService } from '../services/ComponentLibraryService';
 import { Router } from 'express';
 import { requireRole, sessionAuthMiddleware, verifyPassword } from '../middleware/auth';
 import { authService } from '../services/AuthService';
 import { appStoreConnectService } from '../services/AppStoreConnectService';
 import { platformConfigService } from '../services/PlatformConfigService';
 import { productLineConfigService } from '../services/ProductLineConfigService';
+import { applicationServiceCatalog, hasApplicationServices } from '../services/ApplicationServiceCatalog';
+import { applicationService } from '../services/ApplicationService';
 
 const router = Router();
+router.get('/component-libraries', sessionAuthMiddleware, requireRole('admin'), (_req, res) => res.json({ success: true, data: componentLibraryService.list() }));
+router.get('/application-services', sessionAuthMiddleware, (_req, res) => res.json({ success: true, data: applicationServiceCatalog }));
+
+router.get('/product-lines/:id/applications', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  res.json({ success: true, data: applicationService.list(req.params.id, true) });
+});
+router.post('/product-lines/:id/applications', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try { res.json({ success: true, data: applicationService.create(req.params.id, req.body || {}) }); }
+  catch (error: any) { res.status(400).json({ success: false, error: error.message }); }
+});
+router.patch('/product-lines/:id/applications/:applicationId', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
+  try { res.json({ success: true, data: applicationService.update(req.params.id, req.params.applicationId, req.body || {}) }); }
+  catch (error: any) { res.status(400).json({ success: false, error: error.message }); }
+});
 
 /**
  * POST /api/auth/verify
@@ -53,7 +70,7 @@ router.get('/me', (req, res) => {
 });
 
 router.get('/product-lines/public', (_req, res) => {
-  res.json({ success: true, data: authService.listProductLines() });
+  res.json({ success: true, data: authService.listProductLines().map(({ applications, ...product }) => product) });
 });
 
 router.get('/product-lines', sessionAuthMiddleware, requireRole('admin'), (_req, res) => {
@@ -131,6 +148,8 @@ router.put('/product-lines/:id/services', sessionAuthMiddleware, requireRole('ad
 router.post('/product-lines/:id/sync-podx-config', sessionAuthMiddleware, requireRole('admin'), (req, res) => {
   try {
     if (!authService.findProductLine(req.params.id)) return res.status(404).json({ success: false, error: '产品线不存在' });
+    const ios = applicationService.list(req.params.id).find((app) => app.platform === 'ios');
+    if (!ios || !hasApplicationServices(ios, ['podx'])) return res.status(409).json({ success: false, error: '目标产品线的 iOS 应用未启用 Podx' });
     const result = productLineConfigService.syncPodxConfigToProject(req.params.id, String(req.body?.projectDirectory || ''));
     res.json({ success: true, data: result, message: 'podx.config.yml 已同步到主工程' });
   } catch (error: any) {

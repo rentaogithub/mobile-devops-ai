@@ -20,7 +20,7 @@ import {
   CrashGovernanceStatus,
   HistoryRecord,
 } from '../types';
-import { authUtils } from '../utils/auth';
+import { authUtils, type MobileApplication } from '../utils/auth';
 
 const api = axios.create({
   baseURL: '/api',
@@ -34,6 +34,8 @@ const api = axios.create({
 api.interceptors.request.use((config) => {
   const productLine = authUtils.getActiveProductLine();
   if (productLine) config.headers.set('X-Product-Line-Id', productLine.id);
+  const application = authUtils.getActiveApplication();
+  if (application) config.headers.set('X-Application-Id', application.id);
   return config;
 });
 
@@ -53,6 +55,7 @@ export const BACKEND_UNAVAILABLE_HINT = '可在 nn-ios-platform 目录执行 ./s
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
 export interface PlatformProductLine {
+  applications?: MobileApplication[];
   id: string;
   key: string;
   name: string;
@@ -63,6 +66,7 @@ export interface PlatformProductLine {
 }
 
 export interface ProductLineMembership extends PlatformProductLine {
+  appStoreRelease?: boolean;
   role: PlatformRole;
 }
 
@@ -333,7 +337,7 @@ export const authApi = {
     displayName?: string;
     password: string;
     role: PlatformRole;
-    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+    productLines?: Array<{ productLineId: string; role: PlatformRole; appStoreRelease?: boolean }>;
   }): Promise<ApiResponse<PlatformUser>> => {
     const response = await api.post<ApiResponse<PlatformUser>>('/auth/users', payload);
     return response.data;
@@ -344,7 +348,7 @@ export const authApi = {
     password?: string;
     role?: PlatformRole;
     active?: boolean;
-    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+    productLines?: Array<{ productLineId: string; role: PlatformRole; appStoreRelease?: boolean }>;
   }): Promise<ApiResponse<PlatformUser>> => {
     const response = await api.patch<ApiResponse<PlatformUser>>(`/auth/users/${id}`, payload);
     return response.data;
@@ -4502,7 +4506,28 @@ export interface WorkflowReleaseObservation {
   observedAt: string;
 }
 
+export interface DeliveryReadiness {
+  projectId: string;
+  buildNumber: string;
+  status: 'passed' | 'blocked' | 'warning' | 'unknown';
+  summary: string;
+  evaluatedAt: string;
+  limitations: string[];
+  context: { commitHash: string | null; branch: string | null; releaseVersion: string | null; updatedAt: string | null };
+  counts: { artifacts: number; tasks: number; issues: number; openIssues: number; candidates: number };
+  stages: Array<{ key: string; title: string; status: DeliveryReadiness['status']; summary: string; evidenceIds: string[] }>;
+  actions: Array<{ code: string; priority: 'P0' | 'P1' | 'P2'; title: string; reason: string; target: 'cicd' | 'issues' | 'regression' | 'evolution' | 'gate'; evidenceIds: string[] }>;
+  gate: WorkflowReleaseGate;
+  evidence: {
+    artifacts: Array<{ id: string; artifactType: string; name: string; updatedAt: string }>;
+    tasks: Array<{ id: string; suite: string; status: string; commitHash: string | null; branch: string | null; updatedAt: string }>;
+    issues: Array<{ id: string; title: string; severity: string; status: string; ownerHint: string | null }>;
+    candidates: Array<{ id: string; issueId: string; title: string; status: string; updatedAt: string }>;
+  };
+}
+
 export const workflowApi = {
+  deliveryReadiness: async (buildNumber: string): Promise<ApiResponse<DeliveryReadiness>> => (await api.get(`/workflow/delivery/${encodeURIComponent(buildNumber)}`)).data,
   overview: async (): Promise<ApiResponse<WorkflowOverview>> => (await api.get('/workflow/overview')).data,
   listTasks: async (): Promise<ApiResponse<WorkflowTask[]>> => (await api.get('/workflow/tasks')).data,
   listIssues: async (params?: Record<string, unknown>): Promise<ApiResponse<WorkflowIssue[]>> => (await api.get('/workflow/issues', { params })).data,
@@ -4528,3 +4553,36 @@ export const workflowApi = {
 };
 
 export default api;
+
+export interface ComponentLibrary { id: string; name: string; platform: 'ios' | 'android'; configProductLineId: string; }
+export interface ComponentLibraryStatus extends ComponentLibrary { shared: boolean; applications: { id: string; name: string; productLineId: string }[]; }
+export const componentLibraryApi = {
+  list: () => api.get('/auth/component-libraries').then((r) => r.data.data as ComponentLibrary[]),
+  current: () => api.get('/pods/library').then((r) => r.data.data as ComponentLibraryStatus),
+};
+export const mobileApplicationApi = {
+  list: (product: string) => api.get(`/auth/product-lines/${encodeURIComponent(product)}/applications`).then((r) => r.data.data as MobileApplication[]),
+  save: (product: string, data: unknown, id?: string) => (id ? api.patch(`/auth/product-lines/${encodeURIComponent(product)}/applications/${encodeURIComponent(id)}`, data) : api.post(`/auth/product-lines/${encodeURIComponent(product)}/applications`, data)).then((r) => r.data.data),
+};
+export interface AndroidRun {
+  id: string; kind: 'build' | 'smoke'; status: string; jobName: string; buildNumber?: number; createdAt: string;
+  config: { commit: string; sourceRunId?: string; deviceSerial?: string }; result: { message?: string; manifest?: Record<string, unknown> };
+}
+export const androidApi = {
+  issues: () => api.get('/android/issues').then((r) => r.data.data as { id: string; title: string; status: string; buildNumber: string; evidence: unknown[] }[]),
+  resolveIssue: (id: string, smokeRunId: string) => api.post(`/android/issues/${encodeURIComponent(id)}/resolve`, { smokeRunId }),
+  readiness: () => api.get('/android/readiness').then((r) => r.data.data as { configured: boolean; missing: string[]; acceptance: string; configurationRevision: string }),
+  list: () => api.get('/android/runs').then((r) => r.data.data as AndroidRun[]),
+  trigger: (data: { kind: 'build' | 'smoke'; requestKey: string; commit?: string; sourceRunId?: string; configurationRevision?: string }) => api.post('/android/runs', data).then((r) => r.data.data as AndroidRun),
+  sync: (id: string) => api.post(`/android/runs/${encodeURIComponent(id)}/sync`).then((r) => r.data.data),
+  cancel: (id: string) => api.post(`/android/runs/${encodeURIComponent(id)}/cancel`).then((r) => r.data.data),
+  gate: (id: string) => api.get(`/android/runs/${encodeURIComponent(id)}/gate`).then((r) => r.data.data as { passed: boolean; reason: string }),
+  download: (id: string) => api.get(`/android/runs/${encodeURIComponent(id)}/download`, { responseType: 'blob', timeout: 180_000 }).then((r) => r.data as Blob).catch(async (error) => {
+    if (error instanceof Blob) {
+      let reason = '安装包下载失败';
+      try { reason = JSON.parse(await error.text()).error || reason; } catch { /* Non-JSON proxy response. */ }
+      throw new Error(reason);
+    }
+    throw error;
+  }),
+};

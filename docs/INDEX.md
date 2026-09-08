@@ -1,4 +1,9 @@
-# dSYM 符号化工具 - 使用文档
+# 移动管理平台 - 使用文档
+
+- [AI 驱动平台评审与演进方案](AI_DRIVEN_PLATFORM_EVOLUTION.md) - 研发链路现状、交付诊断与分阶段验收指标
+- [应用服务选配](APPLICATION_SERVICE_SELECTION.md) - 按产品线与应用选择提供商、模块及其适配边界
+- [共用组件库](SHARED_COMPONENT_LIBRARIES.md) - 同系统跨产品线共用组件版本与仓库资源
+- [Android 接入与执行模板](ANDROID_PLATFORM_EXTENSION.md) - 已实现的首期能力、Jenkins 模板与真实产品验收步骤
 
 ## 🚀 快速开始
 

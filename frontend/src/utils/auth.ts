@@ -1,9 +1,23 @@
+import { allowsAppStoreRelease } from '../../../backend/src/services/ProductLinePermissions';
+import { ApplicationServiceId, ServiceApplication } from '../../../backend/src/services/ApplicationServiceCatalog';
 // 认证工具函数
 
 const AUTH_USER_KEY = 'auth_user';
 const ACTIVE_PRODUCT_LINE_KEY = 'active_product_line_id';
 
+export interface MobileApplication {
+  services?: ApplicationServiceId[];
+  componentLibraryId?: string;
+  serviceOptions?: ServiceApplication['serviceOptions'];
+  id: string; productLineId: string; platform: 'ios' | 'android'; name: string; packageId: string; projectId: string; active: boolean;
+  config: { repositoryUrl: string; buildJob: string; qualityJob: string; buildVariant: string; apkPath: string; deviceSerial: string };
+}
+function syncApplicationCookie(app?: MobileApplication | null) {
+  document.cookie = app ? `active_application_id=${encodeURIComponent(app.id)}; Path=/; SameSite=Lax` : 'active_application_id=; Path=/; Max-Age=0; SameSite=Lax';
+}
 export interface AuthProductLine {
+  appStoreRelease?: boolean;
+  applications?: MobileApplication[];
   id: string;
   key: string;
   name: string;
@@ -53,6 +67,7 @@ export const authUtils = {
       || user.productLines.find((item) => item.id === 'nn')
       || user.productLines[0];
     if (active) persistActiveProductLineCookie(active.id);
+    syncApplicationCookie(authUtils.getActiveApplication());
     emitAuthStateChanged();
   },
 
@@ -69,6 +84,7 @@ export const authUtils = {
     localStorage.removeItem(AUTH_USER_KEY);
     localStorage.removeItem(ACTIVE_PRODUCT_LINE_KEY);
     persistActiveProductLineCookie();
+    syncApplicationCookie(authUtils.getActiveApplication());
     emitAuthStateChanged();
   },
 
@@ -94,8 +110,25 @@ export const authUtils = {
     if (!user?.productLines.some((item) => item.id === productLineId)) return false;
     localStorage.setItem(ACTIVE_PRODUCT_LINE_KEY, productLineId);
     persistActiveProductLineCookie(productLineId);
+    syncApplicationCookie(authUtils.getActiveApplication());
     emitAuthStateChanged();
     window.dispatchEvent(new Event('product-line-changed'));
+    return true;
+  },
+
+  getActiveApplication: (): MobileApplication | null => {
+    const product = authUtils.getActiveProductLine();
+    const apps = product?.applications?.filter((app) => app.active) || [];
+    return apps.find((app) => app.id === localStorage.getItem(`active_application:${product?.id}`)) || apps[0] || null;
+  },
+  setActiveApplication: (id: string) => {
+    const product = authUtils.getActiveProductLine();
+    const app = product?.applications?.find((app) => app.id === id && app.active);
+    if (!app) return false;
+    localStorage.setItem(`active_application:${product!.id}`, id);
+    syncApplicationCookie(app);
+    emitAuthStateChanged();
+    window.dispatchEvent(new Event('application-changed'));
     return true;
   },
 
@@ -115,6 +148,11 @@ export const authUtils = {
     if (role === 'developer') return currentRole === 'developer';
     if (role === 'product') return currentRole === 'product';
     return false;
+  },
+
+  canReleaseAppStore: (): boolean => {
+    const user = authUtils.getUser();
+    return Boolean(user?.active) && allowsAppStoreRelease(authUtils.getActiveRole() || undefined, authUtils.getActiveProductLine()?.appStoreRelease);
   },
 
   hasAnyRole: (roles: AuthUser['role'][]): boolean => {

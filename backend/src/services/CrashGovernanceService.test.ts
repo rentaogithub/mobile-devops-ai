@@ -840,7 +840,7 @@ describe('CrashGovernanceService', () => {
 
     const health = gateService.evaluateReleaseHealth('nn-ios', '10.6.0');
 
-    expect(health.status).toBe('healthy');
+    expect(health.status).toBe('unknown');
     expect(health.crashHealth.openCrashCount).toBe(0);
     expect(health.crashHealth.supportingEvidence.qualityCrashCount).toBe(1);
     expect(health.crashHealth.supportingEvidence.manualCrashCount).toBe(1);

@@ -10,7 +10,7 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask, LeigodIMSDKVersion } from '../services/api';
+import { componentLibraryApi, type ComponentLibraryStatus, jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask, LeigodIMSDKVersion } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
@@ -246,7 +246,9 @@ export default function PodsPage() {
   const isNNRtcPublish = publishName === 'NNRtc';
   const isLeigodIMPublish = isLeigodIMCrossSDK(publishName);
   const showPublishNniosBuildTask = supportsNniosBuildTask(publishName);
-  // 研发和管理员可以维护 Pods 组件，其他角色只读查看。
+  // 研发和管理员可以维护 组件库，其他角色只读查看。
+  const [library, setLibrary] = useState<ComponentLibraryStatus>();
+  useEffect(() => { void componentLibraryApi.current().then(setLibrary).catch((e) => message.error(e.error || e.message || '读取组件库失败')); }, []);
   const canManagePods = authUtils.hasAnyRole(['developer', 'admin']);
   const selectedIsOfficial = isOfficialComponent(selectedComponent);
   const selectedNNRtcPackageType = selectedComponent?.name === 'NNRtc'
@@ -949,7 +951,7 @@ export default function PodsPage() {
   };
 
   const handleSyncIntegratedBranch = async (record: PodComponent) => {
-    const targetBranch = record.nnios_branch || detailTargetBranch;
+    const targetBranch = (!library?.shared && record.nnios_branch) || detailTargetBranch;
     if (!targetBranch) {
       message.error('当前测试包没有记录发布主仓库集成分支，请重新发布或先选择分支同步一次');
       return;
@@ -1384,7 +1386,7 @@ export default function PodsPage() {
     setSelectedComponent(record);
     setEditingPodspec(false);
     setPodspecDraft(record.podspec_content);
-    setDetailTargetBranch(record.nnios_branch || 'develop');
+    setDetailTargetBranch((!library?.shared && record.nnios_branch) || 'develop');
     setDetailJenkinsBuildNumber('');
     setDetailTriggerNniosBuild(false);
     setDetailDrawerOpen(true);
@@ -1435,17 +1437,17 @@ export default function PodsPage() {
       key: 'build_id',
       width: 90,
       render: (buildId: string | undefined, record) => (
-        record.name === 'NNRtc' && buildId
+        record.name === 'NNRtc' && buildId && !library?.shared && (!library || library.configProductLineId === authUtils.getActiveProductLine()?.id)
           ? (
             <a href={buildNNRtcJenkinsBuildUrl(getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig), buildId)} target="_blank" rel="noopener noreferrer">
               <Text code>#{normalizeNNRtcBuildId(buildId)}</Text>
             </a>
           )
-          : <Text type="secondary">-</Text>
+          : <Text type="secondary">{buildId || '-'}</Text>
       ),
     },
     {
-      title: '发布主仓库集成分支',
+      title: library?.shared ? '发布来源分支' : '发布主仓库集成分支',
       dataIndex: 'nnios_branch',
       key: 'nnios_branch',
       width: 220,
@@ -1508,12 +1510,12 @@ export default function PodsPage() {
           </Button>
           {canManagePods && (
             <>
-              {!(record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version))) && (
+              {(library?.shared || !(record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version)))) && (
                 <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
                   同步
                 </Button>
               )}
-              <Button type="link" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
+              <Button type="link" size="small" danger disabled={library?.shared} icon={<DeleteOutlined />} onClick={() => handleDelete(record)}>
                 删除
               </Button>
             </>
@@ -1529,7 +1531,7 @@ export default function PodsPage() {
         <div style={{ minWidth: 0 }}>
           <Title level={4} style={{ marginBottom: 4 }}>
             <AppstoreOutlined style={{ marginRight: 8, color: '#52c41a' }} />
-            Pods 组件管理
+            组件库
           </Title>
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
             上传 zip 组件到 Nexus 仓库，自动生成 podspec 并同步到 spec 仓库
@@ -1541,6 +1543,7 @@ export default function PodsPage() {
         </Space>
       </div>
 
+      {library && <Alert style={{ marginBottom: 16 }} showIcon type="info" message={`${library.name} · ${library.shared ? '多个产品线共用' : '独立使用'}`} description={`使用应用：${library.applications.map((app) => app.name).join('、')}。组件版本与仓库资源共享，主工程同步仅作用于当前产品线。${library.shared ? '已有版本不可覆盖或删除，请发布新版本供各产品线分别升级。' : '可在“应用接入 → 选配服务”中为其他同系统应用选择此库。'}`} />}
       <div style={{ display: 'flex', gap: 16, minHeight: 500, minWidth: 0 }}>
         {/* 左侧：组件列表 */}
         <Card
@@ -1717,7 +1720,7 @@ export default function PodsPage() {
 
       {/* 发布组件弹窗 */}
       <Modal
-        title="发布 Pod 组件"
+        title="发布组件"
         open={publishModalOpen}
         onCancel={() => {
           setPublishModalOpen(false);
@@ -1865,7 +1868,7 @@ export default function PodsPage() {
                           allowClear
                           showSearch
                           loading={nniosBranchLoading}
-                          placeholder="不选择则仅发布 Pod 组件"
+                          placeholder="不选择则仅发布组件"
                           options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
                           onDropdownVisibleChange={(open) => {
                             if (open && nniosBranches.length === 0) loadNniosBranches();
@@ -2305,7 +2308,7 @@ export default function PodsPage() {
 
             {canManagePods && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 8 }}>
-              {selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+              {!library?.shared && selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <Text strong style={{ whiteSpace: 'nowrap' }}>同步到发布主仓库分支</Text>
                   <Tag color="blue" style={{ marginInlineEnd: 0 }}>{selectedComponent.nnios_branch || detailTargetBranch || '未记录'}</Tag>
@@ -2349,7 +2352,7 @@ export default function PodsPage() {
             </Card>
             )}
 
-            {canManagePods && !selectedIsOfficial && (
+            {canManagePods && !library?.shared && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 16 }}>
               {isLeigodIMComponent(selectedComponent) ? (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2504,7 +2507,7 @@ export default function PodsPage() {
                 <Button size="small" icon={<CopyOutlined />} onClick={() => handleCopyPodspec(editingPodspec ? podspecDraft : selectedComponent.podspec_content)}>
                   复制
                 </Button>
-                {canManagePods && (editingPodspec ? (
+                {canManagePods && !library?.shared && (editingPodspec ? (
                   <>
                     <Button size="small" onClick={() => { setEditingPodspec(false); setPodspecDraft(selectedComponent.podspec_content); }}>
                       取消

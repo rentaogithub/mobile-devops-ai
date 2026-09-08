@@ -1,0 +1,22 @@
+// Install as a trusted Pipeline script; PLATFORM_ANDROID_RUNNER is an agent-local,
+// pinned copy of runner.py. Configure repository credentials in this Job.
+pipeline {
+  agent { label 'android-build' }
+  options { timeout(time: 30, unit: 'MINUTES'); disableConcurrentBuilds(); skipDefaultCheckout(true); buildDiscarder(logRotator(numToKeepStr: '50')) }
+  parameters {
+    string(name: 'PLATFORM_REQUEST_ID'); string(name: 'APPLICATION_ID'); string(name: 'PACKAGE_ID')
+    string(name: 'COMMIT'); string(name: 'REPOSITORY_URL'); string(name: 'BUILD_VARIANT', defaultValue: 'debug'); string(name: 'APK_PATH')
+  }
+  stages {
+    stage('Validate') { steps { script {
+      if (!(params.COMMIT ==~ /[a-f0-9]{40}/)) error('A full fixed Commit is required')
+      if (!(params.REPOSITORY_URL ==~ /(?:https|ssh):\/\/.+/)) error('Invalid repository URL')
+    } } }
+    stage('Checkout fixed Commit') { steps {
+      deleteDir()
+      checkout([$class: 'GitSCM', branches: [[name: params.COMMIT]], userRemoteConfigs: [[url: params.REPOSITORY_URL, credentialsId: env.ANDROID_GIT_CREDENTIALS_ID]]])
+    } }
+    stage('Build and attest APK') { steps { sh 'python3 "$PLATFORM_ANDROID_RUNNER" build' } }
+  }
+  post { success { archiveArtifacts artifacts: "mobile-delivery.json,${params.APK_PATH}", fingerprint: true } }
+}

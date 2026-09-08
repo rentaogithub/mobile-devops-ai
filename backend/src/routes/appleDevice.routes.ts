@@ -8,7 +8,7 @@ import path from 'path';
 import axios from 'axios';
 import { execFileSync } from 'child_process';
 import logger from '../utils/logger';
-import { adminMiddleware, productLineContextMiddleware } from '../middleware/auth';
+import { adminMiddleware, productLineContextMiddleware, requireApplicationPlatform, requireApplicationServices } from '../middleware/auth';
 import { getDatabase } from '../database';
 import { currentProductLineId } from '../services/ProductLineContext';
 import { productLineConfigService } from '../services/ProductLineConfigService';
@@ -16,7 +16,7 @@ import { productLineConfigService } from '../services/ProductLineConfigService';
 const router = Router();
 router.use((req, res, next) => {
   if (/^\/enroll\//.test(req.path)) return next();
-  return productLineContextMiddleware(req, res, next);
+  return productLineContextMiddleware(req, res, () => requireApplicationPlatform('ios')(req, res, () => requireApplicationServices('apple-devices')(req, res, next)));
 });
 const appleConfigUpload = multer({
   dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
@@ -596,7 +596,7 @@ function createCompletionMobileConfig(req: Request, session: EnrollmentSession) 
       <key>Label</key>
       <string>NN 设备注册</string>
       <key>PayloadDescription</key>
-      <string>打开 NN iOS 移动管理平台。</string>
+      <string>打开移动管理平台。</string>
       <key>PayloadDisplayName</key>
       <string>NN 设备注册</string>
       <key>PayloadIdentifier</key>
@@ -653,7 +653,7 @@ function createEnrollmentCompletedHtml(req: Request, session: EnrollmentSession)
 <body>
   <main>
     <h1>Identifier 已采集</h1>
-    <p>平台已收到这台设备的 Identifier，请回到电脑上的 iOS 移动管理平台查看注册结果。</p>
+    <p>平台已收到这台设备的 Identifier，请回到电脑上的移动管理平台查看注册结果。</p>
     <code>${escapeXml(session.device?.udid || '')}</code>
     <a href="${escapeXml(platformUrl)}/cicd/devices">回到平台</a>
   </main>

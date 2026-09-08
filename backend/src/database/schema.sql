@@ -401,11 +401,52 @@ CREATE TABLE IF NOT EXISTS platform_product_lines (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS component_libraries (
+  id TEXT PRIMARY KEY,
+  platform TEXT NOT NULL CHECK(platform IN ('ios', 'android')),
+  config_product_line_id TEXT NOT NULL REFERENCES platform_product_lines(id),
+  UNIQUE(platform, config_product_line_id)
+);
+
+CREATE TABLE IF NOT EXISTS platform_applications (
+  id TEXT PRIMARY KEY,
+  product_line_id TEXT NOT NULL REFERENCES platform_product_lines(id),
+  platform TEXT NOT NULL CHECK(platform IN ('ios', 'android')),
+  name TEXT NOT NULL,
+  package_id TEXT NOT NULL DEFAULT '',
+  workflow_project_id TEXT NOT NULL UNIQUE,
+  services_json TEXT,
+  service_options_json TEXT NOT NULL DEFAULT '{}',
+  component_library_id TEXT REFERENCES component_libraries(id),
+  config_json TEXT NOT NULL DEFAULT '{}',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(product_line_id, platform)
+);
+
+CREATE TABLE IF NOT EXISTS android_delivery_runs (
+  id TEXT PRIMARY KEY,
+  application_id TEXT NOT NULL REFERENCES platform_applications(id),
+  request_key TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('build', 'smoke')),
+  status TEXT NOT NULL,
+  job_name TEXT NOT NULL,
+  queue_url TEXT,
+  build_number INTEGER,
+  config_json TEXT NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(application_id, request_key)
+);
+
 -- 同一用户可在不同产品线拥有不同角色；平台管理员仍由 platform_users.role = admin 表示。
 CREATE TABLE IF NOT EXISTS platform_product_line_memberships (
   product_line_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'guest',
+  app_store_release INTEGER NOT NULL DEFAULT 0 CHECK(app_store_release IN (0, 1)),
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (product_line_id, user_id),

@@ -7,6 +7,7 @@ import { workflowIntegrationService } from './WorkflowIntegrationService';
 import { workflowService } from './WorkflowService';
 import { platformConfigService } from './PlatformConfigService';
 import { currentProjectId } from './ProductLineContext';
+import { normalizeQualitySuite, requiredReleaseGateSuites } from './ReleaseGatePolicy';
 
 function encodeJobPath(jobName: string) {
   return jobName.split('/').filter(Boolean).map((part) => `job/${encodeURIComponent(part)}`).join('/');
@@ -30,24 +31,6 @@ function normalizeReleaseNotes(value?: string) {
   return String(value || '').trim();
 }
 
-function normalizeQualitySuite(value: string) {
-  const text = String(value || 'smoke').trim();
-  if (/monkey|随机|猴子/i.test(text)) return 'monkey';
-  if (/卡顿|stutter|hitch|jank/i.test(text)) return 'stutter';
-  if (/business[_-]?flow|业务.*编排|自定义.*质检|自定义.*测试/i.test(text)) return 'business_flow';
-  if (/冒烟|smoke/i.test(text)) return 'smoke';
-  if (/^im$|im\s*基础/i.test(text)) return 'im';
-  if (/^rtc$|rtc\s*基础/i.test(text)) return 'rtc';
-  if (/全量|full/i.test(text)) return 'full';
-  return text.toLowerCase();
-}
-
-function requiredReleaseGateSuites() {
-  return String(process.env.RELEASE_GATE_REQUIRED_SUITES || 'smoke')
-    .split(',')
-    .map((item) => normalizeQualitySuite(item))
-    .filter(Boolean);
-}
 
 function normalizeDeployTarget(value?: string) {
   const text = String(value || '').replace(/[,，]/g, '').trim();

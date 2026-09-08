@@ -77,6 +77,7 @@ describe('assistant identity, permissions and audit', () => {
       'task_track',
     ]));
     expect(viewerTools).not.toContain('workflow_overview');
+    expect(viewerTools).not.toContain('workflow_delivery_readiness');
     expect(viewerTools).not.toContain('quality_daily_report');
     expect(viewerTools).toContain('cicd_analyze_build_failure');
     expect(viewerTools).toContain('cicd_verify_build');
@@ -99,6 +100,7 @@ describe('assistant identity, permissions and audit', () => {
     expect(registry.assertExecutable(registry.get('cicd_trigger_release')!, { deployTarget: 'AppStore' }, { user: product })).toBeUndefined();
     expect(registry.listForUser(admin)).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'workflow_overview' }),
+      expect.objectContaining({ name: 'workflow_delivery_readiness', riskLevel: 'read', approvalsRequired: 0 }),
       expect.objectContaining({ name: 'quality_daily_report' }),
     ]));
     expect(registry.listForUser(admin).some((tool) => /delete|remove/i.test(tool.name))).toBe(false);

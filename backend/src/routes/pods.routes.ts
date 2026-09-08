@@ -1,3 +1,4 @@
+import { componentLibraryService, runWithComponentLibrary } from '../services/ComponentLibraryService';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import axios from 'axios';
@@ -12,6 +13,21 @@ import { currentProductLineId } from '../services/ProductLineContext';
 import { productLineConfigService } from '../services/ProductLineConfigService';
 
 const router = Router();
+router.use((_req, res, next) => {
+  try { runWithComponentLibrary(next); }
+  catch (error: any) { res.status(409).json({ success: false, error: error.message }); }
+});
+router.get('/library', (_req, res) => {
+  try { res.json({ success: true, data: componentLibraryService.status() }); }
+  catch (error: any) { res.status(409).json({ success: false, error: error.message }); }
+});
+router.use((req, res, next) => {
+  if (req.method === 'DELETE' || (['POST', 'PUT'].includes(req.method) && /\/(replace(?:-task)?|podspec)(?:\/|$)/.test(req.path))) {
+    try { componentLibraryService.assertVersionMutable(); }
+    catch (error: any) { res.status(409).json({ success: false, error: error.message }); return; }
+  }
+  next();
+});
 const podDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
 const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');

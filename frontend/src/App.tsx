@@ -2,6 +2,9 @@ import { ConfigProvider, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
+import ApplicationServicesPage from './pages/ApplicationServicesPage';
+import ApplicationsPage from './pages/ApplicationsPage';
+import AndroidPage from './pages/AndroidPage';
 import MainLayout from './layouts/MainLayout';
 import HomePage from './pages/HomePage';
 import SymbolicatePage from './pages/SymbolicatePage';
@@ -66,13 +69,17 @@ function App() {
         <Routes>
           <Route path="/" element={<MainLayout />}>
             <Route index element={<HomePage />} />
+            <Route path="services" element={<ApplicationServicesPage />} />
+            <Route path="bugly" element={<ApplicationServicesPage />} />
+            <Route path="applications" element={<ApplicationsPage />} />
+            <Route path="android" element={<AndroidPage />} />
             {/* Crash 服务 */}
             <Route path="symbolicate" element={<SymbolicatePage />} />
             <Route path="manage" element={<ManagePage />} />
             <Route path="roles" element={<ManagePage roleManagementOnly />} />
             <Route path="history" element={<HistoryPage />} />
             <Route path="sentry-service" element={<SentryServicePage />} />
-            {/* Pods 组件管理 */}
+            {/* 组件库 */}
             <Route path="pods" element={<PodsPage />} />
             {/* CI/CD 管理 */}
             <Route path="cicd" element={<CICDPage />} />

@@ -5,9 +5,10 @@ import { qualityGateService } from '../services/QualityGateService';
 import { workflowAIService } from '../services/WorkflowAIService';
 import { xcuiTestWorkflowService } from '../services/XCUITestWorkflowService';
 import { platformOperationsService } from '../services/PlatformOperationsService';
-import { adminMiddleware } from '../middleware/auth';
+import { adminMiddleware, requireApplicationServices } from '../middleware/auth';
 import logger from '../utils/logger';
 import { currentProjectId } from '../services/ProductLineContext';
+import { deliveryReadinessService } from '../services/DeliveryReadinessService';
 
 const router = Router();
 
@@ -38,6 +39,17 @@ router.get('/overview', (req, res) => {
     ok(res, workflowService.overview(currentProjectId()));
   } catch (error) {
     fail(res, error, '加载 Workflow 概览失败');
+  }
+});
+
+router.get('/delivery/:buildNumber', adminMiddleware, (req, res) => {
+  if (!/^[1-9]\d{0,11}$/.test(req.params.buildNumber)) {
+    return res.status(400).json({ success: false, error: '构建号必须为 1 至 12 位正整数' });
+  }
+  try {
+    ok(res, deliveryReadinessService.diagnose(req.params.buildNumber));
+  } catch (error) {
+    fail(res, error, '加载交付诊断失败');
   }
 });
 
@@ -204,7 +216,7 @@ router.get('/events', (req, res) => {
   }
 });
 
-router.post('/impact/analyze', (req, res) => {
+router.post('/impact/analyze', requireApplicationServices('podx'), (req, res) => {
   try {
     const result = changeImpactService.analyze(req.body || {});
     workflowService.recordEvent({
@@ -275,7 +287,7 @@ router.get('/regression-candidates', (req, res) => {
   }
 });
 
-router.post('/regression-candidates/:candidateId/generate-xcuitest', async (req: Request, res: Response) => {
+router.post('/regression-candidates/:candidateId/generate-xcuitest', requireApplicationServices('devices'), async (req: Request, res: Response) => {
   try {
     ok(res, await workflowAIService.generateXCUITest(req.params.candidateId, req.body?.apiKey));
   } catch (error) {
@@ -283,7 +295,7 @@ router.post('/regression-candidates/:candidateId/generate-xcuitest', async (req:
   }
 });
 
-router.post('/regression-candidates/:candidateId/export-xcuitest', async (req: Request, res: Response) => {
+router.post('/regression-candidates/:candidateId/export-xcuitest', requireApplicationServices('devices'), async (req: Request, res: Response) => {
   try {
     ok(res, await xcuiTestWorkflowService.exportCandidate(req.params.candidateId, req.body || {}));
   } catch (error) {
@@ -291,7 +303,7 @@ router.post('/regression-candidates/:candidateId/export-xcuitest', async (req: R
   }
 });
 
-router.post('/regression-candidates/:candidateId/verify-xcuitest', async (req: Request, res: Response) => {
+router.post('/regression-candidates/:candidateId/verify-xcuitest', requireApplicationServices('devices'), async (req: Request, res: Response) => {
   try {
     const result = await xcuiTestWorkflowService.verifyCandidate(req.params.candidateId, req.body || {});
     ok(res, result);
@@ -300,7 +312,7 @@ router.post('/regression-candidates/:candidateId/verify-xcuitest', async (req: R
   }
 });
 
-router.post('/regression-candidates/:candidateId/run-xcuitest', async (req: Request, res: Response) => {
+router.post('/regression-candidates/:candidateId/run-xcuitest', requireApplicationServices('devices'), async (req: Request, res: Response) => {
   try {
     const result = await xcuiTestWorkflowService.runCandidate(req.params.candidateId, req.body || {});
     ok(res, result);

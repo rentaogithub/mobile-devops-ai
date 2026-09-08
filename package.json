@@ -1,7 +1,7 @@
 {
   "name": "ios-crash-symbolizer",
   "version": "1.0.0",
-  "description": "iOS 崩溃日志符号化系统",
+  "description": "移动管理平台，汇聚移动研发、质量验证、发布与 AI 服务",
   "private": true,
   "workspaces": [
     "frontend",

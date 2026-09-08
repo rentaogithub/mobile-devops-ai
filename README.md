@@ -1,6 +1,11 @@
-# dSYM 符号化工具
+# 移动管理平台
 
-iOS 崩溃日志符号化系统，支持自动符号化、AI 分析、历史记录、企业微信集成等功能。
+面向多产品线的移动研发交付，连接代码与组件管理、Jenkins 构建、真机质检、Crash 与日志诊断、发布门禁和 AI 会话执行。当前已接入 iOS 服务，Android 首期应用隔离、APK 构建/Smoke 和内部分发适配已落地，真实产品待接入验收。
+
+- [AI 驱动平台评审与演进方案](docs/AI_DRIVEN_PLATFORM_EVOLUTION.md)：当前链路、数据基线、本轮改进和后续验收目标。
+- 质量中心的“交付诊断”可按源构建号查看证据缺口与下一步动作。
+- [应用服务选配](docs/APPLICATION_SERVICE_SELECTION.md)：NN iOS / Android 独立选择 Sentry、Bugly 等服务，Podx 仅支持 iOS。
+- [Android 接入与执行模板](docs/ANDROID_PLATFORM_EXTENSION.md)：应用配置、Jenkins 执行契约与实机验收步骤。
 
 ## 🚀 快速开始
 
@@ -11,7 +16,7 @@ iOS 崩溃日志符号化系统，支持自动符号化、AI 分析、历史记�
 
 ### 环境要求
 
-- Node.js >= 18.x
+- Node.js 22（以 `.node-version` / `.nvmrc` 为准，原生 SQLite 模块需要匹配运行时）
 - npm >= 9.x
 - macOS 系统（用于 symbolicatecrash 工具）
 - Xcode Command Line Tools
@@ -229,7 +234,7 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 - 实际工具调用、审批和结果会写入 `assistant_action_audits`，敏感字段自动脱敏。
 - 仅支持上传 `.crash`、`.ips`、`.txt`，附件 15 分钟后自动清理。
 - 管理员可在 dSYM 管理页的“平台用户”页签创建 `guest`、`tester`、`developer`、`product`、`admin` 账号；也可通过 `POST /api/auth/users` 创建。
-- 角色边界：`guest` 游客可访问常用只读服务和 iOS 设备注册申请；`tester` 测试可发布蒲公英/TestFlight 并执行自动质检；`developer` 研发在测试权限基础上可增加/删除 Pods 组件；`product` 产品运营可发布苹果商店包；`admin` 管理员支持所有功能和配置管理。
+- 角色边界：`guest` 游客可访问常用只读服务和 iOS 设备注册申请；`tester` 测试可发布蒲公英/TestFlight 并执行自动质检；`developer` 研发可维护组件库，并可由管理员按用户、产品线单独授予应用商店发布权限；`product` 产品运营可发布苹果商店包；`admin` 管理员支持所有功能和配置管理。授权入口见[多产品线权限说明](docs/MULTI_PRODUCT_LINES_GUIDE.md)。
 
 ## 🤝 贡献
 
@@ -238,5 +243,3 @@ iOS 系统符号可以提高符号化准确性，配置方法：
 ## 📄 许可证
 
 MIT License
-
-

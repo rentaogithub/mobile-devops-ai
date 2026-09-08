@@ -4,7 +4,7 @@ export function getCicdPermissions() {
   const isAuthenticated = authUtils.isAuthenticated();
   const isAdmin = isAuthenticated && authUtils.isAdmin();
   const canPublishPgyerOrTestFlight = isAuthenticated && authUtils.hasAnyRole(['tester', 'developer', 'admin']);
-  const canPublishAppStore = isAuthenticated && authUtils.hasAnyRole(['product', 'admin']);
+  const canPublishAppStore = isAuthenticated && authUtils.canReleaseAppStore();
 
   return {
     isAdmin,

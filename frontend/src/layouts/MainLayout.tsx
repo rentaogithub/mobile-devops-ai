@@ -1,6 +1,7 @@
+import { hasApplicationServices, requiredServicesForPage } from '../../../backend/src/services/ApplicationServiceCatalog';
 import { useEffect, useState } from 'react';
 import { Layout, Menu, Dropdown, Space, Avatar, Button, Badge, Select, Spin } from 'antd';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import {
   HomeOutlined,
   BugOutlined,
@@ -33,8 +34,13 @@ export default function MainLayout() {
   const isAuthenticated = authUtils.isAuthenticated();
   const currentUser = authUtils.getUser();
   const activeProductLine = authUtils.getActiveProductLine();
+  const activeApplication = authUtils.getActiveApplication();
   const currentRole = authUtils.getActiveRole() || 'guest';
   const isAdmin = isAuthenticated && currentRole === 'admin';
+  const isAndroid = activeApplication?.platform === 'android';
+  const androidAllowed = ['/', '/android', '/applications', '/roles', '/access-stats', '/assistant-insights', '/services', '/bugly'];
+  const platformRouteAllowed = (!isAndroid || androidAllowed.includes(location.pathname)) && hasApplicationServices(activeApplication, requiredServicesForPage(location.pathname)) && (isAdmin || !/^\/services(?:\/|$)/.test(location.pathname));
+  const serviceLanding = isAndroid && hasApplicationServices(activeApplication, ['jenkins']) ? '/android' : isAdmin ? '/services' : '/';
   const canUseQuality = isAuthenticated && ['tester', 'developer', 'admin'].includes(currentRole);
   const canAccessCrashTools = isAuthenticated && ['developer', 'admin'].includes(currentRole);
   const canAccessQualityCenter = isAdmin;
@@ -83,6 +89,8 @@ export default function MainLayout() {
   useEffect(() => {
     if (authHydrating) return;
     const path = location.pathname;
+    if (!platformRouteAllowed) { navigate(serviceLanding, { replace: true }); return; }
+    if (path === '/applications' && !isAdmin) { navigate('/', { replace: true }); return; }
     if (!canAccessCrashTools && ['/sentry-service', '/symbolicate', '/manage'].some((prefix) => path.startsWith(prefix))) {
       navigate('/history', { replace: true });
       return;
@@ -103,6 +111,9 @@ export default function MainLayout() {
       navigate('/', { replace: true });
     }
   }, [
+    platformRouteAllowed,
+    serviceLanding,
+    isAdmin,
     canAccessAssistantInsights,
     canAccessAccessStats,
     canAccessCrashTools,
@@ -169,7 +180,7 @@ export default function MainLayout() {
     {
       key: '/symbolicate-group',
       icon: <BugOutlined />,
-      label: <span onClick={() => navigate(canAccessCrashTools ? '/sentry-service' : '/history')}>Crash 服务</span>,
+      label: <span onClick={() => navigate(canAccessCrashTools && hasApplicationServices(activeApplication, ['sentry']) ? '/sentry-service' : '/history')}>Crash 服务</span>,
       children: [
         ...(canAccessCrashTools ? [{ key: '/sentry-service', label: 'Sentry 服务' }] : []),
         { key: '/history', label: '历史记录' },
@@ -182,7 +193,7 @@ export default function MainLayout() {
     {
       key: '/pods',
       icon: <AppstoreOutlined />,
-      label: 'Pods 组件',
+      label: '组件库',
     },
     {
       key: '/cicd-group',
@@ -238,6 +249,14 @@ export default function MainLayout() {
     }] : []),
   ];
 
+  const visibleMenuItems = [
+    ...menuItems.map((item) => ({ ...item, ...(item.children ? { children: item.children.filter((child) => hasApplicationServices(activeApplication, requiredServicesForPage(child.key))) } : {}) })).filter((item) => (!isAndroid || androidAllowed.includes(item.key)) && hasApplicationServices(activeApplication, requiredServicesForPage(item.key)) && (!item.children || item.children.length > 0)),
+    ...(isAdmin ? [{ key: '/services', icon: <AppstoreOutlined />, label: '应用服务' }] : []),
+    ...(hasApplicationServices(activeApplication, ['bugly']) ? [{ key: '/bugly', icon: <BugOutlined />, label: 'Bugly 崩溃' }] : []),
+    ...(isAndroid && hasApplicationServices(activeApplication, ['jenkins']) ? [{ key: '/android', icon: <MobileOutlined />, label: 'Android 交付' }] : []),
+    ...(isAdmin ? [{ key: '/applications', icon: <AppstoreOutlined />, label: '应用接入' }] : []),
+  ];
+
   const handleLogin = () => {
     const redirect = `${location.pathname}${location.search}${location.hash}`;
     navigate(`/login?redirect=${encodeURIComponent(redirect)}`);
@@ -284,13 +303,13 @@ export default function MainLayout() {
             }}
             onClick={() => navigate('/')}
           >
-            📱 iOS 移动管理平台
+            📱 移动管理平台
           </div>
           <Menu
             theme="dark"
             mode="horizontal"
             selectedKeys={[getSelectedKey()]}
-            items={menuItems}
+            items={visibleMenuItems}
             onClick={({ key }) => navigate(key)}
             style={{ flex: 1, minWidth: 0 }}
           />
@@ -312,6 +331,11 @@ export default function MainLayout() {
               style={{ minWidth: 120 }}
               popupMatchSelectWidth={false}
             />
+            {activeProductLine?.applications?.length ? <Select
+              aria-label="当前应用" value={activeApplication?.id} style={{ minWidth: 120 }}
+              onChange={(value) => authUtils.setActiveApplication(value)}
+              options={activeProductLine.applications.filter((app) => app.active).map((app) => ({ value: app.id, label: app.platform === 'android' ? 'Android' : 'iOS' }))}
+            /> : null}
             <Dropdown menu={{ items: userMenuItems }} placement="bottomRight">
               <Space style={{ cursor: 'pointer' }}>
               <Avatar
@@ -347,7 +371,7 @@ export default function MainLayout() {
               <Spin tip="正在恢复登录状态..." />
             </div>
           ) : (
-            <Outlet key={activeProductLine?.id || 'public-nn'} />
+            platformRouteAllowed ? <Outlet key={`${activeProductLine?.id || 'public-nn'}:${activeApplication?.id || 'ios'}:${JSON.stringify(activeApplication?.services)}:${JSON.stringify(activeApplication?.serviceOptions)}:${activeApplication?.componentLibraryId || 'default-library'}`} /> : <Navigate to={serviceLanding} replace />
           )}
         </div>
       </Content>

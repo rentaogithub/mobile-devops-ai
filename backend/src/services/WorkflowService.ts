@@ -138,6 +138,35 @@ function issueFromRow(row: any) {
 }
 
 export class WorkflowService {
+  getDeliveryEvidence(buildNumber: string) {
+    const db = getDatabase();
+    const projectId = currentProjectId();
+    return db.transaction(() => {
+      const artifacts = (db.prepare('SELECT * FROM workflow_artifacts WHERE project_id = ? AND build_number = ? ORDER BY updated_at DESC LIMIT 501').all(projectId, buildNumber) as any[]).map(artifactFromRow);
+      const tasks = (db.prepare('SELECT * FROM workflow_tasks WHERE project_id = ? AND build_number = ? ORDER BY created_at DESC LIMIT 501').all(projectId, buildNumber) as any[]).map(taskFromRow);
+      // An issue fingerprint may recur in later builds; retain the original build's relation.
+      const issueScope = `project_id = @projectId AND (build_number = @buildNumber OR id IN (
+        SELECT to_id FROM workflow_relations WHERE project_id = @projectId
+          AND from_type = 'build' AND from_id = @buildNumber AND to_type = 'issue'
+      ))`;
+      const params = { projectId, buildNumber };
+      const issues = (db.prepare(`SELECT * FROM workflow_issues WHERE ${issueScope} ORDER BY last_seen DESC LIMIT 501`).all(params) as any[]).map(issueFromRow);
+      const candidates = db.prepare(`
+        SELECT id, issue_id AS issueId, title, status, updated_at AS updatedAt
+        FROM workflow_regression_candidates WHERE project_id = @projectId
+          AND issue_id IN (SELECT id FROM workflow_issues WHERE ${issueScope})
+        ORDER BY updated_at DESC LIMIT 501
+      `).all(params) as Array<{ id: string; issueId: string; title: string; status: string; updatedAt: string }>;
+      const truncated = [artifacts, tasks, issues, candidates].some((rows) => rows.length > 500);
+      return {
+        artifacts: artifacts.slice(0, 500).filter((row): row is NonNullable<typeof row> => row !== null),
+        tasks: tasks.slice(0, 500).filter((row): row is NonNullable<typeof row> => row !== null),
+        issues: issues.slice(0, 500).filter((row): row is NonNullable<typeof row> => row !== null),
+        candidates: candidates.slice(0, 500), truncated,
+      };
+    })();
+  }
+
   createArtifact(input: JsonObject) {
     const db = getDatabase();
     const timestamp = now();

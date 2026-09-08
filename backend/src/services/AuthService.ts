@@ -1,8 +1,11 @@
+import { allowsAppStoreRelease } from './ProductLinePermissions';
+import { currentProductLineId } from './ProductLineContext';
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'crypto';
 import { Request, Response } from 'express';
 import { getDatabase } from '../database';
 import logger from '../utils/logger';
 import { platformConfigService } from './PlatformConfigService';
+import { applicationService, MobileApplication } from './ApplicationService';
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
@@ -14,9 +17,11 @@ export interface PlatformProductLine {
   bundleId?: string;
   jenkinsBaseUrl?: string;
   active: boolean;
+  applications?: MobileApplication[];
 }
 
 export interface ProductLineMembership extends PlatformProductLine {
+  appStoreRelease?: boolean;
   role: PlatformRole;
 }
 
@@ -91,6 +96,7 @@ function productLineFromRow(row: any): PlatformProductLine | null {
     bundleId: row.bundle_id ? String(row.bundle_id) : undefined,
     jenkinsBaseUrl: row.jenkins_base_url ? String(row.jenkins_base_url) : undefined,
     active: Boolean(row.active ?? row.product_line_active),
+    applications: applicationService.list(String(row.id || row.product_line_id)),
   };
 }
 
@@ -164,7 +170,7 @@ export class AuthService {
           ORDER BY p.name COLLATE NOCASE
         `).all() as any[]
       : db.prepare(`
-          SELECT p.*, m.role AS membership_role
+          SELECT p.*, m.role AS membership_role, m.app_store_release
           FROM platform_product_line_memberships m
           JOIN platform_product_lines p ON p.id = m.product_line_id
           WHERE m.user_id = ? AND p.active = 1
@@ -173,6 +179,7 @@ export class AuthService {
 
     return rows.map((row) => ({
       ...productLineFromRow(row)!,
+      appStoreRelease: row.membership_role === 'developer' && Boolean(row.app_store_release),
       role: (VALID_ROLES.includes(row.membership_role as PlatformRole) ? row.membership_role : 'guest') as PlatformRole,
     }));
   }
@@ -213,6 +220,7 @@ export class AuthService {
       key = `pl-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
     }
     const projectId = String(input.projectId || `${key}-ios`).trim().slice(0, 120);
+    if (getDatabase().prepare('SELECT 1 FROM platform_applications WHERE workflow_project_id = ?').get(projectId)) throw new Error('Workflow 标识已被应用占用');
     const jenkinsBaseUrl = this.normalizeServiceUrl(input.jenkinsBaseUrl, 'Jenkins 服务地址');
     const timestamp = now();
     const id = randomUUID();
@@ -220,6 +228,7 @@ export class AuthService {
       INSERT INTO platform_product_lines (id, key, name, project_id, bundle_id, jenkins_base_url, active, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
     `).run(id, key, name, projectId, String(input.bundleId || '').trim() || null, jenkinsBaseUrl || null, timestamp, timestamp);
+    applicationService.ensureIOS(id);
     return this.findProductLine(id);
   }
 
@@ -235,6 +244,7 @@ export class AuthService {
     if (input.projectId !== undefined) {
       const projectId = String(input.projectId || '').trim().slice(0, 120);
       if (!projectId) throw new Error('Workflow 项目标识不能为空');
+      if (this.findProductLine(id)?.projectId !== projectId) throw new Error('已有应用的 Workflow 标识不可变');
       fields.push('project_id = @projectId');
       params.projectId = projectId;
     }
@@ -252,6 +262,7 @@ export class AuthService {
       params.active = input.active ? 1 : 0;
     }
     const result = getDatabase().prepare(`UPDATE platform_product_lines SET ${fields.join(', ')} WHERE id = @id`).run(params);
+    if (result.changes && input.bundleId !== undefined) getDatabase().prepare("UPDATE platform_applications SET package_id = ?, updated_at = ? WHERE product_line_id = ? AND platform = 'ios'").run(String(input.bundleId || '').trim(), now(), id);
     return result.changes ? this.findProductLine(id) : null;
   }
 
@@ -267,7 +278,21 @@ export class AuthService {
     }
   }
 
-  setUserProductLines(userId: string, memberships: Array<{ productLineId: string; role: PlatformRole }>) {
+  private validateAppStoreGrant(item: { role: PlatformRole; appStoreRelease?: boolean }) {
+    if (item.appStoreRelease !== undefined && typeof item.appStoreRelease !== 'boolean') throw new Error('应用商店发布授权必须为布尔值');
+    if (item.appStoreRelease === true && item.role !== 'developer') throw new Error('附加应用商店发布授权仅适用于研发角色');
+  }
+
+  canReleaseAppStore(userId: string, productLineId = currentProductLineId()): boolean {
+    const db = getDatabase();
+    const user = db.prepare('SELECT role FROM platform_users WHERE id = ? AND active = 1').get(userId) as { role: PlatformRole } | undefined;
+    if (!user || !db.prepare('SELECT 1 FROM platform_product_lines WHERE id = ? AND active = 1').get(productLineId)) return false;
+    if (user.role === 'admin') return true;
+    const membership = db.prepare('SELECT role, app_store_release FROM platform_product_line_memberships WHERE user_id = ? AND product_line_id = ?').get(userId, productLineId) as { role: PlatformRole; app_store_release: number } | undefined;
+    return allowsAppStoreRelease(membership?.role, Boolean(membership?.app_store_release));
+  }
+
+  setUserProductLines(userId: string, memberships: Array<{ productLineId: string; role: PlatformRole; appStoreRelease?: boolean }>) {
     const db = getDatabase();
     const user = db.prepare('SELECT * FROM platform_users WHERE id = ?').get(userId) as any;
     if (!user) throw new Error('用户不存在');
@@ -280,6 +305,9 @@ export class AuthService {
       .filter((item) => item.productLineId);
     normalized.forEach((item) => {
       validateRole(item.role, SELF_REGISTER_ROLES);
+      this.validateAppStoreGrant(item);
+      const previous = db.prepare('SELECT role, app_store_release FROM platform_product_line_memberships WHERE user_id = ? AND product_line_id = ?').get(userId, item.productLineId) as any;
+      item.appStoreRelease = item.role === 'developer' && (item.appStoreRelease ?? (previous?.role === 'developer' && Boolean(previous.app_store_release)));
       const productLine = this.findProductLine(item.productLineId);
       if (!productLine || !productLine.active) throw new Error(`产品线 ${item.productLineId} 不存在或已停用`);
     });
@@ -288,10 +316,10 @@ export class AuthService {
     db.transaction(() => {
       db.prepare('DELETE FROM platform_product_line_memberships WHERE user_id = ?').run(userId);
       const insert = db.prepare(`
-        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, app_store_release, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `);
-      normalized.forEach((item) => insert.run(item.productLineId, userId, item.role, timestamp, timestamp));
+      normalized.forEach((item) => insert.run(item.productLineId, userId, item.role, item.appStoreRelease ? 1 : 0, timestamp, timestamp));
       const legacyRole = normalized[0]?.role || 'guest';
       db.prepare('UPDATE platform_users SET role = ?, updated_at = ? WHERE id = ?').run(legacyRole, timestamp, userId);
     })();
@@ -401,7 +429,7 @@ export class AuthService {
     displayName: string;
     password: string;
     role: PlatformRole;
-    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+    productLines?: Array<{ productLineId: string; role: PlatformRole; appStoreRelease?: boolean }>;
   }) {
     const username = normalizeUsername(input.username);
     validateUsername(username);
@@ -411,6 +439,7 @@ export class AuthService {
       const memberships = input.productLines?.length ? input.productLines : [{ productLineId: 'nn', role: input.role }];
       memberships.forEach((membership) => {
         validateRole(membership.role, SELF_REGISTER_ROLES);
+        this.validateAppStoreGrant(membership);
         const productLine = this.findProductLine(membership.productLineId);
         if (!productLine || !productLine.active) throw new Error(`产品线 ${membership.productLineId} 不存在或已停用`);
       });
@@ -504,9 +533,9 @@ export class AuthService {
       `).run(userId, row.username, row.display_name, row.password_hash, row.requested_role, timestamp, timestamp);
 
       db.prepare(`
-        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(productLine.id, userId, row.requested_role, timestamp, timestamp);
+        INSERT INTO platform_product_line_memberships (product_line_id, user_id, role, app_store_release, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(productLine.id, userId, row.requested_role, 0, timestamp, timestamp);
 
       db.prepare(`
         UPDATE platform_user_registration_requests
@@ -551,7 +580,7 @@ export class AuthService {
     password?: string;
     role?: PlatformRole;
     active?: boolean;
-    productLines?: Array<{ productLineId: string; role: PlatformRole }>;
+    productLines?: Array<{ productLineId: string; role: PlatformRole; appStoreRelease?: boolean }>;
   }) {
     const fields = ['updated_at = @updatedAt'];
     const params: Record<string, unknown> = { id, updatedAt: now() };
@@ -565,8 +594,10 @@ export class AuthService {
       fields.push('role = @role'); params.role = input.role;
     }
     if (input.active !== undefined) { fields.push('active = @active'); params.active = input.active ? 1 : 0; }
-    getDatabase().prepare(`UPDATE platform_users SET ${fields.join(', ')} WHERE id = @id`).run(params);
-    if (input.productLines) this.setUserProductLines(id, input.productLines);
+    getDatabase().transaction(() => {
+      getDatabase().prepare(`UPDATE platform_users SET ${fields.join(', ')} WHERE id = @id`).run(params);
+      if (input.productLines) this.setUserProductLines(id, input.productLines);
+    })();
     return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
   }
 

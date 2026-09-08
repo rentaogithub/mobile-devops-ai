@@ -5,6 +5,10 @@ import { assistantCapabilityDatasetService } from './AssistantCapabilityDatasetS
 import { businessSemanticService } from './BusinessSemanticService';
 
 describe('BusinessSemanticService', () => {
+  it('routes delivery evidence questions to the read-only build diagnosis', () => {
+    expect(businessSemanticService.resolveAssistantAction('诊断构建 #12345 的交付链路，还缺哪些证据', ['workflow_delivery_readiness', 'platform_cross_system_diagnosis'])).toMatchObject({ toolName: 'workflow_delivery_readiness', args: { buildNumber: '12345' } });
+    expect(businessSemanticService.resolveAssistantAction('构建 #12345 的交付诊断', [])).toBeUndefined();
+  });
   const semanticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-semantic-test-'));
   const capabilityDatasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-semantic-capability-test-'));
 

@@ -1,3 +1,4 @@
+import { hasCurrentApplicationServices, assertApplicationServices } from '../services/ApplicationCapabilityService';
 import '../config/env';
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
@@ -21,7 +22,7 @@ import { workflowIntegrationService } from '../services/WorkflowIntegrationServi
 import { workflowService } from '../services/WorkflowService';
 import { JenkinsReleaseError, jenkinsAssistantService } from '../services/JenkinsAssistantService';
 import { platformConfigService } from '../services/PlatformConfigService';
-import { requireAnyRole, requireRole } from '../middleware/auth';
+import { requireAnyRole, requireRole, requireAppStoreRelease } from '../middleware/auth';
 import { currentProductLineId, currentProjectId, runWithProductLine } from '../services/ProductLineContext';
 import { PRODUCT_LINE_CONFIG_KEYS, productLineConfigService } from '../services/ProductLineConfigService';
 import { authService } from '../services/AuthService';
@@ -30,17 +31,17 @@ const router = Router();
 const execFileAsync = promisify(execFile);
 const cicdTestReleaseMiddleware = requireAnyRole(['tester', 'developer', 'admin']);
 const cicdDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
-const cicdProductReleaseMiddleware = requireAnyRole(['product', 'admin']);
+const cicdAppStoreReleaseMiddleware = requireAppStoreRelease;
 const cicdReleaseMiddleware = requireAnyRole(['tester', 'developer', 'product', 'admin']);
 const cicdAdminMiddleware = requireRole('admin');
 
-const adminOnlyAppleReleaseMiddleware = (req: Request, res: Response, next: () => void) => {
+const releaseChannelAuthorizationMiddleware = (req: Request, res: Response, next: () => void) => {
   const deployTarget = normalizeDeployTarget(String(req.body?.deployTarget || ''));
   if (deployTarget === 'Pgyer' || deployTarget === 'TestFlight') {
     return cicdTestReleaseMiddleware(req, res, next);
   }
   if (deployTarget === 'AppStore') {
-    return cicdProductReleaseMiddleware(req, res, next);
+    return cicdAppStoreReleaseMiddleware(req, res, next);
   }
   return cicdTestReleaseMiddleware(req, res, next);
 };
@@ -2592,6 +2593,7 @@ function pickDSYMSyncComponentDependencies(dependencies: ThirdSdkDependency[]) {
 }
 
 async function linkExistingComponentDSYMsToAppVersion(dependencies: ThirdSdkDependency[], appVersion: string) {
+  if (!hasCurrentApplicationServices('podx', 'dsym')) return [];
   const components = [];
   for (const dependency of pickDSYMSyncComponentDependencies(dependencies)) {
     const dsyms = await storage.findByAppNameAndVersion(dependency.name, dependency.version);
@@ -2615,6 +2617,7 @@ async function linkExistingComponentDSYMsToAppVersion(dependencies: ThirdSdkDepe
 }
 
 async function syncAppStoreBuildDsyms(buildNumber: number, options: { force?: boolean } = {}) {
+  assertApplicationServices('dsym');
   const cacheKey = `${currentProductLineId()}:${buildNumber}`;
   const existing = getSavedBuildDsymSync(buildNumber);
   if (!options.force && existing && ['success', 'partial', 'running'].includes(String(existing.status || ''))) {
@@ -2695,6 +2698,7 @@ async function syncAppStoreBuildDsyms(buildNumber: number, options: { force?: bo
 }
 
 function scheduleAppStoreBuildDsymSync(build: any) {
+  if (!hasCurrentApplicationServices('dsym')) return;
   const buildNumber = Number(build?.number);
   if (!Number.isFinite(buildNumber) || buildNumber <= 0) return;
   if (normalizeDeployTarget(build?.publishChannel) !== 'AppStore') return;
@@ -5213,7 +5217,7 @@ router.post('/nn/builds/:number/sync-dsyms', cicdDeveloperMiddleware, async (req
   }
 });
 
-router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/submit-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -5346,7 +5350,7 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdProductReleaseMidd
   }
 });
 
-router.post('/nn/builds/:number/cancel-app-store-review', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/builds/:number/cancel-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -5944,7 +5948,7 @@ router.post('/nn/release-gate/preview', cicdReleaseMiddleware, async (req: Reque
   }
 });
 
-router.post('/nn/app-store/release-guard', cicdProductReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/app-store/release-guard', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const branch = normalizeBranchName(String(req.body?.branch || ''));
     if (!isReleaseBranch(branch)) {
@@ -6069,7 +6073,7 @@ router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: 
   });
 });
 
-router.post('/nn/build', adminOnlyAppleReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/nn/build', releaseChannelAuthorizationMiddleware, async (req: Request, res: Response) => {
   let releaseOrder: any = null;
   try {
     const gateBuildNumberValue = req.body?.gateBuildNumber;

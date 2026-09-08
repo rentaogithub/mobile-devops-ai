@@ -264,12 +264,13 @@ function firstPromptForTool(toolName: string) {
 }
 
 function capabilityPromptOptions(capabilities: AssistantCapability[], currentRole: AuthUser['role'], seed: number) {
+  if (authUtils.getActiveApplication()?.platform === 'android') return samplePrompts(capabilities.flatMap((tool) => tool.name === 'android_readiness' ? ['检查当前 Android 应用接入还缺什么'] : tool.name === 'android_list_runs' ? ['查询 Android 最近构建和 Smoke 任务'] : tool.name === 'android_gate' ? ['检查 Android APK 的下载门禁'] : []), seed, 8);
   const availableNames = new Set(capabilities.map((capability) => capability.name));
   const availableDomains = new Set(capabilities.map((capability) => capability.domain || 'platform'));
   const dynamicPrompts = capabilities.flatMap((capability) => promptExamplesForTool(capability.name));
   const fallbackPrompts = fallbackSuggestions
     .filter((suggestion) => (!suggestion.roles || suggestion.roles.includes(currentRole))
-      && (!suggestion.toolName || availableNames.size === 0 || availableNames.has(suggestion.toolName) || (suggestion.domain && availableDomains.has(suggestion.domain))))
+      && (suggestion.toolName ? availableNames.has(suggestion.toolName) : Boolean(suggestion.domain && availableDomains.has(suggestion.domain))))
     .map((suggestion) => suggestion.text);
   return samplePrompts([...dynamicPrompts, ...fallbackPrompts], seed, 8);
 }
@@ -495,6 +496,20 @@ function renderClosureResult(
 ) {
   const result = event.result as any;
   if (!result || typeof result !== 'object' || Array.isArray(result) || !result.kind) return null;
+
+  if (result.kind === 'delivery_readiness') {
+    const statusLabels: Record<string, string> = { passed: '证据通过', blocked: '存在阻断', warning: '待核实', unknown: '证据不足' };
+    return (
+      <div className={`assistant-closure-card ${result.status === 'passed' ? 'assistant-closure-success' : 'assistant-closure-warning'}`}>
+        <div className="assistant-closure-title"><ApartmentOutlined /><Text strong>构建 #{result.buildNumber} 交付诊断</Text><Tag>{statusLabels[result.status] || result.status}</Tag></div>
+        <Text>{result.summary}</Text>
+        <Space wrap>{(result.stages || []).map((stage: any) => <Tag key={stage.key} color={stage.status === 'blocked' ? 'red' : stage.status === 'passed' ? 'green' : 'gold'}>{stage.title}：{statusLabels[stage.status] || stage.status}</Tag>)}</Space>
+        <ul>{(result.actions || []).slice(0, 5).map((action: any) => <li key={action.code}>{action.priority} · {action.title}：{action.reason}</li>)}</ul>
+        <Text type="secondary">依据当前产品线同步快照；缺少证据不代表通过。</Text>
+        <Button type="link" href={`/workflow?buildNumber=${encodeURIComponent(result.buildNumber)}`}>查看完整交付证据</Button>
+      </div>
+    );
+  }
 
   if (result.kind === 'build_failure_diagnosis') {
     const analysis = result.analysis || {};
@@ -1202,6 +1217,10 @@ function renderQuickActions(result: unknown, runPrompt: (prompt: string) => void
 }
 
 export default function HomePage() {
+  const contextHeaders = useRef<Record<string, string>>({
+    ...(authUtils.getActiveProductLine() ? { 'X-Product-Line-Id': authUtils.getActiveProductLine()!.id } : {}),
+    ...(authUtils.getActiveApplication() ? { 'X-Application-Id': authUtils.getActiveApplication()!.id } : {}),
+  }).current;
   const navigate = useNavigate();
   const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [input, setInput] = useState('');
@@ -1239,7 +1258,7 @@ export default function HomePage() {
   useEffect(() => {
     let alive = true;
     setCapabilitiesLoading(true);
-    fetch('/api/assistant/capabilities', { credentials: 'include' })
+    fetch('/api/assistant/capabilities', { credentials: 'include', headers: contextHeaders })
       .then(async (response) => {
         const body = await response.json();
         if (!response.ok || !body.success) throw new Error(body.error || '读取能力失败');
@@ -1265,7 +1284,7 @@ export default function HomePage() {
     if (buildTrackingTimers.current.has(actionId)) return;
     const poll = async () => {
       try {
-        const response = await fetch(`/api/assistant/actions/${encodeURIComponent(actionId)}/status`, { credentials: 'include' });
+        const response = await fetch(`/api/assistant/actions/${encodeURIComponent(actionId)}/status`, { credentials: 'include', headers: contextHeaders });
         const body = await response.json();
         if (!response.ok) throw new Error(body.error || '同步构建状态失败');
         const tracking = body.data || {};
@@ -1342,7 +1361,7 @@ export default function HomePage() {
     const response = await fetch(url, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...contextHeaders },
       body: JSON.stringify(body),
     });
     await readSSE(response, (event) => applyEvent(assistantId, event));
@@ -1425,7 +1444,7 @@ export default function HomePage() {
     const form = new FormData();
     form.append('file', file);
     try {
-      const response = await fetch('/api/assistant/attachments', { method: 'POST', credentials: 'include', body: form });
+      const response = await fetch('/api/assistant/attachments', { method: 'POST', credentials: 'include', headers: contextHeaders, body: form });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || '上传失败');
       setAttachment(data.data);

@@ -6,6 +6,9 @@ import { StorageService } from './StorageService';
 import logger from '../utils/logger';
 import { authService } from './AuthService';
 import { currentProductLineId, currentProjectId, runWithProductLine } from './ProductLineContext';
+import { hasCurrentApplicationServices } from './ApplicationCapabilityService';
+import { currentApplication } from './ProductLineContext';
+import { ApplicationServiceId } from './ApplicationServiceCatalog';
 import { internalRequestToken } from './InternalRequestAuth';
 
 type SyncSource = 'jenkins' | 'quality' | 'dsym' | 'pods' | 'sentry';
@@ -21,6 +24,7 @@ interface OperationStatus {
   itemCount?: number;
 }
 
+const sourceService = (source: SyncSource): ApplicationServiceId => source === 'pods' ? 'podx' : source;
 const SYNC_SOURCES: SyncSource[] = ['jenkins', 'quality', 'dsym', 'pods', 'sentry'];
 
 function numberEnv(name: string, fallback: number) {
@@ -87,13 +91,13 @@ export class PlatformOperationsService {
       enabled: process.env.WORKFLOW_SYNC_ENABLED !== 'false',
       intervalMinutes: numberEnv('WORKFLOW_SYNC_INTERVAL_MINUTES', 10),
       productLineId: currentProductLineId(),
-      sources: SYNC_SOURCES.map((source) => this.getSourceStatus(source)),
+      sources: SYNC_SOURCES.map((source) => ({ ...this.getSourceStatus(source), enabled: hasCurrentApplicationServices(sourceService(source)) })),
     };
   }
 
   async runAllSyncs() {
     for (const source of SYNC_SOURCES) {
-      await this.runSync(source);
+      if (hasCurrentApplicationServices(sourceService(source))) await this.runSync(source);
     }
     return this.getSyncStatus();
   }
@@ -106,6 +110,7 @@ export class PlatformOperationsService {
       name: productLine.name,
       projectId: productLine.projectId,
       role: 'admin',
+      application: productLine.applications?.find((app) => app.platform === 'ios'),
     }, () => this.runAllSyncs())));
   }
 
@@ -122,6 +127,7 @@ export class PlatformOperationsService {
   async runSync(source: SyncSource) {
     if (!SYNC_SOURCES.includes(source)) throw new Error(`不支持的同步源: ${source}`);
     const status = this.getSourceStatus(source);
+    if (!hasCurrentApplicationServices(sourceService(source))) return { ...status, skipped: true, reason: 'service_disabled' };
     if (status.running) return status;
     status.running = true;
     status.lastStartedAt = new Date().toISOString();
@@ -164,6 +170,7 @@ export class PlatformOperationsService {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const headers = new Headers(init.headers || {});
+      if (currentApplication()) headers.set('x-application-id', currentApplication()!.id);
       headers.set('x-product-line-id', currentProductLineId());
       headers.set('x-platform-internal-token', internalRequestToken);
       const response = await fetch(`${this.baseUrl}${relativePath}`, { ...init, headers, signal: controller.signal });
@@ -228,6 +235,8 @@ export class PlatformOperationsService {
   }
 
   private async probe(name: string, endpoint: string, timeoutMs: number, init: RequestInit = {}) {
+    const service: ApplicationServiceId = name === 'sonic' || name === 'devices' ? 'quality' : name as ApplicationServiceId;
+    if (!hasCurrentApplicationServices(service)) return { name, status: 'disabled', configured: false, required: false };
     const startedAt = Date.now();
     try {
       const result = await this.fetchJson(endpoint, init, timeoutMs);

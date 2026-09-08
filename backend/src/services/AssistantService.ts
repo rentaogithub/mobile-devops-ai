@@ -321,6 +321,7 @@ export class AssistantService {
       { text: '查询最近 24 小时新增线上 Crash', toolName: 'sentry_list_issues' },
       { text: '查询用户 131088950 的最近反馈日志', toolName: 'logs_search' },
       { text: '查看质量中心概览、最新任务和最新问题', toolName: 'workflow_overview' },
+      { text: '诊断构建 #12345 的交付链路，还缺哪些证据', toolName: 'workflow_delivery_readiness' },
       { text: '查询质量中心高风险未关闭 Issue', toolName: 'workflow_list_issues' },
       { text: '查询最近 Jenkins 主工程构建', toolName: 'cicd_list_builds' },
       { text: '分析构建 #12345 失败原因', toolName: 'cicd_analyze_build_failure' },

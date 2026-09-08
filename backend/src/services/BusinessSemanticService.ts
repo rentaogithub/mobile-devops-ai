@@ -269,6 +269,10 @@ export class BusinessSemanticService {
     const workflowTaskId = this.extractEntityId(content, ['workflow', '任务', 'task']);
     const branch = this.extractBranch(content);
 
+    if (buildNumber && /(交付诊断|交付链路|交付就绪|交付证据|缺哪些证据)/.test(content) && hasTool('workflow_delivery_readiness')) {
+      return { toolName: 'workflow_delivery_readiness', args: { buildNumber: String(buildNumber) }, completionText: `已诊断构建 #${buildNumber} 的交付证据，请查看阻断项与下一步动作；正式发布仍需实时复核。` };
+    }
+
     const feedbackLogIntent = /(反馈日志|用户.{0,20}日志|日志.{0,20}用户)/i.test(content)
       && !/(崩溃|crash|jenkins|构建|后端日志)/i.test(content);
     const explicitTimeRange = /(\d{4}[-/年]\d{1,2}|今天|昨天|前天|过去\s*\d+\s*(?:小时|天)|近\s*\d+\s*(?:小时|天))/i.test(content);

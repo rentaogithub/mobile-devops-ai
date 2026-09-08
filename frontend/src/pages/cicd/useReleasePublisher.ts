@@ -57,7 +57,7 @@ export function useReleasePublisher({
       return;
     }
     if (deployTarget === 'AppStore' && !canPublishAppStore) {
-      message.warning('苹果商店包发布需要产品运营或管理员权限');
+      message.warning('苹果商店包发布需要产品运营或管理员权限，研发需获得当前产品线的单独授权');
       return;
     }
     if (!publishBranch.trim()) {
@@ -77,7 +77,7 @@ export function useReleasePublisher({
       return;
     }
     if (deployTarget === 'AppStore' && !canPublishAppStore) {
-      message.warning('苹果商店包发布需要产品运营或管理员权限');
+      message.warning('苹果商店包发布需要产品运营或管理员权限，研发需获得当前产品线的单独授权');
       return;
     }
     if (deployTarget !== 'Pgyer' && releaseNotesLength(releaseNotes) <= 4) {

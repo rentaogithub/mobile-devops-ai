@@ -1,3 +1,4 @@
+import { componentLibraryService } from './ComponentLibraryService';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
@@ -329,7 +330,7 @@ class ProductLineConfigService {
         values.JENKINS_USER = 'anonymous';
       }
     }
-    const resolvedPodxConfig = this.podxConfig(productLineId);
+    const resolvedPodxConfig = this.podxConfig(productLineId, false);
     values.PODX_PRIVATE_SOURCE ||= resolvedPodxConfig.privateSource;
     values.PODX_PUBLISH_MAIN_REPO ||= resolvedPodxConfig.publishMainRepo;
     if (!this.hasStoredConfig('PODX_PUBLISH_REPOS', productLineId)) {
@@ -350,7 +351,12 @@ class ProductLineConfigService {
     return values;
   }
 
-  podxConfig(productLineId = currentProductLineId()): ProductLinePodxConfig {
+  private libraryPrivateSource(productLineId: string, fallback: string) {
+    const library = componentLibraryService.resolve(productLineId, 'ios');
+    return library.configProductLineId === productLineId ? fallback : this.podxConfig(library.configProductLineId, false).privateSource;
+  }
+
+  podxConfig(productLineId = currentProductLineId(), useLibrarySource = true): ProductLinePodxConfig {
     const productLine = this.findProductLine(productLineId);
     const jenkinsRepoUrl = this.get('JENKINS_NN_REPO_URL', productLineId)
       || (productLineId === 'nn' ? 'http://git.leigod.top/nn_ios/nnios.git' : '');
@@ -385,7 +391,7 @@ class ProductLineConfigService {
     return {
       productLineId,
       targetName,
-      privateSource,
+      privateSource: useLibrarySource ? this.libraryPrivateSource(productLineId, privateSource) : privateSource,
       gitBaseUrl,
       overlayFile: 'Podfile.overlay',
       publishRepos,

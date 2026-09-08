@@ -1,3 +1,4 @@
+import { hasApplicationServices } from '../../../backend/src/services/ApplicationServiceCatalog';
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Table, Button, message, Popconfirm, Typography, Space, Input, Tag, Card, Alert, Checkbox, Collapse, Badge, Tabs, List, Modal, Select, Spin, Upload } from 'antd';
@@ -198,7 +199,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     password: '',
     role: 'guest' as PlatformRole,
     active: true,
-    productLines: [{ productLineId: 'nn', role: 'guest' as PlatformRole }],
+    productLines: [{ productLineId: 'nn', role: 'guest' as PlatformRole, appStoreRelease: false }],
   });
   const [platformConfig, setPlatformConfig] = useState<PlatformConfigStatus | null>(null);
   const [platformConfigLoading, setPlatformConfigLoading] = useState(false);
@@ -345,7 +346,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const openCreateUserModal = () => {
     setEditingUser(null);
-    setUserForm({ username: '', password: '', role: 'guest', active: true, productLines: [{ productLineId: 'nn', role: 'guest' }] });
+    setUserForm({ username: '', password: '', role: 'guest', active: true, productLines: [{ productLineId: 'nn', role: 'guest', appStoreRelease: false }] });
     setUserModalOpen(true);
   };
 
@@ -356,7 +357,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
       password: '',
       role: user.role,
       active: user.active,
-      productLines: user.productLines.map((item) => ({ productLineId: item.id, role: item.role })),
+      productLines: user.productLines.map((item) => ({ productLineId: item.id, role: item.role, appStoreRelease: Boolean(item.appStoreRelease) })),
     });
     setUserModalOpen(true);
   };
@@ -754,7 +755,10 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
         savedProductLine = created.data || null;
       }
       const services = await authApi.updateProductLineServices(targetProductLineId, productLineServicePayload());
-      try {
+      const iosApplication = savedProductLine?.applications?.find((app) => app.platform === 'ios');
+      if (!iosApplication || !hasApplicationServices(iosApplication, ['podx'])) {
+        message.success('产品线配置已保存；可在“应用接入”中为每个应用选配服务');
+      } else try {
         const syncResult = await syncSavedProductLinePodxConfig(targetProductLineId);
         const action = editingProductLine ? '产品线配置已保存' : '产品线已创建';
         message.success(syncResult?.configPath ? `${action}，已同步到 ${syncResult.configPath}` : `${action}，已同步 podx.config.yml`);
@@ -987,7 +991,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         type="info"
                         showIcon
                         message="统一管理 podx.config.yml"
-                        description="podx 与 mgit 共用当前产品线的工程、仓库和发布配置；保存后会统一同步到主工程根目录。"
+                        description="组件库可在应用接入中跨产品线共用。此处 Nexus 与 Specs 配置维护本产品线原有库；绑定其他库后使用来源库资源。mgit 工程和发布配置仍属于当前产品线；启用 Podx 后，保存配置会同步到主工程根目录；未启用时仅保存资源配置。"
                       />
                       <Card size="small" title="podx · CocoaPods 与本地组件">
                         <Space direction="vertical" size={12} style={{ width: '100%' }}>
@@ -1785,7 +1789,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
         showIcon
         style={{ marginBottom: 16 }}
         message="角色权限说明"
-        description="游客可查看常用服务；测试可发布蒲公英/TestFlight 并执行自动质检；研发在测试权限基础上可维护 Pods 组件；产品运营可发布苹果商店包；管理员支持所有功能和配置管理。"
+        description="游客可查看常用服务；测试可发布蒲公英/TestFlight 并执行自动质检；研发在测试权限基础上可维护组件库，并可按产品线单独授权发布应用商店；产品运营可发布苹果商店包；管理员支持所有功能和配置管理。"
       />
       <Table<PlatformUser>
         rowKey="id"
@@ -1805,7 +1809,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
             key: 'productLines',
             render: (_: PlatformUser['productLines'], record) => record.role === 'admin'
               ? <Tag color="gold">全平台管理员</Tag>
-              : <Space size={[4, 4]} wrap>{record.productLines.map((item) => <Tag key={item.id}>{item.name} · {{ guest: '游客', tester: '测试', developer: '研发', product: '产品运营', admin: '管理员' }[item.role]}</Tag>)}</Space>,
+              : <Space size={[4, 4]} wrap>{record.productLines.map((item) => <Tag key={item.id}>{item.name} · {{ guest: '游客', tester: '测试', developer: '研发', product: '产品运营', admin: '管理员' }[item.role]}{item.role === 'developer' && item.appStoreRelease ? ' · 可发布应用商店' : ''}</Tag>)}</Space>,
           },
           {
             title: '状态',
@@ -2359,13 +2363,13 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                 role,
                 productLines: role === 'admin'
                   ? current.productLines
-                  : current.productLines.map((item, index) => index === 0 ? { ...item, role } : item),
+                  : current.productLines.map((item, index) => index === 0 ? { ...item, role, appStoreRelease: role === 'developer' && item.appStoreRelease } : item),
               }))}
               style={{ width: '100%', marginTop: 6 }}
               options={[
                 { label: '游客：普通用户，常用服务查看', value: 'guest' },
                 { label: '测试：蒲公英/TestFlight 发布、自动质检', value: 'tester' },
-                { label: '研发：测试权限 + Pods 增加/删除', value: 'developer' },
+                { label: '研发：测试权限 + 组件库维护', value: 'developer' },
                 { label: '产品运营：苹果商店包发布', value: 'product' },
                 { label: '管理员：全部功能 + 配置管理', value: 'admin' },
               ]}
@@ -2381,7 +2385,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                   ...current,
                   productLines: ids.map((id) => current.productLines.find((item) => item.productLineId === id) || {
                     productLineId: id,
-                    role: 'guest' as PlatformRole,
+                    role: 'guest' as PlatformRole, appStoreRelease: false,
                   }),
                 }))}
                 options={productLines.filter((item) => item.active).map((item) => ({ label: item.name, value: item.id }))}
@@ -2390,14 +2394,14 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
               />
               <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
                 {userForm.productLines.map((membership) => (
-                  <Space key={membership.productLineId} style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <Space wrap key={membership.productLineId} style={{ width: '100%', justifyContent: 'space-between' }}>
                     <Text>{productLines.find((item) => item.id === membership.productLineId)?.name || membership.productLineId}</Text>
                     <Select
                       value={membership.role}
                       onChange={(role: PlatformRole) => setUserForm((current) => ({
                         ...current,
                         role: current.productLines[0]?.productLineId === membership.productLineId ? role : current.role,
-                        productLines: current.productLines.map((item) => item.productLineId === membership.productLineId ? { ...item, role } : item),
+                        productLines: current.productLines.map((item) => item.productLineId === membership.productLineId ? { ...item, role, appStoreRelease: role === 'developer' && item.appStoreRelease } : item),
                       }))}
                       style={{ width: 150 }}
                       options={[
@@ -2407,9 +2411,15 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                         { label: '产品运营', value: 'product' },
                       ]}
                     />
+                    {membership.role === 'developer' && <Checkbox
+                      aria-label={`${productLines.find((item) => item.id === membership.productLineId)?.name || membership.productLineId} 应用商店发布权限`}
+                      checked={membership.appStoreRelease}
+                      onChange={(event) => setUserForm((current) => ({ ...current, productLines: current.productLines.map((item) => item.productLineId === membership.productLineId ? { ...item, appStoreRelease: event.target.checked } : item) }))}
+                    >允许发布到应用商店</Checkbox>}
                   </Space>
                 ))}
               </Space>
+              <Text type="secondary">附加授权仅对勾选产品线的研发成员生效，包含 AppStore 发布、提交审核和取消审核；质量门禁与发布确认仍需通过。</Text>
             </div>
           )}
           <div>

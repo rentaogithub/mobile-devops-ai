@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "version": "1.0.0",
-  "description": "iOS 移动管理平台 - 前端",
+  "description": "移动管理平台 - 前端",
   "type": "module",
   "scripts": {
     "dev": "vite",

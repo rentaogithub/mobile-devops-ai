@@ -1,5 +1,8 @@
+import { hasCurrentApplicationServices, assertApplicationServices } from './ApplicationCapabilityService';
+import { ApplicationServiceId } from './ApplicationServiceCatalog';
+import { androidDeliveryService } from './AndroidDeliveryService';
 import { extractCrashInfo } from '../utils/crashLogParser';
-import { PlatformRole, PlatformUser } from './AuthService';
+import { authService, PlatformRole, PlatformUser } from './AuthService';
 import { assistantAttachmentService } from './AssistantAttachmentService';
 import historyService from './HistoryService';
 import { jenkinsAssistantService } from './JenkinsAssistantService';
@@ -10,9 +13,10 @@ import { SymbolizerService } from './SymbolizerService';
 import { changeImpactService } from './ChangeImpactService';
 import { workflowAIService } from './WorkflowAIService';
 import { workflowService } from './WorkflowService';
+import { deliveryReadinessService } from './DeliveryReadinessService';
 import { assistantInsightService } from './AssistantInsightService';
 import { apiRouteSearchService } from './ApiRouteSearchService';
-import { currentProjectId } from './ProductLineContext';
+import { currentProjectId, currentApplicationPlatform } from './ProductLineContext';
 import { operationalLogService } from './OperationalLogService';
 import { platformConfigService } from './PlatformConfigService';
 import { isMainAppDSYM } from './DSYMMatcherService';
@@ -39,6 +43,7 @@ export interface AssistantTool {
   parameters: Record<string, unknown>;
   role: PlatformRole;
   allowedRoles?: PlatformRole[];
+  platforms?: ('ios' | 'android')[];
   canExecute?: (args: Record<string, unknown>, context: AssistantToolContext) => true | string;
   riskLevel: AssistantRiskLevel;
   approvalsRequired: number;
@@ -135,6 +140,33 @@ async function symbolicateAttachment(args: { attachmentId: string; uuids?: strin
 
 const tools: AssistantTool[] = [
   {
+    name: 'android_readiness', domain: 'platform', platforms: ['android'], role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
+    description: '查询当前 Android 应用接入缺项、支持范围及待验收项。', parameters: objectSchema({}), execute: () => androidDeliveryService.readiness(),
+  },
+  {
+    name: 'android_list_runs', domain: 'cicd', platforms: ['android'], role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
+    description: '查询当前 Android 应用的持久化构建和 Smoke 任务。状态可能需要同步。', parameters: objectSchema({}), execute: () => androidDeliveryService.list(),
+  },
+  {
+    name: 'android_sync_run', domain: 'cicd', platforms: ['android'], role: 'tester', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 120_000,
+    description: '从 Jenkins 同步 Android 任务的实际状态和证据。', parameters: objectSchema({ runId: { type: 'string' } }, ['runId']), execute: (args) => androidDeliveryService.refresh(args.runId),
+  },
+  {
+    name: 'android_gate', domain: 'quality', platforms: ['android'], role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
+    description: '查询 Android 固定 APK 的内部下载门禁。仅代表安装启动 Smoke，不代表商店发布验收。', parameters: objectSchema({ runId: { type: 'string' } }, ['runId']), execute: (args) => androidDeliveryService.gate(args.runId),
+  },
+  {
+    name: 'android_trigger_run', domain: 'cicd', platforms: ['android'], role: 'tester', riskLevel: 'confirm', approvalsRequired: 1, timeoutMs: 45_000, idempotent: true,
+    description: '触发当前 Android 应用固定 Commit 构建或指定源 APK 的安装启动 Smoke。请求键重试必须保持不变；安装使用配置的测试设备。',
+    parameters: objectSchema({ kind: { type: 'string', enum: ['build', 'smoke'] }, requestKey: { type: 'string' }, commit: { type: 'string' }, sourceRunId: { type: 'string' }, configurationRevision: { type: 'string' } }, ['kind', 'requestKey']),
+    preview: (args) => {
+      const ready = androidDeliveryService.readiness();
+      args.configurationRevision = ready.configurationRevision;
+      return { title: args.kind === 'build' ? 'Android APK 构建' : 'Android 安装启动 Smoke', ...args, application: ready.application };
+    },
+    execute: (args) => androidDeliveryService.trigger(args),
+  },
+  {
     name: 'assistant_capability_search', domain: 'platform', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
     description: '查询 AI 会话执行中心已同步的全服务能力目录，返回能力名称、服务域、权限、风险、入参、输出、来源和同步状态。',
     parameters: objectSchema({
@@ -142,11 +174,12 @@ const tools: AssistantTool[] = [
       domain: { type: 'string' },
       limit: { type: 'number', minimum: 1, maximum: 100 },
     }),
-    execute: (args) => assistantCapabilityDatasetService.searchCapabilities(
-      String(args.keyword || ''),
-      args.limit || 30,
-      args.domain ? [String(args.domain) as any] : undefined,
-    ),
+    execute: (args, context) => {
+      const result = assistantCapabilityDatasetService.searchCapabilities(String(args.keyword || ''), 100, args.domain ? [String(args.domain) as any] : undefined);
+      const allowed = new Set(assistantToolRegistry.listForUser(context.user).map((item) => item.name));
+      const rows = result.rows.filter((row) => row.toolName && allowed.has(row.toolName)).slice(0, args.limit || 30);
+      return { ...result, rows, total: rows.length, note: '仅展示当前应用已启用且当前角色可执行的工具。' };
+    },
   },
   {
     name: 'platform_cross_system_diagnosis', domain: 'platform', role: 'guest', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 180_000,
@@ -193,6 +226,12 @@ const tools: AssistantTool[] = [
     description: '获取移动研发质量中心概览、最新任务和最新问题。',
     parameters: objectSchema({ projectId: { type: 'string', description: '项目 ID，默认使用当前产品线' } }),
     execute: () => workflowService.overview(currentProjectId()),
+  },
+  {
+    name: 'workflow_delivery_readiness', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
+    description: '按 Jenkins 源构建号诊断研发交付链路，关联变更与产物、测试、Issue、回归候选、门禁预览和版本观察，返回证据缺口及下一步动作。依据已同步快照，不代表实时发布许可；unknown 不得解释为通过。',
+    parameters: objectSchema({ buildNumber: { type: 'string' } }, ['buildNumber']),
+    execute: (args) => deliveryReadinessService.diagnose(args.buildNumber),
   },
   {
     name: 'workflow_list_issues', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
@@ -433,14 +472,14 @@ const tools: AssistantTool[] = [
   },
   {
     name: 'cicd_trigger_release', domain: 'cicd', role: 'admin', allowedRoles: ['tester', 'developer', 'product', 'admin'], riskLevel: 'high', approvalsRequired: 2, timeoutMs: 60_000, idempotent: true,
-    description: '触发 Jenkins 受控发布。测试/研发/管理员只能发布 Pgyer、TestFlight；产品运营/管理员可以发布 AppStore。必须指定质量门禁源构建并二次确认；Apple 渠道验证密码在审批界面单独输入，不进入模型上下文。',
+    description: '触发 Jenkins 受控发布。测试/研发/管理员可发布 Pgyer、TestFlight；产品运营/管理员及获当前产品线单独授权的研发可发布 AppStore。必须指定质量门禁源构建并二次确认；Apple 渠道验证密码在审批界面单独输入，不进入模型上下文。',
     parameters: objectSchema({
       branch: { type: 'string' }, deployTarget: { type: 'string', enum: ['Pgyer', 'TestFlight', 'AppStore'] }, gateBuildNumber: { type: 'number' }, releaseGateOverrideReason: { type: 'string' },
     }, ['branch', 'deployTarget', 'gateBuildNumber']),
     canExecute: (args, context) => {
       const deployTarget = String(args.deployTarget || '');
       if (deployTarget === 'AppStore') {
-        return ['product', 'admin'].includes(context.user.role) || '苹果商店包发布需要产品运营或管理员权限';
+        return authService.canReleaseAppStore(context.user.id) || '苹果商店包发布需要产品运营或管理员权限，研发需获得当前产品线的单独授权';
       }
       if (deployTarget === 'Pgyer' || deployTarget === 'TestFlight') {
         return ['tester', 'developer', 'admin'].includes(context.user.role) || '蒲公英 / TestFlight 发布需要测试、研发或管理员权限';
@@ -524,6 +563,25 @@ function validateType(value: unknown, type: string) {
   return typeof value === type;
 }
 
+function toolServices(tool: AssistantTool): ApplicationServiceId[] {
+  const name = tool.name;
+  if (name === 'android_readiness') return [];
+  if (name.startsWith('android_')) return name === 'android_gate' ? ['jenkins', 'quality', 'devices'] : ['jenkins'];
+  if (name === 'platform_cross_system_diagnosis' || name === 'quality_daily_report') return ['sentry', 'jenkins', 'quality', 'logs', 'workflow'];
+  if (name === 'assistant_capability_search') return [];
+  if (name.startsWith('sentry_') || name === 'crash_compare_versions') return ['sentry'];
+  if (name.startsWith('crash_') || name.startsWith('dsym_')) return ['dsym'];
+  if (name.startsWith('pods_')) return ['podx'];
+  if (name.startsWith('logs_')) return ['logs'];
+  if (['api_search', 'routes_search', 'cross_platform_search'].includes(name)) return ['api-docs'];
+  if (name.startsWith('cicd_')) return name === 'cicd_trigger_release' || name === 'cicd_verify_build' ? ['jenkins', 'quality'] : ['jenkins'];
+  if (name.startsWith('quality_') || name === 'task_track') return ['quality', 'jenkins', 'devices'];
+  if (name === 'workflow_change_impact') return ['workflow', 'podx'];
+  if (name === 'workflow_generate_xcuitest') return ['workflow', 'devices'];
+  if (name.startsWith('workflow_')) return ['workflow'];
+  return [];
+}
+
 export class AssistantToolRegistry {
   syncCapabilityDataset() {
     const items = tools.map((tool) => {
@@ -559,7 +617,7 @@ export class AssistantToolRegistry {
   }
 
   listForUser(user: PlatformUser) {
-    return tools.filter((tool) => hasToolRole(user, tool));
+    return tools.filter((tool) => hasToolRole(user, tool) && hasCurrentApplicationServices(...toolServices(tool)) && (tool.platforms || ['ios']).includes(currentApplicationPlatform()));
   }
 
   get(name: string) {
@@ -569,11 +627,15 @@ export class AssistantToolRegistry {
   assertAllowed(name: string, user: PlatformUser) {
     const tool = this.get(name);
     if (!tool) throw new Error(`未注册工具：${name}`);
+    if (!(tool.platforms || ['ios']).includes(currentApplicationPlatform())) throw new Error('当前应用平台不支持此工具');
+    assertApplicationServices(...toolServices(tool));
     if (!hasToolRole(user, tool)) throw new Error(`当前角色无权调用 ${name}，需要 ${roleListText(allowedRolesFor(tool))} 权限`);
     return tool;
   }
 
   assertExecutable(tool: AssistantTool, args: Record<string, unknown>, context: AssistantToolContext) {
+    this.assertAllowed(tool.name, context.user);
+    if (tool.name === 'android_trigger_run' && args.kind === 'smoke') assertApplicationServices('quality', 'devices');
     const result = tool.canExecute?.(args, context) ?? true;
     if (result !== true) throw new Error(result);
   }
