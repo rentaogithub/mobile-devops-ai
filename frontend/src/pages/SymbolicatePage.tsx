@@ -11,6 +11,7 @@ import {
   Spin,
   Alert,
   Select,
+  AutoComplete,
   Collapse,
   Modal,
 } from 'antd';
@@ -24,7 +25,7 @@ import {
   ShareAltOutlined,
 } from '@ant-design/icons';
 import type { UploadProps } from 'antd';
-import { symbolicateApi, dsymApi, authApi } from '../services/api';
+import { symbolicateApi, dsymApi, authApi, jenkinsApi } from '../services/api';
 import { DSYMInfo, CrashAnalysis } from '../types';
 import APIKeyInput from '../components/APIKeyInput';
 import AIAnalysisPanel from '../components/AIAnalysisPanel';
@@ -41,6 +42,9 @@ export default function SymbolicatePage() {
   const [crashLog, setCrashLog] = useState('');
   const [symbolicating, setSymbolicating] = useState(false);
   const [selectedUUIDs, setSelectedUUIDs] = useState<string[]>([]);
+  const [mainAppBranches, setMainAppBranches] = useState<string[]>([]);
+  const [mainAppBranchLoading, setMainAppBranchLoading] = useState(false);
+  const [selectedMainAppBranch, setSelectedMainAppBranch] = useState<string | undefined>(undefined);
   const [selectedMainAppVersion, setSelectedMainAppVersion] = useState<string | undefined>(undefined);
   const [dsymList, setDsymList] = useState<DSYMInfo[]>([]);
   const [apiKey, setApiKey] = useState(() => {
@@ -81,6 +85,18 @@ export default function SymbolicatePage() {
     authApi.getRuntimeConfigStatus()
       .then((response) => setServerAIKeyConfigured(Boolean(response.data?.aiApiKeyConfigured)))
       .catch(() => setServerAIKeyConfigured(false));
+
+    setMainAppBranchLoading(true);
+    jenkinsApi.listBranches()
+      .then((response) => {
+        if (response.success && response.data) {
+          setMainAppBranches(response.data);
+        }
+      })
+      .catch((error) => {
+        console.warn('加载主工程分支失败', error);
+      })
+      .finally(() => setMainAppBranchLoading(false));
   }, []);
 
   useEffect(() => {
@@ -243,6 +259,32 @@ export default function SymbolicatePage() {
     }
   };
 
+  const extractVersionFromBranch = (branch?: string) => {
+    return String(branch || '')
+      .trim()
+      .replace(/^origin\//, '')
+      .match(/^release[_/](\d+(?:\.\d+){2,})$/)?.[1];
+  };
+
+  const handleMainAppBranchChange = (branch: string | undefined) => {
+    const normalizedBranch = String(branch || '').trim().replace(/^origin\//, '') || undefined;
+    setSelectedMainAppBranch(normalizedBranch);
+
+    const branchVersion = extractVersionFromBranch(normalizedBranch);
+    if (!branchVersion) {
+      return;
+    }
+
+    if (mainAppVersions.includes(branchVersion)) {
+      handleMainAppVersionChange(branchVersion, true);
+      message.success(`已按分支 ${normalizedBranch} 选择主应用版本 ${branchVersion}`);
+    } else {
+      message.warning(`分支 ${normalizedBranch} 对应版本 ${branchVersion} 未找到 dSYM，请手动选择主应用版本`);
+      setSelectedMainAppVersion(undefined);
+      setSelectedUUIDs([]);
+    }
+  };
+
   // 获取主应用版本列表（去重，并清理空格）
   const mainAppVersions = Array.from(
     new Set(
@@ -269,7 +311,7 @@ export default function SymbolicatePage() {
     let uuidsToUse = selectedUUIDs;
 
     // 如果提取到了版本号，且与当前选择的不同，强制重新选择
-    if (extractedVersion && extractedVersion !== selectedMainAppVersion) {
+    if (extractedVersion && extractedVersion !== selectedMainAppVersion && !selectedMainAppBranch) {
       versionToUse = undefined;
     }
 
@@ -354,8 +396,10 @@ export default function SymbolicatePage() {
       setErrorDetail(null);
       setCanAnalyze(false);
 
-      // 只进行符号化，不传递 API Key
-      const response = await symbolicateApi.symbolicate(crashLog, uuidsToUse);
+      const response = await symbolicateApi.symbolicate(crashLog, uuidsToUse, {
+        saveHistory: false,
+        mainAppBranch: selectedMainAppBranch,
+      });
 
       if (response.success && response.data) {
         // 检查是否有AI分析结果（兼容两种字段名）
@@ -652,6 +696,7 @@ export default function SymbolicatePage() {
     setCanAnalyze(false);
     setErrorDetail(null);
     setSelectedMainAppVersion(undefined);
+    setSelectedMainAppBranch(undefined);
     setSelectedUUIDs([]);
     setOriginalCrashFileName('');
   };
@@ -664,6 +709,7 @@ export default function SymbolicatePage() {
       setCanAnalyze(false);
       setErrorDetail(null);
       setSelectedMainAppVersion(undefined);
+      setSelectedMainAppBranch(undefined);
       setSelectedUUIDs([]);
       setOriginalCrashFileName(file.name);
       
@@ -677,8 +723,7 @@ export default function SymbolicatePage() {
         setSelectedUUIDs([]);
         message.success('文件读取成功');
         
-        // 设置一个标记，表示需要自动符号化
-        setAutoSymbolicate(true);
+        setAutoSymbolicate(false);
       };
       reader.readAsText(file);
       return false;
@@ -876,6 +921,36 @@ Binary Images:
           <div>
             <Space style={{ marginBottom: 8 }}>
               <Text strong>
+                选择主工程分支：
+              </Text>
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                release 分支会自动匹配对应主应用版本
+              </Text>
+            </Space>
+            <AutoComplete
+              style={{ width: '100%' }}
+              placeholder="选择主工程分支，例如 release/5.15.0"
+              allowClear
+              value={selectedMainAppBranch}
+              onChange={(value) => handleMainAppBranchChange(value)}
+              filterOption={(inputValue, option) =>
+                String(option?.label || '').toLowerCase().includes(inputValue.toLowerCase())
+              }
+              options={mainAppBranches.map((branch) => ({
+                value: branch,
+                label: branch,
+              }))}
+            />
+            {mainAppBranchLoading && (
+              <Text type="secondary" style={{ fontSize: '12px', marginTop: '4px', display: 'block' }}>
+                正在加载主工程分支...
+              </Text>
+            )}
+          </div>
+
+          <div>
+            <Space style={{ marginBottom: 8 }}>
+              <Text strong>
                 选择主应用版本 <Text type="danger">*</Text>：
               </Text>
               <Text type="secondary" style={{ fontSize: '12px' }}>
@@ -1009,9 +1084,11 @@ Binary Images:
           title="符号化结果"
           extra={
             <Space>
-              <Button icon={<ShareAltOutlined />} onClick={handleShare}>
-                分享
-              </Button>
+              {result.historyId && (
+                <Button icon={<ShareAltOutlined />} onClick={handleShare}>
+                  分享
+                </Button>
+              )}
               <Button icon={<DownloadOutlined />} onClick={handleDownload}>
                 下载
               </Button>

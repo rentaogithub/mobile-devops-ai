@@ -1073,11 +1073,17 @@ export const symbolicateApi = {
    */
   symbolicate: async (
     crashLog: string,
-    uuids?: string[]
+    uuids?: string[],
+    options?: {
+      saveHistory?: boolean;
+      mainAppBranch?: string;
+    }
   ): Promise<ApiResponse<SymbolicationResult>> => {
     const response = await api.post<ApiResponse<SymbolicationResult>>('/symbolicate', {
       crashLog,
       uuids,
+      saveHistory: options?.saveHistory,
+      mainAppBranch: options?.mainAppBranch,
     });
     return response.data;
   },

@@ -84,7 +84,9 @@ function upsertManualCrashGovernance(input: {
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    let { crashLog, uuid, uuids, apiKey } = req.body;
+    let { crashLog, uuid, uuids, apiKey, saveHistory, mainAppBranch } = req.body;
+    const shouldSaveHistory = saveHistory !== false;
+    const mainBranch = String(mainAppBranch || '').trim();
 
     if (!crashLog) {
       throw new AppError(ErrorCode.INVALID_CRASH_LOG, '未提供崩溃日志', 400);
@@ -143,45 +145,47 @@ router.post('/', async (req: Request, res: Response) => {
       }
     }
 
-    // 先检查历史记录（持久化存储）
-    logger.info('检查历史记录', { 
-      crashLogLength: crashLog.length,
-      targetUUIDs
-    });
-    
-    const historyRecord = historyService.findDuplicateHistory(crashLog, targetUUIDs);
-    // 检查历史记录是否有效，避免修复后仍返回旧的 NNIM <unknown> 结果。
-    const isHistoryValid = historyRecord &&
-      hasValidSymbolicationResult(crashLog, historyRecord.symbolicatedLog);
-    
-    if (historyRecord && isHistoryValid) {
-      logger.info('✓ 从历史记录中找到相同的崩溃日志', { 
-        historyId: historyRecord.id,
-        appVersion: historyRecord.appVersion,
-        hasAIAnalysis: !!historyRecord.aiAnalysis,
-        fromHistory: true
+    if (shouldSaveHistory) {
+      // 先检查历史记录（持久化存储）
+      logger.info('检查历史记录', { 
+        crashLogLength: crashLog.length,
+        targetUUIDs,
       });
-      upsertManualCrashGovernance({
-        historyId: historyRecord.id,
-        appVersion: historyRecord.appVersion,
-        crashLog,
-        symbolicatedLog: historyRecord.symbolicatedLog,
-        usedUuids: targetUUIDs,
-      });
-
-      // 直接返回历史记录中的结果
-      res.json({
-        success: true,
-        data: {
-          originalLog: crashLog,
-          symbolicatedLog: historyRecord.symbolicatedLog,
-          matchedUUIDs: targetUUIDs,
+      
+      const historyRecord = historyService.findDuplicateHistory(crashLog, targetUUIDs);
+      // 检查历史记录是否有效，避免修复后仍返回旧的 NNIM <unknown> 结果。
+      const isHistoryValid = historyRecord &&
+        hasValidSymbolicationResult(crashLog, historyRecord.symbolicatedLog);
+      
+      if (historyRecord && isHistoryValid) {
+        logger.info('✓ 从历史记录中找到相同的崩溃日志', { 
+          historyId: historyRecord.id,
+          appVersion: historyRecord.appVersion,
+          hasAIAnalysis: !!historyRecord.aiAnalysis,
           fromHistory: true,
-          aiAnalysis: historyRecord.aiAnalysis,
-          historyId: historyRecord.id, // 返回历史记录ID
-        },
-      });
-      return;
+        });
+        upsertManualCrashGovernance({
+          historyId: historyRecord.id,
+          appVersion: historyRecord.appVersion,
+          crashLog,
+          symbolicatedLog: historyRecord.symbolicatedLog,
+          usedUuids: targetUUIDs,
+        });
+
+        // 直接返回历史记录中的结果
+        res.json({
+          success: true,
+          data: {
+            originalLog: crashLog,
+            symbolicatedLog: historyRecord.symbolicatedLog,
+            matchedUUIDs: targetUUIDs,
+            fromHistory: true,
+            aiAnalysis: historyRecord.aiAnalysis,
+            historyId: historyRecord.id, // 返回历史记录ID
+          },
+        });
+        return;
+      }
     }
 
     // 检查缓存（内存存储）
@@ -200,7 +204,7 @@ router.post('/', async (req: Request, res: Response) => {
       });
 
       // 先尝试查找是否已有历史记录
-      const existingHistory = historyService.findDuplicateHistory(crashLog, targetUUIDs);
+      const existingHistory = shouldSaveHistory ? historyService.findDuplicateHistory(crashLog, targetUUIDs) : null;
       
       if (existingHistory) {
         upsertManualCrashGovernance({
@@ -224,6 +228,21 @@ router.post('/', async (req: Request, res: Response) => {
           },
         });
       } else {
+        if (!shouldSaveHistory) {
+          res.json({
+            success: true,
+            data: {
+              originalLog: crashLog,
+              symbolicatedLog: cached.symbolicatedLog,
+              matchedUUIDs: cached.matchedUUIDs,
+              warning: cached.warning,
+              fromCache: true,
+              aiAnalysis: cached.aiAnalysis,
+            },
+          });
+          return;
+        }
+
         // 如果没有历史记录，先保存再返回
         try {
           // 使用缓存中的版本号，如果没有则查找
@@ -356,6 +375,7 @@ router.post('/', async (req: Request, res: Response) => {
     // 保存符号化历史记录
     let aiAnalysis = undefined;
     let historyId: number | undefined = undefined;
+    if (shouldSaveHistory) {
     try {
       const savedRecord = await historyService.saveHistory({
         appVersion,
@@ -393,6 +413,13 @@ router.post('/', async (req: Request, res: Response) => {
     } catch (error: any) {
       logger.error('保存符号化历史记录失败', { error: error.message });
       // 不影响符号化结果的返回
+    }
+    } else {
+      logger.info('本次为临时手动符号化，不写入历史记录', {
+        appVersion,
+        mainAppBranch: mainBranch || undefined,
+        uuids: targetUUIDs,
+      });
     }
 
     // 保存到缓存（包含版本号和AI分析）
