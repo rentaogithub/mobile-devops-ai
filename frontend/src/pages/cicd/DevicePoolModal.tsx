@@ -1,18 +1,18 @@
 import { Alert, Button, Card, Col, Input, Modal, Popconfirm, Row, Space, Typography } from 'antd';
 import { DeleteOutlined, PlusOutlined } from '@ant-design/icons';
-import { SonicDevicePool } from '../../services/api';
+import { QualityDevicePool } from '../../services/api';
 
 const { Text } = Typography;
 
 interface DevicePoolModalProps {
   open: boolean;
   saving?: boolean;
-  drafts: SonicDevicePool[];
+  drafts: QualityDevicePool[];
   hasRunningQualityBuild?: boolean;
   cleaningQualityWda?: string | null;
-  devicePoolDevicesText: (pool: SonicDevicePool) => string;
-  parseDevicePoolDevices: (text: string) => NonNullable<SonicDevicePool['devices']>;
-  onUpdateDraft: (index: number, patch: Partial<SonicDevicePool>) => void;
+  devicePoolDevicesText: (pool: QualityDevicePool) => string;
+  parseDevicePoolDevices: (text: string) => NonNullable<QualityDevicePool['devices']>;
+  onUpdateDraft: (index: number, patch: Partial<QualityDevicePool>) => void;
   onAddDraft: () => void;
   onRemoveDraft: (index: number) => void;
   onCleanupWda: () => void;
@@ -124,7 +124,6 @@ export function DevicePoolModal({
                     onUpdateDraft(index, {
                       devices,
                       deviceId: devices[0]?.udid || '',
-                      groupId: undefined,
                     });
                   }}
                 />

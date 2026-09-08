@@ -1,3 +1,4 @@
+import { readQualityDevicePools } from '../services/QualityDevicePoolConfig';
 import '../config/env';
 import { Router, Request, Response } from 'express';
 import axios from 'axios';
@@ -28,7 +29,6 @@ function defaultQaJobName() {
 }
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
-const LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE = 'sonic-device-pools.json';
 const LOCAL_ARTIFACT_ROUTE = '/api/quality/artifacts/local';
 const ACTIVE_TASK_STATUSES = new Set(['created', 'queued', 'preparing', 'installing', 'running', 'collecting', 'analyzing', 'reporting', 'notifying']);
 const QUALITY_ORPHAN_TASK_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 10 * 60 * 1000);
@@ -181,14 +181,7 @@ function readXmlParameter(xml: string, name: string) {
 function getQualityDevicePools() {
   try {
     const scopedPath = productLineDataPath(QUALITY_DEVICE_POOLS_CONFIG_FILE);
-    const legacyQualityPath = path.join(DATA_DIR, QUALITY_DEVICE_POOLS_CONFIG_FILE);
-    const legacySonicPath = path.join(DATA_DIR, LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE);
-    const configPath = fs.existsSync(legacyQualityPath)
-      ? legacyQualityPath
-      : (fs.existsSync(legacySonicPath) ? legacySonicPath : scopedPath);
-    if (!fs.existsSync(configPath)) return DEFAULT_QUALITY_DEVICE_POOLS;
-    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    const pools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
+    const pools = readQualityDevicePools(DATA_DIR, scopedPath)
       .map((pool: any) => ({
         ...pool,
         devices: (Array.isArray(pool?.devices) ? pool.devices : [])
@@ -209,7 +202,7 @@ function getPlatformRootDir() {
   const configured = String(process.env.NN_IOS_PLATFORM_DIR || '').trim();
   if (configured) return configured;
   const candidates = [process.cwd(), path.resolve(process.cwd(), '..')];
-  return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'scripts/sonic/ios-quality.sh'))) || process.cwd();
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'scripts/ios/ios-quality.sh'))) || process.cwd();
 }
 
 function productLineBusinessMapPath() {
@@ -247,7 +240,7 @@ function hashText(value: string) {
 }
 
 function deviceKeyFromPool(pool: any, fallback: string) {
-  return String(pool?.deviceId || pool?.groupId || fallback || '').trim();
+  return String(pool?.deviceId || fallback || '').trim();
 }
 
 function deviceKeysFromPool(pool: any, fallback: string) {

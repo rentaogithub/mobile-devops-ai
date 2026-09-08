@@ -23,7 +23,6 @@ import pairingRoutes from './routes/pairing.routes';
 import sentryProxyRoutes from './routes/sentryProxy.routes';
 import sentryAnalysisRoutes from './routes/sentryAnalysis.routes';
 import watermarkRoutes from './routes/watermark.routes';
-import sonicProxyRoutes from './routes/sonicProxy.routes';
 import opProxyRoutes from './routes/opProxy.routes';
 import userQueryRecordsRoutes from './routes/userQueryRecords.routes';
 import feedbackLogRoutes from './routes/feedbackLog.routes';
@@ -71,8 +70,6 @@ sentryProxyPaths.forEach((proxyPath) => app.use(proxyPath, productLineContextMid
 app.use('/op', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
 app.use('/jeecg-boot', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
 app.use('/sys', productLineContextMiddleware, requireApplicationServices('logs'), opProxyRoutes);
-app.use('/sonic-admin', productLineContextMiddleware, requireApplicationPlatform('ios'), requireApplicationServices('devices'), sonicProxyRoutes);
-app.use('/sonic-api', productLineContextMiddleware, requireApplicationPlatform('ios'), requireApplicationServices('devices'), sonicProxyRoutes);
 // iOS Profile Service 回调是签名/原始请求体，必须在全局 body parser 前处理。
 app.use('/api/apple-devices', appleDeviceRoutes);
 app.use(express.json({ limit: '10mb' }));
@@ -236,6 +233,9 @@ app.use('/api/api-docs', applicationAccess, apiDocsRoutes);
 app.use('/api/workflow', applicationAccess, requireApplicationPlatform('ios'), workflowRoutes);
 app.use('/api/assistant', applicationAccess, assistantRoutes);
 app.use('/api/device-control', applicationAccess, requireApplicationPlatform('ios'), deviceControlRoutes);
+
+// Unknown API paths must remain JSON errors instead of falling through to the SPA.
+app.use('/api', notFoundHandler);
 
 // 生产环境：serve 前端静态文件
 const frontendDist = path.join(__dirname, '../../frontend/dist');

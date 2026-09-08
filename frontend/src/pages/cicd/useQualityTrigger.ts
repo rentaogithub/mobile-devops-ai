@@ -1,9 +1,9 @@
 import { message } from 'antd';
 
-import { JenkinsBuild, JenkinsQualityListResult, JenkinsQualitySuite, SonicDevicePool, jenkinsApi } from '../../services/api';
+import { JenkinsBuild, JenkinsQualityListResult, JenkinsQualitySuite, QualityDevicePool, jenkinsApi } from '../../services/api';
 import { PRODUCTION_BUNDLE_ID } from './qualityOptions';
 
-type QualityDevice = NonNullable<SonicDevicePool['devices']>[number];
+type QualityDevice = NonNullable<QualityDevicePool['devices']>[number];
 
 interface QualityTriggerForm {
   build: JenkinsBuild | null;
@@ -19,7 +19,7 @@ interface QualityTriggerForm {
 interface UseQualityTriggerParams {
   canUseQuality: boolean;
   form: QualityTriggerForm;
-  selectedPool?: SonicDevicePool;
+  selectedPool?: QualityDevicePool;
   availableDevices: QualityDevice[];
   qualityData?: JenkinsQualityListResult | null;
   onSubmittingChange: (submitting: boolean) => void;

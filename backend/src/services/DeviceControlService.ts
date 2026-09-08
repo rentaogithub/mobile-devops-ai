@@ -684,6 +684,7 @@ export class DeviceControlService {
     const home = os.homedir();
     const candidates = [
       configured,
+      // Read-only compatibility with existing local WDA installations; no agent is started.
       path.join(home, '工作/sonic-agent/WebDriverAgent/WebDriverAgent.xcodeproj'),
       path.join(home, '工作/sonic-agent/sonic-ios-webdriveragent/WebDriverAgent.xcodeproj'),
       path.join(home, '工作/sonic-agent/plugins/WebDriverAgent/WebDriverAgent.xcodeproj'),

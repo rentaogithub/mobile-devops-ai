@@ -117,12 +117,6 @@ export default defineConfig(async () => {
           secure: false,
           timeout: 600000,
         },
-        '^/sonic-(admin|api)(?=/|$)': {
-          target: backendTarget,
-          changeOrigin: false,
-          secure: false,
-          timeout: 600000,
-        },
         '/ws': {
           target: backendWsTarget,
           ws: true,

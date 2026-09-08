@@ -2,10 +2,10 @@
 
 ## 自动质检
 
-日常自动质检默认走打包机本机 USB 真机，不依赖 Sonic Server/Web。Jenkins `nn-auto-quality` 调用：
+日常自动质检默认走打包机本机 USB 真机。Jenkins `nn-auto-quality` 调用：
 
 ```bash
-sh scripts/sonic/ios-quality.sh
+sh scripts/ios/ios-quality.sh
 ```
 
 脚本会按顺序执行：
@@ -20,18 +20,18 @@ Jenkins `nn-auto-quality` 的 `Execute shell` 不写死平台目录。平台触�
 ```bash
 set -e
 PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
-if [ -z "$PLATFORM_DIR" ] && [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE/scripts/sonic/ios-quality.sh" ]; then
+if [ -z "$PLATFORM_DIR" ] && [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE/scripts/ios/ios-quality.sh" ]; then
   PLATFORM_DIR="$WORKSPACE"
 fi
-if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh" ]; then
+if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/ios/ios-quality.sh" ]; then
   echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
-  echo "Expected file: $NN_IOS_PLATFORM_DIR/scripts/sonic/ios-quality.sh"
+  echo "Expected file: $NN_IOS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
   echo "When triggered by nn-ios-platform, this parameter is passed automatically."
   echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
   exit 2
 fi
 cd "$PLATFORM_DIR"
-bash scripts/sonic/ios-quality.sh
+bash scripts/ios/ios-quality.sh
 ```
 
 如果平台部署目录变化，不需要改 Jenkins Job；重启/重新启动平台服务后，平台会按当前服务实际目录重新传参。
@@ -56,7 +56,7 @@ bash scripts/sonic/ios-quality.sh
 | `WDA_URL` | Monkey 测试使用的 WebDriverAgent 地址，默认 `http://127.0.0.1:8100` |
 | `WDA_AUTO_START` | Monkey 测试前自动启动 WebDriverAgent，默认 `1` |
 | `WDA_AUTO_INSTALL` | 找不到 WebDriverAgent.xcodeproj 时自动安装/检测 Appium XCUITest Driver，默认 `1` |
-| `WDA_PROJECT_PATH` | 可选：WebDriverAgent.xcodeproj 路径，留空时自动查找 Sonic Agent / Appium 常见目录 |
+| `WDA_PROJECT_PATH` | 可选：WebDriverAgent.xcodeproj 路径，留空时自动查找 Appium 常见目录或显式 WDA_PROJECT_PATH |
 | `WDA_START_TIMEOUT_SECONDS` | 等待 WebDriverAgent 启动的最长秒数，默认 `300` |
 | `WDA_DEVELOPMENT_TEAM` | 可选：WebDriverAgentRunner 签名 Team ID，留空使用 WDA 工程默认配置 |
 | `WDA_BUNDLE_ID` | 可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID |
@@ -100,14 +100,14 @@ xcrun devicectl manage pair --device <UDID>
 也可以直接使用仓库脚本完成配对和启动：
 
 ```bash
-sh scripts/sonic/sonic.sh ios-pair
+sh scripts/ios/pair-and-launch-ios.sh
 ```
 
 指定设备或 Bundle ID：
 
 ```bash
-sh scripts/sonic/sonic.sh ios-pair 00008101-0015192E0178001E
-sh scripts/sonic/sonic.sh ios-pair 00008101-0015192E0178001E com.nndev.im
+sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E
+sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E com.nndev.im
 ```
 
 ### 同步 Jenkins Job
@@ -143,27 +143,3 @@ Jenkins 应启用本地账号和 Matrix Authorization：匿名用户只保留 Je
 平台管理员密码和 Jenkins 本地账号密码是两个独立的密码库：首次部署可设置为相同值，但以后在平台修改密码时，需要同时在 Jenkins 账号设置中更新，不应在两个系统间传递或记录明文密码。
 
 `ACTION=status` 会把平台作为应当处于运行状态的健康检查：前端或后端任一不可用时，Jenkins 构建返回失败。`stop` 操作使用反向检查，只有前后端都已停止才会返回成功。
-
-## Sonic 可选诊断
-
-Sonic 现在是可选扩展能力，不随平台默认启动。需要排查 Sonic 时再使用统一入口：
-
-```bash
-sh scripts/sonic/sonic.sh start
-sh scripts/sonic/sonic.sh check
-sh scripts/sonic/sonic.sh stop
-```
-
-`scripts/sonic/sonic.sh` 会调度下面这些内部子脚本：
-
-| 脚本 | 用途 |
-| --- | --- |
-| `scripts/sonic/bootstrap.sh` | 一键启动 Sonic Server/Web + Agent，并输出诊断 |
-| `scripts/sonic/init-stack-env.sh` | 初始化 `deploy/sonic/.env` |
-| `scripts/sonic/start-stack.sh` | 启动 Sonic Server/Web Docker 服务 |
-| `scripts/sonic/prepare-agent.sh` | 下载/解压 Sonic Agent，生成 `start.sh` |
-| `scripts/sonic/start-agent.sh` | 启动 Sonic Agent |
-| `scripts/sonic/check.sh` | 诊断 Sonic Server/Web、平台代理和 Agent 线索 |
-| `scripts/sonic/ios-quality.sh` | Jenkins 本机真机自动质检执行脚本 |
-
-除非要单独排查某一层，平时不要直接调用内部子脚本。

@@ -10,10 +10,6 @@
   "scripts": {
     "ensure:native": "node scripts/run-with-supported-node.mjs ensure:native:actual",
     "ensure:native:actual": "node scripts/ensure-native-deps.mjs",
-    "start:sonic": "bash scripts/sonic/sonic.sh start",
-    "sonic": "bash scripts/sonic/sonic.sh",
-    "sonic:check": "bash scripts/sonic/sonic.sh check",
-    "sonic:stop": "bash scripts/sonic/sonic.sh stop",
     "dev": "node scripts/run-with-supported-node.mjs dev:actual",
     "dev:actual": "npm run ensure:native && concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "npm run dev --workspace=backend",

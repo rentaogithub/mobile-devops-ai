@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1320" viewBox="0 0 1120 1320" role="img" aria-labelledby="title desc">
+<title id="title">移动管理平台 · 部署拓扑</title><desc id="desc">平台进程、Jenkins 调度与本机 WDA / USB 设备执行环境</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8c9caf"/></marker></defs>
+<rect width="1120" height="100%" fill="white"/>
+<g font-family="PingFang SC, Microsoft YaHei, sans-serif">
+<text x="40" y="48" font-size="30" text-anchor="start" fill="#172c47" font-weight="600">移动管理平台 · 部署拓扑</text>
+<text x="40" y="80" font-size="17" text-anchor="start" fill="#526780" font-weight="400">平台进程、Jenkins 调度与本机 WDA / USB 设备执行环境</text>
+<rect x="360" y="112" width="400" height="68" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="560.0" y="154.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">用户浏览器</text>
+<polyline points="560,180 560,220" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="580" y="207" font-size="16" text-anchor="start" fill="#526780" font-weight="400">Web / API</text>
+<rect x="40" y="220" width="1040" height="403" rx="12" fill="#edf4ff" fill-opacity="0.38" stroke="#95afd0" stroke-width="1.5"/>
+<text x="58" y="250" font-size="20" text-anchor="start" fill="#172c47" font-weight="600">平台宿主机 · iOS 本机能力依赖 macOS</text>
+<rect x="75" y="267" width="370" height="96" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="260.0" y="296.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">前端交付</text>
+<text x="260.0" y="325.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">开发：Vite 5173 代理</text>
+<text x="260.0" y="352.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">生产：Express 提供 frontend/dist</text>
+<rect x="560" y="267" width="485" height="96" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="802.5" y="310.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Node.js / Express</text>
+<text x="802.5" y="339.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">PORT 缺省 3000 · API / SSE / WS</text>
+<polyline points="445,315 560,315" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<path d="M803 363 L803 405" stroke="#8c9caf" stroke-width="1.7" fill="none"/>
+<path d="M231 405 L905 405" stroke="#8c9caf" stroke-width="1.7" fill="none"/>
+<polyline points="231,405 231,439" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="559,405 559,439" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="905,405 905,439" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="75" y="439" width="312" height="106" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="231.0" y="473.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">平台数据</text>
+<text x="231.0" y="502.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">SQLite + 本地资产目录</text>
+<text x="231.0" y="529.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">dSYM / 缓存 / 录制证据</text>
+<rect x="403" y="439" width="312" height="106" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="559.0" y="473.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">本机计算工具</text>
+<text x="559.0" y="502.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">atos / dwarfdump</text>
+<text x="559.0" y="529.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Rust 水印解码器</text>
+<rect x="731" y="439" width="314" height="106" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="888.0" y="473.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">直接真机控制</text>
+<text x="888.0" y="502.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Xcode / WDA / USB 工具</text>
+<text x="888.0" y="529.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">录制与草稿回放</text>
+<text x="75" y="590" font-size="18" text-anchor="start" fill="#526780" font-weight="400">平台通过 API 查询/提交外部任务；Jenkins 与平台可以同机，也可以单独部署。</text>
+<polyline points="160,623 160,687" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="180" y="661" font-size="16" text-anchor="start" fill="#526780" font-weight="400">构建 / 质检 API</text>
+<rect x="40" y="687" width="660" height="335" rx="12" fill="#fff6e7" fill-opacity="0.38" stroke="#cdb587" stroke-width="1.5"/>
+<text x="58" y="717" font-size="20" text-anchor="start" fill="#172c47" font-weight="600">Jenkins 执行环境</text>
+<rect x="75" y="735" width="590" height="68" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="370.0" y="777.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Jenkins · 队列 / Job / 归档</text>
+<polyline points="213,803 213,843" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="527,803 527,843" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="75" y="843" width="276" height="112" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="213.0" y="880.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">macOS Agent</text>
+<text x="213.0" y="909.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">iOS 构建</text>
+<text x="213.0" y="936.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">scripts/ios/ios-quality.sh</text>
+<rect x="389" y="843" width="276" height="112" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="527.0" y="880.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Android Agent</text>
+<text x="527.0" y="909.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Gradle / SDK / adb</text>
+<text x="527.0" y="936.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">runner.py</text>
+<text x="75" y="993" font-size="17" text-anchor="start" fill="#526780" font-weight="400">执行报告与包同时受 Jenkins 归档策略管理</text>
+<rect x="740" y="720" width="340" height="212" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="910.0" y="794.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">外部业务服务</text>
+<text x="910.0" y="823.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Git / Nexus / Specs</text>
+<text x="910.0" y="850.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Sentry / OP / 日志源</text>
+<text x="910.0" y="877.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Apple / 企业微信 / 模型 API</text>
+<polyline points="1045,315 1097,315 1097,826 1080,826" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<rect x="75" y="1083" width="312" height="90" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="231.0" y="1123.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">USB iOS 真机</text>
+<text x="231.0" y="1152.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">WDA / 设备工具</text>
+<rect x="427" y="1083" width="273" height="90" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="563.5" y="1123.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Android 真机</text>
+<text x="563.5" y="1152.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">指定 adb 序列号</text>
+<polyline points="213,1022 213,1083" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="527,1022 527,1050 564,1050 564,1083" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="905,545 905,653 715,653 715,1056 363,1056 363,1083" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="75" y="1225" font-size="18" text-anchor="start" fill="#172c47" font-weight="400">直接 WDA 录制与回放由平台发起；标准质检由 Jenkins 调度本机执行脚本。</text>
+<text x="40" y="1296" font-size="16" text-anchor="start" fill="#526780" font-weight="400">说明：展示代码支持的部署关系，实际主机、设备与外部服务可用性以运行环境验收为准。</text>
+</g></svg>

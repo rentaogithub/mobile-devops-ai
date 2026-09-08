@@ -93,17 +93,7 @@ main() {
 
 Docker/Colima 已安装并启动。
 
-下一步：
-1. 配置 Sonic 镜像:
-   deploy/sonic/.env
-
-2. 启动平台时会自动尝试启动 Sonic Server/Web:
-   npm run dev
-
-3. 或手动启动 Sonic Server/Web:
-   cd deploy/sonic
-   docker compose --env-file .env up -d
-
+可使用 docker compose 管理所需的容器服务。
 EOF
 }
 

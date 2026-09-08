@@ -1,12 +1,12 @@
 # Tasks: Formalize Recording Orchestration
 
-## Superpowers Implementation Plans
+## Consolidated Delivery Criteria
 
-- Increment A: `docs/superpowers/plans/2026-09-01-recording-source-and-persistent-drafts.md`
-- Increment B: `docs/superpowers/plans/2026-09-01-replay-flow-low-code-roundtrip.md`
-- Increment C: `docs/superpowers/plans/2026-09-01-versioned-quality-flow-assets.md`
+- Increment A: [Recording Source and Persistent Drafts](../../../docs/设计与演进.md#increment-a)
+- Increment B: [Low-code Round Trip](../../../docs/设计与演进.md#increment-b)
+- Increment C: [Published Versions and Quality Gates](../../../docs/设计与演进.md#increment-c)
 
-Execute the plans in A → B → C order. Each plan contains its own TDD cycles, exact interfaces, verification commands, and exit criteria; the checkboxes below remain the OpenSpec-level delivery ledger.
+Execute increments in A → B → C order. The consolidated document retains design constraints and exit criteria; detailed historical implementation plans remain available in Git history. The checkboxes below remain the authoritative OpenSpec-level delivery ledger.
 
 ## Increment A: Recording Source and Persistent Drafts
 

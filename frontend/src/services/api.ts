@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { assertQualityDevicePoolResponse } from './qualityDevicePoolResponse';
 import {
   DSYMInfo,
   SymbolicationResult,
@@ -3177,25 +3178,11 @@ export interface QualityTask {
   links?: Record<string, string>;
 }
 
-export interface SonicQualityStatus {
-  configured: boolean;
-  apiBase: string;
-  webUrl?: string;
-  apiProxyTarget?: string;
-  webProxyTarget?: string;
-  tokenConfigured: boolean;
-  projectId: string;
-  testPlanId: string;
-  reachable: boolean;
-  message: string;
-}
-
-export interface SonicDevicePool {
+export interface QualityDevicePool {
   label: string;
   value: string;
   description: string;
   deviceId?: string;
-  groupId?: string;
   devices?: Array<{
     label?: string;
     udid: string;
@@ -3218,8 +3205,8 @@ export interface SonicDevicePool {
   };
 }
 
-export interface SonicDevicePoolStatusResult {
-  pools: SonicDevicePool[];
+export interface QualityDevicePoolStatusResult {
+  pools: QualityDevicePool[];
   detectedDevices: Array<{
     udid: string;
     serial?: string;
@@ -3409,23 +3396,21 @@ export const jenkinsApi = {
     return response.data;
   },
 
-  getSonicQualityStatus: async (): Promise<ApiResponse<SonicQualityStatus>> => {
-    const response = await api.get<ApiResponse<SonicQualityStatus>>('/jenkins/nn/quality/sonic/status');
+  listQualityDevicePools: async (): Promise<ApiResponse<QualityDevicePool[]>> => {
+    const response = await api.get<ApiResponse<QualityDevicePool[]>>('/jenkins/nn/quality/device-pools');
+    assertQualityDevicePoolResponse(response.data, 'list');
     return response.data;
   },
 
-  listSonicDevicePools: async (): Promise<ApiResponse<SonicDevicePool[]>> => {
-    const response = await api.get<ApiResponse<SonicDevicePool[]>>('/jenkins/nn/quality/sonic/device-pools');
+  getQualityDevicePoolStatus: async (): Promise<ApiResponse<QualityDevicePoolStatusResult>> => {
+    const response = await api.get<ApiResponse<QualityDevicePoolStatusResult>>('/jenkins/nn/quality/device-pools/status');
+    assertQualityDevicePoolResponse(response.data, 'status');
     return response.data;
   },
 
-  getSonicDevicePoolStatus: async (): Promise<ApiResponse<SonicDevicePoolStatusResult>> => {
-    const response = await api.get<ApiResponse<SonicDevicePoolStatusResult>>('/jenkins/nn/quality/sonic/device-pools/status');
-    return response.data;
-  },
-
-  updateSonicDevicePools: async (devicePools: SonicDevicePool[]): Promise<ApiResponse<SonicDevicePool[]>> => {
-    const response = await api.put<ApiResponse<SonicDevicePool[]>>('/jenkins/nn/quality/sonic/device-pools', { devicePools });
+  updateQualityDevicePools: async (devicePools: QualityDevicePool[]): Promise<ApiResponse<QualityDevicePool[]>> => {
+    const response = await api.put<ApiResponse<QualityDevicePool[]>>('/jenkins/nn/quality/device-pools', { devicePools });
+    assertQualityDevicePoolResponse(response.data, 'list');
     return response.data;
   },
 

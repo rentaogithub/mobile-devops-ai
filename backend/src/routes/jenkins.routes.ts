@@ -1,3 +1,4 @@
+import { readQualityDevicePools } from '../services/QualityDevicePoolConfig';
 import { hasCurrentApplicationServices, assertApplicationServices } from '../services/ApplicationCapabilityService';
 import '../config/env';
 import { Router, Request, Response } from 'express';
@@ -90,7 +91,6 @@ const RELEASE_SYNC_SCAN_LIMIT = Math.min(80, Math.max(10, Number(process.env.JEN
 const RELEASE_SYNC_CONCURRENCY = Math.min(8, Math.max(1, Number(process.env.JENKINS_RELEASE_SYNC_CONCURRENCY || 4) || 4));
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
 const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
-const LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE = 'sonic-device-pools.json';
 const BUILD_FAILURE_ANALYSIS_CACHE_FILE = 'jenkins-build-failure-analysis.json';
 const BUILD_DSYM_SYNC_CACHE_FILE = 'jenkins-build-dsym-sync.json';
 const PACKAGE_SIZE_ANALYSIS_CACHE_FILE = 'jenkins-package-size-analysis.json';
@@ -351,19 +351,6 @@ function normalizeBusinessFlowPlan(input: any) {
   };
 }
 
-function getSonicConfig() {
-  const apiBase = (getRuntimeEnv('SONIC_API_BASE') || 'http://127.0.0.1:5173/sonic-api').replace(/\/$/, '');
-  return {
-    apiBase,
-    webUrl: (getRuntimeEnv('SONIC_WEB_URL') || 'http://127.0.0.1:5173/sonic-admin').replace(/\/$/, ''),
-    apiProxyTarget: (getRuntimeEnv('SONIC_API_PROXY_TARGET') || 'http://127.0.0.1:8094').replace(/\/$/, ''),
-    webProxyTarget: (getRuntimeEnv('SONIC_WEB_PROXY_TARGET') || 'http://127.0.0.1:3002').replace(/\/$/, ''),
-    token: getRuntimeEnv('SONIC_TOKEN') || '',
-    projectId: getRuntimeEnv('SONIC_PROJECT_ID') || currentProjectId(),
-    testPlanId: getRuntimeEnv('SONIC_TEST_PLAN_ID') || 'smoke',
-  };
-}
-
 function getPlatformRootDir() {
   const configured = String(getRuntimeEnv('NN_IOS_PLATFORM_DIR') || '').trim();
   if (configured) return configured;
@@ -373,7 +360,7 @@ function getPlatformRootDir() {
     path.resolve(process.cwd(), '..'),
   ];
   const matched = candidates.find((candidate) => (
-    fs.existsSync(path.join(candidate, 'scripts/sonic/ios-quality.sh'))
+    fs.existsSync(path.join(candidate, 'scripts/ios/ios-quality.sh'))
   ));
   return matched || process.cwd();
 }
@@ -500,7 +487,6 @@ interface QualityDevicePool {
   value: string;
   description: string;
   deviceId?: string;
-  groupId?: string;
   devices?: Array<{
     label?: string;
     udid: string;
@@ -564,7 +550,6 @@ function normalizeQualityDevicePool(pool: any): QualityDevicePool | null {
     value,
     description: String(pool?.description || '用于打包机本机 iOS 真机质检调度。').trim(),
     deviceId: pool?.deviceId ? String(pool.deviceId).trim() : undefined,
-    groupId: pool?.groupId ? String(pool.groupId).trim() : undefined,
     devices,
   };
 }
@@ -572,33 +557,10 @@ function normalizeQualityDevicePool(pool: any): QualityDevicePool | null {
 function getQualityDevicePools() {
   try {
     const scopedConfigPath = productLineDataPath(QUALITY_DEVICE_POOLS_CONFIG_FILE);
-    const legacyQualityPath = path.join(DATA_DIR, QUALITY_DEVICE_POOLS_CONFIG_FILE);
-    const legacySonicPath = path.join(DATA_DIR, LEGACY_SONIC_DEVICE_POOLS_CONFIG_FILE);
-    const configPath = fs.existsSync(legacyQualityPath)
-      ? legacyQualityPath
-      : (fs.existsSync(legacySonicPath) ? legacySonicPath : scopedConfigPath);
-    if (fs.existsSync(configPath)) {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-      const savedPools = (Array.isArray(config?.devicePools) ? config.devicePools : [])
-        .map(normalizeQualityDevicePool)
-        .filter(Boolean) as QualityDevicePool[];
-      if (savedPools.length > 0) {
-        return savedPools;
-      }
-    }
-  } catch {
-    // 配置文件损坏时回退到环境变量或默认配置。
-  }
-
-  const raw = String(process.env.SONIC_DEVICE_POOLS_JSON || '').trim();
-  if (!raw) return DEFAULT_QUALITY_DEVICE_POOLS;
-
-  try {
-    const parsed = JSON.parse(raw);
-    const pools = (Array.isArray(parsed) ? parsed : [])
+    const savedPools = readQualityDevicePools(DATA_DIR, scopedConfigPath)
       .map(normalizeQualityDevicePool)
       .filter(Boolean) as QualityDevicePool[];
-    return pools.length > 0 ? pools : DEFAULT_QUALITY_DEVICE_POOLS;
+    return savedPools.length > 0 ? savedPools : DEFAULT_QUALITY_DEVICE_POOLS;
   } catch {
     return DEFAULT_QUALITY_DEVICE_POOLS;
   }
@@ -621,7 +583,7 @@ function hashText(value: string) {
 }
 
 function deviceKeyFromPool(pool: QualityDevicePool, fallback: string) {
-  return String(pool.deviceId || pool.groupId || fallback || '').trim();
+  return String(pool.deviceId || fallback || '').trim();
 }
 
 function deviceKeysFromPool(pool: QualityDevicePool, fallback: string) {
@@ -3333,7 +3295,7 @@ async function enrichQualitySummaryWithSourceBuild(summary: any) {
 
 async function hasActiveQualityScriptProcess() {
   try {
-    await execFileAsync('pgrep', ['-f', 'scripts/sonic/ios-quality.sh'], { timeout: 1500 });
+    await execFileAsync('pgrep', ['-f', 'scripts/(ios|sonic)/ios-quality[.]sh'], { timeout: 1500 });
     return true;
   } catch {
     return false;
@@ -3445,7 +3407,7 @@ async function cleanupLocalQualityProcesses(deviceUdid?: string) {
         `tidevice.*${escapedUdid}.*perf|tidevice.*perf.*${escapedUdid}`,
       ]
     : [
-        'scripts/sonic/ios-quality.sh',
+        'scripts/(ios|sonic)/ios-quality[.]sh',
         'WebDriverAgentRunner',
         'xctrunner',
         'xcodebuild.*WebDriverAgentRunner',
@@ -5789,77 +5751,14 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
   }
 });
 
-router.get('/nn/quality/sonic/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
-  const sonicConfig = getSonicConfig();
-  const configured = Boolean(sonicConfig.apiBase);
-  const status = {
-    configured,
-    apiBase: sonicConfig.apiBase || '',
-    webUrl: sonicConfig.webUrl || '',
-    apiProxyTarget: sonicConfig.apiProxyTarget || '',
-    webProxyTarget: sonicConfig.webProxyTarget || '',
-    tokenConfigured: Boolean(sonicConfig.token),
-    projectId: sonicConfig.projectId || '',
-    testPlanId: sonicConfig.testPlanId || '',
-    reachable: false,
-    message: configured
-      ? (sonicConfig.token ? 'Sonic 已配置，等待连通性检测' : 'Sonic API 已配置，Token 未配置')
-      : '未配置 SONIC_API_BASE',
-  };
-
-  if (!configured) {
-    res.json({
-      success: true,
-      data: status,
-    });
-    return;
-  }
-
-  try {
-    const apiTargetResponse = await axios.get(`${sonicConfig.apiProxyTarget}/`, {
-      timeout: 5000,
-      validateStatus: () => true,
-    });
-    const webTargetResponse = await axios.get(`${sonicConfig.webProxyTarget}/`, {
-      timeout: 5000,
-      validateStatus: () => true,
-    });
-    const response = await axios.get(`${sonicConfig.apiBase}/`, {
-      timeout: 5000,
-      headers: sonicConfig.token ? {
-        Authorization: `Bearer ${sonicConfig.token}`,
-      } : undefined,
-      validateStatus: () => true,
-    });
-    res.json({
-      success: true,
-      data: {
-        ...status,
-        reachable: response.status >= 200 && response.status < 500,
-        message: `Sonic API ${response.status}，代理目标 API ${apiTargetResponse.status}，Web ${webTargetResponse.status}`,
-      },
-    });
-  } catch (error: any) {
-    const targetMessage = getConnectionErrorMessage(error);
-    res.json({
-      success: true,
-      data: {
-        ...status,
-        reachable: false,
-        message: `Sonic 代理目标未启动或不可达：${targetMessage}。请确认 Sonic Server(API ${sonicConfig.apiProxyTarget}) 和 Sonic Web(${sonicConfig.webProxyTarget}) 已启动。`,
-      },
-    });
-  }
-});
-
-router.get('/nn/quality/sonic/device-pools', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
+router.get('/nn/quality/device-pools', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   res.json({
     success: true,
     data: getQualityDevicePools(),
   });
 });
 
-router.get('/nn/quality/sonic/device-pools/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
+router.get('/nn/quality/device-pools/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   try {
     res.json({
       success: true,
@@ -5873,7 +5772,7 @@ router.get('/nn/quality/sonic/device-pools/status', cicdTestReleaseMiddleware, a
   }
 });
 
-router.put('/nn/quality/sonic/device-pools', cicdAdminMiddleware, async (req: Request, res: Response) => {
+router.put('/nn/quality/device-pools', cicdAdminMiddleware, async (req: Request, res: Response) => {
   try {
     const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
       .map(normalizeQualityDevicePool)
@@ -6358,7 +6257,6 @@ router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Re
 router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultQaJobName());
-    const sonicConfig = getSonicConfig();
     const buildNumber = String(req.body?.buildNumber || '').trim();
     let branch = normalizeBranchName(String(req.body?.branch || ''));
     let commitHash = String(req.body?.commitHash || '').trim();
@@ -6579,11 +6477,6 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       PERF_FRAME_STUTTER_SEVERE_MS: getRuntimeEnv('QA_PERF_FRAME_STUTTER_SEVERE_MS') || '33.34',
       NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
       PLATFORM_TASK_ID: String(platformTask?.id || ''),
-      // 兼容仍在使用旧 Jenkins 参数或 Sonic 任务脚本的环境。
-      SONIC_DEVICE_GROUP_ID: selectedDevicePool.groupId || '',
-      SONIC_API_BASE: sonicConfig.apiBase,
-      SONIC_PROJECT_ID: sonicConfig.projectId,
-      SONIC_TEST_PLAN_ID: sonicConfig.testPlanId,
     });
 
     const queueResponse = await axios.post(`${jenkinsBaseUrl()}/${jobPath}/buildWithParameters`, params.toString(), {

@@ -207,8 +207,7 @@ export class PlatformOperationsService {
   async dependencies() {
     const probes = await Promise.all([
       this.probe('jenkins', '/api/jenkins/nn/builds', 20_000),
-      this.probe('sonic', '/api/jenkins/nn/quality/sonic/status', 10_000),
-      this.probe('devices', '/api/jenkins/nn/quality/sonic/device-pools/status', 15_000),
+      this.probe('devices', '/api/jenkins/nn/quality/device-pools/status', 15_000),
       this.probe('sentry', '/api/sentry-analysis/issues', 30_000, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -235,13 +234,12 @@ export class PlatformOperationsService {
   }
 
   private async probe(name: string, endpoint: string, timeoutMs: number, init: RequestInit = {}) {
-    const service: ApplicationServiceId = name === 'sonic' || name === 'devices' ? 'quality' : name as ApplicationServiceId;
+    const service: ApplicationServiceId = name === 'devices' ? 'quality' : name as ApplicationServiceId;
     if (!hasCurrentApplicationServices(service)) return { name, status: 'disabled', configured: false, required: false };
     const startedAt = Date.now();
     try {
       const result = await this.fetchJson(endpoint, init, timeoutMs);
       let status = 'up';
-      if (name === 'sonic' && result?.data?.reachable === false) status = 'down';
       if (name === 'devices' && !result?.data?.pools?.some((pool: any) => Number(pool?.stats?.online) > 0)) status = 'degraded';
       return {
         name,
@@ -266,14 +264,6 @@ export class PlatformOperationsService {
         latestResult: latest?.result || null,
         running: Number(data?.stats?.running || 0),
         successRate: data?.stats?.successRate || null,
-      };
-    }
-    if (name === 'sonic') {
-      return {
-        reachable: Boolean(data?.reachable),
-        configured: Boolean(data?.configured),
-        tokenConfigured: Boolean(data?.tokenConfigured),
-        message: String(data?.message || ''),
       };
     }
     if (name === 'devices') {

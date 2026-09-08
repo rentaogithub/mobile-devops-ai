@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import { JenkinsBuild, JenkinsQualitySuite, SonicDevicePool } from '../../services/api';
+import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool } from '../../services/api';
 import {
   DEFAULT_BUSINESS_FLOW_FEATURES,
   DEFAULT_MONKEY_DURATION_SECONDS,
@@ -12,7 +12,7 @@ import {
 interface OpenQualityStartModalParams {
   selectedBuild?: JenkinsBuild;
   builds?: JenkinsBuild[];
-  pools: SonicDevicePool[];
+  pools: QualityDevicePool[];
 }
 
 export function useQualityStartModal() {

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1390" viewBox="0 0 1120 1390" role="img" aria-labelledby="title desc">
+<title id="title">移动管理平台 · 核心业务与数据流</title><desc id="desc">构建—验证—问题—发布链路，以及当前独立的真机回放链路</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8c9caf"/></marker></defs>
+<rect width="1120" height="100%" fill="white"/>
+<g font-family="PingFang SC, Microsoft YaHei, sans-serif">
+<text x="40" y="48" font-size="30" text-anchor="start" fill="#172c47" font-weight="600">移动管理平台 · 核心业务与数据流</text>
+<text x="40" y="80" font-size="17" text-anchor="start" fill="#526780" font-weight="400">构建—验证—问题—发布链路，以及当前独立的真机回放链路</text>
+<rect x="40" y="113" width="666" height="1165" rx="12" fill="#edf4ff" fill-opacity="0.38" stroke="#95afd0" stroke-width="1.5"/>
+<text x="58" y="143" font-size="20" text-anchor="start" fill="#172c47" font-weight="600">主交付链路：外部执行 + 平台证据汇总</text>
+<rect x="90" y="164" width="566" height="68" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="373.0" y="206.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">代码 / 分支 / 组件变更</text>
+<polyline points="373,232 373,266" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="90" y="266" width="566" height="90" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="373.0" y="306.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Jenkins 构建</text>
+<text x="373.0" y="335.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">IPA / APK / dSYM / Commit / 构建状态</text>
+<polyline points="373,356 373,394" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="390" y="382" font-size="16" text-anchor="start" fill="#526780" font-weight="400">源构建与包</text>
+<rect x="90" y="394" width="566" height="120" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="373.0" y="435.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">标准质检</text>
+<text x="373.0" y="464.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">iOS：Smoke / Monkey / Stutter / Business flow</text>
+<text x="373.0" y="491.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Android：指定 adb 设备安装启动 Smoke</text>
+<polyline points="373,514 373,561" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="390" y="544" font-size="16" text-anchor="start" fill="#526780" font-weight="400">任务结果 / 失败 / 报告 / 产物血缘</text>
+<rect x="90" y="561" width="566" height="108" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="373.0" y="596.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Workflow · 交付证据</text>
+<text x="373.0" y="625.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Artifact / Task / Issue / Relation</text>
+<text x="373.0" y="652.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">构建与质检汇总 + 线上诊断问题</text>
+<polyline points="373,669 373,713" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="90" y="713" width="566" height="92" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="373.0" y="754.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">交付诊断与门禁预览</text>
+<text x="373.0" y="783.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">同步快照 → 缺口 / 风险 / 下一步动作</text>
+<polyline points="242,805 242,849" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="90" y="849" width="282" height="116" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="231.0" y="888.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">iOS 发布实时预检</text>
+<text x="231.0" y="917.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">源构建 / 分支 / 必需套件</text>
+<text x="231.0" y="944.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">阻断问题 / 渠道规则</text>
+<rect x="395" y="849" width="261" height="116" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="525.5" y="888.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Android 门禁</text>
+<text x="525.5" y="917.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">APK 与 Smoke 同源校验</text>
+<text x="525.5" y="944.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">通过后内部 APK 下载</text>
+<polyline points="656,454 694,454 694,907 656,907" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="231,965 231,1001" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="247" y="990" font-size="16" text-anchor="start" fill="#526780" font-weight="400">校验通过后提交</text>
+<rect x="90" y="1001" width="282" height="112" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" />
+<text x="231.0" y="1038.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Jenkins / 发布渠道</text>
+<text x="231.0" y="1067.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Pgyer / TestFlight</text>
+<text x="231.0" y="1094.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">App Store</text>
+<rect x="395" y="1001" width="261" height="112" rx="8" fill="#edf4ff" stroke="#95afd0" stroke-width="1.4" />
+<text x="525.5" y="1038.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">回归候选</text>
+<text x="525.5" y="1067.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Issue → XCUITest</text>
+<text x="525.5" y="1094.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">生成 / 编译 / Runner</text>
+<polyline points="656,642 680,642 680,1057 656,1057" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<polyline points="231,1113 231,1156" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="247" y="1143" font-size="16" text-anchor="start" fill="#526780" font-weight="400">另行采集或录入</text>
+<rect x="90" y="1156" width="566" height="83" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="373.0" y="1192.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">发布观察与 Crash 治理</text>
+<text x="373.0" y="1221.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">已有版本健康判断；尚非自动全闭环</text>
+<polyline points="90,1197 65,1197 65,759 90,759" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="736" y="113" width="344" height="561" rx="12" fill="#f4f0fb" fill-opacity="0.38" stroke="#b4a5ce" stroke-width="1.5"/>
+<text x="754" y="143" font-size="20" text-anchor="start" fill="#172c47" font-weight="600">直接真机回放</text>
+<rect x="761" y="164" width="294" height="90" rx="8" fill="#f4f0fb" stroke="#b4a5ce" stroke-width="1.4" />
+<text x="908.0" y="204.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">WDA 录制</text>
+<text x="908.0" y="233.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">动作 + 截图 / XML</text>
+<polyline points="908,254 908,294" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="761" y="294" width="294" height="95" rx="8" fill="#f4f0fb" stroke="#b4a5ce" stroke-width="1.4" />
+<text x="908.0" y="323.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">DSL 草稿资产</text>
+<text x="908.0" y="352.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">条件 / 等待 / 断言</text>
+<text x="908.0" y="379.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">前置 / 主 / 后置流程</text>
+<polyline points="908,389 908,429" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<rect x="761" y="429" width="294" height="99" rx="8" fill="#f4f0fb" stroke="#b4a5ce" stroke-width="1.4" />
+<text x="908.0" y="460.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">平台直接执行</text>
+<text x="908.0" y="489.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">节点结果与现场证据</text>
+<text x="908.0" y="516.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">当前执行草稿</text>
+<polyline points="908,528 908,567" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<rect x="761" y="567" width="294" height="83" rx="8" fill="#fff6e7" stroke="#cdb587" stroke-width="1.4" stroke-dasharray="7 5"/>
+<text x="908.0" y="603.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">尚待补齐</text>
+<text x="908.0" y="632.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">不可变版本发布 / 正式质检绑定</text>
+<rect x="736" y="713" width="344" height="348" rx="12" fill="#edf7f0" fill-opacity="0.38" stroke="#96b9a2" stroke-width="1.5"/>
+<text x="754" y="743" font-size="20" text-anchor="start" fill="#172c47" font-weight="600">诊断与持续验证</text>
+<rect x="761" y="762" width="294" height="102" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="908.0" y="794.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Sentry / Crash / 日志</text>
+<text x="908.0" y="823.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">同步线上问题</text>
+<text x="908.0" y="850.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">补充故障现场</text>
+<rect x="761" y="900" width="294" height="124" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
+<text x="908.0" y="930.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">验证结论的范围</text>
+<text x="908.0" y="959.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">编译成功 ≠ 真机执行成功</text>
+<text x="908.0" y="986.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">候选 verified ≠ 覆盖本次构建</text>
+<text x="908.0" y="1013.0" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">版本观察 ≠ 自动发布后验收</text>
+<polyline points="761,812 720,812 720,615 656,615" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />
+<text x="667" y="699" font-size="16" text-anchor="start" fill="#526780" font-weight="400">问题证据</text>
+<text x="760" y="1138" font-size="17" text-anchor="start" fill="#526780" font-weight="400">实线：调用或记录流转</text>
+<text x="760" y="1172" font-size="17" text-anchor="start" fill="#526780" font-weight="400">虚线：另行采集或待补齐链路</text>
+<text x="760" y="1218" font-size="17" text-anchor="start" fill="#526780" font-weight="400">AI 在受控工具入口调用这些能力</text>
+<text x="40" y="1366" font-size="16" text-anchor="start" fill="#526780" font-weight="400">说明：图中分支表示不同平台能力；交付诊断不替代发布实时预检，网页回放草稿尚未强制绑定正式质检。</text>
+</g></svg>

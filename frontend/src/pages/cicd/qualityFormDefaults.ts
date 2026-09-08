@@ -1,4 +1,4 @@
-import { JenkinsBuild, JenkinsQualitySuite, SonicDevicePool } from '../../services/api';
+import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool } from '../../services/api';
 import { defaultQualityDeviceUdids } from './devicePoolUtils';
 import { shouldUseInstalledProductionApp } from './qualityOptions';
 
@@ -11,14 +11,14 @@ export function pickFallbackQualityBuild(builds?: JenkinsBuild[], preferredBuild
   return preferredBuild || builds?.find((item) => item.result === 'SUCCESS') || builds?.[0] || null;
 }
 
-export function pickDefaultQualityDevicePool(pools: SonicDevicePool[]) {
+export function pickDefaultQualityDevicePool(pools: QualityDevicePool[]) {
   return pools.find((pool) => (pool.stats?.idle || 0) > 0)?.value || pools[0]?.value || 'ios-default';
 }
 
 export function buildQualityModalDefaults(params: {
   build?: JenkinsBuild;
   builds?: JenkinsBuild[];
-  pools: SonicDevicePool[];
+  pools: QualityDevicePool[];
 }) {
   const fallbackBuild = pickFallbackQualityBuild(params.builds, params.build);
   const devicePool = pickDefaultQualityDevicePool(params.pools);

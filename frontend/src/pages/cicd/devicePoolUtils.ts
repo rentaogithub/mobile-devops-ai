@@ -1,9 +1,9 @@
-import { SonicDevicePool } from '../../services/api';
+import { QualityDevicePool } from '../../services/api';
 
-export function devicePoolDevicesText(pool: SonicDevicePool) {
+export function devicePoolDevicesText(pool: QualityDevicePool) {
   const devices = pool.devices?.length
     ? pool.devices
-    : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : []);
+    : (pool.deviceId ? [{ udid: pool.deviceId }] : []);
   return devices.map((device) => device.label ? `${device.udid} ${device.label}` : device.udid).join('\n');
 }
 
@@ -22,12 +22,11 @@ export function parseDevicePoolDevices(text: string) {
     .filter((device) => device.udid);
 }
 
-export function cleanDevicePoolsForSave(pools: SonicDevicePool[]) {
+export function cleanDevicePoolsForSave(pools: QualityDevicePool[]) {
   return pools.map((pool) => ({
     label: pool.label.trim(),
     value: pool.value.trim(),
     deviceId: pool.deviceId?.trim() || undefined,
-    groupId: pool.groupId?.trim() || undefined,
     devices: (pool.devices || []).map((device) => ({
       label: device.label?.trim() || undefined,
       udid: device.udid.trim(),
@@ -37,20 +36,20 @@ export function cleanDevicePoolsForSave(pools: SonicDevicePool[]) {
   }));
 }
 
-export function cloneDevicePoolsForDraft(pools: SonicDevicePool[]) {
+export function cloneDevicePoolsForDraft(pools: QualityDevicePool[]) {
   return pools.map((pool) => ({
     ...pool,
     devices: pool.devices?.map((device) => ({ ...device })),
   }));
 }
 
-export function updateDevicePoolDraftAt(pools: SonicDevicePool[], index: number, patch: Partial<SonicDevicePool>) {
+export function updateDevicePoolDraftAt(pools: QualityDevicePool[], index: number, patch: Partial<QualityDevicePool>) {
   return pools.map((pool, poolIndex) => (
     poolIndex === index ? { ...pool, ...patch } : pool
   ));
 }
 
-export function appendDevicePoolDraft(pools: SonicDevicePool[]) {
+export function appendDevicePoolDraft(pools: QualityDevicePool[]) {
   return [
     ...pools,
     {
@@ -62,11 +61,11 @@ export function appendDevicePoolDraft(pools: SonicDevicePool[]) {
   ];
 }
 
-export function removeDevicePoolDraftAt(pools: SonicDevicePool[], index: number) {
+export function removeDevicePoolDraftAt(pools: QualityDevicePool[], index: number) {
   return pools.filter((_, poolIndex) => poolIndex !== index);
 }
 
-export function defaultQualityDeviceUdids(pools: SonicDevicePool[], poolValue: string) {
+export function defaultQualityDeviceUdids(pools: QualityDevicePool[], poolValue: string) {
   const pool = pools.find((item) => item.value === poolValue);
   return (pool?.devices || [])
     .filter((device) => device.status === 'idle' && device.udid)
@@ -74,15 +73,15 @@ export function defaultQualityDeviceUdids(pools: SonicDevicePool[], poolValue: s
     .map((device) => device.udid);
 }
 
-export function availableQualityDevicePools(pools: SonicDevicePool[]) {
+export function availableQualityDevicePools(pools: QualityDevicePool[]) {
   return pools.filter((pool) => (pool.stats?.idle ?? 0) > 0);
 }
 
-export function findQualityDevicePool(pools: SonicDevicePool[], poolValue: string) {
+export function findQualityDevicePool(pools: QualityDevicePool[], poolValue: string) {
   return pools.find((pool) => pool.value === poolValue);
 }
 
-export function availableQualityDevices(pool?: SonicDevicePool) {
+export function availableQualityDevices(pool?: QualityDevicePool) {
   return (pool?.devices || []).filter((device) => device.status === 'idle' && device.udid);
 }
 

@@ -1,7 +1,11 @@
 import { Alert, Button, Card, Col, Row, Select, Space, Tag, Typography } from 'antd';
-import { SonicDevicePool, SonicDevicePoolStatusResult } from '../../services/api';
+import { QualityDevicePool, QualityDevicePoolStatusResult } from '../../services/api';
 
 const { Text } = Typography;
+
+function configuredDevices(pool: QualityDevicePool): NonNullable<QualityDevicePool['devices']> {
+  return pool.devices?.length ? pool.devices : (pool.deviceId ? [{ udid: pool.deviceId }] : []);
+}
 
 function deviceStatusTag(status?: string) {
   if (status === 'idle') return <Tag color="green">空闲</Tag>;
@@ -11,8 +15,9 @@ function deviceStatusTag(status?: string) {
 }
 
 interface QualityDevicePoolOverviewProps {
-  status?: SonicDevicePoolStatusResult | null;
-  pools: SonicDevicePool[];
+  error?: string;
+  status?: QualityDevicePoolStatusResult | null;
+  pools: QualityDevicePool[];
   canAdmin?: boolean;
   unassignedTargetPool?: string;
   adding?: boolean;
@@ -21,6 +26,7 @@ interface QualityDevicePoolOverviewProps {
 }
 
 export function QualityDevicePoolOverview({
+  error,
   status,
   pools,
   canAdmin,
@@ -31,6 +37,11 @@ export function QualityDevicePoolOverview({
 }: QualityDevicePoolOverviewProps) {
   return (
     <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+      {error && (
+        <Col span={24}>
+          <Alert type="error" showIcon message="设备池加载失败" description={error} />
+        </Col>
+      )}
       {status?.detector && !status.detector.available && (
         <Col span={24}>
           <Alert
@@ -71,14 +82,14 @@ export function QualityDevicePoolOverview({
             <Space direction="vertical" size={8}>
               <Space wrap>
                 <Tag color="blue">{pool.value}</Tag>
-                {(pool.devices?.length || pool.deviceId || pool.groupId) && (
+                {(pool.devices?.length || pool.deviceId) && (
                   <Tag color="purple">设备 {pool.devices?.length || 1} 台</Tag>
                 )}
                 {pool.stats && <Tag color="green">空闲 {pool.stats.idle}</Tag>}
                 {pool.stats && pool.stats.busy > 0 && <Tag color="orange">占用 {pool.stats.busy}</Tag>}
                 {pool.stats && pool.stats.offline > 0 && <Tag color="red">离线 {pool.stats.offline}</Tag>}
               </Space>
-              {(pool.devices?.length ? pool.devices : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : [])).slice(0, 4).map((device) => (
+              {configuredDevices(pool).slice(0, 4).map((device) => (
                 <Space key={device.udid} size={4} wrap>
                   {deviceStatusTag(device.status)}
                   <Text code style={{ fontSize: 12 }}>{device.udid}</Text>
@@ -95,7 +106,7 @@ export function QualityDevicePoolOverview({
           </Card>
         </Col>
       ))}
-      {pools.length === 0 && (
+      {!error && pools.length === 0 && (
         <Col span={24}>
           <Alert type="warning" showIcon message="暂无质检设备池配置" />
         </Col>

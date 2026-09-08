@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { message } from 'antd';
 
-import { SonicDevicePool, SonicDevicePoolStatusResult, jenkinsApi } from '../../services/api';
+import { QualityDevicePool, QualityDevicePoolStatusResult, jenkinsApi } from '../../services/api';
 import {
   appendDevicePoolDraft,
   cleanDevicePoolsForSave,
@@ -21,15 +21,16 @@ export function useQualityDevicePools({
   selectedPoolValue,
   onSelectedPoolChange,
 }: UseQualityDevicePoolsParams) {
-  const [pools, setPools] = useState<SonicDevicePool[]>([]);
-  const [status, setStatus] = useState<SonicDevicePoolStatusResult | null>(null);
+  const [pools, setPools] = useState<QualityDevicePool[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [status, setStatus] = useState<QualityDevicePoolStatusResult | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
   const [unassignedTargetPool, setUnassignedTargetPool] = useState('ios-default');
-  const [drafts, setDrafts] = useState<SonicDevicePool[]>([]);
+  const [drafts, setDrafts] = useState<QualityDevicePool[]>([]);
 
-  const syncSelectedPools = (nextPools: SonicDevicePool[]) => {
+  const syncSelectedPools = (nextPools: QualityDevicePool[]) => {
     if (nextPools.length > 0 && !nextPools.some((pool) => pool.value === selectedPoolValue)) {
       onSelectedPoolChange(nextPools[0].value);
     }
@@ -40,26 +41,34 @@ export function useQualityDevicePools({
 
   const loadPools = async () => {
     try {
-      const response = await jenkinsApi.getSonicDevicePoolStatus();
+      const response = await jenkinsApi.getQualityDevicePoolStatus();
       const nextStatus = response.data || null;
       const nextPools = nextStatus?.pools || [];
       setStatus(nextStatus);
       setPools(nextPools);
+      setLoadError('');
       syncSelectedPools(nextPools);
     } catch (err: any) {
       try {
-        const response = await jenkinsApi.listSonicDevicePools();
+        const response = await jenkinsApi.listQualityDevicePools();
         const nextPools = response.data || [];
         setStatus(null);
         setPools(nextPools);
+        setLoadError('');
         syncSelectedPools(nextPools);
       } catch {
-        message.warning(err?.error || err?.message || '加载质检设备池失败');
+        const error = err?.error || err?.message || '加载质检设备池失败';
+        setLoadError(error);
+        message.warning(error);
       }
     }
   };
 
   const openModal = () => {
+    if (loadError) {
+      message.warning('请先刷新并成功加载设备池，再修改配置');
+      return;
+    }
     if (!canAdmin) {
       message.warning('设备池配置仅管理员可操作');
       return;
@@ -68,7 +77,7 @@ export function useQualityDevicePools({
     setModalOpen(true);
   };
 
-  const updateDraft = (index: number, patch: Partial<SonicDevicePool>) => {
+  const updateDraft = (index: number, patch: Partial<QualityDevicePool>) => {
     setDrafts((items) => updateDevicePoolDraftAt(items, index, patch));
   };
 
@@ -94,7 +103,7 @@ export function useQualityDevicePools({
 
     setSaving(true);
     try {
-      const response = await jenkinsApi.updateSonicDevicePools(normalized);
+      const response = await jenkinsApi.updateQualityDevicePools(normalized);
       const nextPools = response.data || [];
       setPools(nextPools);
       syncSelectedPools(nextPools);
@@ -128,7 +137,7 @@ export function useQualityDevicePools({
       if (pool.value !== targetValue) return pool;
       const existingDevices = pool.devices?.length
         ? pool.devices
-        : (pool.deviceId || pool.groupId ? [{ udid: pool.deviceId || pool.groupId || '' }] : []);
+        : (pool.deviceId ? [{ udid: pool.deviceId }] : []);
       const existingUdids = new Set(existingDevices.map((device) => device.udid).filter(Boolean));
       const nextDevices = [
         ...existingDevices,
@@ -143,14 +152,13 @@ export function useQualityDevicePools({
       return {
         ...pool,
         deviceId: nextDevices[0]?.udid || pool.deviceId,
-        groupId: undefined,
         devices: nextDevices,
       };
     });
 
     setAdding(true);
     try {
-      await jenkinsApi.updateSonicDevicePools(cleanDevicePoolsForSave(nextPools));
+      await jenkinsApi.updateQualityDevicePools(cleanDevicePoolsForSave(nextPools));
       message.success(`已加入 ${devices.length} 台设备`);
       await loadPools();
     } catch (err: any) {
@@ -162,6 +170,7 @@ export function useQualityDevicePools({
 
   return {
     pools,
+    loadError,
     status,
     modalOpen,
     saving,

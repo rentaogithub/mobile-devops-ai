@@ -162,7 +162,7 @@
         <hudson.model.StringParameterDefinition>
           <name>WDA_PROJECT_PATH</name>
           <defaultValue></defaultValue>
-          <description>可选：WebDriverAgent.xcodeproj 路径。留空时自动查找 Sonic Agent / Appium 常见目录。</description>
+          <description>可选：WebDriverAgent.xcodeproj 路径。留空时自动查找 Appium 常见目录或显式 WDA_PROJECT_PATH。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -357,25 +357,6 @@
           <description>nn-ios-platform 在 Jenkins 打包机上的实际目录。平台触发质检时会自动传入，手动构建时可填写。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>SONIC_API_BASE</name>
-          <defaultValue>http://10.1.3.177:5173/sonic-api</defaultValue>
-          <trim>true</trim>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>SONIC_PROJECT_ID</name>
-          <defaultValue>nn-ios</defaultValue>
-          <trim>true</trim>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>SONIC_TEST_PLAN_ID</name>
-          <defaultValue>smoke</defaultValue>
-          <trim>true</trim>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.PasswordParameterDefinition>
-          <name>SONIC_TOKEN</name>
-          <defaultValue></defaultValue>
-        </hudson.model.PasswordParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
@@ -390,18 +371,18 @@
     <hudson.tasks.Shell>
       <command>set -e
 PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
-if [ -z "$PLATFORM_DIR" ] &amp;&amp; [ -n "${WORKSPACE:-}" ] &amp;&amp; [ -f "$WORKSPACE/scripts/sonic/ios-quality.sh" ]; then
+if [ -z "$PLATFORM_DIR" ] &amp;&amp; [ -n "${WORKSPACE:-}" ] &amp;&amp; [ -f "$WORKSPACE/scripts/ios/ios-quality.sh" ]; then
   PLATFORM_DIR="$WORKSPACE"
 fi
-if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/sonic/ios-quality.sh" ]; then
+if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/ios/ios-quality.sh" ]; then
   echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
-  echo "Expected file: \$NN_IOS_PLATFORM_DIR/scripts/sonic/ios-quality.sh"
+  echo "Expected file: \$NN_IOS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
   echo "When triggered by nn-ios-platform, this parameter is passed automatically."
   echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
   exit 2
 fi
 cd "$PLATFORM_DIR"
-bash scripts/sonic/ios-quality.sh</command>
+bash scripts/ios/ios-quality.sh</command>
     </hudson.tasks.Shell>
   </builders>
   <publishers>

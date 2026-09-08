@@ -1,9 +1,9 @@
 import { Alert, Checkbox, Modal, Radio, Select, Space, Tag, Typography } from 'antd';
-import { JenkinsBuild, JenkinsQualitySuite, SonicDevicePool } from '../../services/api';
+import { JenkinsBuild, JenkinsQualitySuite, QualityDevicePool } from '../../services/api';
 
 const { Text } = Typography;
 
-type QualityDevice = NonNullable<SonicDevicePool['devices']>[number];
+type QualityDevice = NonNullable<QualityDevicePool['devices']>[number];
 
 interface QualityStartModalProps {
   open: boolean;
@@ -20,7 +20,7 @@ interface QualityStartModalProps {
   businessFlowFeatureGroups: Array<{ title: string; options: Array<{ label: string; value: string }> }>;
   businessFlowFeatures: string[];
   skipInstall: boolean;
-  availableDevicePools: SonicDevicePool[];
+  availableDevicePools: QualityDevicePool[];
   availableDevices: QualityDevice[];
   selectedDeviceUdids: string[];
   publishChannelLabel: (channel?: string) => string;

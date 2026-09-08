@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from 'react';
 
-import { SonicDevicePool } from '../../services/api';
+import { QualityDevicePool } from '../../services/api';
 import {
   availableQualityDevicePools as getAvailableQualityDevicePools,
   availableQualityDevices as getAvailableQualityDevices,
@@ -9,7 +9,7 @@ import {
 } from './devicePoolUtils';
 
 interface UseQualityDeviceSelectionParams {
-  pools: SonicDevicePool[];
+  pools: QualityDevicePool[];
   selectedPoolValue: string;
   modalOpen: boolean;
   setDeviceUdids: (updater: (current: string[]) => string[]) => void;

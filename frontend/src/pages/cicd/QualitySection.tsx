@@ -1,7 +1,7 @@
 import { Alert } from 'antd';
 import { ReactNode } from 'react';
 
-import { JenkinsQualityBuild, JenkinsQualityListResult, SonicDevicePool, SonicDevicePoolStatusResult } from '../../services/api';
+import { JenkinsQualityBuild, JenkinsQualityListResult, QualityDevicePool, QualityDevicePoolStatusResult } from '../../services/api';
 import { StatsCards } from './StatsCards';
 import { QualityDevicePoolOverview } from './QualityDevicePoolOverview';
 import { QualityBuildTable } from './QualityBuildTable';
@@ -10,8 +10,9 @@ import { buildQualityStatsCards } from './cicdStats';
 interface QualitySectionProps {
   error?: string;
   data?: JenkinsQualityListResult | null;
-  devicePoolStatus?: SonicDevicePoolStatusResult | null;
-  devicePools: SonicDevicePool[];
+  devicePoolStatus?: QualityDevicePoolStatusResult | null;
+  devicePools: QualityDevicePool[];
+  devicePoolError?: string;
   canAdmin?: boolean;
   unassignedTargetPool: string;
   addingDevicePool?: boolean;
@@ -45,6 +46,7 @@ export function QualitySection({
   data,
   devicePoolStatus,
   devicePools,
+  devicePoolError,
   canAdmin,
   unassignedTargetPool,
   addingDevicePool,
@@ -85,6 +87,7 @@ export function QualitySection({
       )}
       <StatsCards stats={buildQualityStatsCards(data)} />
       <QualityDevicePoolOverview
+        error={devicePoolError}
         status={devicePoolStatus}
         pools={devicePools}
         canAdmin={canAdmin}

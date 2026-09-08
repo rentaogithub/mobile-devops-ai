@@ -36,6 +36,7 @@ export function QualitySectionContainer({
       data={qualityBuilds.data}
       devicePoolStatus={qualityDevicePools.status}
       devicePools={qualityDevicePools.pools}
+      devicePoolError={qualityDevicePools.loadError}
       canAdmin={permissions.canAdminCicd}
       unassignedTargetPool={qualityDevicePools.unassignedTargetPool}
       addingDevicePool={qualityDevicePools.adding}

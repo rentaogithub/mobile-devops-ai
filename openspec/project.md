@@ -43,5 +43,5 @@
 
 ## Related Design
 
-- `docs/DEVICE_REPLAY_ORCHESTRATION_REQUIREMENTS.md`
-- `docs/superpowers/specs/2026-09-01-ios-black-box-recording-orchestration-design.md`
+- [回放设计约束与验收](../docs/设计与演进.md#replay-design)
+- [平台当前架构](../docs/平台架构.md)

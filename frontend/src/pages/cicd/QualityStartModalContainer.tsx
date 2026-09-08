@@ -1,4 +1,4 @@
-import { JenkinsBuild, JenkinsQualityListResult, SonicDevicePool } from '../../services/api';
+import { JenkinsBuild, JenkinsQualityListResult, QualityDevicePool } from '../../services/api';
 import { QualityStartModal } from './QualityStartModal';
 import {
   BUSINESS_FLOW_FEATURE_GROUPS,
@@ -15,7 +15,7 @@ import { useQualityTrigger } from './useQualityTrigger';
 interface QualityStartModalContainerProps {
   modal: ReturnType<typeof useQualityStartModal>;
   builds: JenkinsBuild[];
-  devicePools: SonicDevicePool[];
+  devicePools: QualityDevicePool[];
   canUseQuality: boolean;
   qualityData?: JenkinsQualityListResult | null;
   refreshSection: () => Promise<unknown>;
