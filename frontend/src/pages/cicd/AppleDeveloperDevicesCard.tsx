@@ -9,6 +9,8 @@ interface AppleDeveloperDevicesCardProps {
   devices: AppleDeveloperDevice[];
   loading?: boolean;
   error?: string;
+  source?: 'apple' | 'cache';
+  warning?: string;
   keyword: string;
   onKeywordChange: (value: string) => void;
   onRefresh: () => void;
@@ -19,6 +21,8 @@ export function AppleDeveloperDevicesCard({
   devices,
   loading,
   error,
+  source,
+  warning,
   keyword,
   onKeywordChange,
   onRefresh,
@@ -30,6 +34,8 @@ export function AppleDeveloperDevicesCard({
           <span>Apple Developer 设备列表</span>
           <Tag color="blue">iPhone</Tag>
           <Tag>{total || 0} 台</Tag>
+          {source === 'apple' && <Tag color="green">Apple 实时数据</Tag>}
+          {source === 'cache' && <Tag color="orange">历史缓存 · 未实时确认</Tag>}
           {keyword.trim() && <Tag color="green">匹配 {devices.length} 台</Tag>}
         </Space>
       )}
@@ -39,6 +45,15 @@ export function AppleDeveloperDevicesCard({
         </Button>
       )}
     >
+      {source === 'cache' && (
+        <Alert
+          showIcon
+          type="warning"
+          message="Apple 实时查询失败，当前显示历史缓存"
+          description={`${warning || ''} 缓存中的 ENABLED 是上次同步状态，不能确认设备目前仍在当前 Apple 团队中。请刷新列表后再确认。`}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       {error && (
         <Alert
           showIcon
@@ -55,6 +70,9 @@ export function AppleDeveloperDevicesCard({
           style={{ marginBottom: 12 }}
         />
       )}
+      <Typography.Paragraph type="secondary">
+        列表属于平台当前配置的 Apple API Key 所在团队。在 Apple Developer 网站核对时，请先切换到同一团队。
+      </Typography.Paragraph>
       <Input.Search
         allowClear
         value={keyword}

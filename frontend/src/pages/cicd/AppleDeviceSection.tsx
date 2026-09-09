@@ -8,6 +8,7 @@ import {
   AppleDeviceRegistrationRequestListResult,
 } from '../../services/api';
 import { AppleDeviceAdminTabs } from './AppleDeviceAdminTabs';
+import { AppleDeviceAccountCard } from './AppleDeviceAccountCard';
 import { AppleRegistrationResultAlert } from './AppleRegistrationResultAlert';
 import { AppleScanCard } from './AppleScanCard';
 import { AppleRegistrationInlineResult } from './appleDeviceUtils';
@@ -89,6 +90,7 @@ export function AppleDeviceSection({
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {isAdmin && <AppleDeviceAccountCard />}
       {isAdmin ? (
         <AppleDeviceAdminTabs
           scanCard={scanCard}

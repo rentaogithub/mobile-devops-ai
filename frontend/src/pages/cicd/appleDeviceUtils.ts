@@ -33,9 +33,9 @@ export function findRegisteredAppleDevice({
 }): AppleDeveloperDevice | null {
   const targetUdid = normalizeAppleUdid(udid || enrollment?.device?.udid);
   if (!targetUdid) return null;
-  const listedDevice = (developerDevices?.devices || []).find((device) => normalizeAppleUdid(device.udid) === targetUdid);
+  const listedDevice = (developerDevices?.source === 'apple' ? developerDevices.devices : []).find((device) => normalizeAppleUdid(device.udid) === targetUdid);
   if (listedDevice) return listedDevice;
-  if (lookup?.registered && normalizeAppleUdid(lookup.device?.udid) === targetUdid) {
+  if (lookup?.source === 'apple' && lookup.registered && normalizeAppleUdid(lookup.device?.udid) === targetUdid) {
     return lookup.device || null;
   }
   return null;
@@ -127,7 +127,7 @@ export function getAppleRegistrationAutoAction({
       notice: { type: 'info', content: '该设备已提交注册申请，等待管理员审批' },
     };
   }
-  if (lookupLoading || !lookup || registering || lookup.registered || autoSubmitted) {
+  if (lookupLoading || lookup?.source !== 'apple' || registering || lookup.registered || autoSubmitted) {
     return { targetUdid };
   }
   return { targetUdid, shouldSubmit: true };

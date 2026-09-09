@@ -3500,6 +3500,9 @@ export const jenkinsApi = {
 
 export interface AppleDeviceConfigStatus {
   configured: boolean;
+  requiredTeamId?: string;
+  teamId?: string;
+  productLineId?: string;
   missing: string[];
   warnings?: string[];
   keyId?: string;
@@ -3600,10 +3603,12 @@ export const appleDeviceApi = {
 
   updateConfig: async (payload: {
     issuerId: string;
+    teamId: string;
     keyFile?: File | null;
   }): Promise<ApiResponse<AppleDeviceConfigStatus & { message?: string }>> => {
     const formData = new FormData();
     formData.append('issuerId', payload.issuerId);
+    formData.append('teamId', payload.teamId);
     if (payload.keyFile) formData.append('keyFile', payload.keyFile, payload.keyFile.name);
     const response = await api.post<ApiResponse<AppleDeviceConfigStatus & { message?: string }>>('/apple-devices/config', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },

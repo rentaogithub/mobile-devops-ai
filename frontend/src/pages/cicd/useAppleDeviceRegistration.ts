@@ -80,6 +80,7 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
       const response = await appleDeviceApi.listDevices({ platform: 'IOS', limit: 200 });
       setDeveloperDevices(response.data || null);
     } catch (err: any) {
+      setDeveloperDevices(null);
       setDeveloperDevicesError(err?.error || err?.message || '获取 Apple Developer 设备列表失败');
     } finally {
       setDeveloperDevicesLoading(false);

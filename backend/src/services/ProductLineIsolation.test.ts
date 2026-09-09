@@ -114,6 +114,8 @@ describe('product line isolation', () => {
         PODX_PUBLISH_BASE_BRANCH: 'develop',
         PGYER_API_KEY: 'alpha-pgyer-key',
         APP_STORE_CONNECT_API_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nalpha-private-key\n-----END PRIVATE KEY-----',
+        APPLE_DEVICE_API_PRIVATE_KEY: 'development-private-key',
+        APPLE_DEVICE_TEAM_ID: 'LX4548D2Q6',
         WECHAT_WEBHOOK_URL: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=alpha-webhook-secret',
       }, 'test-admin');
 
@@ -196,6 +198,12 @@ describe('product line isolation', () => {
       expect(adminView.WECHAT_WEBHOOK_URL_SOURCE).toBe('产品线加密配置');
       expect(adminView.JENKINS_TOKEN).toBe('alpha-token');
       expect(adminView).not.toHaveProperty('APP_STORE_CONNECT_API_PRIVATE_KEY');
+      expect(adminView).not.toHaveProperty('APPLE_DEVICE_API_PRIVATE_KEY');
+      expect(adminView.APPLE_DEVICE_API_PRIVATE_KEYConfigured).toBe(true);
+      expect(adminView.APPLE_DEVICE_TEAM_ID).toBe('LX4548D2Q6');
+      expect(productLineConfigService.get('APPLE_DEVICE_API_PRIVATE_KEY', alpha.id)).toBe('development-private-key');
+      const deviceSecret = getDatabase().prepare("SELECT value FROM platform_product_line_configs WHERE product_line_id = ? AND key = 'APPLE_DEVICE_API_PRIVATE_KEY'").get(alpha.id) as { value: string };
+      expect(deviceSecret.value).toMatch(/^enc:v1:/);
 
       const encryptedRows = getDatabase().prepare(`
         SELECT key, value, encrypted FROM platform_product_line_configs

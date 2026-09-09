@@ -52,6 +52,7 @@ type RegistrationRequestStatus = 'pending' | 'registered' | 'rejected';
 interface RegistrationRequest {
   id: string;
   productLineId: string;
+  accountScope: string;
   createdAt: number;
   updatedAt: number;
   status: RegistrationRequestStatus;
@@ -89,7 +90,9 @@ function publicBaseUrl(req: Request) {
 }
 
 function normalizeUdid(value: unknown) {
-  return String(value || '').trim().toUpperCase();
+  const udid = String(value || '').trim().toUpperCase();
+  // Apple requires the separator for modern 24-hex device identifiers.
+  return /^[A-F0-9]{24}$/.test(udid) ? `${udid.slice(0, 8)}-${udid.slice(8)}` : udid;
 }
 
 function isValidUdid(udid: string) {
@@ -104,6 +107,13 @@ function createFallbackDeviceName(udid: string) {
 function ensureAppleDeviceTables() {
   if (appleDeviceTablesReady) return;
   getDatabase().exec(`
+    CREATE TABLE IF NOT EXISTS apple_device_list_removals (
+      product_line_id TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      udid TEXT NOT NULL,
+      removed_at INTEGER NOT NULL,
+      PRIMARY KEY (product_line_id, team_id, udid)
+    );
     CREATE TABLE IF NOT EXISTS apple_developer_devices (
       product_line_id TEXT NOT NULL DEFAULT 'nn',
       id TEXT NOT NULL,
@@ -166,6 +176,12 @@ function ensureAppleDeviceTables() {
   if (!requestColumns.some((column) => column.name === 'product_line_id')) {
     getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
   }
+  if (!deviceColumns.some((column) => column.name === 'account_scope')) {
+    getDatabase().exec("ALTER TABLE apple_developer_devices ADD COLUMN account_scope TEXT NOT NULL DEFAULT ''");
+  }
+  if (!requestColumns.some((column) => column.name === 'account_scope')) {
+    getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN account_scope TEXT NOT NULL DEFAULT ''");
+  }
   getDatabase().exec(`
     CREATE INDEX IF NOT EXISTS idx_apple_developer_devices_platform ON apple_developer_devices(product_line_id, platform, added_date DESC);
     CREATE INDEX IF NOT EXISTS idx_apple_registration_product ON apple_device_registration_requests(product_line_id, status, created_at DESC);
@@ -183,6 +199,7 @@ function registrationRequestFromRow(row: any): RegistrationRequest {
   return {
     id: row.id,
     productLineId: row.product_line_id || 'nn',
+    accountScope: row.account_scope || '',
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0),
     status: row.status,
@@ -200,8 +217,8 @@ function saveRegistrationRequest(request: RegistrationRequest) {
   ensureAppleDeviceTables();
   getDatabase().prepare(`
     INSERT INTO apple_device_registration_requests (
-      id, product_line_id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, product_line_id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message, account_scope
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       updated_at = excluded.updated_at,
       status = excluded.status,
@@ -225,33 +242,36 @@ function saveRegistrationRequest(request: RegistrationRequest) {
     request.appleDeviceId || null,
     request.appleStatus || null,
     request.message || null,
+    request.accountScope,
   );
 }
 
 function getRegistrationRequest(id: string) {
   ensureAppleDeviceTables();
-  const row = getDatabase().prepare('SELECT * FROM apple_device_registration_requests WHERE id = ? AND product_line_id = ?').get(id, currentProductLineId());
+  const row = getDatabase().prepare('SELECT * FROM apple_device_registration_requests WHERE id = ? AND product_line_id = ? AND account_scope = ?').get(id, currentProductLineId(), appleAccountScope());
   return row ? registrationRequestFromRow(row) : null;
 }
 
 function listRegistrationRequests() {
+  if (!appleConfigStatus().configured) return [];
   ensureAppleDeviceTables();
   return (getDatabase().prepare(`
     SELECT * FROM apple_device_registration_requests
-    WHERE product_line_id = ?
+    WHERE product_line_id = ? AND account_scope = ?
     ORDER BY created_at DESC
     LIMIT 100
-  `).all(currentProductLineId()) as any[]).map(registrationRequestFromRow);
+  `).all(currentProductLineId(), appleAccountScope()) as any[]).map(registrationRequestFromRow);
 }
 
 function findPendingRegistrationRequest(udid: string) {
+  if (!appleConfigStatus().configured) return null;
   ensureAppleDeviceTables();
   const row = getDatabase().prepare(`
     SELECT * FROM apple_device_registration_requests
-    WHERE product_line_id = ? AND status = 'pending' AND udid = ?
+    WHERE product_line_id = ? AND status = 'pending' AND REPLACE(UPPER(udid), '-', '') = ? AND account_scope = ?
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(currentProductLineId(), udid);
+  `).get(currentProductLineId(), normalizeUdid(udid).replace(/-/g, ''), appleAccountScope());
   return row ? registrationRequestFromRow(row) : null;
 }
 
@@ -269,26 +289,26 @@ function appleDeviceFromRow(row: any) {
 }
 
 function listCachedAppleDevices(platform: string) {
+  if (!appleConfigStatus().configured) return [];
   ensureAppleDeviceTables();
   const rows = getDatabase().prepare(`
     SELECT * FROM apple_developer_devices
-    WHERE product_line_id = ? AND platform = ?
+    WHERE product_line_id = ? AND platform = ? AND account_scope = ?
     ORDER BY added_date DESC
     LIMIT 500
-  `).all(currentProductLineId(), platform) as any[];
-  return rows.map(appleDeviceFromRow);
+  `).all(currentProductLineId(), platform, appleAccountScope()) as any[];
+  return visibleAppleDevices(rows.map(appleDeviceFromRow));
 }
 
-function findCachedAppleDeviceByUdid(udid: string) {
+// List removal is local presentation state, not an Apple deregistration.
+// Keep lookup authoritative so scanning a removed row cannot trigger duplicate registration.
+function visibleAppleDevices<T extends { udid: string }>(devices: T[]): T[] {
   ensureAppleDeviceTables();
-  const normalized = normalizeUdid(udid).replace(/-/g, '');
-  if (!normalized) return null;
-  const row = getDatabase().prepare(`
-    SELECT * FROM apple_developer_devices
-    WHERE product_line_id = ? AND REPLACE(UPPER(udid), '-', '') = ?
-    LIMIT 1
-  `).get(currentProductLineId(), normalized);
-  return row ? appleDeviceFromRow(row) : null;
+  const removed = getDatabase().prepare(`
+    SELECT udid FROM apple_device_list_removals WHERE product_line_id = ? AND team_id = ?
+  `).all(currentProductLineId(), productLineConfigService.get('APPLE_DEVICE_TEAM_ID')) as Array<{ udid: string }>;
+  const removedUdids = new Set(removed.map((row) => normalizeUdid(row.udid)));
+  return devices.filter((device) => !removedUdids.has(normalizeUdid(device.udid)));
 }
 
 function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
@@ -296,8 +316,8 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
   const now = Date.now();
   const stmt = getDatabase().prepare(`
     INSERT INTO apple_developer_devices (
-      product_line_id, id, name, udid, platform, status, device_class, model, added_date, synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      product_line_id, id, name, udid, platform, status, device_class, model, added_date, synced_at, account_scope
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(product_line_id, udid) DO UPDATE SET
       id = excluded.id,
       name = excluded.name,
@@ -306,7 +326,8 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
       device_class = excluded.device_class,
       model = excluded.model,
       added_date = excluded.added_date,
-      synced_at = excluded.synced_at
+      synced_at = excluded.synced_at,
+      account_scope = excluded.account_scope
   `);
   const tx = getDatabase().transaction((items: ReturnType<typeof normalizeAppleDevice>[]) => {
     for (const device of items) {
@@ -321,6 +342,7 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
         device.model,
         device.addedDate,
         now,
+        appleAccountScope(),
       );
     }
   });
@@ -387,7 +409,19 @@ function enrichEnrollmentDeviceFromLocal(session: EnrollmentSession) {
 }
 
 function readApplePrivateKey() {
-  return productLineConfigService.get('APP_STORE_CONNECT_API_PRIVATE_KEY').replace(/\\n/g, '\n');
+  return productLineConfigService.get('APPLE_DEVICE_API_PRIVATE_KEY').replace(/\\n/g, '\n');
+}
+
+function requiredAppleTeamId() {
+  return currentProductLineId() === 'nn' ? 'LX4548D2Q6' : '';
+}
+
+function appleAccountScope() {
+  return crypto.createHash('sha256').update(JSON.stringify([
+    productLineConfigService.get('APPLE_DEVICE_TEAM_ID'),
+    productLineConfigService.get('APPLE_DEVICE_API_ISSUER_ID'),
+    productLineConfigService.get('APPLE_DEVICE_API_KEY_ID'),
+  ])).digest('hex');
 }
 
 function appleKeyPathInfo() {
@@ -400,19 +434,23 @@ function appleKeyPathInfo() {
 }
 
 function appleConfigStatus() {
-  const keyId = productLineConfigService.get('APP_STORE_CONNECT_API_KEY_ID');
-  const issuerId = productLineConfigService.get('APP_STORE_CONNECT_API_ISSUER_ID');
+  const keyId = productLineConfigService.get('APPLE_DEVICE_API_KEY_ID');
+  const issuerId = productLineConfigService.get('APPLE_DEVICE_API_ISSUER_ID');
+  const teamId = productLineConfigService.get('APPLE_DEVICE_TEAM_ID');
+  const requiredTeamId = requiredAppleTeamId();
   const privateKey = readApplePrivateKey();
   const keyInfo = appleKeyPathInfo();
   const missing = [
-    !keyId ? 'APP_STORE_CONNECT_API_KEY_ID' : '',
-    !issuerId ? 'APP_STORE_CONNECT_API_ISSUER_ID' : '',
-    !privateKey ? 'APP_STORE_CONNECT_API_PRIVATE_KEY' : '',
+    !keyId ? 'APPLE_DEVICE_API_KEY_ID' : '',
+    !issuerId ? 'APPLE_DEVICE_API_ISSUER_ID' : '',
+    !privateKey ? 'APPLE_DEVICE_API_PRIVATE_KEY' : '',
+    !teamId ? 'APPLE_DEVICE_TEAM_ID' : '',
   ].filter(Boolean);
   const warnings = [
-    '',
+    requiredTeamId && teamId && teamId !== requiredTeamId
+      ? `扫码采集仅支持武汉团队 ${requiredTeamId}，当前设备注册配置不符合要求。` : '',
   ].filter(Boolean);
-  return { configured: missing.length === 0, missing, warnings, keyId, issuerId, productLineId: currentProductLineId(), ...keyInfo };
+  return { configured: missing.length === 0 && warnings.length === 0, missing, warnings, keyId, issuerId, teamId, requiredTeamId, productLineId: currentProductLineId(), ...keyInfo };
 }
 
 function appleDeviceApiErrorMessage(error: any, fallback: string) {
@@ -431,6 +469,7 @@ function appleDeviceApiErrorMessage(error: any, fallback: string) {
 }
 
 async function registerAppleDeviceToDeveloper(udid: string, name: string, platform: string) {
+  udid = normalizeUdid(udid);
   const existing = await requestApple<any>('GET', `${ASC_API_BASE}/devices?filter[udid]=${encodeURIComponent(udid)}&limit=1`);
   const existedDevice = Array.isArray(existing?.data) ? existing.data[0] : null;
   if (existedDevice?.id) {
@@ -475,12 +514,12 @@ function base64Url(input: Buffer | string) {
     .replace(/\//g, '_');
 }
 
-function createAppleJwt() {
-  const keyId = productLineConfigService.get('APP_STORE_CONNECT_API_KEY_ID');
-  const issuerId = productLineConfigService.get('APP_STORE_CONNECT_API_ISSUER_ID');
-  const privateKey = readApplePrivateKey();
+function createAppleJwt(config?: { keyId: string; issuerId: string; privateKey: string }) {
+  const keyId = config?.keyId ?? productLineConfigService.get('APPLE_DEVICE_API_KEY_ID');
+  const issuerId = config?.issuerId ?? productLineConfigService.get('APPLE_DEVICE_API_ISSUER_ID');
+  const privateKey = config?.privateKey ?? readApplePrivateKey();
   if (!keyId || !issuerId || !privateKey) {
-    throw new Error(`App Store Connect API Key 未配置完整：${appleConfigStatus().missing.join('、')}`);
+    throw new Error('请先配置开发联调团队的设备注册 API Key、Issuer ID 和私钥；设备注册独立于 App Store 发布账号。');
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -500,6 +539,8 @@ function createAppleJwt() {
 }
 
 async function requestApple<T>(method: 'GET' | 'POST', url: string, data?: any): Promise<T> {
+  const status = appleConfigStatus();
+  if (!status.configured) throw new Error(status.warnings[0] || '请先配置开发联调团队的设备注册凭据（Team ID、Issuer ID 和 AuthKey 私钥）。');
   const token = createAppleJwt();
   const response = await axios.request<T>({
     method,
@@ -725,10 +766,17 @@ router.get('/status', (_req, res) => {
   res.json({ success: true, data: appleConfigStatus() });
 });
 
-router.post('/config', adminMiddleware, appleConfigUpload.single('keyFile'), (req, res) => {
+router.post('/config', adminMiddleware, appleConfigUpload.single('keyFile'), async (req, res) => {
   try {
     let keyId = String(req.body?.keyId || '').trim();
     const issuerId = String(req.body?.issuerId || '').trim();
+    const teamId = String(req.body?.teamId || '').trim().toUpperCase();
+    const requiredTeamId = requiredAppleTeamId();
+    if (requiredTeamId && teamId !== requiredTeamId) {
+      if (req.file?.path) fs.unlinkSync(req.file.path);
+      res.status(400).json({ success: false, error: `扫码采集仅支持武汉团队 ${requiredTeamId}，不能切换到其他团队。` });
+      return;
+    }
     const keyPath = String(req.body?.keyPath || '').trim();
     let privateKey = readApplePrivateKey();
 
@@ -758,21 +806,38 @@ router.post('/config', adminMiddleware, appleConfigUpload.single('keyFile'), (re
       privateKey = fs.readFileSync(resolvedKeyPath, 'utf8');
     }
 
-    if (!keyId || !issuerId || !privateKey.trim()) {
-      res.status(400).json({ success: false, error: '请配置 Issuer ID 并上传未改名的 AuthKey_*.p8 私钥' });
+    keyId ||= productLineConfigService.get('APPLE_DEVICE_API_KEY_ID');
+    if (!keyId || !issuerId || !privateKey.trim() || !/^[A-Z0-9]{10}$/.test(teamId)) {
+      res.status(400).json({ success: false, error: '请配置有效的 Team ID、Issuer ID 并上传未改名的 AuthKey_*.p8 私钥' });
+      return;
+    }
+
+    // Verify the credential's actual signing team before persisting it.
+    const verification = await axios.request<any>({
+      method: 'GET', url: `${ASC_API_BASE}/certificates?limit=1`, timeout: 30000,
+      headers: { Authorization: `Bearer ${createAppleJwt({ keyId, issuerId, privateKey })}` },
+    });
+    const certificate = verification.data?.data?.[0]?.attributes?.certificateContent;
+    const actualTeam = certificate
+      ? new crypto.X509Certificate(Buffer.from(certificate, 'base64')).toLegacyObject().subject.OU : '';
+    if (actualTeam !== teamId) {
+      res.status(400).json({ success: false, error: actualTeam
+        ? `该 API Key 属于团队 ${actualTeam}，与目标团队 ${teamId} 不一致，未保存。`
+        : '该账号没有可用于核对团队的签名证书，请先在目标团队创建开发证书后重试。' });
       return;
     }
 
     productLineConfigService.setMany(currentProductLineId(), {
-      APP_STORE_CONNECT_API_KEY_ID: keyId,
-      APP_STORE_CONNECT_API_ISSUER_ID: issuerId,
-      APP_STORE_CONNECT_API_PRIVATE_KEY: privateKey,
+      APPLE_DEVICE_API_KEY_ID: keyId,
+      APPLE_DEVICE_API_ISSUER_ID: issuerId,
+      APPLE_DEVICE_API_PRIVATE_KEY: privateKey,
+      APPLE_DEVICE_TEAM_ID: teamId,
     }, String((req as any).authUser?.username || 'admin'));
     res.json({
       success: true,
       data: {
         ...appleConfigStatus(),
-        message: '当前产品线 Apple Developer API 配置已更新',
+        message: `开发联调设备注册团队已更新为 ${teamId}`,
       },
     });
   } catch (error: any) {
@@ -799,8 +864,7 @@ router.get('/devices', adminMiddleware, async (req, res) => {
       devices.push(...(Array.isArray(response?.data) ? response.data : []));
       url = response?.links?.next || '';
     }
-    const normalizedDevices = devices
-      .map(normalizeAppleDevice)
+    const normalizedDevices = visibleAppleDevices(devices.map(normalizeAppleDevice))
       .sort((a, b) => String(b.addedDate || '').localeCompare(String(a.addedDate || '')));
     saveAppleDevices(normalizedDevices);
     res.json({
@@ -838,20 +902,9 @@ router.get('/devices', adminMiddleware, async (req, res) => {
 });
 
 router.get('/lookup', async (req, res) => {
-  const udid = normalizeUdid(req.query.udid).replace(/-/g, '');
+  const udid = normalizeUdid(req.query.udid);
   if (!isValidUdid(udid)) {
     res.status(400).json({ success: false, error: '请输入有效的 iOS 设备 Identifier/UDID' });
-    return;
-  }
-
-  const cachedDevice = findCachedAppleDeviceByUdid(udid);
-  if (cachedDevice) {
-    res.json({ success: true, data: { registered: true, device: cachedDevice, source: 'cache' } });
-    return;
-  }
-
-  if (!appleConfigStatus().configured) {
-    res.json({ success: true, data: { registered: false, source: 'cache' } });
     return;
   }
 
@@ -867,8 +920,8 @@ router.get('/lookup', async (req, res) => {
     res.json({ success: true, data: { registered: true, device: normalizedDevice, source: 'apple' } });
   } catch (error: any) {
     const { message } = appleDeviceApiErrorMessage(error, '查询 Apple 设备注册状态失败');
-    logger.warn('查询 Apple 设备注册状态失败，返回本地未命中结果', { error: error?.message, udid });
-    res.json({ success: true, data: { registered: false, source: 'cache', warning: message } });
+    logger.warn('查询 Apple 设备注册状态失败', { error: error?.message, udid });
+    res.status(502).json({ success: false, error: message });
   }
 });
 
@@ -1057,6 +1110,7 @@ router.post('/registration-requests', express.json({ limit: '1mb' }), async (req
     const request: RegistrationRequest = {
       id: crypto.randomUUID(),
       productLineId: currentProductLineId(),
+      accountScope: appleAccountScope(),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       status: 'pending',

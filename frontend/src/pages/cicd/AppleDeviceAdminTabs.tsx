@@ -85,6 +85,8 @@ export function AppleDeviceAdminTabs({
               devices={filteredDeveloperDevices}
               loading={developerDevicesLoading}
               error={developerDevicesError}
+              source={developerDevices?.source}
+              warning={developerDevices?.warning}
               keyword={developerDeviceKeyword}
               onKeywordChange={onDeveloperDeviceKeywordChange}
               onRefresh={onLoadDeveloperDevices}
