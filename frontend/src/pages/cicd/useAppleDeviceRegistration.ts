@@ -4,7 +4,6 @@ import { message } from 'antd';
 import {
   AppleDeveloperDeviceListResult,
   AppleDeveloperDeviceLookupResult,
-  AppleDeviceConfigStatus,
   AppleDeviceEnrollment,
   AppleDeviceEnrollmentCreateResult,
   AppleDeviceRegistrationRequestListResult,
@@ -27,8 +26,6 @@ interface UseAppleDeviceRegistrationParams {
 }
 
 export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceRegistrationParams) {
-  const [configStatus, setConfigStatus] = useState<AppleDeviceConfigStatus | null>(null);
-  const [configStatusLoading, setConfigStatusLoading] = useState(false);
   const [enrollment, setEnrollment] = useState<AppleDeviceEnrollmentCreateResult | null>(null);
   const [enrollmentState, setEnrollmentState] = useState<AppleDeviceEnrollment | null>(null);
   const [enrollmentLoading, setEnrollmentLoading] = useState(false);
@@ -45,9 +42,6 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
   const [registrationRequests, setRegistrationRequests] = useState<AppleDeviceRegistrationRequestListResult | null>(null);
   const [registrationRequestsLoading, setRegistrationRequestsLoading] = useState(false);
   const [approvingRegistrationRequest, setApprovingRegistrationRequest] = useState('');
-  const [configSaving, setConfigSaving] = useState(false);
-  const [configIssuerId, setConfigIssuerId] = useState('');
-  const [configKeyFile, setConfigKeyFile] = useState<File | null>(null);
   const enrollmentAutoCreatedRef = useRef(false);
   const deviceLookupSeqRef = useRef(0);
   const autoRegistrationUdidRef = useRef('');
@@ -73,43 +67,6 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
   const filteredDeveloperDevices = useMemo(() => {
     return filterAppleDeveloperDevices(developerDevices?.devices || [], developerDeviceKeyword);
   }, [developerDevices?.devices, developerDeviceKeyword]);
-
-  const loadConfigStatus = async () => {
-    setConfigStatusLoading(true);
-    try {
-      const response = await appleDeviceApi.status();
-      const status = response.data || null;
-      setConfigStatus(status);
-      if (status) {
-        setConfigIssuerId(status.issuerId || '');
-      }
-    } catch (err: any) {
-      message.warning(err?.error || err?.message || '加载 Apple Developer 配置状态失败');
-    } finally {
-      setConfigStatusLoading(false);
-    }
-  };
-
-  const saveConfig = async () => {
-    setConfigSaving(true);
-    try {
-      const response = await appleDeviceApi.updateConfig({
-        issuerId: configIssuerId.trim(),
-        keyFile: configKeyFile,
-      });
-      const status = response.data || null;
-      setConfigStatus(status);
-      setConfigKeyFile(null);
-      if (status) {
-        setConfigIssuerId(status.issuerId || configIssuerId.trim());
-      }
-      message.success(status?.message || 'Apple Developer API 配置已更新');
-    } catch (err: any) {
-      message.error(err?.error || err?.message || '更新 Apple Developer API 配置失败');
-    } finally {
-      setConfigSaving(false);
-    }
-  };
 
   const loadDeveloperDevices = async () => {
     if (!canAdmin) {
@@ -147,7 +104,6 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
 
   const refreshSection = async () => {
     await Promise.all([
-      loadConfigStatus(),
       loadDeveloperDevices(),
       loadRegistrationRequests(),
     ]);
@@ -383,8 +339,6 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
   ]);
 
   return {
-    configStatus,
-    configStatusLoading,
     enrollment,
     enrollmentState,
     enrollmentLoading,
@@ -399,16 +353,9 @@ export function useAppleDeviceRegistration({ active, canAdmin }: UseAppleDeviceR
     registrationRequests,
     registrationRequestsLoading,
     approvingRegistrationRequest,
-    configSaving,
-    configIssuerId,
-    configKeyFile,
     registeredDevice,
     filteredDeveloperDevices,
     setDeveloperDeviceKeyword,
-    setConfigIssuerId,
-    setConfigKeyFile,
-    loadConfigStatus,
-    saveConfig,
     loadDeveloperDevices,
     loadRegistrationRequests,
     refreshSection,

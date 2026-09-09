@@ -3,10 +3,8 @@ import { ReactNode } from 'react';
 import {
   AppleDeveloperDevice,
   AppleDeveloperDeviceListResult,
-  AppleDeviceConfigStatus,
   AppleDeviceRegistrationRequestListResult,
 } from '../../services/api';
-import { AppleDeveloperApiConfigCard } from './AppleDeveloperApiConfigCard';
 import { AppleDeveloperDevicesCard } from './AppleDeveloperDevicesCard';
 import { AppleRegistrationRequestsCard } from './AppleRegistrationRequestsCard';
 
@@ -20,20 +18,11 @@ interface AppleDeviceAdminTabsProps {
   developerDevicesLoading?: boolean;
   developerDevicesError?: string;
   developerDeviceKeyword: string;
-  configStatus: AppleDeviceConfigStatus | null;
-  configStatusLoading?: boolean;
-  configSaving?: boolean;
-  configIssuerId: string;
-  configKeyFile: File | null;
   onTabChange: (key: string) => void;
   onLoadRegistrationRequests: () => void;
   onApproveRegistrationRequest: (id: string) => void;
   onLoadDeveloperDevices: () => void;
   onDeveloperDeviceKeywordChange: (value: string) => void;
-  onLoadConfigStatus: () => void;
-  onSaveConfig: () => void;
-  onConfigIssuerIdChange: (value: string) => void;
-  onConfigKeyFileChange: (file: File | null) => void;
 }
 
 export function AppleDeviceAdminTabs({
@@ -46,20 +35,11 @@ export function AppleDeviceAdminTabs({
   developerDevicesLoading,
   developerDevicesError,
   developerDeviceKeyword,
-  configStatus,
-  configStatusLoading,
-  configSaving,
-  configIssuerId,
-  configKeyFile,
   onTabChange,
   onLoadRegistrationRequests,
   onApproveRegistrationRequest,
   onLoadDeveloperDevices,
   onDeveloperDeviceKeywordChange,
-  onLoadConfigStatus,
-  onSaveConfig,
-  onConfigIssuerIdChange,
-  onConfigKeyFileChange,
 }: AppleDeviceAdminTabsProps) {
   const requests = registrationRequests?.requests || [];
   const pendingCount = requests.filter((request) => request.status === 'pending').length;
@@ -108,23 +88,6 @@ export function AppleDeviceAdminTabs({
               keyword={developerDeviceKeyword}
               onKeywordChange={onDeveloperDeviceKeywordChange}
               onRefresh={onLoadDeveloperDevices}
-            />
-          ),
-        },
-        {
-          key: 'config',
-          label: 'API 配置',
-          children: (
-            <AppleDeveloperApiConfigCard
-              status={configStatus}
-              statusLoading={configStatusLoading}
-              saving={configSaving}
-              issuerId={configIssuerId}
-              keyFile={configKeyFile}
-              onIssuerIdChange={onConfigIssuerIdChange}
-              onKeyFileChange={onConfigKeyFileChange}
-              onCheck={onLoadConfigStatus}
-              onSave={onSaveConfig}
             />
           ),
         },

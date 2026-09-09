@@ -3,7 +3,6 @@ import { Col, Row, Space } from 'antd';
 import {
   AppleDeveloperDevice,
   AppleDeveloperDeviceListResult,
-  AppleDeviceConfigStatus,
   AppleDeviceEnrollment,
   AppleDeviceEnrollmentCreateResult,
   AppleDeviceRegistrationRequestListResult,
@@ -33,21 +32,12 @@ interface AppleDeviceSectionProps {
   developerDevicesLoading?: boolean;
   developerDevicesError?: string;
   developerDeviceKeyword: string;
-  configStatus: AppleDeviceConfigStatus | null;
-  configStatusLoading?: boolean;
-  configSaving?: boolean;
-  configIssuerId: string;
-  configKeyFile: File | null;
   onCreateEnrollment: () => void;
   onTabChange: (key: string) => void;
   onLoadRegistrationRequests: () => void;
   onApproveRegistrationRequest: (id: string) => void;
   onLoadDeveloperDevices: () => void;
   onDeveloperDeviceKeywordChange: (value: string) => void;
-  onLoadConfigStatus: () => void;
-  onSaveConfig: () => void;
-  onConfigIssuerIdChange: (value: string) => void;
-  onConfigKeyFileChange: (file: File | null) => void;
 }
 
 export function AppleDeviceSection({
@@ -70,21 +60,12 @@ export function AppleDeviceSection({
   developerDevicesLoading,
   developerDevicesError,
   developerDeviceKeyword,
-  configStatus,
-  configStatusLoading,
-  configSaving,
-  configIssuerId,
-  configKeyFile,
   onCreateEnrollment,
   onTabChange,
   onLoadRegistrationRequests,
   onApproveRegistrationRequest,
   onLoadDeveloperDevices,
   onDeveloperDeviceKeywordChange,
-  onLoadConfigStatus,
-  onSaveConfig,
-  onConfigIssuerIdChange,
-  onConfigKeyFileChange,
 }: AppleDeviceSectionProps) {
   const scanCard = (
     <AppleScanCard
@@ -119,20 +100,11 @@ export function AppleDeviceSection({
           developerDevicesLoading={developerDevicesLoading}
           developerDevicesError={developerDevicesError}
           developerDeviceKeyword={developerDeviceKeyword}
-          configStatus={configStatus}
-          configStatusLoading={configStatusLoading}
-          configSaving={configSaving}
-          configIssuerId={configIssuerId}
-          configKeyFile={configKeyFile}
           onTabChange={onTabChange}
           onLoadRegistrationRequests={onLoadRegistrationRequests}
           onApproveRegistrationRequest={onApproveRegistrationRequest}
           onLoadDeveloperDevices={onLoadDeveloperDevices}
           onDeveloperDeviceKeywordChange={onDeveloperDeviceKeywordChange}
-          onLoadConfigStatus={onLoadConfigStatus}
-          onSaveConfig={onSaveConfig}
-          onConfigIssuerIdChange={onConfigIssuerIdChange}
-          onConfigKeyFileChange={onConfigKeyFileChange}
         />
       ) : (
         <Row gutter={[16, 16]}>

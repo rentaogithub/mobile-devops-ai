@@ -32,25 +32,15 @@ export function AppleDeviceSectionContainer({
       developerDevicesLoading={registration.developerDevicesLoading}
       developerDevicesError={registration.developerDevicesError}
       developerDeviceKeyword={registration.developerDeviceKeyword}
-      configStatus={registration.configStatus}
-      configStatusLoading={registration.configStatusLoading}
-      configSaving={registration.configSaving}
-      configIssuerId={registration.configIssuerId}
-      configKeyFile={registration.configKeyFile}
       onCreateEnrollment={registration.createEnrollment}
       onTabChange={(key) => {
         if (key === 'requests') void registration.loadRegistrationRequests();
         if (key === 'devices') void registration.loadDeveloperDevices();
-        if (key === 'config') void registration.loadConfigStatus();
       }}
       onLoadRegistrationRequests={registration.loadRegistrationRequests}
       onApproveRegistrationRequest={registration.approveRegistrationRequest}
       onLoadDeveloperDevices={registration.loadDeveloperDevices}
       onDeveloperDeviceKeywordChange={registration.setDeveloperDeviceKeyword}
-      onLoadConfigStatus={registration.loadConfigStatus}
-      onSaveConfig={registration.saveConfig}
-      onConfigIssuerIdChange={registration.setConfigIssuerId}
-      onConfigKeyFileChange={registration.setConfigKeyFile}
     />
   );
 }
