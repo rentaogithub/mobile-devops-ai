@@ -164,7 +164,7 @@ export class AssistantInsightService {
         '二进制兼容性、资源 Bundle 和最低系统版本仍需通过构建与 smoke 质检验证',
       ],
       recommendedChecks: ['Pod 依赖解析', '主工程编译', '启动 smoke', ...(dependents.length > 0 ? ['依赖方核心流程回归'] : [])],
-      quickActions: [{ label: '分析变更影响', prompt: `分析 ${name} 从 ${target.version} 升级到 ${latestVersion} 对主工程的变更影响和建议质检范围` }],
+      quickActions: [{ label: '查看验证范围', prompt: `分析 ${name} 从 ${target.version} 升级到 ${latestVersion} 对主工程的升级风险和建议质检范围` }],
     };
   }
 

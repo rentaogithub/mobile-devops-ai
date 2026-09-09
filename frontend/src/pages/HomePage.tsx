@@ -139,7 +139,6 @@ const toolPromptExamples: Record<string, string[]> = {
   workflow_list_issues: ['查询质量中心高风险未关闭 Issue', '查询最近质量中心 P0/P1 问题'],
   workflow_list_tasks: ['查询最近构建、质检和回归任务', '查看最近自动化回归任务状态'],
   workflow_verify_task: ['验证指定 Workflow 任务是否通过', '检查 Workflow 任务 #12345 的验证结果'],
-  workflow_change_impact: ['分析当前变更影响范围并建议验证策略', '按变更内容生成回归验证建议'],
   workflow_release_gate_preview: ['预览指定构建的发布质量门禁', '检查版本发布前质量门禁风险'],
   workflow_verify_release_health: ['验证指定版本发布后是否健康', '查看指定版本发布后的 Crash 和质量状态'],
   task_track: ['跟踪构建、质检或 Workflow 任务状态', '继续跟踪 Workflow 任务 #12345'],

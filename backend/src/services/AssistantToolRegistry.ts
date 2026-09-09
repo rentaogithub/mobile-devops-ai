@@ -10,7 +10,6 @@ import { qualityGateService } from './QualityGateService';
 import sentryIssueService from './SentryIssueService';
 import { StorageService } from './StorageService';
 import { SymbolizerService } from './SymbolizerService';
-import { changeImpactService } from './ChangeImpactService';
 import { workflowAIService } from './WorkflowAIService';
 import { workflowService } from './WorkflowService';
 import { deliveryReadinessService } from './DeliveryReadinessService';
@@ -277,13 +276,6 @@ const tools: AssistantTool[] = [
         nextActions: !terminal ? ['任务仍在执行，稍后再次验证'] : passed ? ['任务验证通过'] : ['查看失败问题，修复后重跑对应质检任务'],
       };
     },
-  },
-  {
-    name: 'workflow_change_impact', domain: 'workflow', role: 'tester', riskLevel: 'confirm', approvalsRequired: 1, timeoutMs: 60_000,
-    description: '根据仓库、Base/Head Ref 或文件列表执行变更影响分析。',
-    parameters: objectSchema({ repoPath: { type: 'string' }, baseRef: { type: 'string' }, headRef: { type: 'string' }, files: { type: 'array', items: { type: 'string' } } }),
-    preview: (args) => ({ title: '执行变更影响分析', repoPath: args.repoPath, baseRef: args.baseRef, headRef: args.headRef, fileCount: args.files?.length || 0 }),
-    execute: (args) => changeImpactService.analyze(args),
   },
   {
     name: 'workflow_release_gate_preview', domain: 'workflow', role: 'admin', riskLevel: 'read', approvalsRequired: 0, timeoutMs: 10_000,
@@ -576,7 +568,6 @@ function toolServices(tool: AssistantTool): ApplicationServiceId[] {
   if (['api_search', 'routes_search', 'cross_platform_search'].includes(name)) return ['api-docs'];
   if (name.startsWith('cicd_')) return name === 'cicd_trigger_release' || name === 'cicd_verify_build' ? ['jenkins', 'quality'] : ['jenkins'];
   if (name.startsWith('quality_') || name === 'task_track') return ['quality', 'jenkins', 'devices'];
-  if (name === 'workflow_change_impact') return ['workflow', 'podx'];
   if (name === 'workflow_generate_xcuitest') return ['workflow', 'devices'];
   if (name.startsWith('workflow_')) return ['workflow'];
   return [];

@@ -171,7 +171,7 @@ ${candidate.assertions.map((assertion: string) => `        // Assertion: ${escap
     const startedAt = Date.now();
     const result = await aiAnalysisService.runStructuredAnalysis({
       apiKey,
-      systemPrompt: `你是资深 iOS 故障修复助手。基于 Issue、Swift/Objective-C 代码上下文和变更影响给出候选修复方案。输出严格 JSON：
+      systemPrompt: `你是资深 iOS 故障修复助手。基于 Issue、Swift/Objective-C 代码上下文和质量证据给出候选修复方案。输出严格 JSON：
 {
   "summary": "修复摘要",
   "rootCauseHypotheses": ["根因假设"],

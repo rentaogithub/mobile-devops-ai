@@ -404,11 +404,6 @@ export class BusinessSemanticService {
     if (candidateId && /(xcuitest|ui\s*test|自动化代码|生成测试)/i.test(content) && hasTool('workflow_generate_xcuitest')) {
       return { toolName: 'workflow_generate_xcuitest', args: { candidateId }, completionText: `已准备为回归候选 ${candidateId} 生成 XCUITest。` };
     }
-    if (/(变更影响|影响分析|改动影响|diff|base|head)/i.test(content) && hasTool('workflow_change_impact')) {
-      const refs = this.extractRefs(content);
-      return { toolName: 'workflow_change_impact', args: refs, completionText: '已准备执行变更影响分析。' };
-    }
-
     if (/(能力目录|服务能力|平台能力|能做什么|可以做什么|支持什么|有哪些能力|能力清单|查询能力)/i.test(content) && hasTool('assistant_capability_search')) {
       const keyword = this.cleanKeyword(content, ['AI', 'ai', '会话', '执行中心', '能力目录', '服务能力', '平台能力', '能做什么', '可以做什么', '支持什么', '有哪些能力', '能力清单', '查询能力']);
       return {

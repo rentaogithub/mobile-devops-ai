@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
 import { workflowService } from '../services/WorkflowService';
-import { changeImpactService } from '../services/ChangeImpactService';
 import { qualityGateService } from '../services/QualityGateService';
 import { workflowAIService } from '../services/WorkflowAIService';
 import { xcuiTestWorkflowService } from '../services/XCUITestWorkflowService';
@@ -213,21 +212,6 @@ router.get('/events', (req, res) => {
     ok(res, workflowService.listEvents(req.query));
   } catch (error) {
     fail(res, error, '加载 Workflow 事件失败');
-  }
-});
-
-router.post('/impact/analyze', requireApplicationServices('podx'), (req, res) => {
-  try {
-    const result = changeImpactService.analyze(req.body || {});
-    workflowService.recordEvent({
-      eventType: 'change_impact.analyzed',
-      entityType: 'commit',
-      entityId: String(req.body?.headRef || 'working-tree'),
-      payload: result,
-    });
-    ok(res, result);
-  } catch (error) {
-    fail(res, error, '变更影响分析失败', 400);
   }
 });
 

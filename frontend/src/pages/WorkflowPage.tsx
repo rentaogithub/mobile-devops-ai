@@ -8,7 +8,6 @@ import {
   Card,
   Checkbox,
   Col,
-  Descriptions,
   Form,
   Input,
   InputNumber,
@@ -36,7 +35,6 @@ import {
 import {
   workflowApi,
   qualityApi,
-  WorkflowImpactResult,
   WorkflowIssue,
   WorkflowKnowledgeEntry,
   WorkflowOverview,
@@ -101,13 +99,11 @@ function WorkflowPageContent() {
   const [knowledge, setKnowledge] = useState<WorkflowKnowledgeEntry[]>([]);
   const [observations, setObservations] = useState<WorkflowReleaseObservation[]>([]);
   const [evaluations, setEvaluations] = useState<any[]>([]);
-  const [impact, setImpact] = useState<WorkflowImpactResult>();
   const [gateResult, setGateResult] = useState<WorkflowReleaseGate>();
   const [releaseHealth, setReleaseHealth] = useState<Record<string, any>>();
   const [detailTitle, setDetailTitle] = useState('');
   const [detailContent, setDetailContent] = useState('');
   const [detailOpen, setDetailOpen] = useState(false);
-  const [impactForm] = Form.useForm();
   const [gateForm] = Form.useForm();
   const [observationForm] = Form.useForm();
   const [knowledgeForm] = Form.useForm();
@@ -191,20 +187,6 @@ function WorkflowPageContent() {
       openJson('候选修复建议（不会创建 Commit/PR）', response.data);
     } catch (error: any) {
       message.error({ content: error?.error || '生成修复建议失败', key });
-    }
-  };
-
-  const analyzeImpact = async () => {
-    const values = await impactForm.validateFields();
-    setLoading(true);
-    try {
-      const response = await workflowApi.analyzeImpact(values);
-      setImpact(response.data);
-      message.success('变更影响分析完成');
-    } catch (error: any) {
-      message.error(error?.error || '变更影响分析失败');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -431,38 +413,6 @@ function WorkflowPageContent() {
     />
   );
 
-  const impactTab = (
-    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <Card title="PR / Commit 变更影响分析">
-        <Form form={impactForm} layout="vertical" initialValues={{ headRef: 'HEAD' }}>
-          <Row gutter={16}>
-            <Col xs={24} lg={10}><Form.Item label="iOS 仓库路径" name="repoPath"><Input placeholder="留空使用当前产品线主仓库" /></Form.Item></Col>
-            <Col xs={12} lg={5}><Form.Item label="Base Ref" name="baseRef"><Input placeholder="origin/main；留空分析工作区" /></Form.Item></Col>
-            <Col xs={12} lg={5}><Form.Item label="Head Ref" name="headRef"><Input /></Form.Item></Col>
-            <Col xs={24} lg={4} style={{ display: 'flex', alignItems: 'end' }}><Form.Item><Button type="primary" onClick={analyzeImpact}>开始分析</Button></Form.Item></Col>
-          </Row>
-        </Form>
-      </Card>
-      {impact && <Card title="影响结论">
-        <Descriptions column={{ xs: 1, md: 3 }}>
-          <Descriptions.Item label="风险"><Progress type="circle" size={72} percent={impact.riskScore} status={impact.riskLevel === 'high' ? 'exception' : 'normal'} /></Descriptions.Item>
-          <Descriptions.Item label="变更规模">{impact.totalFiles} 文件 / {impact.changedLines} 行</Descriptions.Item>
-          <Descriptions.Item label="模块">{impact.modules.map((item) => <Tag key={item}>{item}</Tag>)}</Descriptions.Item>
-          <Descriptions.Item label="业务域">{impact.domains.map((item) => <Tag color="blue" key={item}>{item}</Tag>)}</Descriptions.Item>
-          <Descriptions.Item label="推荐套件" span={2}>{impact.recommendedSuites.map((item) => <Tag color="purple" key={item}>{item}</Tag>)}</Descriptions.Item>
-          <Descriptions.Item label="专项检查" span={3}>{impact.recommendedChecks.length ? impact.recommendedChecks.join('；') : '基础 Smoke 与单元测试'}</Descriptions.Item>
-        </Descriptions>
-        <Table size="small" rowKey="path" pagination={{ pageSize: 20 }} dataSource={impact.files} columns={[
-          { title: '文件', dataIndex: 'path', ellipsis: true },
-          { title: '类型', dataIndex: 'kind', width: 130 },
-          { title: '模块', dataIndex: 'module', width: 140 },
-          { title: '+/-', width: 100, render: (_, row) => <Text><Text type="success">+{row.added}</Text> / <Text type="danger">-{row.deleted}</Text></Text> },
-          { title: '风险', dataIndex: 'risks', width: 280, render: (values: string[]) => values.map((item) => <Tag key={item}>{item}</Tag>) },
-        ]} />
-      </Card>}
-    </Space>
-  );
-
   const gateTab = (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <Card title="发布质量门禁">
@@ -588,18 +538,17 @@ function WorkflowPageContent() {
   const tabItems = useMemo(() => [
     { key: 'overview', label: '平台概览', children: overviewTab },
     { key: 'issues', label: `Issue 中心（${issues.length}）`, children: issueTab },
-    { key: 'impact', label: '变更影响', children: impactTab },
     { key: 'gate', label: '发布门禁', children: gateTab },
     { key: 'regression', label: `回归候选（${candidates.length}）`, children: regressionTab },
     { key: 'evolution', label: '知识与发布观察', children: evolutionTab },
-  ], [overview, issues, gates, candidates, knowledge, observations, evaluations, impact, gateResult, releaseHealth, loading]);
+  ], [overview, issues, gates, candidates, knowledge, observations, evaluations, gateResult, releaseHealth, loading]);
 
   return (
     <div>
       <Space align="start" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 20 }}>
         <div>
           <Title level={4} style={{ marginBottom: 6 }}><ApartmentOutlined style={{ color: '#1677ff', marginRight: 8 }} />移动研发质量中心</Title>
-          <Paragraph type="secondary" style={{ margin: 0 }}>统一汇聚 Artifact、质量任务和 Issue，为变更分析、发布决策、确定性回归及质量知识沉淀提供依据。</Paragraph>
+          <Paragraph type="secondary" style={{ margin: 0 }}>统一汇聚 Artifact、质量任务和 Issue，为发布决策、确定性回归及质量知识沉淀提供依据。</Paragraph>
         </div>
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => loadAll()}>刷新</Button>
       </Space>

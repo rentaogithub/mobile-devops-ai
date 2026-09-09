@@ -251,7 +251,7 @@ const toolSections: ToolSection[] = [
       {
         title: 'AI 更新',
         command: 'podx ai update',
-        description: '更新 Codex CodeGraph MCP，并检查改动影响。',
+        description: '更新 Codex CodeGraph MCP，并检查配置一致性。',
         category: 'AI',
       },
       {

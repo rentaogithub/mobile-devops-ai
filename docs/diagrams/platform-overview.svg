@@ -47,7 +47,7 @@
 <rect x="75" y="713" width="970" height="102" rx="8" fill="#edf7f0" stroke="#96b9a2" stroke-width="1.4" />
 <text x="560.0" y="745.5" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">Workflow · 统一交付证据</text>
 <text x="560.0" y="774.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">Artifact / Task / Issue / Relation / Event</text>
-<text x="560.0" y="801.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">变更影响  ·  门禁与交付诊断  ·  回归候选  ·  知识与版本观察</text>
+<text x="560.0" y="801.5" font-size="18" text-anchor="middle" fill="#172c47" font-weight="400">门禁与交付诊断  ·  回归候选  ·  知识与版本观察</text>
 <rect x="75" y="839" width="970" height="65" rx="8" fill="#f4f0fb" stroke="#b4a5ce" stroke-width="1.4" />
 <text x="560.0" y="880.0" font-size="21" text-anchor="middle" fill="#172c47" font-weight="600">公共运行能力：定时同步 · 健康检查 · 备份 · 保留策略 · 文件清理</text>
 <polyline points="310,928 310,978" fill="none" stroke="#8c9caf" stroke-width="1.7" marker-end="url(#arrow)" />

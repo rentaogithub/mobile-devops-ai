@@ -4526,22 +4526,6 @@ export interface WorkflowIssue {
   metadata: Record<string, any>;
 }
 
-export interface WorkflowImpactResult {
-  repoPath: string;
-  baseRef?: string;
-  headRef: string;
-  totalFiles: number;
-  changedLines: number;
-  riskScore: number;
-  riskLevel: string;
-  modules: string[];
-  domains: string[];
-  risks: string[];
-  recommendedSuites: string[];
-  recommendedChecks: string[];
-  files: Array<{ path: string; kind: string; module: string; domains: string[]; risks: string[]; added: number; deleted: number }>;
-}
-
 export interface WorkflowReleaseGate {
   id: string;
   buildNumber: string;
@@ -4623,7 +4607,6 @@ export const workflowApi = {
   listTasks: async (): Promise<ApiResponse<WorkflowTask[]>> => (await api.get('/workflow/tasks')).data,
   listIssues: async (params?: Record<string, unknown>): Promise<ApiResponse<WorkflowIssue[]>> => (await api.get('/workflow/issues', { params })).data,
   updateIssue: async (issueId: string, payload: Record<string, unknown>): Promise<ApiResponse<WorkflowIssue>> => (await api.patch(`/workflow/issues/${issueId}`, payload)).data,
-  analyzeImpact: async (payload: { repoPath?: string; baseRef?: string; headRef?: string; files?: string[] }): Promise<ApiResponse<WorkflowImpactResult>> => (await api.post('/workflow/impact/analyze', payload, { timeout: 120000 })).data,
   evaluateGate: async (payload: Record<string, unknown>): Promise<ApiResponse<WorkflowReleaseGate>> => (await api.post('/workflow/release-gates/evaluate', payload)).data,
   listGates: async (): Promise<ApiResponse<WorkflowReleaseGate[]>> => (await api.get('/workflow/release-gates')).data,
   proposeRegression: async (issueId: string): Promise<ApiResponse<WorkflowRegressionCandidate>> => (await api.post(`/workflow/issues/${issueId}/regression-candidates`)).data,

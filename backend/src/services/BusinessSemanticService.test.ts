@@ -95,7 +95,6 @@ describe('BusinessSemanticService', () => {
       'task_track',
       'workflow_create_regression_candidate',
       'workflow_generate_xcuitest',
-      'workflow_change_impact',
       'api_search',
       'routes_search',
       'cross_platform_search',
