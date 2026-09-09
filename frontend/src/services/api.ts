@@ -2345,7 +2345,7 @@ export const gitApi = {
 
   /**
    * 解析各业务仓库在指定分支下的 podspec 依赖，
-   * 并用 nnios 同名分支 Podfile / third_sdk.rb 反查版本
+   * 并用发布主仓库同名分支 Podfile 反查版本
    */
   resolvePodDeps: async (params: {
     repos?: string[];

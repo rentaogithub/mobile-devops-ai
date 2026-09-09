@@ -174,11 +174,11 @@ export function BuildLogModal({
               children: (
                 <Space direction="vertical" size={12} style={{ width: '100%' }}>
                   <Space wrap>
-                    <Text type="secondary">来源：当前构建主工程 third_sdk.rb</Text>
+                    <Text type="secondary">来源：当前构建主工程 Podfile</Text>
                     {selectedBuildLog?.thirdSdkBranch && <Tag color="geekblue">分支 {selectedBuildLog.thirdSdkBranch}</Tag>}
                   </Space>
                   {selectedBuildLog?.thirdSdkError && (
-                    <Alert type="warning" showIcon message="读取 third_sdk.rb 失败" description={selectedBuildLog.thirdSdkError} />
+                    <Alert type="warning" showIcon message="读取 Podfile 失败" description={selectedBuildLog.thirdSdkError} />
                   )}
                   {selectedBuildLog?.thirdSdkMissingFiles?.length ? (
                     <Alert type="warning" showIcon message={`未找到：${selectedBuildLog.thirdSdkMissingFiles.join(', ')}`} />
@@ -209,7 +209,7 @@ export function BuildLogModal({
                     />
                   ) : (
                     <Text type="secondary">
-                      {logLoading ? '正在读取 third_sdk.rb...' : '未从 third_sdk.rb 解析到三方库'}
+                      {logLoading ? '正在读取 Podfile...' : '未从 Podfile 解析到三方库'}
                     </Text>
                   )}
                 </Space>

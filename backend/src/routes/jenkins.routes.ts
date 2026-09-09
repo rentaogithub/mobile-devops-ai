@@ -4389,7 +4389,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
     const normalizedRevision = revision && /^[0-9a-f]{7,40}$/i.test(revision) ? revision : undefined;
     const index = await podDepsResolver.loadNniosIndex(normalizedBranch, getGitCredentials(), undefined, normalizedRevision);
     const dependencies = index.sources
-      .filter((item) => item.sourceFile === 'third_sdk.rb')
+      .filter((item) => item.sourceFile === 'Podfile')
       .map((item) => ({
         name: item.podName,
         version: item.version || item.tag || item.branch || item.commit || item.pathRef || '-',
@@ -4400,7 +4400,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
       branch: index.branch,
       revision: normalizedRevision,
       dependencies,
-      missingFiles: index.missingFiles.filter((file) => file === 'third_sdk.rb'),
+      missingFiles: index.missingFiles.filter((file) => file === 'Podfile'),
     };
   } catch (error: any) {
     return {
@@ -4408,7 +4408,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
       revision,
       dependencies: [],
       missingFiles: [],
-      error: error.message || '读取 third_sdk.rb 失败',
+      error: error.message || '读取 Podfile 失败',
     };
   }
 }

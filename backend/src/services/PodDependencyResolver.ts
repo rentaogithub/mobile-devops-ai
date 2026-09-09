@@ -7,12 +7,12 @@ import { productLineConfigService } from './ProductLineConfigService';
 import { currentProductLineId } from './ProductLineContext';
 
 /**
- * 基于 nnios 的 Podfile / third_sdk.rb 为各业务仓库的 podspec 依赖反查版本。
+ * 基于发布主仓库的 Podfile 为各业务仓库的 podspec 依赖反查版本。
  *
  * 关键假设：
  * - nnios 仓库 URL 固定为 http://git.leigod.top/nn_ios/nnios.git
  * - 业务仓库某分支下每个 .podspec 声明了 s.dependency 'XXX', '...'
- * - nnios 同名分支下 Podfile 和/或 third_sdk.rb 里会用 pod 'XXX', '1.2.3' / :git => .. / :branch => ..
+ * - 发布主仓库同名分支下 Podfile 里会用 pod 'XXX', '1.2.3' / :git => .. / :branch => ..
  *   的方式给定具体版本，反查时用 pod 名作为 key。
  */
 
@@ -37,7 +37,7 @@ export interface PodSpecDependency {
 }
 
 export interface NniosPodSource {
-  /** 来自 Podfile 还是 third_sdk.rb */
+  /** 来自 Podfile；保留 third_sdk.rb 兼容历史解析结果 */
   sourceFile: 'Podfile' | 'third_sdk.rb';
   /** 在 nnios 中写的 pod 名（可能是 'Foo' 或 'Foo/Subspec'） */
   podName: string;
@@ -260,7 +260,7 @@ export function parsePodspecDependencies(rootDir: string): {
   return { specFiles, deps };
 }
 
-// -------------- Podfile / third_sdk.rb 解析 --------------
+// -------------- Podfile 解析 --------------
 
 /**
  * 解析单行 pod 声明，返回 NniosPodSource，匹配不到返回 null
@@ -364,8 +364,6 @@ export function buildNniosIndex(
   }
   if (thirdSdkContent != null) {
     sources.push(...parseNniosRubyFile(thirdSdkContent, 'third_sdk.rb'));
-  } else {
-    missingFiles.push('third_sdk.rb');
   }
 
   const byName = new Map<string, NniosPodSource[]>();
@@ -391,7 +389,7 @@ export function buildNniosIndex(
 
 export class PodDependencyResolver {
   /**
-   * 解析 nnios 仓库指定分支的 Podfile / third_sdk.rb
+   * 解析发布主仓库指定分支的 Podfile。
    * 返回 Index；文件缺失时 missingFiles 会记录
    */
   async loadNniosIndex(
@@ -411,14 +409,8 @@ export class PodDependencyResolver {
       };
 
       const podfile = read('Podfile');
-      // third_sdk.rb 位置可能在根也可能在子目录，先尝试根，再 glob 扫一层
-      let thirdSdk = read('third_sdk.rb');
-      if (thirdSdk == null) {
-        const found = findFileByName(repoDir, 'third_sdk.rb', 3);
-        if (found) thirdSdk = fs.readFileSync(found, 'utf-8');
-      }
 
-      return buildNniosIndex(branch, podfile, thirdSdk);
+      return buildNniosIndex(branch, podfile, null);
     } finally {
       if (repoDir && fs.existsSync(repoDir)) {
         try {

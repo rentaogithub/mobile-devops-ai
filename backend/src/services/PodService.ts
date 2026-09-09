@@ -639,14 +639,9 @@ ${sourceLine}
   }
 
   private mainRepoDependencyFiles(repoLocal = mainRepoLocal()): string[] {
-    const files = ['Podfile'];
-    if (!fs.existsSync(repoLocal)) return files;
-    for (const entry of fs.readdirSync(repoLocal, { withFileTypes: true })) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      const relativePath = path.join(entry.name, 'third_sdk.rb');
-      if (fs.existsSync(path.join(repoLocal, relativePath))) files.push(relativePath);
-    }
-    return files;
+    return [path.join(repoLocal, 'Podfile')]
+      .filter((filePath) => fs.existsSync(filePath))
+      .map(() => 'Podfile');
   }
 
   private getNniosPodVersion(name: string, branch: string): { branch: string; version: string | null } {
@@ -701,35 +696,6 @@ ${sourceLine}
       `(^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]\\s*,\\s*)['"][^'"]+['"]([^\\n]*)`,
       'm'
     );
-    const dedupe = (text: string) => {
-      let seen = false;
-      return text
-        .split('\n')
-        .filter((line) => {
-          if (!new RegExp(`^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]`).test(line)) return true;
-          if (!seen) {
-            seen = true;
-            return true;
-          }
-          changed = true;
-          return false;
-        })
-        .join('\n');
-    };
-
-    const placeExternalPodInExternalSection = (text: string) => {
-      const lines = text.split('\n');
-      const podLinePattern = new RegExp(`^\\s*(?:xcpod|pod)\\s+['"]${escapedName}['"]`);
-      const podIndex = lines.findIndex((line) => podLinePattern.test(line));
-      let externalIndex = lines.findIndex((line) => /^\s*#\s*外部组件\s*$/.test(line));
-      if (podIndex < 0 || externalIndex < 0 || podIndex === externalIndex + 1) return text;
-      const [podLine] = lines.splice(podIndex, 1);
-      externalIndex = lines.findIndex((line) => /^\s*#\s*外部组件\s*$/.test(line));
-      const insertIndex = lines.findIndex((line, index) => index > externalIndex && /^\s*(?:#|end\s*$)/.test(line));
-      lines.splice(insertIndex >= 0 ? insertIndex : externalIndex + 1, 0, podLine);
-      changed = true;
-      return lines.join('\n');
-    };
 
     if (withVersionPattern.test(content)) {
       const replaced = content.replace(withVersionPattern, (match, prefix, suffix) => {
@@ -737,38 +703,36 @@ ${sourceLine}
         changed = nextLine !== match;
         return nextLine;
       });
-      return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
-    }
-
-    const noVersionPattern = new RegExp(`(^\\s*pod\\s+['"]${escapedName}['"])([^\\n]*)`, 'm');
-    if (noVersionPattern.test(content)) {
-      const replaced = content.replace(noVersionPattern, (match, prefix, suffix) => {
-        const cleanSuffix = String(suffix || '').replace(/^\s*,?\s*/, '');
-        const nextLine = `${prefix}, '${version}'${cleanSuffix ? `, ${cleanSuffix}` : ''}`;
-        changed = nextLine !== match;
-        return nextLine;
-      });
-      return { content: placeExternalPodInExternalSection(dedupe(replaced)), changed };
+      return { content: replaced, changed };
     }
 
     return { content, changed: false };
   }
 
-  private appendPodToThirdSdk(content: string, name: string, version: string): { content: string; changed: boolean } {
-    const marker = /^\s*end\s*$/gm;
-    const matches = [...content.matchAll(marker)];
-    if (matches.length === 0) {
-      return { content, changed: false };
+  private appendPodToThirdSdkDef(content: string, name: string, version: string): { content: string; changed: boolean } {
+    const lines = content.split('\n');
+    const defIndex = lines.findIndex((line) => /^\s*def\s+third_sdk\b/.test(line));
+    if (defIndex < 0) return { content, changed: false };
+
+    let depth = 0;
+    for (let i = defIndex; i < lines.length; i += 1) {
+      const code = lines[i].replace(/#.*$/, '');
+      if (/^\s*(?:def|if|unless|case|begin|for|while|until)\b/.test(code) || /\bdo\s*(?:\|[^|]*\|)?\s*$/.test(code)) {
+        depth += 1;
+      }
+      if (/^\s*end\s*$/.test(code)) {
+        depth -= 1;
+        if (depth === 0) {
+          const bodyLine = lines.slice(defIndex + 1, i).find((line) => /^\s*(?:xcpod|pod)\s+['"]/.test(line));
+          const defIndent = lines[defIndex].match(/^(\s*)/)?.[1] || '';
+          const indent = bodyLine?.match(/^(\s*)/)?.[1] || `${defIndent}  `;
+          lines.splice(i, 0, `${indent}pod   '${name}', '${version}'`);
+          return { content: lines.join('\n'), changed: true };
+        }
+      }
     }
 
-    const last = matches[matches.length - 1];
-    const insertAt = last.index ?? content.length;
-    const sectionTitle = isPrivateNniosComponent(name) ? '内部组件' : '外部组件';
-    const line = `    pod   '${name}', '${version}'\n`;
-    return {
-      content: `${content.slice(0, insertAt)}\n    # ${sectionTitle}\n${line}${content.slice(insertAt)}`,
-      changed: true,
-    };
+    return { content, changed: false };
   }
 
   /**
@@ -806,20 +770,19 @@ ${sourceLine}
       }
 
       if (!matchedExisting) {
-        const thirdSdkRelativePath = candidateFiles.find((relativePath) => relativePath.endsWith('third_sdk.rb'));
-        if (!thirdSdkRelativePath) {
-          throw new Error('发布主仓库未找到组件声明，也未找到可追加的 third_sdk.rb');
+        if (!candidateFiles.includes('Podfile')) {
+          throw new Error('发布主仓库未找到 Podfile，无法同步组件声明');
         }
-        const thirdSdkPath = path.join(repoLocal, thirdSdkRelativePath);
-        const original = fs.readFileSync(thirdSdkPath, 'utf-8');
-        const appended = this.appendPodToThirdSdk(original, name, version);
+        const podfilePath = path.join(repoLocal, 'Podfile');
+        const original = fs.readFileSync(podfilePath, 'utf-8');
+        const appended = this.appendPodToThirdSdkDef(original, name, version);
         if (!appended.changed) {
-          throw new Error('未找到组件声明，且无法定位 third_sdk.rb 追加位置');
+          throw new Error(`发布主仓库 Podfile 未找到 ${name} 组件声明，且未找到 def third_sdk 可追加位置`);
         }
-        fs.writeFileSync(thirdSdkPath, appended.content, 'utf-8');
+        fs.writeFileSync(podfilePath, appended.content, 'utf-8');
         changed = true;
-        changedFiles.add(thirdSdkRelativePath);
-        logger.info('追加发布主仓库组件版本声明', { relativePath: thirdSdkRelativePath, name, version });
+        changedFiles.add('Podfile');
+        logger.info('追加发布主仓库 Podfile 组件版本声明', { relativePath: 'Podfile', name, version });
       }
 
       if (!changed) {
@@ -2121,7 +2084,7 @@ ${sourceLine}
   }
 
   /**
-   * 仅同步当前组件版本到发布主仓库指定分支的 Podfile / third_sdk.rb。
+   * 仅同步当前组件版本到发布主仓库指定分支的 Podfile。
    */
   async syncVersionToBranch(name: string, version: string, targetBranch?: string): Promise<PodComponent> {
     const component = await this.getOne(name, version);

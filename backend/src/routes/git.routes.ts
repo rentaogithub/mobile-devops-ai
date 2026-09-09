@@ -109,8 +109,8 @@ router.get('/default-repos', (_req: Request, res: Response) => {
 
 /**
  * POST /api/git/pod-deps
- * 扫描每个业务仓库（同名分支）下的 .podspec 依赖，并用 nnios 同名分支的
- * Podfile / third_sdk.rb 反查版本。
+ * 扫描每个业务仓库（同名分支）下的 .podspec 依赖，并用发布主仓库同名分支的
+ * Podfile 反查版本。
  *
  * body: { repos?: string[], branch: string, username?: string, password?: string }
  */

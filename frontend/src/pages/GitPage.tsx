@@ -1092,8 +1092,7 @@ function PodDepsModal({
                 已解析 {resolvedCount} / {totalCount}
               </Tag>
               <Text type="secondary">
-                版本来源：发布主仓库 <Tag>{state.nniosInfo?.branch}</Tag> 分支的 Podfile 与
-                third_sdk.rb
+                版本来源：发布主仓库 <Tag>{state.nniosInfo?.branch}</Tag> 分支的 Podfile
               </Text>
             </Space>
             {state.nniosInfo?.missingFiles && state.nniosInfo.missingFiles.length > 0 && (

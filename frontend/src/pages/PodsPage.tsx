@@ -904,7 +904,7 @@ export default function PodsPage() {
       content: (
         <div>
           <p>
-            将把当前组件版本写入指定发布主仓库分支的 <Text code>Podfile / third_sdk.rb</Text>。
+            将把当前组件版本写入指定发布主仓库分支的 <Text code>Podfile</Text>。
           </p>
           <p>请选择要同步的分支：</p>
           <Select
