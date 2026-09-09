@@ -3549,6 +3549,8 @@ export interface AppleDeviceRegistrationRequest {
   id: string;
   createdAt: number;
   updatedAt: number;
+  approvedAt?: number;
+  approvedBy?: string;
   status: 'pending' | 'registered' | 'rejected';
   udid: string;
   name: string;
@@ -3656,12 +3658,6 @@ export const appleDeviceApi = {
     return response.data;
   },
 
-  register: async (payload: { udid: string; name?: string; platform?: 'IOS' | 'MAC_OS' }): Promise<ApiResponse<AppleDeviceRegisterResult>> => {
-    const response = await api.post<ApiResponse<AppleDeviceRegisterResult>>('/apple-devices/register', payload, {
-      timeout: 60000,
-    });
-    return response.data;
-  },
 };
 
 export interface DeviceControlDevice {

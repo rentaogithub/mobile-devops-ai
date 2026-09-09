@@ -5,6 +5,12 @@ const udid = '00008020-001D31642E81002E';
 const device = { id: 'device', udid, name: 'iPhone', platform: 'IOS', status: 'ENABLED' };
 
 describe('Apple registration evidence', () => {
+  it('explains that an existing device was not newly registered by this scan', () => {
+    const action = getAppleRegistrationAutoAction({ udid, registeredDevice: { ...device, addedDate: '2026-09-09T02:16:40Z' } });
+    expect(action.shouldSubmit).toBeUndefined();
+    expect(action.result?.description).toContain('Apple 注册时间');
+    expect(action.result?.description).toContain('未执行新注册');
+  });
   it('does not use cached device lists or lookups as registration confirmation', () => {
     expect(findRegisteredAppleDevice({
       udid,

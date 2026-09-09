@@ -1,4 +1,4 @@
-import { Button, Card, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Space, Table, Tag, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { AppleDeviceRegistrationRequest } from '../../services/api';
 
@@ -35,6 +35,7 @@ export function AppleRegistrationRequestsCard({
         </Button>
       )}
     >
+      <Alert showIcon type="info" message="新设备先提交申请，由管理员点击“批准并注册”后才写入 Apple。Apple 中已存在的设备不会重复申请，请在设备列表查看。" style={{ marginBottom: 12 }} />
       <Table<AppleDeviceRegistrationRequest>
         rowKey="id"
         loading={loading}
@@ -71,6 +72,17 @@ export function AppleRegistrationRequestsCard({
             width: 120,
             render: (value: AppleDeviceRegistrationRequest['status']) => (
               value === 'pending' ? <Tag color="orange">待审批</Tag> : (value === 'registered' ? <Tag color="green">已注册</Tag> : <Tag>已驳回</Tag>)
+            ),
+          },
+          {
+            title: '申请 / 审核记录',
+            key: 'approval',
+            width: 190,
+            render: (_, record) => (
+              <Space direction="vertical" size={2}>
+                <Text type="secondary">申请：{new Date(record.createdAt).toLocaleString('zh-CN', { hour12: false })}</Text>
+                {record.approvedAt && <Text type="secondary">审核：{record.approvedBy || '未记录审核人'} · {new Date(record.approvedAt).toLocaleString('zh-CN', { hour12: false })}</Text>}
+              </Space>
             ),
           },
           {

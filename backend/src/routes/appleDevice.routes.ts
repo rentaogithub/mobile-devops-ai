@@ -66,6 +66,8 @@ interface RegistrationRequest {
   };
   appleDeviceId?: string;
   appleStatus?: string;
+  approvedAt?: number;
+  approvedBy?: string;
   message?: string;
 }
 
@@ -107,13 +109,6 @@ function createFallbackDeviceName(udid: string) {
 function ensureAppleDeviceTables() {
   if (appleDeviceTablesReady) return;
   getDatabase().exec(`
-    CREATE TABLE IF NOT EXISTS apple_device_list_removals (
-      product_line_id TEXT NOT NULL,
-      team_id TEXT NOT NULL,
-      udid TEXT NOT NULL,
-      removed_at INTEGER NOT NULL,
-      PRIMARY KEY (product_line_id, team_id, udid)
-    );
     CREATE TABLE IF NOT EXISTS apple_developer_devices (
       product_line_id TEXT NOT NULL DEFAULT 'nn',
       id TEXT NOT NULL,
@@ -182,6 +177,12 @@ function ensureAppleDeviceTables() {
   if (!requestColumns.some((column) => column.name === 'account_scope')) {
     getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN account_scope TEXT NOT NULL DEFAULT ''");
   }
+  if (!requestColumns.some((column) => column.name === 'approved_at')) {
+    getDatabase().exec('ALTER TABLE apple_device_registration_requests ADD COLUMN approved_at INTEGER');
+  }
+  if (!requestColumns.some((column) => column.name === 'approved_by')) {
+    getDatabase().exec('ALTER TABLE apple_device_registration_requests ADD COLUMN approved_by TEXT');
+  }
   getDatabase().exec(`
     CREATE INDEX IF NOT EXISTS idx_apple_developer_devices_platform ON apple_developer_devices(product_line_id, platform, added_date DESC);
     CREATE INDEX IF NOT EXISTS idx_apple_registration_product ON apple_device_registration_requests(product_line_id, status, created_at DESC);
@@ -209,6 +210,8 @@ function registrationRequestFromRow(row: any): RegistrationRequest {
     source,
     appleDeviceId: row.apple_device_id || undefined,
     appleStatus: row.apple_status || undefined,
+    approvedAt: row.approved_at ? Number(row.approved_at) : undefined,
+    approvedBy: row.approved_by || undefined,
     message: row.message || undefined,
   };
 }
@@ -217,8 +220,8 @@ function saveRegistrationRequest(request: RegistrationRequest) {
   ensureAppleDeviceTables();
   getDatabase().prepare(`
     INSERT INTO apple_device_registration_requests (
-      id, product_line_id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message, account_scope
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, product_line_id, created_at, updated_at, status, udid, name, platform, source_json, apple_device_id, apple_status, message, account_scope, approved_at, approved_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       updated_at = excluded.updated_at,
       status = excluded.status,
@@ -228,7 +231,9 @@ function saveRegistrationRequest(request: RegistrationRequest) {
       source_json = excluded.source_json,
       apple_device_id = excluded.apple_device_id,
       apple_status = excluded.apple_status,
-      message = excluded.message
+      message = excluded.message,
+      approved_at = excluded.approved_at,
+      approved_by = excluded.approved_by
   `).run(
     request.id,
     request.productLineId,
@@ -243,6 +248,8 @@ function saveRegistrationRequest(request: RegistrationRequest) {
     request.appleStatus || null,
     request.message || null,
     request.accountScope,
+    request.approvedAt || null,
+    request.approvedBy || null,
   );
 }
 
@@ -297,18 +304,7 @@ function listCachedAppleDevices(platform: string) {
     ORDER BY added_date DESC
     LIMIT 500
   `).all(currentProductLineId(), platform, appleAccountScope()) as any[];
-  return visibleAppleDevices(rows.map(appleDeviceFromRow));
-}
-
-// List removal is local presentation state, not an Apple deregistration.
-// Keep lookup authoritative so scanning a removed row cannot trigger duplicate registration.
-function visibleAppleDevices<T extends { udid: string }>(devices: T[]): T[] {
-  ensureAppleDeviceTables();
-  const removed = getDatabase().prepare(`
-    SELECT udid FROM apple_device_list_removals WHERE product_line_id = ? AND team_id = ?
-  `).all(currentProductLineId(), productLineConfigService.get('APPLE_DEVICE_TEAM_ID')) as Array<{ udid: string }>;
-  const removedUdids = new Set(removed.map((row) => normalizeUdid(row.udid)));
-  return devices.filter((device) => !removedUdids.has(normalizeUdid(device.udid)));
+  return rows.map(appleDeviceFromRow);
 }
 
 function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
@@ -864,7 +860,7 @@ router.get('/devices', adminMiddleware, async (req, res) => {
       devices.push(...(Array.isArray(response?.data) ? response.data : []));
       url = response?.links?.next || '';
     }
-    const normalizedDevices = visibleAppleDevices(devices.map(normalizeAppleDevice))
+    const normalizedDevices = devices.map(normalizeAppleDevice)
       .sort((a, b) => String(b.addedDate || '').localeCompare(String(a.addedDate || '')));
     saveAppleDevices(normalizedDevices);
     res.json({
@@ -1159,6 +1155,8 @@ router.post('/registration-requests/:id/approve', express.json({ limit: '1mb' })
     const result = await registerAppleDeviceToDeveloper(request.udid, request.name, request.platform);
     request.status = 'registered';
     request.updatedAt = Date.now();
+    request.approvedAt = request.updatedAt;
+    request.approvedBy = (req as any).authUser?.username || (req as any).authUser?.id || undefined;
     request.appleDeviceId = result.id;
     request.appleStatus = result.status;
     request.message = result.message;
@@ -1175,31 +1173,12 @@ router.post('/registration-requests/:id/approve', express.json({ limit: '1mb' })
   }
 });
 
-router.post('/register', express.json({ limit: '1mb' }), adminMiddleware, async (req, res) => {
-  const udid = normalizeUdid(req.body?.udid);
-  const name = String(req.body?.name || '').trim() || `iPhone ${udid.slice(-6)}`;
-  const platform = String(req.body?.platform || 'IOS').trim().toUpperCase();
-  if (!isValidUdid(udid)) {
-    res.status(400).json({ success: false, error: '请输入有效的 iOS 设备 Identifier/UDID' });
-    return;
-  }
-  if (!['IOS', 'MAC_OS'].includes(platform)) {
-    res.status(400).json({ success: false, error: '设备平台仅支持 IOS 或 MAC_OS' });
-    return;
-  }
-
-  try {
-    const result = await registerAppleDeviceToDeveloper(udid, name, platform);
-    res.json({ success: true, data: result });
-  } catch (error: any) {
-    const { appleError, message } = appleDeviceApiErrorMessage(error, '注册 Apple 设备失败');
-    logger.error('注册 Apple 设备失败', { error: error?.message, appleError, udid });
-    res.status(502).json({
-      success: false,
-      error: message,
-      appleError,
-    });
-  }
+router.post('/register', adminMiddleware, (_req, res) => {
+  res.status(409).json({
+    success: false,
+    code: 'APPROVAL_REQUIRED',
+    error: '直接注册接口已关闭，请先提交设备注册申请，再由管理员批准并注册。',
+  });
 });
 
 export default router;

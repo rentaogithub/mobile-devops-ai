@@ -110,10 +110,10 @@ export function getAppleRegistrationAutoAction({
       targetUdid,
       result: {
         type: 'info',
-        message: '该设备已在 Apple Developer 设备列表中',
-        description: '无需重复提交注册申请。',
+        message: '该设备此前已在 Apple Developer 注册',
+        description: `${registeredDevice.addedDate ? `Apple 注册时间：${new Date(registeredDevice.addedDate).toLocaleString('zh-CN', { hour12: false })}。` : ''}本次扫码仅查询已有记录，未执行新注册，不会重复生成待审批申请。`,
       },
-      notice: { type: 'info', content: '该设备已在 Apple Developer 设备列表中，无需重复申请' },
+      notice: { type: 'info', content: '设备此前已注册，本次扫码未执行新注册' },
     };
   }
   if (pendingRequest) {

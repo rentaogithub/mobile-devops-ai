@@ -8,7 +8,8 @@ import router from './appleDevice.routes';
 
 jest.mock('../config/env', () => ({}));
 jest.mock('axios');
-jest.mock('../utils/logger', () => ({ __esModule: true, default: { warn: jest.fn(), error: jest.fn() } }));
+jest.mock('../utils/logger', () => ({ __esModule: true, default: { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() } }));
+jest.mock('child_process', () => ({ execFileSync: jest.fn(() => { throw new Error('No local devices in tests'); }) }));
 jest.mock('../database', () => {
   const db = new (require('better-sqlite3'))(':memory:');
   return { getDatabase: () => db };
@@ -26,7 +27,10 @@ jest.mock('../services/ProductLineConfigService', () => {
   } };
 });
 
-const app = express().use(router);
+const app = express().use((req, _res, next) => {
+  (req as any).authUser = { username: 'test-reviewer' };
+  next();
+}).use(router);
 const appleRequest = axios.request as jest.Mock;
 const udid = '00008020-001D31642E81002E';
 const compact = udid.replace(/-/g, '');
@@ -40,7 +44,7 @@ beforeEach(async () => {
   appleRequest.mockReset();
   appleRequest.mockResolvedValue({ data: { data: [] } });
   await request(app).get('/devices');
-  getDatabase().exec('DELETE FROM apple_developer_devices; DELETE FROM apple_device_registration_requests; DELETE FROM apple_device_list_removals;');
+  getDatabase().exec('DELETE FROM apple_developer_devices; DELETE FROM apple_device_registration_requests;');
   appleRequest.mockClear();
 });
 
@@ -75,7 +79,7 @@ it('blocks Leishen queries, registrations and cached lists if stored configurati
   appleRequest.mockClear();
   expect((await request(app).get('/devices')).status).toBe(502);
   expect((await request(app).get('/lookup').query({ udid })).status).toBe(502);
-  expect((await request(app).post('/register').send({ udid })).status).toBe(502);
+  expect((await request(app).post('/register').send({ udid })).status).toBe(409);
   expect((await request(app).post('/registration-requests').send({ udid })).status).toBe(502);
   expect((await request(app).post(`/registration-requests/${pending.body.data.id}/approve`)).status).toBe(502);
   expect((await request(app).get('/registration-requests')).body.data.requests).toEqual([]);
@@ -111,7 +115,7 @@ it.each(['M4HNX7MUD2', 'LX4548D2Q6'])('verifies the actual team %s before saving
         APPLE_DEVICE_TEAM_ID: 'LX4548D2Q6', APPLE_DEVICE_API_KEY_ID: 'DEVKEY',
         APPLE_DEVICE_API_ISSUER_ID: 'development-issuer',
         APPLE_DEVICE_API_PRIVATE_KEY: expect.stringContaining('BEGIN PRIVATE KEY'),
-      }, 'admin');
+      }, 'test-reviewer');
     }
   } finally {
     certificateParser.mockRestore();
@@ -119,35 +123,72 @@ it.each(['M4HNX7MUD2', 'LX4548D2Q6'])('verifies the actual team %s before saving
 });
 afterAll(() => getDatabase().close());
 
-it('keeps a removed list entry absent after live refresh while preserving its actual Apple registration', async () => {
-  getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)').run('nn', 'LX4548D2Q6', compact.toLowerCase(), Date.now());
-  appleRequest.mockResolvedValue({ data: { data: [device] } });
-  const lookup = await request(app).get('/lookup').query({ udid });
-  expect(lookup.body.data).toMatchObject({ registered: true, source: 'apple' });
-  for (let refresh = 0; refresh < 2; refresh += 1) {
-    const response = await request(app).get('/devices');
-    expect(response.body.data).toMatchObject({ devices: [], total: 0, source: 'apple' });
+it('shows the real Apple list and cache even when legacy local hiding records exist', async () => {
+  getDatabase().exec('CREATE TABLE apple_device_list_removals (product_line_id TEXT, team_id TEXT, udid TEXT, removed_at INTEGER)');
+  try {
+    getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)').run('nn', 'LX4548D2Q6', udid, Date.now());
+    appleRequest.mockResolvedValueOnce({ data: { data: [device] } });
+    const live = await request(app).get('/devices');
+    expect(live.body.data).toMatchObject({ total: 1, source: 'apple', devices: [{ udid }] });
+    appleRequest.mockRejectedValueOnce(new Error('offline'));
+    const cached = await request(app).get('/devices');
+    expect(cached.body.data).toMatchObject({ total: 1, source: 'cache', devices: [{ udid }] });
+  } finally {
+    getDatabase().exec('DROP TABLE apple_device_list_removals');
   }
+});
+
+it('never writes to Apple during scan or application submission; only approval registers a new device', async () => {
+  const enrollment = await request(app).post('/enrollments');
+  const sessionId = enrollment.body.data.sessionId;
+  const callback = await request(app).post(`/enroll/${sessionId}/callback`).set('Content-Type', 'application/xml')
+    .send(`<?xml version="1.0"?><plist><dict><key>UDID</key><string>${udid}</string><key>PRODUCT</key><string>iPhone11,6</string></dict></plist>`);
+  expect(callback.status).toBe(200);
+  const collected = await request(app).get(`/enrollments/${sessionId}`);
+  expect(collected.body.data).toMatchObject({ status: 'completed', device: { udid } });
+  expect(appleRequest).not.toHaveBeenCalled();
+  const submitted = await request(app).post('/registration-requests').send({ udid });
+  expect(submitted.body.data.status).toBe('pending');
+  expect((await request(app).get('/registration-requests')).body.data.requests).toEqual([
+    expect.objectContaining({ id: submitted.body.data.id, status: 'pending' }),
+  ]);
   expect(appleRequest.mock.calls.every(([call]) => call.method === 'GET')).toBe(true);
+  appleRequest.mockClear();
+  appleRequest.mockResolvedValueOnce({ data: { data: [] } }).mockResolvedValueOnce({ data: { data: device } });
+  const approved = await request(app).post(`/registration-requests/${submitted.body.data.id}/approve`);
+  expect(approved.body.data).toMatchObject({ status: 'registered', approvedBy: 'test-reviewer', approvedAt: expect.any(Number) });
+  expect(appleRequest.mock.calls.filter(([call]) => call.method === 'POST')).toHaveLength(1);
+  const saved = (await request(app).get('/registration-requests')).body.data.requests[0];
+  expect(saved).toMatchObject({ approvedBy: 'test-reviewer', approvedAt: approved.body.data.approvedAt });
+  appleRequest.mockClear();
+  await request(app).post(`/registration-requests/${submitted.body.data.id}/approve`);
+  expect(appleRequest).not.toHaveBeenCalled();
 });
 
-it('also excludes removed entries from the cache fallback', async () => {
-  const other = { ...device, id: 'other', attributes: { ...device.attributes, udid: '00008120-000418860E98201E' } };
-  appleRequest.mockResolvedValueOnce({ data: { data: [device, other] } });
-  await request(app).get('/devices');
-  getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)').run('nn', 'LX4548D2Q6', udid, Date.now());
-  appleRequest.mockRejectedValue(new Error('offline'));
-  const response = await request(app).get('/devices');
-  expect(response.body.data).toMatchObject({ total: 1, source: 'cache', devices: [{ id: 'other' }] });
+it('rejects the old direct-registration route and approval without an existing request', async () => {
+  const response = await request(app).post('/register').send({ udid });
+  expect(response.status).toBe(409);
+  expect(response.body.code).toBe('APPROVAL_REQUIRED');
+  expect((await request(app).post('/registration-requests/not-found/approve')).status).toBe(404);
+  expect(appleRequest).not.toHaveBeenCalled();
 });
 
-it('does not apply another product line or team’s list removals', async () => {
-  const insert = getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)');
-  insert.run('another-product', 'LX4548D2Q6', udid, Date.now());
-  insert.run('nn', 'M4HNX7MUD2', udid, Date.now());
+it('keeps the request pending without a success audit when Apple registration fails', async () => {
+  const submitted = await request(app).post('/registration-requests').send({ udid });
+  appleRequest.mockRejectedValueOnce(new Error('Apple unavailable'));
+  expect((await request(app).post(`/registration-requests/${submitted.body.data.id}/approve`)).status).toBe(502);
+  const saved = (await request(app).get('/registration-requests')).body.data.requests[0];
+  expect(saved.status).toBe('pending');
+  expect(saved.approvedAt).toBeUndefined();
+  expect(saved.approvedBy).toBeUndefined();
+});
+
+it('does not register again or fabricate an approval for a device already in Apple', async () => {
   appleRequest.mockResolvedValueOnce({ data: { data: [device] } });
-  const response = await request(app).get('/devices');
-  expect(response.body.data).toMatchObject({ total: 1, devices: [{ id: device.id }] });
+  const submitted = await request(app).post('/registration-requests').send({ udid });
+  expect(submitted.body.data.alreadyExists).toBe(true);
+  expect((await request(app).get('/registration-requests')).body.data.requests).toEqual([]);
+  expect(appleRequest.mock.calls.every(([call]) => call.method === 'GET')).toBe(true);
 });
 
 it('queries Apple with the canonical UDID even when the client removes the separator', async () => {
