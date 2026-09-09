@@ -88,4 +88,20 @@ describe('PodService Podfile sync helpers', () => {
     expect(result.changed).toBe(false);
     expect(result.content).toBe(original);
   });
+
+  it('skips delete-time podx cache cleanup when no Podfile is available', () => {
+    expect(() => service.cleanPodxCache('NNRtc', 'delete')).not.toThrow();
+  });
+
+  it('compacts podx command errors before surfacing them', () => {
+    const error = {
+      stderr: Buffer.from([
+        '[!] 当前目录或指定目录下未找到 Podfile。',
+        'Usage: pod 命令:',
+        'podx clean NAME 清理指定组件 pod cache，并删除 Pods/NAME',
+      ].join('\n')),
+    };
+
+    expect(service.compactCommandError(error)).toBe('[!] 当前目录或指定目录下未找到 Podfile。');
+  });
 });

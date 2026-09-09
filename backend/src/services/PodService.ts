@@ -539,10 +539,24 @@ ${sourceLine}
   private cleanPodxCache(name: string, action: 'republish' | 'delete' = 'republish'): void {
     try {
       logger.info(action === 'republish' ? '检测到相同版本组件，执行 podx clean' : '删除组件后执行 podx clean', { name });
-      const mainLocal = mainRepoLocal();
+      let mainLocal = '';
+      try {
+        mainLocal = mainRepoLocal();
+      } catch (error: any) {
+        const message = `当前打包机主工程目录不可用，跳过 CocoaPods 缓存清理: ${this.compactCommandError(error)}`;
+        logger.warn(message, { name });
+        if (action === 'delete') return;
+        throw new Error(message);
+      }
       const podxWorkDir = fs.existsSync(path.join(mainLocal, 'Podfile'))
         ? mainLocal
         : process.cwd();
+      if (!fs.existsSync(path.join(podxWorkDir, 'Podfile'))) {
+        const message = '当前打包机未找到主工程 Podfile，跳过 CocoaPods 缓存清理';
+        logger.warn(message, { name, cwd: podxWorkDir, mainLocal });
+        if (action === 'delete') return;
+        throw new Error(message);
+      }
       execSync(`podx clean ${shellQuote(name)}`, {
         encoding: 'utf-8',
         timeout: 120000,
@@ -560,7 +574,7 @@ ${sourceLine}
       });
       logger.info('podx clean 执行成功', { name, cwd: podxWorkDir });
     } catch (error: any) {
-      const detail = error.stderr?.toString?.() || error.stdout?.toString?.() || error.message;
+      const detail = this.compactCommandError(error);
       logger.error('podx clean 执行失败', { name, error: detail });
       const prefix = action === 'republish' ? '已存在相同版本，' : '';
       throw new Error(`${prefix}执行 podx clean ${name} 失败: ${detail}`);
@@ -569,6 +583,15 @@ ${sourceLine}
 
   private appendWarning(current: string | undefined, next: string): string {
     return current ? `${current}; ${next}` : next;
+  }
+
+  private compactCommandError(error: any): string {
+    const raw = String(error?.stderr?.toString?.() || error?.stdout?.toString?.() || error?.message || '未知错误').trim();
+    const firstUsefulLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !/^Usage:/i.test(line) && !/^Options:/i.test(line));
+    return firstUsefulLine || raw.split(/\r?\n/).find(Boolean)?.trim() || '未知错误';
   }
 
   private normalizeNniosBranch(branch?: string): string | undefined {
