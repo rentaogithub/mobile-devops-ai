@@ -234,6 +234,26 @@ function inferNNRtcBuildBranch(build: any, parameters: any[]) {
   return matched ? matched[1].replace(/^origin\//, '') : '';
 }
 
+function normalizeNNRtcJenkinsBuildUrl(url?: string) {
+  const rawUrl = String(url || '').trim();
+  if (!rawUrl) return undefined;
+  const { baseUrl } = getNNRtcJenkinsConfig();
+  if (!baseUrl) return rawUrl;
+  try {
+    const parsedUrl = new URL(rawUrl);
+    const parsedBaseUrl = new URL(baseUrl);
+    if (['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname)) {
+      parsedUrl.protocol = parsedBaseUrl.protocol;
+      parsedUrl.hostname = parsedBaseUrl.hostname;
+      parsedUrl.port = parsedBaseUrl.port;
+      return parsedUrl.toString();
+    }
+  } catch {
+    return rawUrl;
+  }
+  return rawUrl;
+}
+
 async function fetchNNRtcBuildParameters(jobPath: string, buildNumber: number): Promise<any[]> {
   const { baseUrl } = getNNRtcJenkinsConfig();
   try {
@@ -280,7 +300,7 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
         result: String(build.result || ''),
         branchName: inferNNRtcBuildBranch(build, []),
         timestamp: Number(build.timestamp) || undefined,
-        url: build.url ? String(build.url) : undefined,
+        url: normalizeNNRtcJenkinsBuildUrl(build.url),
         artifactPath: String(artifact.relativePath || artifact.fileName || ''),
       };
     })

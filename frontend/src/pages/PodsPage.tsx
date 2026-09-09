@@ -651,15 +651,12 @@ export default function PodsPage() {
     nnrtcBuilds.filter((build) => {
       const isReleaseBuild = isNNRtcReleaseBuildBranch(build.branchName);
       if (nnrtcPackageType !== 'release') return !isReleaseBuild;
-      if (!isReleaseBuild) return false;
-
-      const buildVersion = getNNRtcReleaseVersion(build.branchName);
-      return !latestNNRtcReleaseVersion || compareVersionText(buildVersion, latestNNRtcReleaseVersion) > 0;
+      return isReleaseBuild;
     })
-  ), [latestNNRtcReleaseVersion, nnrtcBuilds, nnrtcPackageType]);
+  ), [nnrtcBuilds, nnrtcPackageType]);
 
   const nnrtcPublishBuildNotFoundText = nnrtcPackageType === 'release'
-    ? (latestNNRtcReleaseVersion ? '已是最新版本' : '未找到 release_x.x.x 构建')
+    ? '未找到 release_x.x.x 构建'
     : '未找到非 release 构建';
   const showNNRtcLatestHint = isNNRtcPublish &&
     nnrtcPackageType === 'release' &&
