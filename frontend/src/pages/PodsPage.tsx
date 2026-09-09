@@ -304,9 +304,7 @@ export default function PodsPage() {
       }
       const builds = res.data || [];
       setNnrtcBuilds(builds);
-      if (!form.getFieldValue('nnrtc_build_number') && builds.length > 0) {
-        form.setFieldValue('nnrtc_build_number', String(builds[0].number));
-      } else if (builds.length === 0) {
+      if (builds.length === 0) {
         form.setFieldValue('nnrtc_build_number', undefined);
       }
       if (!detailJenkinsBuildNumber && builds.length > 0) {
@@ -641,12 +639,6 @@ export default function PodsPage() {
     };
   }, [groups]);
 
-  const nnrtcPublishBuilds = useMemo(() => (
-    nnrtcBuilds.filter((build) => nnrtcPackageType === 'release'
-      ? isNNRtcReleaseBuildBranch(build.branchName)
-      : !isNNRtcReleaseBuildBranch(build.branchName))
-  ), [nnrtcBuilds, nnrtcPackageType]);
-
   const latestNNRtcReleaseVersion = useMemo(() => {
     const versions = components
       .filter((item) => item.name === 'NNRtc' && !isNNRtcTestVersion(item.version))
@@ -654,6 +646,27 @@ export default function PodsPage() {
       .filter((version) => /^\d+(?:\.\d+){2,}$/.test(version));
     return versions.sort(compareVersionText).at(-1) || '';
   }, [components]);
+
+  const nnrtcPublishBuilds = useMemo(() => (
+    nnrtcBuilds.filter((build) => {
+      const isReleaseBuild = isNNRtcReleaseBuildBranch(build.branchName);
+      if (nnrtcPackageType !== 'release') return !isReleaseBuild;
+      if (!isReleaseBuild) return false;
+
+      const buildVersion = getNNRtcReleaseVersion(build.branchName);
+      return !latestNNRtcReleaseVersion || compareVersionText(buildVersion, latestNNRtcReleaseVersion) > 0;
+    })
+  ), [latestNNRtcReleaseVersion, nnrtcBuilds, nnrtcPackageType]);
+
+  const nnrtcPublishBuildNotFoundText = nnrtcPackageType === 'release'
+    ? (latestNNRtcReleaseVersion ? '已是最新版本' : '未找到 release_x.x.x 构建')
+    : '未找到非 release 构建';
+  const showNNRtcLatestHint = isNNRtcPublish &&
+    nnrtcPackageType === 'release' &&
+    !nnrtcBuildLoading &&
+    nnrtcBuilds.length > 0 &&
+    nnrtcPublishBuilds.length === 0 &&
+    Boolean(latestNNRtcReleaseVersion);
 
   useEffect(() => {
     if (!isNNRtcPublish) return;
@@ -1834,12 +1847,20 @@ export default function PodsPage() {
                             </span>
                           )}
                           rules={[{ required: true, message: '请选择 Jenkins 构建号' }]}
+                          extra={showNNRtcLatestHint ? (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="已是最新版本"
+                              style={{ marginTop: 8 }}
+                            />
+                          ) : undefined}
                         >
                           <Select
                             showSearch
                             loading={nnrtcBuildLoading}
                             placeholder="选择构建号"
-                            notFoundContent={nnrtcBuildLoading ? '加载中...' : (nnrtcPackageType === 'release' ? '未找到 release_x.x.x 构建' : '未找到非 release 构建')}
+                            notFoundContent={nnrtcBuildLoading ? '加载中...' : nnrtcPublishBuildNotFoundText}
                             optionFilterProp="label"
                             options={nnrtcPublishBuilds.map((build) => ({
                               value: String(build.number),
