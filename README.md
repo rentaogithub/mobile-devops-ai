@@ -64,4 +64,4 @@ AI 使用具名工具和参数白名单；普通执行需确认，高风险发�
 
 ## 许可证
 
-MIT License
+[MIT License](LICENSE)
