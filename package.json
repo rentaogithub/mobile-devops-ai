@@ -1,8 +1,11 @@
 {
-  "name": "ios-crash-symbolizer",
-  "version": "1.0.0",
+  "name": "mobile-devops-ai",
+  "version": "0.1.0",
   "description": "移动管理平台，汇聚移动研发、质量验证、发布与 AI 服务",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "workspaces": [
     "frontend",
     "backend"

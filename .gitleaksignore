@@ -1,0 +1,2 @@
+# Test-only App Store Connect identifiers; the private key is generated at runtime.
+9c9cf0d453c49697e885ee6c3830fc7edbef20c7:backend/src/services/AppStoreConnectService.test.ts:generic-api-key:16

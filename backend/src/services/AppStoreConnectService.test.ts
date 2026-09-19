@@ -11,11 +11,12 @@ describe('AppStoreConnectService', () => {
   it('loads and classifies TestFlight groups for one product line', async () => {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const testIssuerId = ['00000000', '0000', '4000', '8000', '000000000001'].join('-');
     const values: Record<string, string> = {
-      APP_STORE_CONNECT_API_KEY_ID: 'K75M4WYA7F',
-      APP_STORE_CONNECT_API_ISSUER_ID: '07a7751b-6b24-4381-866e-b42e22910b1a',
+      APP_STORE_CONNECT_API_KEY_ID: 'TESTKEY01',
+      APP_STORE_CONNECT_API_ISSUER_ID: testIssuerId,
       APP_STORE_CONNECT_API_PRIVATE_KEY: privateKeyPem,
-      APP_STORE_CONNECT_APP_ID: '1627452460',
+      APP_STORE_CONNECT_APP_ID: '1000000000',
     };
     jest.spyOn(productLineConfigService, 'get').mockImplementation((key) => values[key] || '');
     const request = jest.spyOn(axios, 'get').mockResolvedValue({
@@ -35,7 +36,7 @@ describe('AppStoreConnectService', () => {
       'https://api.appstoreconnect.apple.com/v1/betaGroups',
       expect.objectContaining({
         headers: { Authorization: expect.stringMatching(/^Bearer /) },
-        params: { 'filter[app]': '1627452460', limit: '200' },
+        params: { 'filter[app]': '1000000000', limit: '200' },
       }),
     );
   });

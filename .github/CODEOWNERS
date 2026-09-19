@@ -1,0 +1,9 @@
+# Default review owner. Add domain owners as the maintainer team grows.
+* @rentaogithub
+
+# Security- and release-sensitive areas.
+/.github/ @rentaogithub
+/backend/src/config/ @rentaogithub
+/backend/src/middleware/ @rentaogithub
+/scripts/jenkins/ @rentaogithub
+/scripts/ios/ @rentaogithub

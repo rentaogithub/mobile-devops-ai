@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/rentaogithub/mobile-devops-ai/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.
+  - name: Project documentation
+    url: https://github.com/rentaogithub/mobile-devops-ai/tree/main/docs
+    about: Review the architecture, features, and deployment guides before opening an issue.

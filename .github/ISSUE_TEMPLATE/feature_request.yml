@@ -1,0 +1,48 @@
+name: Feature request
+description: Propose an improvement or new capability
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - AI-assisted development
+        - Automated testing
+        - Build and release
+        - Observability and crash analysis
+        - Dependency and package management
+        - Platform integrations
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or operational gap should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the desired behavior, boundaries, and alternatives considered.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Success criteria
+      description: How should maintainers verify that this feature works?
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to help implement or test this proposal.

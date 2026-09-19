@@ -1,0 +1,25 @@
+name: Documentation improvement
+description: Report missing, outdated, or unclear documentation
+title: "[Docs]: "
+labels:
+  - documentation
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Document or page
+      placeholder: README.md, docs/部署与运行.md, or a URL
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is unclear or outdated?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested improvement
+    validations:
+      required: true
