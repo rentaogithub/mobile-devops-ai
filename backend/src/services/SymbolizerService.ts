@@ -655,7 +655,7 @@ export class SymbolizerService {
     }
 
     // 某些地址在 dSYM 里没有函数/DWARF 条目，atos 只能返回
-    // "0x00003650 (in NNRtc)"。最终结果里保留这个信息，比继续显示
+    // "0x00003650 (in MobileRTC)"。最终结果里保留这个信息，比继续显示
     // "<unknown> + ..." 更清楚，但它不能参与候选基址评分。
     return includeAddressOnly && /^0x[0-9a-f]+\s+\(in [^)]+\)(?:\s+\+\s+\d+)?$/i.test(symbol);
   }
@@ -854,7 +854,7 @@ export class SymbolizerService {
     }
 
     // 尝试从 <unknown> + offset 格式中计算加载地址
-    // 格式: 6   NNIM   0x204ce7fd0   <unknown> + 4375609296
+    // 格式: 6   MobileApp   0x204ce7fd0   <unknown> + 4375609296
     const unknownPattern = new RegExp(
       `\\d+\\s+${escapedName}\\s+(0x[0-9a-f]+)\\s+<unknown>\\s+\\+\\s+(\\d+)`,
       'i'

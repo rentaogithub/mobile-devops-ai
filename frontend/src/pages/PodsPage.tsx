@@ -10,11 +10,11 @@ import {
   RightOutlined, EditOutlined, SaveOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { componentLibraryApi, type ComponentLibraryStatus, jenkinsApi, podsApi, PodComponent, NNRtcJenkinsBuild, NNRtcJenkinsConfig, NNRtcPodTask, LeigodIMSDKVersion } from '../services/api';
+import { componentLibraryApi, type ComponentLibraryStatus, jenkinsApi, podsApi, PodComponent, MobileRTCJenkinsBuild, MobileRTCJenkinsConfig, MobileRTCPodTask, MobileIMSDKVersion } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 const { Title, Paragraph, Text } = Typography;
-const NNRTC_JENKINS_JOB_URL_FALLBACK = 'http://10.1.2.175:8080/job/nnrtc-ios-build/';
+const MOBILE_RTC_JENKINS_JOB_URL_FALLBACK = 'https://jenkins.example.com/job/mobile-rtc-ios-build/';
 
 interface ComponentGroup {
   name: string;
@@ -51,19 +51,19 @@ function compareReleaseBranches(a: string, b: string) {
   return a.localeCompare(b);
 }
 
-function isNNRtcReleaseBuildBranch(branch?: string) {
+function isMobileRTCReleaseBuildBranch(branch?: string) {
   return /^release[_/]\d+(?:\.\d+){2,}$/.test(String(branch || ''));
 }
 
-function getNNRtcReleaseVersion(branch?: string) {
+function getMobileRTCReleaseVersion(branch?: string) {
   return String(branch || '').match(/^release[_/](\d+(?:\.\d+){2,})$/)?.[1] || '';
 }
 
-function isNNRtcTestVersion(version?: string) {
+function isMobileRTCTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
-function buildNNRtcTestVersion(version: string) {
+function buildMobileRTCTestVersion(version: string) {
   return `${version}-test`;
 }
 
@@ -110,7 +110,7 @@ function isStableExternalPodVersion(version: string) {
   return Boolean(String(version || '').trim()) && !String(version).includes('-');
 }
 
-function buildNniosBranchOptions(branches: string[]) {
+function buildMainAppBranchOptions(branches: string[]) {
   const releaseBranches = branches.filter(isReleaseBranch);
   const latestRelease = releaseBranches.sort(compareReleaseBranches)[releaseBranches.length - 1];
   return branches.filter((branch) => !isReleaseBranch(branch) || branch === latestRelease);
@@ -128,45 +128,45 @@ function formatBuildTime(timestamp?: number) {
   });
 }
 
-function formatNNRtcBuildLabel(build: NNRtcJenkinsBuild) {
+function formatMobileRTCBuildLabel(build: MobileRTCJenkinsBuild) {
   const time = formatBuildTime(build.timestamp);
   return `#${build.number}${build.branchName ? ` ${build.branchName}` : ''}${time ? ` ${time}` : ''}`;
 }
 
-function normalizeNNRtcBuildId(buildId?: string | number) {
+function normalizeMobileRTCBuildId(buildId?: string | number) {
   return String(buildId || '').trim().replace(/^#+/, '').trim();
 }
 
-function getNNRtcJenkinsJobUrl(config?: NNRtcJenkinsConfig | null) {
-  return config?.jobUrl || NNRTC_JENKINS_JOB_URL_FALLBACK;
+function getMobileRTCJenkinsJobUrl(config?: MobileRTCJenkinsConfig | null) {
+  return config?.jobUrl || MOBILE_RTC_JENKINS_JOB_URL_FALLBACK;
 }
 
-function buildNNRtcJenkinsBuildUrl(jobUrl: string, buildId: string | number) {
-  const normalizedBuildId = normalizeNNRtcBuildId(buildId);
+function buildMobileRTCJenkinsBuildUrl(jobUrl: string, buildId: string | number) {
+  const normalizedBuildId = normalizeMobileRTCBuildId(buildId);
   if (!normalizedBuildId) return jobUrl;
   return `${jobUrl.replace(/\/$/, '')}/${encodeURIComponent(normalizedBuildId)}/`;
 }
 
-function supportsNniosBuildTask(name?: string) {
+function supportsMainAppBuildTask(name?: string) {
   const normalized = String(name || '').trim();
-  return normalized === 'NNRtc' || normalized === 'leigod_im_cross_sdk';
+  return normalized === 'MobileRTC' || normalized === 'mobile_im_cross_sdk';
 }
 
-function isLeigodIMCrossSDK(name?: string) {
-  return String(name || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '') === 'leigod_im_cross_sdk';
+function isMobileIMCrossSDK(name?: string) {
+  return String(name || '').replace(/[\s\u200B-\u200D\uFEFF]/g, '') === 'mobile_im_cross_sdk';
 }
 
-function isLeigodIMComponent(component?: PodComponent | null) {
+function isMobileIMComponent(component?: PodComponent | null) {
   if (!component) return false;
-  return isLeigodIMCrossSDK(component.name) ||
-    String(component.source_zip_url || '').includes('/leigod_im_cross_sdk/') ||
-    String(component.podspec_content || '').includes("s.name         = 'leigod_im_cross_sdk'");
+  return isMobileIMCrossSDK(component.name) ||
+    String(component.source_zip_url || '').includes('/mobile_im_cross_sdk/') ||
+    String(component.podspec_content || '').includes("s.name         = 'mobile_im_cross_sdk'");
 }
 
 function isInternalComponent(component?: PodComponent | null) {
   if (!component) return false;
-  if (isLeigodIMComponent(component)) return true;
-  return String(component.name || '').trim() === 'NNRtc';
+  if (isMobileIMComponent(component)) return true;
+  return String(component.name || '').trim() === 'MobileRTC';
 }
 
 function isOfficialComponent(component?: PodComponent | null) {
@@ -210,155 +210,155 @@ export default function PodsPage() {
   const [internalVersion, setInternalVersion] = useState<string>('');
   const [prepareCommand, setPrepareCommand] = useState<string>('');
   const [officialTargetBranch, setOfficialTargetBranch] = useState<string>();
-  const [officialTriggerNniosBuild, setOfficialTriggerNniosBuild] = useState(false);
+  const [officialTriggerMainAppBuild, setOfficialTriggerMainAppBuild] = useState(false);
   const [publishTabKey, setPublishTabKey] = useState<string>('local');
-  const [nniosBranches, setNniosBranches] = useState<string[]>([]);
-  const [nniosBranchLoading, setNniosBranchLoading] = useState(false);
+  const [mainAppBranches, setMainAppBranches] = useState<string[]>([]);
+  const [mainAppBranchLoading, setMainAppBranchLoading] = useState(false);
   const [detailTargetBranch, setDetailTargetBranch] = useState<string>('develop');
   const [detailJenkinsBuildNumber, setDetailJenkinsBuildNumber] = useState('');
-  const [detailTriggerNniosBuild, setDetailTriggerNniosBuild] = useState(false);
-  const [nnrtcBuilds, setNnrtcBuilds] = useState<NNRtcJenkinsBuild[]>([]);
-  const [nnrtcJenkinsConfig, setNnrtcJenkinsConfig] = useState<NNRtcJenkinsConfig | null>(null);
-  const [nnrtcBuildLoading, setNnrtcBuildLoading] = useState(false);
-  const [leigodIMSDKVersions, setLeigodIMSDKVersions] = useState<LeigodIMSDKVersion[]>([]);
-  const [leigodIMSDKLoading, setLeigodIMSDKLoading] = useState(false);
-  const [leigodIMSDKError, setLeigodIMSDKError] = useState('');
-  const [nnrtcTaskModalOpen, setNnrtcTaskModalOpen] = useState(false);
-  const [nnrtcTask, setNnrtcTask] = useState<NNRtcPodTask | null>(null);
-  const nnrtcTaskContextRef = useRef<{
+  const [detailTriggerMainAppBuild, setDetailTriggerMainAppBuild] = useState(false);
+  const [mobileRtcBuilds, setMobileRtcBuilds] = useState<MobileRTCJenkinsBuild[]>([]);
+  const [mobileRtcJenkinsConfig, setMobileRtcJenkinsConfig] = useState<MobileRTCJenkinsConfig | null>(null);
+  const [mobileRtcBuildLoading, setMobileRtcBuildLoading] = useState(false);
+  const [mobileIMSDKVersions, setMobileIMSDKVersions] = useState<MobileIMSDKVersion[]>([]);
+  const [mobileIMSDKLoading, setMobileIMSDKLoading] = useState(false);
+  const [mobileIMSDKError, setMobileIMSDKError] = useState('');
+  const [mobileRtcTaskModalOpen, setMobileRtcTaskModalOpen] = useState(false);
+  const [mobileRtcTask, setMobileRtcTask] = useState<MobileRTCPodTask | null>(null);
+  const mobileRtcTaskContextRef = useRef<{
     action: 'publish' | 'replace';
     name: string;
     version: string;
     targetBranch: string;
-    triggerNniosBuild: boolean;
+    triggerMainAppBuild: boolean;
   } | null>(null);
-  const nnrtcHandledTasksRef = useRef<Set<string>>(new Set());
-  const nnrtcBuildTriggeredTasksRef = useRef<Set<string>>(new Set());
+  const mobileRtcHandledTasksRef = useRef<Set<string>>(new Set());
+  const mobileRtcBuildTriggeredTasksRef = useRef<Set<string>>(new Set());
   const newVersionCacheRef = useRef<Map<string, NewVersionHint>>(new Map());
   const publishName = Form.useWatch('name', form);
-  const nnrtcPackageType = Form.useWatch('nnrtc_package_type', form) || 'release';
-  const nnrtcBuildNumber = Form.useWatch('nnrtc_build_number', form);
-  const leigodIMSDKVersion = Form.useWatch('leigod_im_sdk_version', form);
+  const mobileRtcPackageType = Form.useWatch('mobile_rtc_package_type', form) || 'release';
+  const mobileRtcBuildNumber = Form.useWatch('mobile_rtc_build_number', form);
+  const mobileIMSDKVersion = Form.useWatch('mobile_im_sdk_version', form);
   const publishVersion = Form.useWatch('version', form);
   const publishTargetBranch = Form.useWatch('target_branch', form);
   const publishLibType = Form.useWatch('lib_type', form);
-  const publishTriggerNniosBuild = Form.useWatch('trigger_nnios_build', form);
-  const isNNRtcPublish = publishName === 'NNRtc';
-  const isLeigodIMPublish = isLeigodIMCrossSDK(publishName);
-  const showPublishNniosBuildTask = supportsNniosBuildTask(publishName);
+  const publishTriggerMainAppBuild = Form.useWatch('trigger_main_app_build', form);
+  const isMobileRTCPublish = publishName === 'MobileRTC';
+  const isMobileIMPublish = isMobileIMCrossSDK(publishName);
+  const showPublishMainAppBuildTask = supportsMainAppBuildTask(publishName);
   // 研发和管理员可以维护 组件库，其他角色只读查看。
   const [library, setLibrary] = useState<ComponentLibraryStatus>();
   useEffect(() => { void componentLibraryApi.current().then(setLibrary).catch((e) => message.error(e.error || e.message || '读取组件库失败')); }, []);
   const canManagePods = authUtils.hasAnyRole(['developer', 'admin']);
   const selectedIsOfficial = isOfficialComponent(selectedComponent);
-  const selectedNNRtcPackageType = selectedComponent?.name === 'NNRtc'
-    ? (selectedComponent.package_type || (isNNRtcTestVersion(selectedComponent.version) ? 'test' : 'release'))
+  const selectedMobileRTCPackageType = selectedComponent?.name === 'MobileRTC'
+    ? (selectedComponent.package_type || (isMobileRTCTestVersion(selectedComponent.version) ? 'test' : 'release'))
     : undefined;
-  const detailNNRtcBuilds = useMemo(() => (
-    nnrtcBuilds.filter((build) => selectedNNRtcPackageType === 'release'
-      ? isNNRtcReleaseBuildBranch(build.branchName)
-      : !isNNRtcReleaseBuildBranch(build.branchName))
-  ), [nnrtcBuilds, selectedNNRtcPackageType]);
+  const detailMobileRTCBuilds = useMemo(() => (
+    mobileRtcBuilds.filter((build) => selectedMobileRTCPackageType === 'release'
+      ? isMobileRTCReleaseBuildBranch(build.branchName)
+      : !isMobileRTCReleaseBuildBranch(build.branchName))
+  ), [mobileRtcBuilds, selectedMobileRTCPackageType]);
   const currentPublishVersion = String(publishVersion || form.getFieldValue('version') || '').trim();
   const currentPublishTargetBranch = String(publishTargetBranch || form.getFieldValue('target_branch') || '').trim();
   const currentPublishLibType = String(publishLibType || form.getFieldValue('lib_type') || '').trim();
   const isLocalPublishDisabled = publishing ||
     !String(publishName || '').trim() ||
     !currentPublishLibType ||
-    (Boolean(publishTriggerNniosBuild) && !currentPublishTargetBranch) ||
-    (isLeigodIMPublish
-      ? !String(leigodIMSDKVersion || '').trim()
-      : isNNRtcPublish
+    (Boolean(publishTriggerMainAppBuild) && !currentPublishTargetBranch) ||
+    (isMobileIMPublish
+      ? !String(mobileIMSDKVersion || '').trim()
+      : isMobileRTCPublish
         ? (
           !currentPublishVersion ||
-          !String(nnrtcBuildNumber || '').trim()
+          !String(mobileRtcBuildNumber || '').trim()
         )
         : !currentPublishVersion);
 
-  const loadNniosBranches = useCallback(async (): Promise<string[]> => {
+  const loadMainAppBranches = useCallback(async (): Promise<string[]> => {
     if (!canManagePods) return [];
-    setNniosBranchLoading(true);
+    setMainAppBranchLoading(true);
     try {
       const res = await jenkinsApi.listBranches();
-      const branches = buildNniosBranchOptions(res.data || []);
-      setNniosBranches(branches);
+      const branches = buildMainAppBranchOptions(res.data || []);
+      setMainAppBranches(branches);
       return branches;
     } catch (error: any) {
       message.warning(error?.error || error?.message || '加载发布主仓库分支失败，请稍后重试');
       return [];
     } finally {
-      setNniosBranchLoading(false);
+      setMainAppBranchLoading(false);
     }
   }, [form, canManagePods]);
 
-  const loadNNRtcBuilds = useCallback(async () => {
+  const loadMobileRTCBuilds = useCallback(async () => {
     if (!canManagePods) return;
-    setNnrtcBuildLoading(true);
+    setMobileRtcBuildLoading(true);
     try {
       const [configRes, res] = await Promise.all([
-        podsApi.getNNRtcJenkinsConfig(),
-        podsApi.listNNRtcJenkinsBuilds(),
+        podsApi.getMobileRTCJenkinsConfig(),
+        podsApi.listMobileRTCJenkinsBuilds(),
       ]);
       if (configRes.success && configRes.data) {
-        setNnrtcJenkinsConfig(configRes.data);
+        setMobileRtcJenkinsConfig(configRes.data);
       }
       const builds = res.data || [];
-      setNnrtcBuilds(builds);
+      setMobileRtcBuilds(builds);
       if (builds.length === 0) {
-        form.setFieldValue('nnrtc_build_number', undefined);
+        form.setFieldValue('mobile_rtc_build_number', undefined);
       }
       if (!detailJenkinsBuildNumber && builds.length > 0) {
         setDetailJenkinsBuildNumber(String(builds[0].number));
       }
     } catch (error: any) {
-      message.warning(error?.error || error?.message || '加载 NNRtc Jenkins 构建号失败');
+      message.warning(error?.error || error?.message || '加载 MobileRTC Jenkins 构建号失败');
     } finally {
-      setNnrtcBuildLoading(false);
+      setMobileRtcBuildLoading(false);
     }
   }, [detailJenkinsBuildNumber, form, canManagePods]);
 
-  const loadLeigodIMSDKVersions = useCallback(async () => {
+  const loadMobileIMSDKVersions = useCallback(async () => {
     if (!canManagePods) return;
-    setLeigodIMSDKLoading(true);
-    setLeigodIMSDKError('');
+    setMobileIMSDKLoading(true);
+    setMobileIMSDKError('');
     try {
-      const res = await podsApi.listLeigodIMSDKVersions();
+      const res = await podsApi.listMobileIMSDKVersions();
       const versions = res.data || [];
-      setLeigodIMSDKVersions(versions);
+      setMobileIMSDKVersions(versions);
       if (versions.length === 0) {
         form.setFieldsValue({
-          leigod_im_sdk_version: undefined,
+          mobile_im_sdk_version: undefined,
           version: undefined,
         });
         const currentHighestVersion = components
-          .filter((item) => isLeigodIMCrossSDK(item.name))
+          .filter((item) => isMobileIMCrossSDK(item.name))
           .map((item) => String(item.version || '').trim())
           .filter(Boolean)
           .sort(compareVersionText)
           .at(-1);
-        setLeigodIMSDKError(
+        setMobileIMSDKError(
           currentHighestVersion
             ? `已挂载 IMSDK 共享目录，但未找到高于当前已发布版本 ${currentHighestVersion} 的 IMSDK 版本`
             : '已挂载 IMSDK 共享目录，但未找到可发布版本'
         );
       }
-      const current = form.getFieldValue('leigod_im_sdk_version');
+      const current = form.getFieldValue('mobile_im_sdk_version');
       const next = versions.some((item) => item.version === current)
         ? current
         : versions[0]?.version;
       if (next) {
         form.setFieldsValue({
-          leigod_im_sdk_version: next,
+          mobile_im_sdk_version: next,
           version: next,
         });
       }
     } catch (error: any) {
       const errorMessage = error?.error || error?.message || '加载 IMSDK 版本失败';
-      setLeigodIMSDKVersions([]);
-      setLeigodIMSDKError(errorMessage);
+      setMobileIMSDKVersions([]);
+      setMobileIMSDKError(errorMessage);
       message.warning(errorMessage);
     } finally {
-      setLeigodIMSDKLoading(false);
+      setMobileIMSDKLoading(false);
     }
   }, [components, form, canManagePods]);
 
@@ -386,56 +386,56 @@ export default function PodsPage() {
 
   useEffect(() => {
     if (publishModalOpen && canManagePods) {
-      loadNniosBranches();
+      loadMainAppBranches();
     }
-  }, [canManagePods, loadNniosBranches, publishModalOpen]);
+  }, [canManagePods, loadMainAppBranches, publishModalOpen]);
 
   useEffect(() => {
-    if (publishModalOpen && publishTabKey === 'local' && isNNRtcPublish) {
-      loadNNRtcBuilds();
+    if (publishModalOpen && publishTabKey === 'local' && isMobileRTCPublish) {
+      loadMobileRTCBuilds();
     }
-  }, [isNNRtcPublish, loadNNRtcBuilds, publishModalOpen, publishTabKey]);
+  }, [isMobileRTCPublish, loadMobileRTCBuilds, publishModalOpen, publishTabKey]);
 
   useEffect(() => {
-    if (publishModalOpen && publishTabKey === 'local' && isLeigodIMPublish) {
-      loadLeigodIMSDKVersions();
+    if (publishModalOpen && publishTabKey === 'local' && isMobileIMPublish) {
+      loadMobileIMSDKVersions();
     }
-  }, [isLeigodIMPublish, loadLeigodIMSDKVersions, publishModalOpen, publishTabKey]);
+  }, [isMobileIMPublish, loadMobileIMSDKVersions, publishModalOpen, publishTabKey]);
 
   useEffect(() => {
     if (detailDrawerOpen && canManagePods) {
-      loadNniosBranches();
+      loadMainAppBranches();
     }
-  }, [detailDrawerOpen, canManagePods, loadNniosBranches]);
+  }, [detailDrawerOpen, canManagePods, loadMainAppBranches]);
 
   useEffect(() => {
-    if (detailDrawerOpen && selectedComponent?.name === 'NNRtc') {
-      loadNNRtcBuilds();
+    if (detailDrawerOpen && selectedComponent?.name === 'MobileRTC') {
+      loadMobileRTCBuilds();
     }
-  }, [detailDrawerOpen, loadNNRtcBuilds, selectedComponent?.name]);
+  }, [detailDrawerOpen, loadMobileRTCBuilds, selectedComponent?.name]);
 
   useEffect(() => {
-    if (!detailDrawerOpen || selectedComponent?.name !== 'NNRtc') return;
-    const currentInOptions = detailNNRtcBuilds.some((build) => String(build.number) === detailJenkinsBuildNumber);
+    if (!detailDrawerOpen || selectedComponent?.name !== 'MobileRTC') return;
+    const currentInOptions = detailMobileRTCBuilds.some((build) => String(build.number) === detailJenkinsBuildNumber);
     if (!currentInOptions) {
-      setDetailJenkinsBuildNumber(detailNNRtcBuilds[0] ? String(detailNNRtcBuilds[0].number) : '');
+      setDetailJenkinsBuildNumber(detailMobileRTCBuilds[0] ? String(detailMobileRTCBuilds[0].number) : '');
     }
-  }, [detailDrawerOpen, detailJenkinsBuildNumber, detailNNRtcBuilds, selectedComponent?.name]);
+  }, [detailDrawerOpen, detailJenkinsBuildNumber, detailMobileRTCBuilds, selectedComponent?.name]);
 
-  const triggerNniosBuildTask = useCallback(async (branch: string) => {
+  const triggerMainAppBuildTask = useCallback(async (branch: string) => {
     const targetBranch = branch.trim();
     if (!targetBranch) {
       message.warning('未选择发布主仓库分支，已跳过主仓库构建任务');
       return;
     }
-    const buildsResponse = await jenkinsApi.listNNBuilds();
+    const buildsResponse = await jenkinsApi.listMobileBuilds();
     const gateBuild = buildsResponse.data?.builds?.find((build) => (
       build.result === 'SUCCESS' && String(build.branchName || '').replace(/^origin\//, '') === targetBranch.replace(/^origin\//, '')
     ));
     if (!gateBuild) {
       throw new Error(`未找到 ${targetBranch} 可用的成功源构建，无法通过发布质量门禁`);
     }
-    await jenkinsApi.publishNN({
+    await jenkinsApi.publishMobile({
       deployTarget: 'Pgyer',
       branch: targetBranch,
       gateBuildNumber: gateBuild.number,
@@ -443,34 +443,34 @@ export default function PodsPage() {
     message.success(`已触发发布主仓库 ${targetBranch} 构建任务`);
   }, []);
 
-  const startNNRtcTaskPolling = useCallback((task: NNRtcPodTask, context: {
+  const startMobileRTCTaskPolling = useCallback((task: MobileRTCPodTask, context: {
     action: 'publish' | 'replace';
     name: string;
     version: string;
     targetBranch: string;
-    triggerNniosBuild: boolean;
+    triggerMainAppBuild: boolean;
   }) => {
-    nnrtcTaskContextRef.current = context;
-    nnrtcHandledTasksRef.current.delete(task.id);
-    setNnrtcTask(task);
-    setNnrtcTaskModalOpen(true);
+    mobileRtcTaskContextRef.current = context;
+    mobileRtcHandledTasksRef.current.delete(task.id);
+    setMobileRtcTask(task);
+    setMobileRtcTaskModalOpen(true);
   }, []);
 
   useEffect(() => {
-    if (!nnrtcTaskModalOpen || !nnrtcTask || ['success', 'failed'].includes(nnrtcTask.status)) return undefined;
+    if (!mobileRtcTaskModalOpen || !mobileRtcTask || ['success', 'failed'].includes(mobileRtcTask.status)) return undefined;
     const timer = window.setInterval(async () => {
       try {
-        const res = await podsApi.getNNRtcTask(nnrtcTask.id);
+        const res = await podsApi.getMobileRTCTask(mobileRtcTask.id);
         if (!res.data) return;
-        setNnrtcTask(res.data);
+        setMobileRtcTask(res.data);
         if (res.data.status === 'success') {
-          if (nnrtcHandledTasksRef.current.has(res.data.id)) return;
-          nnrtcHandledTasksRef.current.add(res.data.id);
-          const context = nnrtcTaskContextRef.current;
+          if (mobileRtcHandledTasksRef.current.has(res.data.id)) return;
+          mobileRtcHandledTasksRef.current.add(res.data.id);
+          const context = mobileRtcTaskContextRef.current;
           if (res.warning || res.data.warning) {
             message.warning(res.warning || res.data.warning);
           } else {
-            message.success(context?.action === 'replace' ? 'NNRtc 替换完成' : 'NNRtc 发布完成');
+            message.success(context?.action === 'replace' ? 'MobileRTC 替换完成' : 'MobileRTC 发布完成');
           }
           if (context?.action === 'publish') {
             setPublishModalOpen(false);
@@ -483,25 +483,25 @@ export default function PodsPage() {
             setDetailJenkinsBuildNumber('');
           }
           fetchComponents();
-          if (context?.triggerNniosBuild && !nnrtcBuildTriggeredTasksRef.current.has(res.data.id)) {
-            nnrtcBuildTriggeredTasksRef.current.add(res.data.id);
+          if (context?.triggerMainAppBuild && !mobileRtcBuildTriggeredTasksRef.current.has(res.data.id)) {
+            mobileRtcBuildTriggeredTasksRef.current.add(res.data.id);
             try {
-              await triggerNniosBuildTask(context.targetBranch);
+              await triggerMainAppBuildTask(context.targetBranch);
             } catch (error: any) {
               message.error(error?.error || error?.message || '触发主仓库构建任务失败');
             }
           }
         } else if (res.data.status === 'failed') {
-          if (nnrtcHandledTasksRef.current.has(res.data.id)) return;
-          nnrtcHandledTasksRef.current.add(res.data.id);
-          message.error(res.data.error || 'NNRtc 任务失败');
+          if (mobileRtcHandledTasksRef.current.has(res.data.id)) return;
+          mobileRtcHandledTasksRef.current.add(res.data.id);
+          message.error(res.data.error || 'MobileRTC 任务失败');
         }
       } catch (error: any) {
-        message.error(error?.error || '查询 NNRtc 任务失败');
+        message.error(error?.error || '查询 MobileRTC 任务失败');
       }
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [fetchComponents, form, nnrtcTask, nnrtcTaskModalOpen, triggerNniosBuildTask]);
+  }, [fetchComponents, form, mobileRtcTask, mobileRtcTaskModalOpen, triggerMainAppBuildTask]);
 
   // 按组件名称分组
   const groups: ComponentGroup[] = useMemo(() => {
@@ -573,11 +573,11 @@ export default function PodsPage() {
       const currentLatest = latestVersionOf(group.versions.map((item) => item.version));
       if (!currentLatest) return {};
 
-      if (group.name === 'NNRtc') {
-        const res = await podsApi.listNNRtcJenkinsBuilds();
+      if (group.name === 'MobileRTC') {
+        const res = await podsApi.listMobileRTCJenkinsBuilds();
         const latestReleaseVersion = latestVersionOf(
           (res.data || [])
-            .map((build) => getNNRtcReleaseVersion(build.branchName))
+            .map((build) => getMobileRTCReleaseVersion(build.branchName))
             .filter(Boolean)
         );
         return {
@@ -586,8 +586,8 @@ export default function PodsPage() {
         };
       }
 
-      if (isLeigodIMCrossSDK(group.name)) {
-        const res = await podsApi.listLeigodIMSDKVersions();
+      if (isMobileIMCrossSDK(group.name)) {
+        const res = await podsApi.listMobileIMSDKVersions();
         const latestIMSDKVersion = latestVersionOf((res.data || []).map((item) => item.version));
         return {
           latestVersion: latestIMSDKVersion,
@@ -639,68 +639,68 @@ export default function PodsPage() {
     };
   }, [groups]);
 
-  const latestNNRtcReleaseVersion = useMemo(() => {
+  const latestMobileRTCReleaseVersion = useMemo(() => {
     const versions = components
-      .filter((item) => item.name === 'NNRtc' && !isNNRtcTestVersion(item.version))
+      .filter((item) => item.name === 'MobileRTC' && !isMobileRTCTestVersion(item.version))
       .map((item) => item.version)
       .filter((version) => /^\d+(?:\.\d+){2,}$/.test(version));
     return versions.sort(compareVersionText).at(-1) || '';
   }, [components]);
 
-  const nnrtcPublishBuilds = useMemo(() => (
-    nnrtcBuilds.filter((build) => {
-      const isReleaseBuild = isNNRtcReleaseBuildBranch(build.branchName);
-      if (nnrtcPackageType !== 'release') return !isReleaseBuild;
+  const mobileRtcPublishBuilds = useMemo(() => (
+    mobileRtcBuilds.filter((build) => {
+      const isReleaseBuild = isMobileRTCReleaseBuildBranch(build.branchName);
+      if (mobileRtcPackageType !== 'release') return !isReleaseBuild;
       return isReleaseBuild;
     })
-  ), [nnrtcBuilds, nnrtcPackageType]);
+  ), [mobileRtcBuilds, mobileRtcPackageType]);
 
-  const nnrtcPublishBuildNotFoundText = nnrtcPackageType === 'release'
+  const mobileRtcPublishBuildNotFoundText = mobileRtcPackageType === 'release'
     ? '未找到 release_x.x.x 构建'
     : '未找到非 release 构建';
-  const showNNRtcLatestHint = isNNRtcPublish &&
-    nnrtcPackageType === 'release' &&
-    !nnrtcBuildLoading &&
-    nnrtcBuilds.length > 0 &&
-    nnrtcPublishBuilds.length === 0 &&
-    Boolean(latestNNRtcReleaseVersion);
+  const showMobileRTCLatestHint = isMobileRTCPublish &&
+    mobileRtcPackageType === 'release' &&
+    !mobileRtcBuildLoading &&
+    mobileRtcBuilds.length > 0 &&
+    mobileRtcPublishBuilds.length === 0 &&
+    Boolean(latestMobileRTCReleaseVersion);
 
   useEffect(() => {
-    if (!isNNRtcPublish) return;
-    if (!form.getFieldValue('nnrtc_package_type')) {
-      form.setFieldValue('nnrtc_package_type', 'release');
+    if (!isMobileRTCPublish) return;
+    if (!form.getFieldValue('mobile_rtc_package_type')) {
+      form.setFieldValue('mobile_rtc_package_type', 'release');
     }
 
-    if (nnrtcPackageType === 'test') {
-      const nextVersion = latestNNRtcReleaseVersion ? buildNNRtcTestVersion(latestNNRtcReleaseVersion) : '';
+    if (mobileRtcPackageType === 'test') {
+      const nextVersion = latestMobileRTCReleaseVersion ? buildMobileRTCTestVersion(latestMobileRTCReleaseVersion) : '';
       if (form.getFieldValue('version') !== nextVersion) {
         form.setFieldValue('version', nextVersion);
       }
     }
 
-    const currentBuild = String(nnrtcBuildNumber || form.getFieldValue('nnrtc_build_number') || '');
-    const currentInOptions = nnrtcPublishBuilds.some((build) => String(build.number) === currentBuild);
-    const nextBuild = currentInOptions ? currentBuild : (nnrtcPublishBuilds[0] ? String(nnrtcPublishBuilds[0].number) : undefined);
+    const currentBuild = String(mobileRtcBuildNumber || form.getFieldValue('mobile_rtc_build_number') || '');
+    const currentInOptions = mobileRtcPublishBuilds.some((build) => String(build.number) === currentBuild);
+    const nextBuild = currentInOptions ? currentBuild : (mobileRtcPublishBuilds[0] ? String(mobileRtcPublishBuilds[0].number) : undefined);
     if (nextBuild !== currentBuild) {
-      form.setFieldValue('nnrtc_build_number', nextBuild);
+      form.setFieldValue('mobile_rtc_build_number', nextBuild);
     }
 
-    const selectedBuild = nnrtcPublishBuilds.find((build) => String(build.number) === (nextBuild || currentBuild));
-    const nextVersion = nnrtcPackageType === 'release'
-      ? getNNRtcReleaseVersion(selectedBuild?.branchName)
-      : (latestNNRtcReleaseVersion ? buildNNRtcTestVersion(latestNNRtcReleaseVersion) : '');
+    const selectedBuild = mobileRtcPublishBuilds.find((build) => String(build.number) === (nextBuild || currentBuild));
+    const nextVersion = mobileRtcPackageType === 'release'
+      ? getMobileRTCReleaseVersion(selectedBuild?.branchName)
+      : (latestMobileRTCReleaseVersion ? buildMobileRTCTestVersion(latestMobileRTCReleaseVersion) : '');
     if (form.getFieldValue('version') !== nextVersion) {
       form.setFieldValue('version', nextVersion);
     }
-  }, [form, isNNRtcPublish, latestNNRtcReleaseVersion, nnrtcBuildNumber, nnrtcPackageType, nnrtcPublishBuilds]);
+  }, [form, isMobileRTCPublish, latestMobileRTCReleaseVersion, mobileRtcBuildNumber, mobileRtcPackageType, mobileRtcPublishBuilds]);
 
   useEffect(() => {
-    if (!isLeigodIMPublish) return;
-    const selected = String(leigodIMSDKVersion || form.getFieldValue('leigod_im_sdk_version') || '');
+    if (!isMobileIMPublish) return;
+    const selected = String(mobileIMSDKVersion || form.getFieldValue('mobile_im_sdk_version') || '');
     if (selected && form.getFieldValue('version') !== selected) {
       form.setFieldValue('version', selected);
     }
-  }, [form, isLeigodIMPublish, leigodIMSDKVersion]);
+  }, [form, isMobileIMPublish, mobileIMSDKVersion]);
 
   useEffect(() => {
     if (!publishModalOpen || form.getFieldValue('lib_type')) return;
@@ -730,32 +730,32 @@ export default function PodsPage() {
 
   const doPublish = async (values: any) => {
     setPublishing(true);
-    const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
+    const shouldTriggerMainAppBuild = supportsMainAppBuildTask(values.name) && Boolean(values.trigger_main_app_build);
     try {
-      if (values.name === 'NNRtc') {
-        const taskRes = await podsApi.startNNRtcPublishTask({
-            build_number: values.nnrtc_build_number,
+      if (values.name === 'MobileRTC') {
+        const taskRes = await podsApi.startMobileRTCPublishTask({
+            build_number: values.mobile_rtc_build_number,
             version: values.version,
-            package_type: values.nnrtc_package_type === 'test' ? 'test' : 'release',
+            package_type: values.mobile_rtc_package_type === 'test' ? 'test' : 'release',
             sys_frameworks: values.sys_frameworks,
             sys_libraries: values.sys_libraries,
             target_branch: values.target_branch,
         });
         if (taskRes.success && taskRes.data) {
-          startNNRtcTaskPolling(taskRes.data, {
+          startMobileRTCTaskPolling(taskRes.data, {
             action: 'publish',
             name: values.name,
             version: values.version,
             targetBranch: values.target_branch,
-            triggerNniosBuild: shouldTriggerNniosBuild,
+            triggerMainAppBuild: shouldTriggerMainAppBuild,
           });
-          message.success('NNRtc 发布任务已开始');
+          message.success('MobileRTC 发布任务已开始');
         }
         return;
       }
 
-      if (isLeigodIMCrossSDK(values.name)) {
-        const res = await podsApi.publishLeigodIMFromIMSDK({
+      if (isMobileIMCrossSDK(values.name)) {
+        const res = await podsApi.publishMobileIMFromIMSDK({
           version: values.version,
           sys_frameworks: values.sys_frameworks,
           sys_libraries: values.sys_libraries,
@@ -773,9 +773,9 @@ export default function PodsPage() {
           form.resetFields();
           setSelectedName(values.name);
           fetchComponents();
-          if (shouldTriggerNniosBuild) {
+          if (shouldTriggerMainAppBuild) {
             try {
-              await triggerNniosBuildTask(values.target_branch);
+              await triggerMainAppBuildTask(values.target_branch);
             } catch (error: any) {
               message.error(error?.error || error?.message || '触发主仓库构建任务失败');
             }
@@ -792,8 +792,8 @@ export default function PodsPage() {
             sys_frameworks: values.sys_frameworks,
             sys_libraries: values.sys_libraries,
             target_branch: values.target_branch,
-            package_type: values.name === 'NNRtc'
-              ? (values.nnrtc_package_type === 'test' || isNNRtcTestVersion(values.version) ? 'test' : 'release')
+            package_type: values.name === 'MobileRTC'
+              ? (values.mobile_rtc_package_type === 'test' || isMobileRTCTestVersion(values.version) ? 'test' : 'release')
               : undefined,
       });
       if (res.success) {
@@ -808,9 +808,9 @@ export default function PodsPage() {
         form.resetFields();
         setSelectedName(values.name);
         fetchComponents();
-        if (shouldTriggerNniosBuild) {
+        if (shouldTriggerMainAppBuild) {
           try {
-            await triggerNniosBuildTask(values.target_branch);
+            await triggerMainAppBuildTask(values.target_branch);
           } catch (error: any) {
             message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
@@ -830,17 +830,17 @@ export default function PodsPage() {
         message.error('请选择二进制库格式');
         return;
       }
-      const shouldTriggerNniosBuild = supportsNniosBuildTask(values.name) && Boolean(values.trigger_nnios_build);
-      if (shouldTriggerNniosBuild && !String(values.target_branch || '').trim()) {
+      const shouldTriggerMainAppBuild = supportsMainAppBuildTask(values.name) && Boolean(values.trigger_main_app_build);
+      if (shouldTriggerMainAppBuild && !String(values.target_branch || '').trim()) {
         message.error('发布主仓库构建任务时需要选择发布主仓库分支');
         return;
       }
 
       const targetBranch = String(values.target_branch || '').trim();
-      const sourceText = values.name === 'NNRtc'
-        ? `Jenkins 构建 #${values.nnrtc_build_number}`
-        : isLeigodIMCrossSDK(values.name)
-          ? `IMSDK/${values.leigod_im_sdk_version || values.version}`
+      const sourceText = values.name === 'MobileRTC'
+        ? `Jenkins 构建 #${values.mobile_rtc_build_number}`
+        : isMobileIMCrossSDK(values.name)
+          ? `IMSDK/${values.mobile_im_sdk_version || values.version}`
           : '元信息发布';
       let confirmBranch = '';
       Modal.confirm({
@@ -852,7 +852,7 @@ export default function PodsPage() {
               <p>发布成功后会同步到发布主仓库分支 <Text strong code>{targetBranch}</Text>。</p>
             )}
             <p>发布来源：<Text strong code>{sourceText}</Text></p>
-            {shouldTriggerNniosBuild && (
+            {shouldTriggerMainAppBuild && (
               <p>发布成功后会触发发布主仓库 <Text strong code>{targetBranch}</Text> 的构建任务。</p>
             )}
             {targetBranch && (
@@ -906,7 +906,7 @@ export default function PodsPage() {
   };
 
   const handleSyncBranch = async (record: PodComponent) => {
-    const branches = nniosBranches.length > 0 ? nniosBranches : await loadNniosBranches();
+    const branches = mainAppBranches.length > 0 ? mainAppBranches : await loadMainAppBranches();
     let targetBranch = detailTargetBranch || (branches.includes('develop') ? 'develop' : branches[0] || '');
     let confirmBranch = '';
     Modal.confirm({
@@ -920,7 +920,7 @@ export default function PodsPage() {
           <Select
             showSearch
             defaultValue={targetBranch || undefined}
-            loading={nniosBranchLoading}
+            loading={mainAppBranchLoading}
             style={{ width: '100%' }}
             placeholder="选择发布主仓库分支"
             options={branches.map((branch) => ({ value: branch, label: branch }))}
@@ -961,7 +961,7 @@ export default function PodsPage() {
   };
 
   const handleSyncIntegratedBranch = async (record: PodComponent) => {
-    const targetBranch = (!library?.shared && record.nnios_branch) || detailTargetBranch;
+    const targetBranch = (!library?.shared && record.main_app_branch) || detailTargetBranch;
     if (!targetBranch) {
       message.error('当前测试包没有记录发布主仓库集成分支，请重新发布或先选择分支同步一次');
       return;
@@ -972,7 +972,7 @@ export default function PodsPage() {
         message.success(`已同步到发布主仓库/${targetBranch}`);
         if (res.data) {
           setSelectedComponent(res.data);
-          setDetailTargetBranch(res.data.nnios_branch || targetBranch);
+          setDetailTargetBranch(res.data.main_app_branch || targetBranch);
         }
         fetchComponents();
       }
@@ -990,7 +990,7 @@ export default function PodsPage() {
           <p>将同时删除 Nexus 上的 zip 文件，此操作不可恢复。</p>
           <p>仅删除当前组件版本，不会修改发布主仓库分支引用。</p>
           <p>将执行 <Text strong code>podx clean {record.name}</Text> 清理当前打包机 CocoaPods 缓存。</p>
-          {(record.name === 'NNRtc' || record.name === 'leigod_im_cross_sdk') && (
+          {(record.name === 'MobileRTC' || record.name === 'mobile_im_cross_sdk') && (
             <p>将同时删除 dSYM 管理中的 <Text strong code>{record.name}@{record.version}</Text> 符号文件。</p>
           )}
           <p>请输入版本号 <Text strong code>{record.version}</Text> 确认删除：</p>
@@ -1096,9 +1096,9 @@ export default function PodsPage() {
         setSelectedComponent(res.data);
         setPodspecDraft(res.data.podspec_content);
         fetchComponents();
-        if (supportsNniosBuildTask(selectedComponent.name) && detailTriggerNniosBuild) {
+        if (supportsMainAppBuildTask(selectedComponent.name) && detailTriggerMainAppBuild) {
           try {
-            await triggerNniosBuildTask(detailTargetBranch);
+            await triggerMainAppBuildTask(detailTargetBranch);
           } catch (error: any) {
             message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
@@ -1121,7 +1121,7 @@ export default function PodsPage() {
           <p>
             将替换 Nexus 上的二进制，并同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。
           </p>
-          {supportsNniosBuildTask(selectedComponent.name) && detailTriggerNniosBuild && (
+          {supportsMainAppBuildTask(selectedComponent.name) && detailTriggerMainAppBuild && (
             <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
@@ -1146,11 +1146,11 @@ export default function PodsPage() {
     });
   };
 
-  const handleReplaceLeigodIMFromIMSDK = async () => {
+  const handleReplaceMobileIMFromIMSDK = async () => {
     if (!selectedComponent) return;
     setReplacingZip(true);
     try {
-      const res = await podsApi.replaceLeigodIMFromIMSDK(selectedComponent.version, detailTargetBranch);
+      const res = await podsApi.replaceMobileIMFromIMSDK(selectedComponent.version, detailTargetBranch);
       if (res.success && res.data) {
         if (res.warning) {
           message.warning(res.warning);
@@ -1162,9 +1162,9 @@ export default function PodsPage() {
         setSelectedComponent(res.data);
         setPodspecDraft(res.data.podspec_content);
         fetchComponents();
-        if (detailTriggerNniosBuild) {
+        if (detailTriggerMainAppBuild) {
           try {
-            await triggerNniosBuildTask(detailTargetBranch);
+            await triggerMainAppBuildTask(detailTargetBranch);
           } catch (error: any) {
             message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
@@ -1177,7 +1177,7 @@ export default function PodsPage() {
     }
   };
 
-  const confirmReplaceLeigodIMFromIMSDK = () => {
+  const confirmReplaceMobileIMFromIMSDK = () => {
     if (!selectedComponent) return;
     let confirmBranch = '';
     Modal.confirm({
@@ -1185,11 +1185,11 @@ export default function PodsPage() {
       content: (
         <div>
           <p>
-            将使用 <Text strong code>smb://192.168.3.30/share/IMSDK/{selectedComponent.version}</Text> 对应版本包，
-            提取 leigod_im_cross_sdk.framework 替换 Nexus 二进制。
+            将使用 <Text strong code>smb://files.example.com/share/IMSDK/{selectedComponent.version}</Text> 对应版本包，
+            提取 mobile_im_cross_sdk.framework 替换 Nexus 二进制。
           </p>
           <p>同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。</p>
-          {detailTriggerNniosBuild && (
+          {detailTriggerMainAppBuild && (
             <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
@@ -1209,25 +1209,25 @@ export default function PodsPage() {
           message.error(`发布主仓库目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
-        await handleReplaceLeigodIMFromIMSDK();
+        await handleReplaceMobileIMFromIMSDK();
       },
     });
   };
 
-  const handleReplaceNNRtcFromJenkins = async (buildNumber: string) => {
+  const handleReplaceMobileRTCFromJenkins = async (buildNumber: string) => {
     if (!selectedComponent) return;
     setReplacingZip(true);
     try {
-      const res = await podsApi.startNNRtcReplaceTask(selectedComponent.version, buildNumber, detailTargetBranch);
+      const res = await podsApi.startMobileRTCReplaceTask(selectedComponent.version, buildNumber, detailTargetBranch);
       if (res.success && res.data) {
-        startNNRtcTaskPolling(res.data, {
+        startMobileRTCTaskPolling(res.data, {
           action: 'replace',
           name: selectedComponent.name,
           version: selectedComponent.version,
           targetBranch: detailTargetBranch,
-          triggerNniosBuild: detailTriggerNniosBuild,
+          triggerMainAppBuild: detailTriggerMainAppBuild,
         });
-        message.success('NNRtc 替换任务已开始');
+        message.success('MobileRTC 替换任务已开始');
       }
     } catch (error: any) {
       message.error(error?.error || '替换失败');
@@ -1236,7 +1236,7 @@ export default function PodsPage() {
     }
   };
 
-  const confirmReplaceNNRtcFromJenkins = () => {
+  const confirmReplaceMobileRTCFromJenkins = () => {
     if (!selectedComponent) return;
     const buildNumber = detailJenkinsBuildNumber.trim();
     if (!buildNumber) {
@@ -1249,11 +1249,11 @@ export default function PodsPage() {
       content: (
         <div>
           <p>
-            将使用 NNRtc Jenkins 构建 <Text strong code>#{buildNumber}</Text> 的 nrt/nrtc.tgz，
-            提取 NNRtc.framework 发布，并同步 NNRtc.dSYM。
+            将使用 MobileRTC Jenkins 构建 <Text strong code>#{buildNumber}</Text> 的 nrt/nrtc.tgz，
+            提取 MobileRTC.framework 发布，并同步 MobileRTC.dSYM。
           </p>
           <p>同步到发布主仓库分支 <Text strong code>{detailTargetBranch}</Text>。</p>
-          {detailTriggerNniosBuild && (
+          {detailTriggerMainAppBuild && (
             <p>替换成功后会触发发布主仓库 <Text strong code>{detailTargetBranch}</Text> 的构建任务。</p>
           )}
           <p>
@@ -1273,7 +1273,7 @@ export default function PodsPage() {
           message.error(`发布主仓库目标分支输入不匹配，请输入 ${detailTargetBranch}`);
           return Promise.reject();
         }
-        await handleReplaceNNRtcFromJenkins(buildNumber);
+        await handleReplaceMobileRTCFromJenkins(buildNumber);
       },
     });
   };
@@ -1339,7 +1339,7 @@ export default function PodsPage() {
     setImporting(true);
     try {
       const targetBranch = officialTargetBranch;
-      const shouldTriggerNniosBuild = officialTriggerNniosBuild;
+      const shouldTriggerMainAppBuild = officialTriggerMainAppBuild;
       const res = await podsApi.importOfficial(
         officialName.trim(),
         officialVersion,
@@ -1374,12 +1374,12 @@ export default function PodsPage() {
         setBuildBinary(true);
         setBuildOutputType('framework');
         setOfficialTargetBranch(undefined);
-        setOfficialTriggerNniosBuild(false);
+        setOfficialTriggerMainAppBuild(false);
         setSelectedName(officialName.trim());
         fetchComponents();
-        if (status === 'published' && shouldTriggerNniosBuild && targetBranch) {
+        if (status === 'published' && shouldTriggerMainAppBuild && targetBranch) {
           try {
-            await triggerNniosBuildTask(targetBranch);
+            await triggerMainAppBuildTask(targetBranch);
           } catch (error: any) {
             message.error(error?.error || error?.message || '触发主仓库构建任务失败');
           }
@@ -1396,9 +1396,9 @@ export default function PodsPage() {
     setSelectedComponent(record);
     setEditingPodspec(false);
     setPodspecDraft(record.podspec_content);
-    setDetailTargetBranch((!library?.shared && record.nnios_branch) || 'develop');
+    setDetailTargetBranch((!library?.shared && record.main_app_branch) || 'develop');
     setDetailJenkinsBuildNumber('');
-    setDetailTriggerNniosBuild(false);
+    setDetailTriggerMainAppBuild(false);
     setDetailDrawerOpen(true);
   };
 
@@ -1436,8 +1436,8 @@ export default function PodsPage() {
       key: 'package_type',
       width: 90,
       render: (_: string | undefined, record) => {
-        if (record.name !== 'NNRtc') return <Text type="secondary">-</Text>;
-        const type = record.package_type || (isNNRtcTestVersion(record.version) ? 'test' : 'release');
+        if (record.name !== 'MobileRTC') return <Text type="secondary">-</Text>;
+        const type = record.package_type || (isMobileRTCTestVersion(record.version) ? 'test' : 'release');
         return <Tag color={type === 'test' ? 'orange' : 'green'}>{type === 'test' ? '测试包' : '正式包'}</Tag>;
       },
     },
@@ -1447,10 +1447,10 @@ export default function PodsPage() {
       key: 'build_id',
       width: 90,
       render: (buildId: string | undefined, record) => (
-        record.name === 'NNRtc' && buildId && !library?.shared && (!library || library.configProductLineId === authUtils.getActiveProductLine()?.id)
+        record.name === 'MobileRTC' && buildId && !library?.shared && (!library || library.configProductLineId === authUtils.getActiveProductLine()?.id)
           ? (
-            <a href={buildNNRtcJenkinsBuildUrl(getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig), buildId)} target="_blank" rel="noopener noreferrer">
-              <Text code>#{normalizeNNRtcBuildId(buildId)}</Text>
+            <a href={buildMobileRTCJenkinsBuildUrl(getMobileRTCJenkinsJobUrl(mobileRtcJenkinsConfig), buildId)} target="_blank" rel="noopener noreferrer">
+              <Text code>#{normalizeMobileRTCBuildId(buildId)}</Text>
             </a>
           )
           : <Text type="secondary">{buildId || '-'}</Text>
@@ -1458,12 +1458,12 @@ export default function PodsPage() {
     },
     {
       title: library?.shared ? '发布来源分支' : '发布主仓库集成分支',
-      dataIndex: 'nnios_branch',
-      key: 'nnios_branch',
+      dataIndex: 'main_app_branch',
+      key: 'main_app_branch',
       width: 220,
       render: (branch: string | undefined, record) => {
-        const type = record.package_type || (isNNRtcTestVersion(record.version) ? 'test' : 'release');
-        if (record.name === 'NNRtc' && type === 'test') {
+        const type = record.package_type || (isMobileRTCTestVersion(record.version) ? 'test' : 'release');
+        if (record.name === 'MobileRTC' && type === 'test') {
           return branch ? (
             <Tooltip title={branch}>
               <Tag
@@ -1520,7 +1520,7 @@ export default function PodsPage() {
           </Button>
           {canManagePods && (
             <>
-              {(library?.shared || !(record.name === 'NNRtc' && (record.package_type === 'test' || isNNRtcTestVersion(record.version)))) && (
+              {(library?.shared || !(record.name === 'MobileRTC' && (record.package_type === 'test' || isMobileRTCTestVersion(record.version)))) && (
                 <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => handleSyncBranch(record)}>
                   同步
                 </Button>
@@ -1746,11 +1746,11 @@ export default function PodsPage() {
           setBuildBinary(true);
           setBuildOutputType('framework');
           setOfficialTargetBranch(undefined);
-          setOfficialTriggerNniosBuild(false);
-          setNniosBranches([]);
-          setNnrtcBuilds([]);
-          setLeigodIMSDKVersions([]);
-          setLeigodIMSDKError('');
+          setOfficialTriggerMainAppBuild(false);
+          setMainAppBranches([]);
+          setMobileRtcBuilds([]);
+          setMobileIMSDKVersions([]);
+          setMobileIMSDKError('');
         }}
         footer={null}
         width={560}
@@ -1767,36 +1767,36 @@ export default function PodsPage() {
                 <div>
                   <Form form={form} layout="vertical" style={{ marginTop: 8 }}>
                     <Form.Item name="name" label="组件名称" rules={[{ required: true, message: '请输入组件名称' }]}>
-                      <Input placeholder="例如: NNRtc" />
+                      <Input placeholder="例如: MobileRTC" />
                     </Form.Item>
-                    {!isNNRtcPublish && !isLeigodIMPublish && (
+                    {!isMobileRTCPublish && !isMobileIMPublish && (
                     <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                       <Input placeholder="例如: 2.7.0" />
                     </Form.Item>
                     )}
-                    {isLeigodIMPublish && (
+                    {isMobileIMPublish && (
                       <>
                         <Form.Item
-                          name="leigod_im_sdk_version"
+                          name="mobile_im_sdk_version"
                           label="IMSDK 发布版本"
                           rules={[{ required: true, message: '请选择 IMSDK 发布版本' }]}
-                          extra={leigodIMSDKError ? (
+                          extra={mobileIMSDKError ? (
                             <Alert
                               type="warning"
                               showIcon
-                              message={leigodIMSDKError}
+                              message={mobileIMSDKError}
                               style={{ marginTop: 8 }}
                             />
                           ) : undefined}
                         >
                           <Select
                             showSearch
-                            loading={leigodIMSDKLoading}
+                            loading={mobileIMSDKLoading}
                             placeholder="选择 IMSDK 版本"
-                            notFoundContent={leigodIMSDKLoading ? '加载中...' : '未找到可发布版本'}
+                            notFoundContent={mobileIMSDKLoading ? '加载中...' : '未找到可发布版本'}
                             optionFilterProp="label"
                             optionLabelProp="label"
-                            options={leigodIMSDKVersions.map((item) => ({
+                            options={mobileIMSDKVersions.map((item) => ({
                               value: item.version,
                               label: item.version,
                             }))}
@@ -1804,7 +1804,7 @@ export default function PodsPage() {
                               form.setFieldValue('version', value);
                             }}
                             onDropdownVisibleChange={(open) => {
-                              if (open && leigodIMSDKVersions.length === 0) loadLeigodIMSDKVersions();
+                              if (open && mobileIMSDKVersions.length === 0) loadMobileIMSDKVersions();
                             }}
                           />
                         </Form.Item>
@@ -1813,10 +1813,10 @@ export default function PodsPage() {
                         </Form.Item>
                       </>
                     )}
-                    {isNNRtcPublish && (
+                    {isMobileRTCPublish && (
                       <>
                         <Form.Item
-                          name="nnrtc_package_type"
+                          name="mobile_rtc_package_type"
                           label="包类型"
                           initialValue="release"
                           rules={[{ required: true, message: '请选择包类型' }]}
@@ -1829,12 +1829,12 @@ export default function PodsPage() {
                           />
                         </Form.Item>
                         <Form.Item
-                          name="nnrtc_build_number"
+                          name="mobile_rtc_build_number"
                           label={(
                             <span>
-                              NNRtc 发布来源（
+                              MobileRTC 发布来源（
                               <a
-                                href={getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig)}
+                                href={getMobileRTCJenkinsJobUrl(mobileRtcJenkinsConfig)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                               >
@@ -1844,7 +1844,7 @@ export default function PodsPage() {
                             </span>
                           )}
                           rules={[{ required: true, message: '请选择 Jenkins 构建号' }]}
-                          extra={showNNRtcLatestHint ? (
+                          extra={showMobileRTCLatestHint ? (
                             <Alert
                               type="info"
                               showIcon
@@ -1855,23 +1855,23 @@ export default function PodsPage() {
                         >
                           <Select
                             showSearch
-                            loading={nnrtcBuildLoading}
+                            loading={mobileRtcBuildLoading}
                             placeholder="选择构建号"
-                            notFoundContent={nnrtcBuildLoading ? '加载中...' : nnrtcPublishBuildNotFoundText}
+                            notFoundContent={mobileRtcBuildLoading ? '加载中...' : mobileRtcPublishBuildNotFoundText}
                             optionFilterProp="label"
-                            options={nnrtcPublishBuilds.map((build) => ({
+                            options={mobileRtcPublishBuilds.map((build) => ({
                               value: String(build.number),
-                              label: formatNNRtcBuildLabel(build),
+                              label: formatMobileRTCBuildLabel(build),
                             }))}
                             onDropdownVisibleChange={(open) => {
-                              if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                              if (open && mobileRtcBuilds.length === 0) loadMobileRTCBuilds();
                             }}
                           />
                         </Form.Item>
                         <Form.Item name="version" label="版本号" rules={[{ required: true, message: '请输入版本号' }]}>
                           <Input
                             readOnly
-                            placeholder={nnrtcPackageType === 'release' ? '按 release_x.x.x 构建分支自动获取' : '按当前正式包最高版本自动生成'}
+                            placeholder={mobileRtcPackageType === 'release' ? '按 release_x.x.x 构建分支自动获取' : '按当前正式包最高版本自动生成'}
                           />
                         </Form.Item>
                       </>
@@ -1880,23 +1880,23 @@ export default function PodsPage() {
                       <Form.Item
                         name="target_branch"
                         label="同步到发布主仓库分支（可选）"
-                        extra={publishTriggerNniosBuild ? '发布主仓库构建任务时需要选择分支' : undefined}
+                        extra={publishTriggerMainAppBuild ? '发布主仓库构建任务时需要选择分支' : undefined}
                       >
                         <Select
                           allowClear
                           showSearch
-                          loading={nniosBranchLoading}
+                          loading={mainAppBranchLoading}
                           placeholder="不选择则仅发布组件"
-                          options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                          options={mainAppBranches.map((branch) => ({ value: branch, label: branch }))}
                           onDropdownVisibleChange={(open) => {
-                            if (open && nniosBranches.length === 0) loadNniosBranches();
+                            if (open && mainAppBranches.length === 0) loadMainAppBranches();
                           }}
                         />
                       </Form.Item>
                     )}
-                    {showPublishNniosBuildTask && (
+                    {showPublishMainAppBuildTask && (
                       <Form.Item
-                        name="trigger_nnios_build"
+                        name="trigger_main_app_build"
                         valuePropName="checked"
                         initialValue={false}
                         style={{ marginBottom: 16 }}
@@ -1938,7 +1938,7 @@ export default function PodsPage() {
               children: (
                 <div style={{ marginTop: 8 }}>
                   <div style={{ marginBottom: 16 }}>
-                    <Text type="secondary">从官方 CocoaPods 下载 SDK，自动上传到内部 Nexus 并同步 podspec 到 NNSpec</Text>
+                    <Text type="secondary">从官方 CocoaPods 下载 SDK，自动上传到内部 Nexus 并同步 podspec 到 MobileSpec</Text>
                   </div>
                   <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
                     <Input
@@ -2132,18 +2132,18 @@ export default function PodsPage() {
                       </div>
                       <Select
                         showSearch
-                        loading={nniosBranchLoading}
+                        loading={mainAppBranchLoading}
                         value={officialTargetBranch}
                         style={{ width: '100%' }}
                         placeholder="选择发布主仓库分支"
                         allowClear
-                        options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                        options={mainAppBranches.map((branch) => ({ value: branch, label: branch }))}
                         onChange={(branch) => {
                           setOfficialTargetBranch(branch);
-                          if (!branch) setOfficialTriggerNniosBuild(false);
+                          if (!branch) setOfficialTriggerMainAppBuild(false);
                         }}
                         onDropdownVisibleChange={(open) => {
-                          if (open && nniosBranches.length === 0) loadNniosBranches();
+                          if (open && mainAppBranches.length === 0) loadMainAppBranches();
                         }}
                       />
                     </div>
@@ -2151,9 +2151,9 @@ export default function PodsPage() {
                   {officialVersions.length > 0 && (
                     <div style={{ marginBottom: 16 }}>
                       <Checkbox
-                        checked={officialTriggerNniosBuild}
+                        checked={officialTriggerMainAppBuild}
                         disabled={!officialTargetBranch}
-                        onChange={(e) => setOfficialTriggerNniosBuild(e.target.checked)}
+                        onChange={(e) => setOfficialTriggerMainAppBuild(e.target.checked)}
                       >
                         是否发布主仓库构建任务
                       </Checkbox>
@@ -2214,39 +2214,39 @@ export default function PodsPage() {
       </Modal>
 
       <Modal
-        title={nnrtcTask?.type === 'replace' ? 'NNRtc 构建替换进度' : 'NNRtc 发布进度'}
-        open={nnrtcTaskModalOpen}
-        onCancel={() => setNnrtcTaskModalOpen(false)}
+        title={mobileRtcTask?.type === 'replace' ? 'MobileRTC 构建替换进度' : 'MobileRTC 发布进度'}
+        open={mobileRtcTaskModalOpen}
+        onCancel={() => setMobileRtcTaskModalOpen(false)}
         footer={
-          nnrtcTask && ['success', 'failed'].includes(nnrtcTask.status)
-            ? [<Button key="close" type="primary" onClick={() => setNnrtcTaskModalOpen(false)}>关闭</Button>]
+          mobileRtcTask && ['success', 'failed'].includes(mobileRtcTask.status)
+            ? [<Button key="close" type="primary" onClick={() => setMobileRtcTaskModalOpen(false)}>关闭</Button>]
             : null
         }
-        closable={!nnrtcTask || ['success', 'failed'].includes(nnrtcTask.status)}
+        closable={!mobileRtcTask || ['success', 'failed'].includes(mobileRtcTask.status)}
         maskClosable={false}
         width={520}
       >
         <div>
           <Progress
-            percent={Math.min(100, Math.max(0, nnrtcTask?.progress || 0))}
-            status={nnrtcTask?.status === 'failed' ? 'exception' : nnrtcTask?.status === 'success' ? 'success' : 'active'}
+            percent={Math.min(100, Math.max(0, mobileRtcTask?.progress || 0))}
+            status={mobileRtcTask?.status === 'failed' ? 'exception' : mobileRtcTask?.status === 'success' ? 'success' : 'active'}
           />
           <div style={{ marginTop: 12 }}>
-            <Text strong>{nnrtcTask?.message || '等待开始'}</Text>
+            <Text strong>{mobileRtcTask?.message || '等待开始'}</Text>
           </div>
-          {nnrtcTask?.warning && (
+          {mobileRtcTask?.warning && (
             <div style={{ marginTop: 8 }}>
-              <Text type="warning">{nnrtcTask.warning}</Text>
+              <Text type="warning">{mobileRtcTask.warning}</Text>
             </div>
           )}
-          {nnrtcTask?.error && (
+          {mobileRtcTask?.error && (
             <div style={{ marginTop: 8 }}>
-              <Text type="danger">{nnrtcTask.error}</Text>
+              <Text type="danger">{mobileRtcTask.error}</Text>
             </div>
           )}
-          {nnrtcTask?.logs && nnrtcTask.logs.length > 0 && (
+          {mobileRtcTask?.logs && mobileRtcTask.logs.length > 0 && (
             <div style={{ marginTop: 12, background: '#f5f5f5', padding: 12, borderRadius: 6, maxHeight: 180, overflow: 'auto' }}>
-              {nnrtcTask.logs.map((line, index) => (
+              {mobileRtcTask.logs.map((line, index) => (
                 <div key={`${line}-${index}`} style={{ fontSize: 12, lineHeight: 1.7 }}>
                   {line}
                 </div>
@@ -2270,30 +2270,30 @@ export default function PodsPage() {
               <Descriptions.Item label="版本号">
                 <Tag color="blue">{selectedComponent.version}</Tag>
               </Descriptions.Item>
-              {selectedComponent.name === 'NNRtc' && (
+              {selectedComponent.name === 'MobileRTC' && (
                 <Descriptions.Item label="包类型">
-                  <Tag color={selectedNNRtcPackageType === 'test' ? 'orange' : 'green'}>
-                    {selectedNNRtcPackageType === 'test' ? '测试包' : '正式包'}
+                  <Tag color={selectedMobileRTCPackageType === 'test' ? 'orange' : 'green'}>
+                    {selectedMobileRTCPackageType === 'test' ? '测试包' : '正式包'}
                   </Tag>
                 </Descriptions.Item>
               )}
-              {selectedComponent.name === 'NNRtc' && (
+              {selectedComponent.name === 'MobileRTC' && (
                 <Descriptions.Item label="构建ID">
                   {selectedComponent.build_id ? (
                     <a
-                      href={buildNNRtcJenkinsBuildUrl(getNNRtcJenkinsJobUrl(nnrtcJenkinsConfig), selectedComponent.build_id)}
+                      href={buildMobileRTCJenkinsBuildUrl(getMobileRTCJenkinsJobUrl(mobileRtcJenkinsConfig), selectedComponent.build_id)}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      <Text code>#{normalizeNNRtcBuildId(selectedComponent.build_id)}</Text>
+                      <Text code>#{normalizeMobileRTCBuildId(selectedComponent.build_id)}</Text>
                     </a>
                   ) : <Text type="secondary">-</Text>}
                 </Descriptions.Item>
               )}
-              {selectedComponent.name === 'NNRtc' && (
+              {selectedComponent.name === 'MobileRTC' && (
                 <Descriptions.Item label="发布主仓库集成分支">
-                  {selectedNNRtcPackageType === 'test'
-                    ? (selectedComponent.nnios_branch ? <Tag color="blue">{selectedComponent.nnios_branch}</Tag> : <Text type="secondary">未记录</Text>)
+                  {selectedMobileRTCPackageType === 'test'
+                    ? (selectedComponent.main_app_branch ? <Tag color="blue">{selectedComponent.main_app_branch}</Tag> : <Text type="secondary">未记录</Text>)
                     : <Text type="secondary">-</Text>}
                 </Descriptions.Item>
               )}
@@ -2305,11 +2305,11 @@ export default function PodsPage() {
                 </a>
               </Descriptions.Item>
               <Descriptions.Item label="Podspec 仓库">
-                <a href={`http://git.leigod.top/nn_ios/nnspec/tree/master/${selectedComponent.name}/${selectedComponent.version}`} target="_blank" rel="noopener noreferrer">
-                  nnspec/{selectedComponent.name}/{selectedComponent.version}
+                <a href={`https://github.com/example/mobile-specs/tree/main/${selectedComponent.name}/${selectedComponent.version}`} target="_blank" rel="noopener noreferrer">
+                  mobile-specs/{selectedComponent.name}/{selectedComponent.version}
                 </a>
               </Descriptions.Item>
-              {selectedComponent.homepage && !selectedComponent.homepage.includes('leigod') && (
+              {selectedComponent.homepage && !selectedComponent.homepage.includes('mobile') && (
                 <Descriptions.Item label="官方 CocoaPods">
                   <a href={`https://cocoapods.org/pods/${selectedComponent.name}`} target="_blank" rel="noopener noreferrer">
                     https://cocoapods.org/pods/{selectedComponent.name}
@@ -2326,14 +2326,14 @@ export default function PodsPage() {
 
             {canManagePods && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 8 }}>
-              {!library?.shared && selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+              {!library?.shared && selectedComponent.name === 'MobileRTC' && selectedMobileRTCPackageType === 'test' ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <Text strong style={{ whiteSpace: 'nowrap' }}>同步到发布主仓库分支</Text>
-                  <Tag color="blue" style={{ marginInlineEnd: 0 }}>{selectedComponent.nnios_branch || detailTargetBranch || '未记录'}</Tag>
+                  <Tag color="blue" style={{ marginInlineEnd: 0 }}>{selectedComponent.main_app_branch || detailTargetBranch || '未记录'}</Tag>
                   <Button
                     size="small"
                     icon={<SyncOutlined />}
-                    disabled={!selectedComponent.nnios_branch && !detailTargetBranch}
+                    disabled={!selectedComponent.main_app_branch && !detailTargetBranch}
                     onClick={() => handleSyncIntegratedBranch(selectedComponent)}
                   >
                     同步
@@ -2344,14 +2344,14 @@ export default function PodsPage() {
                   <Text strong style={{ whiteSpace: 'nowrap' }}>同步到发布主仓库分支</Text>
                   <Select
                     showSearch
-                    loading={nniosBranchLoading}
+                    loading={mainAppBranchLoading}
                     value={detailTargetBranch}
                     style={{ flex: 1 }}
                     placeholder="选择发布主仓库分支"
-                    options={nniosBranches.map((branch) => ({ value: branch, label: branch }))}
+                    options={mainAppBranches.map((branch) => ({ value: branch, label: branch }))}
                     onChange={setDetailTargetBranch}
                     onDropdownVisibleChange={(open) => {
-                      if (open && nniosBranches.length === 0) loadNniosBranches();
+                      if (open && mainAppBranches.length === 0) loadMainAppBranches();
                     }}
                   />
                 </div>
@@ -2359,11 +2359,11 @@ export default function PodsPage() {
             </Card>
             )}
 
-            {canManagePods && !selectedIsOfficial && selectedComponent && supportsNniosBuildTask(selectedComponent.name) && (
+            {canManagePods && !selectedIsOfficial && selectedComponent && supportsMainAppBuildTask(selectedComponent.name) && (
             <Card size="small" style={{ marginBottom: 16 }}>
               <Checkbox
-                checked={detailTriggerNniosBuild}
-                onChange={(e) => setDetailTriggerNniosBuild(e.target.checked)}
+                checked={detailTriggerMainAppBuild}
+                onChange={(e) => setDetailTriggerMainAppBuild(e.target.checked)}
               >
                 是否发布主仓库构建任务
               </Checkbox>
@@ -2372,24 +2372,24 @@ export default function PodsPage() {
 
             {canManagePods && !library?.shared && !selectedIsOfficial && (
             <Card size="small" style={{ marginBottom: 16 }}>
-              {isLeigodIMComponent(selectedComponent) ? (
+              {isMobileIMComponent(selectedComponent) ? (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <Text strong>替换二进制文件</Text>
                     <br />
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      从 smb://192.168.3.30/share/IMSDK/{selectedComponent.version} 对应版本包替换，自动更新 sha256 和 podspec
+                      从 smb://files.example.com/share/IMSDK/{selectedComponent.version} 对应版本包替换，自动更新 sha256 和 podspec
                     </Text>
                   </div>
                   <Button
                     icon={<SyncOutlined />}
                     loading={replacingZip}
-                    onClick={confirmReplaceLeigodIMFromIMSDK}
+                    onClick={confirmReplaceMobileIMFromIMSDK}
                   >
                     {replacingZip ? '替换中...' : 'IMSDK 替换'}
                   </Button>
                 </div>
-              ) : selectedComponent.name === 'NNRtc' && selectedNNRtcPackageType === 'test' ? (
+              ) : selectedComponent.name === 'MobileRTC' && selectedMobileRTCPackageType === 'test' ? (
                 <div style={{ display: 'grid', gridTemplateColumns: '96px minmax(0, 1fr)', rowGap: 8, columnGap: 12, alignItems: 'center' }}>
                   <Text strong style={{ whiteSpace: 'nowrap' }}>替换来源1：</Text>
                   <div>
@@ -2417,21 +2417,21 @@ export default function PodsPage() {
                     <Space.Compact style={{ width: '100%' }}>
                       <Select
                         showSearch
-                        loading={nnrtcBuildLoading}
+                        loading={mobileRtcBuildLoading}
                         value={detailJenkinsBuildNumber || undefined}
                         placeholder="选择构建号"
                         optionFilterProp="label"
                         style={{ flex: 1 }}
-                        options={detailNNRtcBuilds.map((build) => ({
+                        options={detailMobileRTCBuilds.map((build) => ({
                           value: String(build.number),
-                          label: formatNNRtcBuildLabel(build),
+                          label: formatMobileRTCBuildLabel(build),
                         }))}
                         onChange={setDetailJenkinsBuildNumber}
                         onDropdownVisibleChange={(open) => {
-                          if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                          if (open && mobileRtcBuilds.length === 0) loadMobileRTCBuilds();
                         }}
                       />
-                      <Button loading={replacingZip} disabled={detailNNRtcBuilds.length === 0} onClick={confirmReplaceNNRtcFromJenkins}>
+                      <Button loading={replacingZip} disabled={detailMobileRTCBuilds.length === 0} onClick={confirmReplaceMobileRTCFromJenkins}>
                         构建替换
                       </Button>
                     </Space.Compact>
@@ -2443,31 +2443,31 @@ export default function PodsPage() {
                   <Text strong>替换二进制文件</Text>
                   <br />
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {selectedComponent.name === 'NNRtc'
-                      ? '从 Jenkins 构建提取 NNRtc.framework 替换，并同步 NNRtc.dSYM'
+                    {selectedComponent.name === 'MobileRTC'
+                      ? '从 Jenkins 构建提取 MobileRTC.framework 替换，并同步 MobileRTC.dSYM'
                       : '上传新的 zip 文件替换 Nexus 上的二进制，自动更新 sha256 和 podspec'}
                   </Text>
                 </div>
-                {selectedComponent.name === 'NNRtc' ? (
+                {selectedComponent.name === 'MobileRTC' ? (
                   <div style={{ minWidth: 360 }}>
                     <Space.Compact style={{ width: '100%' }}>
                       <Select
                         showSearch
-                        loading={nnrtcBuildLoading}
+                        loading={mobileRtcBuildLoading}
                         value={detailJenkinsBuildNumber || undefined}
                         placeholder="选择构建号"
                         optionFilterProp="label"
                         style={{ flex: 1 }}
-                        options={detailNNRtcBuilds.map((build) => ({
+                        options={detailMobileRTCBuilds.map((build) => ({
                           value: String(build.number),
-                          label: formatNNRtcBuildLabel(build),
+                          label: formatMobileRTCBuildLabel(build),
                         }))}
                         onChange={setDetailJenkinsBuildNumber}
                         onDropdownVisibleChange={(open) => {
-                          if (open && nnrtcBuilds.length === 0) loadNNRtcBuilds();
+                          if (open && mobileRtcBuilds.length === 0) loadMobileRTCBuilds();
                         }}
                       />
-                      <Button loading={replacingZip} disabled={detailNNRtcBuilds.length === 0} onClick={confirmReplaceNNRtcFromJenkins}>
+                      <Button loading={replacingZip} disabled={detailMobileRTCBuilds.length === 0} onClick={confirmReplaceMobileRTCFromJenkins}>
                         构建替换
                       </Button>
                     </Space.Compact>
@@ -2502,7 +2502,7 @@ export default function PodsPage() {
                 <div>
                   <Text strong>同步 Spec 仓库</Text>
                   <br />
-                  <Text type="secondary" style={{ fontSize: 12 }}>将当前 podspec 重新推送到 NNSpec 仓库</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>将当前 podspec 重新推送到 MobileSpec 仓库</Text>
                 </div>
                 <Popconfirm
                   title="确认重试同步？"

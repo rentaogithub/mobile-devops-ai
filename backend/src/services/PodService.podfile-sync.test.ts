@@ -23,7 +23,7 @@ describe('PodService Podfile sync helpers', () => {
     const original = [
       "target 'App' do",
       '  # 内部组件',
-      "  pod 'NNRtc', '3.0.0'",
+      "  pod 'MobileRTC', '3.0.0'",
       '  # 外部组件',
       "  pod 'ActiveLabel', '1.0.0'",
       "  pod 'Alamofire', '5.12.0'",
@@ -90,7 +90,7 @@ describe('PodService Podfile sync helpers', () => {
   });
 
   it('skips delete-time podx cache cleanup when no Podfile is available', () => {
-    expect(() => service.cleanPodxCache('NNRtc', 'delete')).not.toThrow();
+    expect(() => service.cleanPodxCache('MobileRTC', 'delete')).not.toThrow();
   });
 
   it('compacts podx command errors before surfacing them', () => {

@@ -43,6 +43,8 @@ npm run dev
 
 默认前端 [localhost:5173](http://localhost:5173)，后端 [localhost:3000](http://localhost:3000)；实际后端端口以 `PORT` 为准。日常后台运行可使用 `./start-platform.sh start|status|restart|stop`。生产构建及反向代理要求统一见部署指南。
 
+仓库不包含任何组织专属标识、内网地址或生产凭据。Jenkins、Sentry、Git、Nexus、App Store Connect 等外部集成均需通过 `backend/.env` 或产品线管理页面显式配置；示例值仅用于说明配置格式。
+
 ## 文档入口
 
 - [文档索引](docs/文档索引.md)：文档与常用主题导航。

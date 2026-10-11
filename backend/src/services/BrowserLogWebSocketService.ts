@@ -119,7 +119,7 @@ class BrowserLogWebSocketService {
         timestamp: new Date().toISOString(),
       });
       this.broadcastToBrowsers(pairingId, { type: 'status', status: 'app_connected' });
-    this.appendLog(pairingId, '[NNRealtimeLog] app connected', 'business');
+    this.appendLog(pairingId, '[MobileRealtimeLog] app connected', 'business');
     }
 
     socket.on('data', (data) => this.handleFrame(client, data));
@@ -300,11 +300,11 @@ class BrowserLogWebSocketService {
   }
 
   private isIMLogLine(line: string): boolean {
-    return line.includes('[IMSDK]') || /\[nnimsdk-[^\]]+\]/.test(line);
+    return line.includes('[IMSDK]') || /\[imsdk-[^\]]+\]/.test(line);
   }
 
   private isRTCLogLine(line: string): boolean {
-    return line.includes('[RTCSDK]') || /\[nnrtc-[^\]]+\]/i.test(line);
+    return line.includes('[RTCSDK]') || /\[mobileRtc-[^\]]+\]/i.test(line);
   }
 
   private normalizeDisplayLine(line: string, channel: LogChannel): string {

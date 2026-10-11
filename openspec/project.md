@@ -1,8 +1,8 @@
-# nn-ios-platform OpenSpec Project
+# mobile-devops-ai OpenSpec Project
 
 ## Project Purpose
 
-`nn-ios-platform` 是本地部署的 iOS 移动研发与质量平台，覆盖真机控制、黑盒自动化录制与回放、Crash 符号化、质量任务、Jenkins 集成及相关运维能力。
+`mobile-devops-ai` 是本地部署的 iOS 移动研发与质量平台，覆盖真机控制、黑盒自动化录制与回放、Crash 符号化、质量任务、Jenkins 集成及相关运维能力。
 
 本 OpenSpec 目录用于管理具有跨前后端接口、持久化模型或执行语义影响的产品变更。
 

@@ -34,7 +34,7 @@ interface ParsedLogLine {
   content: string;
 }
 
-const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
+const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.example.com').replace(/\/+$/, '');
 const MAX_ARCHIVE_BYTES = Number(process.env.ASSISTANT_LOG_MAX_ARCHIVE_BYTES || 50 * 1024 * 1024);
 const execFileAsync = promisify(execFile);
 
@@ -107,7 +107,7 @@ function isBusinessLogFile(entryName: string) {
   const filename = path.basename(entryName);
   return (
     /^logs.*\.log$/i.test(filename) ||
-    /^app_nn_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
+    /^app_mobile_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
     /(?:^|[_-])\d{8}[_-]\d{6}(?:[_-]\d+)?\.log$/i.test(filename)
   );
 }
@@ -124,7 +124,7 @@ export class OperationalLogService {
     const cookie = buildOpCookieHeader();
     return {
       Accept: 'application/json',
-      'User-Agent': 'nn-ios-platform-assistant/1.0',
+      'User-Agent': 'mobile-devops-ai-assistant/1.0',
       ...(token ? { 'x-access-token': token } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
     };

@@ -73,7 +73,7 @@ verify_docker() {
   log "验证 Docker..."
   docker version
   docker compose version
-  docker run --rm hello-world >/tmp/nn-ios-platform-docker-hello.log
+  docker run --rm hello-world >/tmp/mobile-devops-ai-docker-hello.log
   log "Docker 验证通过"
 }
 

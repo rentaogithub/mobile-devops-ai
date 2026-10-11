@@ -12,7 +12,7 @@ import { isComponentDSYM, isMainAppDSYM } from '../utils/dsym';
 
 const { Title, Paragraph, Text } = Typography;
 
-type ProductLineSecretKey = 'JENKINS_TOKEN' | 'PGYER_API_KEY' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'WECHAT_WEBHOOK_URL' | 'PODS_NEXUS_PASSWORD' | 'GIT_PASSWORD' | 'NNRTC_JENKINS_TOKEN' | 'WECHAT_WORK_SECRET' | 'SENTRY_LOGIN_PASSWORD';
+type ProductLineSecretKey = 'JENKINS_TOKEN' | 'PGYER_API_KEY' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'WECHAT_WEBHOOK_URL' | 'PODS_NEXUS_PASSWORD' | 'GIT_PASSWORD' | 'MOBILE_RTC_JENKINS_TOKEN' | 'WECHAT_WORK_SECRET' | 'SENTRY_LOGIN_PASSWORD';
 type ProductLineTextConfigKey = Exclude<keyof ProductLineServiceConfig, `${string}Configured` | ProductLineSecretKey>;
 type ProductLineEditorMode = 'create' | 'edit';
 type AppStoreFieldHelp = 'issuerId' | 'appId';
@@ -21,9 +21,9 @@ const emptyProductLineServices = (): ProductLineServiceConfig => ({
   JENKINS_USER: '',
   JENKINS_TOKEN: '',
   JENKINS_TOKENConfigured: false,
-  JENKINS_NN_JOB: '',
-  JENKINS_NN_QA_JOB: '',
-  JENKINS_NN_REPO_URL: '',
+  JENKINS_JOB: '',
+  JENKINS_QUALITY_JOB: '',
+  JENKINS_REPO_URL: '',
   PODX_TARGET_NAME: '',
   PODX_PRIVATE_SOURCE: '',
   PODX_GIT_BASE_URL: '',
@@ -36,10 +36,10 @@ const emptyProductLineServices = (): ProductLineServiceConfig => ({
   PODS_NEXUS_PASSWORDConfigured: false,
   GIT_USERNAME: '',
   GIT_PASSWORDConfigured: false,
-  NNRTC_JENKINS_BASE_URL: '',
-  NNRTC_JENKINS_JOB: '',
-  NNRTC_JENKINS_USER: '',
-  NNRTC_JENKINS_TOKENConfigured: false,
+  MOBILE_RTC_JENKINS_BASE_URL: '',
+  MOBILE_RTC_JENKINS_JOB: '',
+  MOBILE_RTC_JENKINS_USER: '',
+  MOBILE_RTC_JENKINS_TOKENConfigured: false,
   SENTRY_PROXY_TARGET: '',
   SENTRY_ORG: '',
   SENTRY_PROJECT: '',
@@ -72,7 +72,7 @@ const emptyProductLineSecrets = (): Record<ProductLineSecretKey, string> => ({
   WECHAT_WEBHOOK_URL: '',
   PODS_NEXUS_PASSWORD: '',
   GIT_PASSWORD: '',
-  NNRTC_JENKINS_TOKEN: '',
+  MOBILE_RTC_JENKINS_TOKEN: '',
   WECHAT_WORK_SECRET: '',
   SENTRY_LOGIN_PASSWORD: '',
 });
@@ -84,7 +84,7 @@ const emptySecretChanges = (): Record<ProductLineSecretKey, boolean> => ({
   WECHAT_WEBHOOK_URL: false,
   PODS_NEXUS_PASSWORD: false,
   GIT_PASSWORD: false,
-  NNRTC_JENKINS_TOKEN: false,
+  MOBILE_RTC_JENKINS_TOKEN: false,
   WECHAT_WORK_SECRET: false,
   SENTRY_LOGIN_PASSWORD: false,
 });
@@ -113,21 +113,21 @@ const normalizeProductLineServices = (
   services?: Partial<ProductLineServiceConfig>
 ): ProductLineServiceConfig => {
   const normalized = { ...emptyProductLineServices(), ...(services || {}) };
-  const isNnProductLine = productLine.id === 'nn' || productLine.key === 'nn';
+  const isDefaultProductLine = productLine.id === 'default' || productLine.key === 'default';
 
-  if (isNnProductLine) {
-    normalized.PODX_PRIVATE_SOURCE ||= 'http://git.leigod.top/nn_ios/nnspec.git';
-    normalized.PODX_PUBLISH_MAIN_REPO ||= 'nnios';
+  if (isDefaultProductLine) {
+    normalized.PODX_PRIVATE_SOURCE ||= 'https://github.com/example/mobile-specs.git';
+    normalized.PODX_PUBLISH_MAIN_REPO ||= 'mobile-app';
   }
 
-  normalized.JENKINS_NN_REPO_URL ||= siblingRepositoryUrl(
+  normalized.JENKINS_REPO_URL ||= siblingRepositoryUrl(
     normalized.PODX_PRIVATE_SOURCE,
     normalized.PODX_PUBLISH_MAIN_REPO
   );
-  if (isNnProductLine) {
-    normalized.JENKINS_NN_REPO_URL ||= 'http://git.leigod.top/nn_ios/nnios.git';
+  if (isDefaultProductLine) {
+    normalized.JENKINS_REPO_URL ||= 'https://github.com/example/mobile-app.git';
   }
-  normalized.PODX_PUBLISH_MAIN_REPO ||= repositoryNameFromValue(normalized.JENKINS_NN_REPO_URL);
+  normalized.PODX_PUBLISH_MAIN_REPO ||= repositoryNameFromValue(normalized.JENKINS_REPO_URL);
   normalized.PODX_PUBLISH_BASE_BRANCH ||= 'develop';
 
   return normalized;
@@ -199,7 +199,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     password: '',
     role: 'guest' as PlatformRole,
     active: true,
-    productLines: [{ productLineId: 'nn', role: 'guest' as PlatformRole, appStoreRelease: false }],
+    productLines: [{ productLineId: 'default', role: 'guest' as PlatformRole, appStoreRelease: false }],
   });
   const [platformConfig, setPlatformConfig] = useState<PlatformConfigStatus | null>(null);
   const [platformConfigLoading, setPlatformConfigLoading] = useState(false);
@@ -346,7 +346,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const openCreateUserModal = () => {
     setEditingUser(null);
-    setUserForm({ username: '', password: '', role: 'guest', active: true, productLines: [{ productLineId: 'nn', role: 'guest', appStoreRelease: false }] });
+    setUserForm({ username: '', password: '', role: 'guest', active: true, productLines: [{ productLineId: 'default', role: 'guest', appStoreRelease: false }] });
     setUserModalOpen(true);
   };
 
@@ -467,8 +467,8 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const updateManagedComponentRepositories = (repositories: ProductLineComponentRepository[]) => {
     const mainRepositoryUrl = editingProductLine
-      ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_NN_REPO_URL
-      : productLineServices.JENKINS_NN_REPO_URL;
+      ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_REPO_URL
+      : productLineServices.JENKINS_REPO_URL;
     const normalized = normalizeComponentRepositories(
       repositories,
       mainRepositoryUrl
@@ -640,11 +640,11 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
 
   const productLineServicePayload = (): ProductLineServiceUpdate => ({
     JENKINS_USER: productLineServices.JENKINS_USER,
-    JENKINS_NN_JOB: productLineServices.JENKINS_NN_JOB,
-    JENKINS_NN_QA_JOB: productLineServices.JENKINS_NN_QA_JOB,
-    JENKINS_NN_REPO_URL: editingProductLine
-      ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_NN_REPO_URL
-      : productLineServices.JENKINS_NN_REPO_URL,
+    JENKINS_JOB: productLineServices.JENKINS_JOB,
+    JENKINS_QUALITY_JOB: productLineServices.JENKINS_QUALITY_JOB,
+    JENKINS_REPO_URL: editingProductLine
+      ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_REPO_URL
+      : productLineServices.JENKINS_REPO_URL,
     PODX_TARGET_NAME: productLineServices.PODX_TARGET_NAME,
     PODX_PRIVATE_SOURCE: productLineServices.PODX_PRIVATE_SOURCE,
     PODX_GIT_BASE_URL: productLineServices.PODX_GIT_BASE_URL,
@@ -657,9 +657,9 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
     PODS_NEXUS_BASE_URL: productLineServices.PODS_NEXUS_BASE_URL,
     PODS_NEXUS_USER: productLineServices.PODS_NEXUS_USER,
     GIT_USERNAME: productLineServices.GIT_USERNAME,
-    NNRTC_JENKINS_BASE_URL: productLineServices.NNRTC_JENKINS_BASE_URL,
-    NNRTC_JENKINS_JOB: productLineServices.NNRTC_JENKINS_JOB,
-    NNRTC_JENKINS_USER: productLineServices.NNRTC_JENKINS_USER,
+    MOBILE_RTC_JENKINS_BASE_URL: productLineServices.MOBILE_RTC_JENKINS_BASE_URL,
+    MOBILE_RTC_JENKINS_JOB: productLineServices.MOBILE_RTC_JENKINS_JOB,
+    MOBILE_RTC_JENKINS_USER: productLineServices.MOBILE_RTC_JENKINS_USER,
     SENTRY_PROXY_TARGET: productLineServices.SENTRY_PROXY_TARGET,
     SENTRY_ORG: productLineServices.SENTRY_ORG,
     SENTRY_PROJECT: productLineServices.SENTRY_PROJECT,
@@ -892,7 +892,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                               style={{ marginTop: 6 }}
                               value={productLineForm.key}
                               onChange={(event) => setProductLineForm((current) => ({ ...current, key: event.target.value.trim() }))}
-                              placeholder="如：nn、nnrtc"
+                              placeholder="如：default、mobileRtc"
                             />
                           </div>
                         )}
@@ -902,7 +902,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                             style={{ marginTop: 6 }}
                             value={productLineForm.name}
                             onChange={(event) => setProductLineForm((current) => ({ ...current, name: event.target.value }))}
-                            placeholder="如：雷神加速器"
+                            placeholder="如：示例移动应用"
                           />
                         </div>
                         <div>
@@ -911,7 +911,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                             style={{ marginTop: 6 }}
                             value={productLineForm.projectId}
                             onChange={(event) => setProductLineForm((current) => ({ ...current, projectId: event.target.value.trim() }))}
-                            placeholder="如：nn-ios、nnrtc-ios"
+                            placeholder="如：mobile-ios、mobileRtc-ios"
                           />
                         </div>
                         <div>
@@ -950,9 +950,9 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           />
                         </div>
                         <div><Text strong>Jenkins 用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_USER} onChange={(event) => updateProductLineService('JENKINS_USER', event.target.value)} placeholder="用于调用 Jenkins API" /></div>
-                        <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
-                        <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_NN_QA_JOB} onChange={(event) => updateProductLineService('JENKINS_NN_QA_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
-                        <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={editingProductLine ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_NN_REPO_URL : productLineServices.JENKINS_NN_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
+                        <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_JOB} onChange={(event) => updateProductLineService('JENKINS_JOB', event.target.value)} placeholder="如：app-ios-build，也支持 folder/job" /></div>
+                        <div><Text strong>自动质检 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.JENKINS_QUALITY_JOB} onChange={(event) => updateProductLineService('JENKINS_QUALITY_JOB', event.target.value)} placeholder="如：app-ios-quality" /></div>
+                        <div><Text strong>iOS Git 仓库地址</Text><Input style={{ marginTop: 6 }} value={editingProductLine ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_REPO_URL : productLineServices.JENKINS_REPO_URL} onChange={(event) => updateProductLineService('JENKINS_REPO_URL', event.target.value)} placeholder="如：https://git.example.com/mobile/app-ios.git" /></div>
                       </div>
                       {productLineServices.JENKINS_USER === 'anonymous' && !productLineServices.JENKINS_TOKENConfigured ? (
                         <div>
@@ -967,15 +967,15 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                           />
                         </div>
                       ) : renderServiceSecret('JENKINS_TOKEN', 'Jenkins API Token', productLineServices.JENKINS_TOKENConfigured, '输入 API Token')}
-                      <Card size="small" title="NNRtc 组件构建（可选）">
+                      <Card size="small" title="MobileRTC 组件构建（可选）">
                         <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                          <Text type="secondary">仅当前产品线需要独立构建 NNRtc 组件时配置；未配置时不会回退到其他产品线账号。</Text>
+                          <Text type="secondary">仅当前产品线需要独立构建 MobileRTC 组件时配置；未配置时不会回退到其他产品线账号。</Text>
                           <div style={productLineFormGridStyle}>
-                            <div><Text strong>服务地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.NNRTC_JENKINS_BASE_URL} onChange={(event) => updateProductLineService('NNRTC_JENKINS_BASE_URL', event.target.value)} placeholder="如：https://jenkins.example.com:8080" /></div>
-                            <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.NNRTC_JENKINS_JOB} onChange={(event) => updateProductLineService('NNRTC_JENKINS_JOB', event.target.value)} placeholder="如：nnrtc-ios-build" /></div>
-                            <div><Text strong>用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.NNRTC_JENKINS_USER} onChange={(event) => updateProductLineService('NNRTC_JENKINS_USER', event.target.value)} placeholder="用于调用组件 Jenkins API" /></div>
+                            <div><Text strong>服务地址</Text><Input style={{ marginTop: 6 }} value={productLineServices.MOBILE_RTC_JENKINS_BASE_URL} onChange={(event) => updateProductLineService('MOBILE_RTC_JENKINS_BASE_URL', event.target.value)} placeholder="如：https://jenkins.example.com:8080" /></div>
+                            <div><Text strong>构建 Job</Text><Input style={{ marginTop: 6 }} value={productLineServices.MOBILE_RTC_JENKINS_JOB} onChange={(event) => updateProductLineService('MOBILE_RTC_JENKINS_JOB', event.target.value)} placeholder="如：mobile-rtc-ios-build" /></div>
+                            <div><Text strong>用户名</Text><Input style={{ marginTop: 6 }} value={productLineServices.MOBILE_RTC_JENKINS_USER} onChange={(event) => updateProductLineService('MOBILE_RTC_JENKINS_USER', event.target.value)} placeholder="用于调用组件 Jenkins API" /></div>
                           </div>
-                          {renderServiceSecret('NNRTC_JENKINS_TOKEN', 'NNRtc Jenkins API Token', productLineServices.NNRTC_JENKINS_TOKENConfigured, '输入组件 Jenkins API Token')}
+                          {renderServiceSecret('MOBILE_RTC_JENKINS_TOKEN', 'MobileRTC Jenkins API Token', productLineServices.MOBILE_RTC_JENKINS_TOKENConfigured, '输入组件 Jenkins API Token')}
                         </Space>
                       </Card>
                       {renderTabActions(' Jenkins')}
@@ -999,7 +999,7 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                             用于 podx install、podx update、podx main、podx doctor 和本地组件切换；仓库命名空间与 Git 基础地址会自动推导。
                           </Text>
                           <div style={productLineFormGridStyle}>
-                            {renderServiceInput('PODX_PRIVATE_SOURCE', '私有 Specs 源', '如：https://git.example.com/nnrtc_ios/nnspec.git')}
+                            {renderServiceInput('PODX_PRIVATE_SOURCE', '私有 Specs 源', '如：https://git.example.com/mobile-rtc_ios/mobile-specs.git')}
                           </div>
                         </Space>
                       </Card>
@@ -1014,9 +1014,9 @@ export default function ManagePage({ roleManagementOnly = false }: { roleManagem
                               <Input
                                 style={{ marginTop: 6 }}
                                 value={editingProductLine
-                                  ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_NN_REPO_URL
-                                  : productLineServices.JENKINS_NN_REPO_URL}
-                                onChange={(event) => updateProductLineService('JENKINS_NN_REPO_URL', event.target.value)}
+                                  ? normalizeProductLineServices(editingProductLine, productLineServices).JENKINS_REPO_URL
+                                  : productLineServices.JENKINS_REPO_URL}
+                                onChange={(event) => updateProductLineService('JENKINS_REPO_URL', event.target.value)}
                                 placeholder="如：https://git.example.com/mobile/app-ios.git"
                               />
                             </div>

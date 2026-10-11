@@ -78,9 +78,9 @@ function dateText(value?: string) {
 }
 
 export default function WorkflowPage() {
-  const [productId, setProductId] = useState(() => authUtils.getActiveProductLine()?.id || 'nn');
+  const [productId, setProductId] = useState(() => authUtils.getActiveProductLine()?.id || 'default');
   useEffect(() => {
-    const resetScope = () => setProductId(authUtils.getActiveProductLine()?.id || 'nn');
+    const resetScope = () => setProductId(authUtils.getActiveProductLine()?.id || 'default');
     window.addEventListener('product-line-changed', resetScope);
     return () => window.removeEventListener('product-line-changed', resetScope);
   }, []);

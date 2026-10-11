@@ -203,8 +203,8 @@ const replayActionSchemaProperties = {
 
 export const DEVICE_REPLAY_FLOW_JSON_SCHEMA = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
-  $id: 'https://nn-ios-platform.local/schemas/device-replay-flow-v1.json',
-  title: 'NN iOS Device Replay Flow DSL',
+  $id: 'https://mobile-devops-ai.local/schemas/device-replay-flow-v1.json',
+  title: 'Mobile DevOps AI iOS Device Replay Flow DSL',
   description: '纯黑盒 iOS 真机状态驱动回放流程协议',
   type: 'object',
   additionalProperties: false,

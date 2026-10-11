@@ -41,7 +41,7 @@ api.interceptors.request.use((config) => {
 });
 
 const FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS = ['10.0.0'];
-const fallbackExcludedSentryAppVersions = () => authUtils.getActiveProductLine()?.id === 'nn'
+const fallbackExcludedSentryAppVersions = () => authUtils.getActiveProductLine()?.id === 'default'
   ? FALLBACK_EXCLUDED_SENTRY_APP_VERSIONS
   : [];
 const fallbackSentryIssueQuery = () => {
@@ -51,7 +51,7 @@ const fallbackSentryIssueQuery = () => {
 let sentryGovernanceConfigCache: (CrashGovernanceConfig & { productLineId: string; loadedAt: number }) | null = null;
 export const BACKEND_UNAVAILABLE_CODE = 'BACKEND_UNAVAILABLE';
 export const BACKEND_UNAVAILABLE_MESSAGE = '平台后端服务不可达，请确认 3000 端口服务已启动';
-export const BACKEND_UNAVAILABLE_HINT = '可在 nn-ios-platform 目录执行 ./start-platform.sh，或查看 backend-dev.log。';
+export const BACKEND_UNAVAILABLE_HINT = '可在 mobile-devops-ai 目录执行 ./start-platform.sh，或查看 backend-dev.log。';
 
 export type PlatformRole = 'guest' | 'tester' | 'developer' | 'product' | 'admin';
 
@@ -110,9 +110,9 @@ export interface ProductLineServiceConfig {
   JENKINS_USER: string;
   JENKINS_TOKEN: string;
   JENKINS_TOKENConfigured: boolean;
-  JENKINS_NN_JOB: string;
-  JENKINS_NN_QA_JOB: string;
-  JENKINS_NN_REPO_URL: string;
+  JENKINS_JOB: string;
+  JENKINS_QUALITY_JOB: string;
+  JENKINS_REPO_URL: string;
   PODX_TARGET_NAME: string;
   PODX_PRIVATE_SOURCE: string;
   PODX_GIT_BASE_URL: string;
@@ -125,10 +125,10 @@ export interface ProductLineServiceConfig {
   PODS_NEXUS_PASSWORDConfigured: boolean;
   GIT_USERNAME: string;
   GIT_PASSWORDConfigured: boolean;
-  NNRTC_JENKINS_BASE_URL: string;
-  NNRTC_JENKINS_JOB: string;
-  NNRTC_JENKINS_USER: string;
-  NNRTC_JENKINS_TOKENConfigured: boolean;
+  MOBILE_RTC_JENKINS_BASE_URL: string;
+  MOBILE_RTC_JENKINS_JOB: string;
+  MOBILE_RTC_JENKINS_USER: string;
+  MOBILE_RTC_JENKINS_TOKENConfigured: boolean;
   SENTRY_PROXY_TARGET: string;
   SENTRY_ORG: string;
   SENTRY_PROJECT: string;
@@ -174,12 +174,12 @@ export interface ProductLineTestFlightGroup {
 }
 
 export type ProductLineServiceUpdate = Partial<Record<
-  | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_NN_JOB' | 'JENKINS_NN_QA_JOB' | 'JENKINS_NN_REPO_URL'
+  | 'JENKINS_USER' | 'JENKINS_TOKEN' | 'JENKINS_JOB' | 'JENKINS_QUALITY_JOB' | 'JENKINS_REPO_URL'
   | 'PODX_TARGET_NAME' | 'PODX_PRIVATE_SOURCE' | 'PODX_GIT_BASE_URL'
   | 'PODX_PUBLISH_REPOS' | 'PODX_PUBLISH_MAIN_REPO' | 'PODX_PUBLISH_WORK_DIR' | 'PODX_PUBLISH_BASE_BRANCH'
   | 'PODS_NEXUS_BASE_URL' | 'PODS_NEXUS_USER' | 'PODS_NEXUS_PASSWORD'
   | 'GIT_USERNAME' | 'GIT_PASSWORD'
-  | 'NNRTC_JENKINS_BASE_URL' | 'NNRTC_JENKINS_JOB' | 'NNRTC_JENKINS_USER' | 'NNRTC_JENKINS_TOKEN'
+  | 'MOBILE_RTC_JENKINS_BASE_URL' | 'MOBILE_RTC_JENKINS_JOB' | 'MOBILE_RTC_JENKINS_USER' | 'MOBILE_RTC_JENKINS_TOKEN'
   | 'SENTRY_PROXY_TARGET' | 'SENTRY_ORG' | 'SENTRY_PROJECT' | 'SENTRY_AUTO_LOGIN' | 'SENTRY_LOGIN_USERNAME' | 'SENTRY_LOGIN_PASSWORD'
   | 'PGYER_API_KEY' | 'PGYER_APP_KEY' | 'PGYER_SHORTCUT_URL'
   | 'APP_STORE_CONNECT_API_KEY_ID' | 'APP_STORE_CONNECT_API_ISSUER_ID' | 'APP_STORE_CONNECT_API_PRIVATE_KEY' | 'APP_STORE_CONNECT_APP_ID' | 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS'
@@ -509,7 +509,7 @@ export interface OpUserInfo {
   nickName?: string;
   telNum?: string;
   email?: string;
-  nnNumber?: string;
+  externalNumber?: string;
   userType_dictText?: string;
   status_dictText?: string;
   registerCanal?: string;
@@ -765,7 +765,7 @@ export const opUserApi = {
         searchkey,
         column: 'createTime',
         order: 'desc',
-        field: 'id,,action,userId,nickName,telNum,email,nnNumber,userType_dictText,status_dictText,registerCanal,updateBy,updaeTime,createTime',
+        field: 'id,,action,userId,nickName,telNum,email,externalNumber,userType_dictText,status_dictText,registerCanal,updateBy,updaeTime,createTime',
         pageNo,
         pageSize,
       },
@@ -973,7 +973,7 @@ export const feedbackLogApi = {
       timeout: 120000,
     });
     if (!response.data.data) {
-      throw new Error(response.data.error || '分析 NN 日志失败');
+      throw new Error(response.data.error || '分析 业务日志失败');
     }
     return response.data.data;
   },
@@ -1222,7 +1222,7 @@ function collectAppVersions(source: any): string[] {
 }
 
 async function getSentryGovernanceConfigForClient() {
-  const productLineId = authUtils.getActiveProductLine()?.id || 'nn';
+  const productLineId = authUtils.getActiveProductLine()?.id || 'default';
   if (sentryGovernanceConfigCache
     && sentryGovernanceConfigCache.productLineId === productLineId
     && Date.now() - sentryGovernanceConfigCache.loadedAt < 5 * 60 * 1000) {
@@ -1249,9 +1249,9 @@ async function getSentryGovernanceConfigForClient() {
   return {
     excludedVersions: fallbackExcludedSentryAppVersions(),
     defaultIssueQuery: fallbackSentryIssueQuery(),
-    sentryOrganization: productLineId === 'nn' ? 'sentry' : '',
-    sentryProject: productLineId === 'nn' ? 'nn-ios' : '',
-    sentryProxyPath: productLineId === 'nn' ? '/organizations/sentry/projects/nn-ios/' : '/',
+    sentryOrganization: productLineId === 'default' ? 'sentry' : '',
+    sentryProject: productLineId === 'default' ? 'mobile-ios' : '',
+    sentryProxyPath: productLineId === 'default' ? '/organizations/sentry/projects/mobile-ios/' : '/',
     productLineId,
     loadedAt: Date.now(),
   };
@@ -1436,7 +1436,7 @@ export const sentryAnalysisApi = {
         sentryOrganization: response.data.data.sentryOrganization || sentryGovernanceConfigCache?.sentryOrganization,
         sentryProject: response.data.data.sentryProject || sentryGovernanceConfigCache?.sentryProject,
         sentryProxyPath: response.data.data.sentryProxyPath || sentryGovernanceConfigCache?.sentryProxyPath,
-        productLineId: authUtils.getActiveProductLine()?.id || 'nn',
+        productLineId: authUtils.getActiveProductLine()?.id || 'default',
         loadedAt: Date.now(),
       };
     }
@@ -1820,13 +1820,13 @@ export const historyApi = {
 };
 
 export interface ExternalServicesConfig {
-  nnrtcJenkins: {
+  mobileRtcJenkins: {
     baseUrl: string;
     jobName: string;
     jobUrl: string;
   };
   dsymSources: {
-    nnRtcArchiveSmbUrl: string;
+    mobileRtcArchiveSmbUrl: string;
     screenShareUrl: string;
   };
 }
@@ -1900,10 +1900,10 @@ export interface PodComponent {
   warning_message?: string;
   package_type?: 'release' | 'test';
   build_id?: string;
-  nnios_branch?: string;
+  main_app_branch?: string;
 }
 
-export interface NNRtcJenkinsBuild {
+export interface MobileRTCJenkinsBuild {
   number: number;
   result: string;
   branchName: string;
@@ -1912,13 +1912,13 @@ export interface NNRtcJenkinsBuild {
   artifactPath: string;
 }
 
-export interface NNRtcJenkinsConfig {
+export interface MobileRTCJenkinsConfig {
   baseUrl: string;
   jobName: string;
   jobUrl: string;
 }
 
-export interface NNRtcPodTask {
+export interface MobileRTCPodTask {
   id: string;
   type: 'publish' | 'replace';
   status: 'pending' | 'running' | 'success' | 'failed';
@@ -1932,7 +1932,7 @@ export interface NNRtcPodTask {
   updatedAt: number;
 }
 
-export interface LeigodIMSDKVersion {
+export interface MobileIMSDKVersion {
   version: string;
   path: string;
   packageName?: string;
@@ -1979,8 +1979,8 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 从 NNRtc Jenkins 构建发布组件 */
-  publishNNRtcFromJenkins: async (params: {
+  /** 从 MobileRTC Jenkins 构建发布组件 */
+  publishMobileRTCFromJenkins: async (params: {
     build_number: string;
     version: string;
     target_branch?: string;
@@ -1988,58 +1988,58 @@ export const podsApi = {
     sys_frameworks?: string;
     sys_libraries?: string;
   }): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.post<ApiResponse<PodComponent>>('/pods/nnrtc/jenkins/publish', params, {
+    const response = await api.post<ApiResponse<PodComponent>>('/pods/mobile-rtc/jenkins/publish', params, {
       timeout: 600000,
     });
     return response.data;
   },
 
-  /** 创建 NNRtc Jenkins 发布任务 */
-  startNNRtcPublishTask: async (params: {
+  /** 创建 MobileRTC Jenkins 发布任务 */
+  startMobileRTCPublishTask: async (params: {
     build_number: string;
     version: string;
     target_branch?: string;
     package_type?: 'release' | 'test';
     sys_frameworks?: string;
     sys_libraries?: string;
-  }): Promise<ApiResponse<NNRtcPodTask>> => {
-    const response = await api.post<ApiResponse<NNRtcPodTask>>('/pods/nnrtc/jenkins/publish-task', params, {
+  }): Promise<ApiResponse<MobileRTCPodTask>> => {
+    const response = await api.post<ApiResponse<MobileRTCPodTask>>('/pods/mobile-rtc/jenkins/publish-task', params, {
       timeout: 60000,
     });
     return response.data;
   },
 
-  /** 获取 NNRtc Jenkins 构建列表 */
-  listNNRtcJenkinsBuilds: async (): Promise<ApiResponse<NNRtcJenkinsBuild[]>> => {
-    const response = await api.get<ApiResponse<NNRtcJenkinsBuild[]>>('/pods/nnrtc/jenkins/builds', {
+  /** 获取 MobileRTC Jenkins 构建列表 */
+  listMobileRTCJenkinsBuilds: async (): Promise<ApiResponse<MobileRTCJenkinsBuild[]>> => {
+    const response = await api.get<ApiResponse<MobileRTCJenkinsBuild[]>>('/pods/mobile-rtc/jenkins/builds', {
       params: { limit: 300 },
       timeout: 60000,
     });
     return response.data;
   },
 
-  /** 获取 NNRtc Jenkins 配置 */
-  getNNRtcJenkinsConfig: async (): Promise<ApiResponse<NNRtcJenkinsConfig>> => {
-    const response = await api.get<ApiResponse<NNRtcJenkinsConfig>>('/pods/nnrtc/jenkins/config');
+  /** 获取 MobileRTC Jenkins 配置 */
+  getMobileRTCJenkinsConfig: async (): Promise<ApiResponse<MobileRTCJenkinsConfig>> => {
+    const response = await api.get<ApiResponse<MobileRTCJenkinsConfig>>('/pods/mobile-rtc/jenkins/config');
     return response.data;
   },
 
-  /** 获取 IMSDK 共享目录中的 leigod_im_cross_sdk 版本列表 */
-  listLeigodIMSDKVersions: async (): Promise<ApiResponse<LeigodIMSDKVersion[]>> => {
-    const response = await api.get<ApiResponse<LeigodIMSDKVersion[]>>('/pods/leigod-im/imsdk/versions', {
+  /** 获取 IMSDK 共享目录中的 mobile_im_cross_sdk 版本列表 */
+  listMobileIMSDKVersions: async (): Promise<ApiResponse<MobileIMSDKVersion[]>> => {
+    const response = await api.get<ApiResponse<MobileIMSDKVersion[]>>('/pods/mobile-im/imsdk/versions', {
       timeout: 60000,
     });
     return response.data;
   },
 
-  /** 从 IMSDK 共享目录发布 leigod_im_cross_sdk */
-  publishLeigodIMFromIMSDK: async (params: {
+  /** 从 IMSDK 共享目录发布 mobile_im_cross_sdk */
+  publishMobileIMFromIMSDK: async (params: {
     version: string;
     target_branch?: string;
     sys_frameworks?: string;
     sys_libraries?: string;
   }): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.post<ApiResponse<PodComponent>>('/pods/leigod-im/imsdk/publish', params, {
+    const response = await api.post<ApiResponse<PodComponent>>('/pods/mobile-im/imsdk/publish', params, {
       timeout: 600000,
     });
     return response.data;
@@ -2075,7 +2075,7 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 同步当前组件版本到 nnios 指定分支 */
+  /** 同步当前组件版本到 mainApp 指定分支 */
   syncBranch: async (name: string, version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
     const response = await api.post<ApiResponse<PodComponent>>(`/pods/${name}/${version}/sync-branch`, { target_branch });
     return response.data;
@@ -2099,9 +2099,9 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 从 IMSDK 共享目录对应版本替换 leigod_im_cross_sdk */
-  replaceLeigodIMFromIMSDK: async (version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.post<ApiResponse<PodComponent>>(`/pods/leigod-im/${version}/imsdk/replace`, {
+  /** 从 IMSDK 共享目录对应版本替换 mobile_im_cross_sdk */
+  replaceMobileIMFromIMSDK: async (version: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/mobile-im/${version}/imsdk/replace`, {
       target_branch,
     }, {
       timeout: 600000,
@@ -2109,9 +2109,9 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 从 NNRtc Jenkins 构建替换已有版本 */
-  replaceNNRtcFromJenkins: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
-    const response = await api.post<ApiResponse<PodComponent>>(`/pods/nnrtc/${version}/jenkins/replace`, {
+  /** 从 MobileRTC Jenkins 构建替换已有版本 */
+  replaceMobileRTCFromJenkins: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<PodComponent>> => {
+    const response = await api.post<ApiResponse<PodComponent>>(`/pods/mobile-rtc/${version}/jenkins/replace`, {
       build_number,
       target_branch,
     }, {
@@ -2120,9 +2120,9 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 创建 NNRtc Jenkins 替换任务 */
-  startNNRtcReplaceTask: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<NNRtcPodTask>> => {
-    const response = await api.post<ApiResponse<NNRtcPodTask>>(`/pods/nnrtc/${version}/jenkins/replace-task`, {
+  /** 创建 MobileRTC Jenkins 替换任务 */
+  startMobileRTCReplaceTask: async (version: string, build_number: string, target_branch: string): Promise<ApiResponse<MobileRTCPodTask>> => {
+    const response = await api.post<ApiResponse<MobileRTCPodTask>>(`/pods/mobile-rtc/${version}/jenkins/replace-task`, {
       build_number,
       target_branch,
     }, {
@@ -2131,15 +2131,15 @@ export const podsApi = {
     return response.data;
   },
 
-  /** 查询 NNRtc 发布/替换任务 */
-  getNNRtcTask: async (taskId: string): Promise<ApiResponse<NNRtcPodTask>> => {
-    const response = await api.get<ApiResponse<NNRtcPodTask>>(`/pods/nnrtc/tasks/${taskId}`);
+  /** 查询 MobileRTC 发布/替换任务 */
+  getMobileRTCTask: async (taskId: string): Promise<ApiResponse<MobileRTCPodTask>> => {
+    const response = await api.get<ApiResponse<MobileRTCPodTask>>(`/pods/mobile-rtc/tasks/${taskId}`);
     return response.data;
   },
 
-  /** 查询最近 NNRtc 发布/替换任务 */
-  listNNRtcTasks: async (): Promise<ApiResponse<NNRtcPodTask[]>> => {
-    const response = await api.get<ApiResponse<NNRtcPodTask[]>>('/pods/nnrtc/tasks');
+  /** 查询最近 MobileRTC 发布/替换任务 */
+  listMobileRTCTasks: async (): Promise<ApiResponse<MobileRTCPodTask[]>> => {
+    const response = await api.get<ApiResponse<MobileRTCPodTask[]>>('/pods/mobile-rtc/tasks');
     return response.data;
   },
 
@@ -2270,7 +2270,7 @@ export interface GitRepoBranches {
   error?: string;
 }
 
-export interface GitNniosPodSource {
+export interface GitMainAppPodSource {
   sourceFile: 'Podfile' | 'third_sdk.rb';
   podName: string;
   version?: string;
@@ -2287,8 +2287,8 @@ export interface GitResolvedDependency {
   specRequirement?: string;
   fromSpec: string;
   resolved: boolean;
-  match?: GitNniosPodSource;
-  allMatches: GitNniosPodSource[];
+  match?: GitMainAppPodSource;
+  allMatches: GitMainAppPodSource[];
 }
 
 export interface GitRepoDependencyResult {
@@ -2302,7 +2302,7 @@ export interface GitRepoDependencyResult {
 }
 
 export interface GitPodDepsResponse {
-  nnios: { branch: string; missingFiles: string[]; sourceCount: number };
+  mainApp: { branch: string; missingFiles: string[]; sourceCount: number };
   results: GitRepoDependencyResult[];
 }
 
@@ -2466,7 +2466,7 @@ export interface PairingStatusData {
     appDeviceId?: string;
     userId?: number | string;
     nickName?: string;
-    nnNumber?: number | string;
+    externalNumber?: number | string;
   };
 }
 
@@ -3249,19 +3249,19 @@ export interface QualityDevicePoolStatusResult {
 
 export const jenkinsApi = {
   listBranches: async (): Promise<ApiResponse<string[]>> => {
-    const response = await api.get<ApiResponse<string[]>>('/jenkins/nn/branches');
+    const response = await api.get<ApiResponse<string[]>>('/jenkins/default/branches');
     return response.data;
   },
 
-  listNNBuilds: async (params?: {
+  listMobileBuilds: async (params?: {
     deployTarget?: 'Pgyer' | 'TestFlight' | 'AppStore' | '';
     branch?: string;
   }): Promise<ApiResponse<JenkinsBuildListResult>> => {
-    const response = await api.get<ApiResponse<JenkinsBuildListResult>>('/jenkins/nn/builds', { params });
+    const response = await api.get<ApiResponse<JenkinsBuildListResult>>('/jenkins/default/builds', { params });
     return response.data;
   },
 
-  publishNN: async (payload: {
+  publishMobile: async (payload: {
     deployTarget: 'Pgyer' | 'TestFlight' | 'AppStore';
     verificationPassword?: string;
     branch?: string;
@@ -3270,7 +3270,7 @@ export const jenkinsApi = {
     releaseGateOverrideReason?: string;
     testFlightWhatsNew?: string;
   }): Promise<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate; releaseOrder?: JenkinsReleaseOrder }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate; releaseOrder?: JenkinsReleaseOrder }>>('/jenkins/nn/build', payload);
+    const response = await api.post<ApiResponse<{ jobName: string; url: string; deployTarget: string; branch: string; jenkinsBranch?: string; sourceBuildNumber?: number; releaseGate?: WorkflowReleaseGate; releaseOrder?: JenkinsReleaseOrder }>>('/jenkins/default/build', payload);
     return response.data;
   },
 
@@ -3281,12 +3281,12 @@ export const jenkinsApi = {
     gateBuildNumber?: number;
     testFlightWhatsNew?: string;
   }): Promise<ApiResponse<JenkinsReleasePreflightResult>> => {
-    const response = await api.post<ApiResponse<JenkinsReleasePreflightResult>>('/jenkins/nn/release/preflight', payload);
+    const response = await api.post<ApiResponse<JenkinsReleasePreflightResult>>('/jenkins/default/release/preflight', payload);
     return response.data;
   },
 
   getCicdHealth: async (): Promise<ApiResponse<JenkinsCicdHealthResult>> => {
-    const response = await api.get<ApiResponse<JenkinsCicdHealthResult>>('/jenkins/nn/cicd/health');
+    const response = await api.get<ApiResponse<JenkinsCicdHealthResult>>('/jenkins/default/cicd/health');
     return response.data;
   },
 
@@ -3302,24 +3302,24 @@ export const jenkinsApi = {
       build: JenkinsBuild;
       releaseGate: WorkflowReleaseGate;
       missingSuites: JenkinsQualitySuite[];
-    }>>('/jenkins/nn/release-gate/preview', payload);
+    }>>('/jenkins/default/release-gate/preview', payload);
     return response.data;
   },
 
   checkAppStoreReleaseGuard: async (payload: {
     branch: string;
   }): Promise<ApiResponse<JenkinsAppStoreReleaseGuard>> => {
-    const response = await api.post<ApiResponse<JenkinsAppStoreReleaseGuard>>('/jenkins/nn/app-store/release-guard', payload);
+    const response = await api.post<ApiResponse<JenkinsAppStoreReleaseGuard>>('/jenkins/default/app-store/release-guard', payload);
     return response.data;
   },
 
   submitAppStoreReview: async (buildNumber: number): Promise<ApiResponse<JenkinsAppStoreRelease>> => {
-    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/nn/builds/${buildNumber}/submit-app-store-review`);
+    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/default/builds/${buildNumber}/submit-app-store-review`);
     return response.data;
   },
 
   cancelAppStoreReview: async (buildNumber: number): Promise<ApiResponse<JenkinsAppStoreRelease>> => {
-    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/nn/builds/${buildNumber}/cancel-app-store-review`);
+    const response = await api.post<ApiResponse<JenkinsAppStoreRelease>>(`/jenkins/default/builds/${buildNumber}/cancel-app-store-review`);
     return response.data;
   },
 
@@ -3337,26 +3337,26 @@ export const jenkinsApi = {
       targetBranch: string;
       baseBranch: string;
       commands: Array<{ command: string; output: string }>;
-    }>>('/jenkins/nn/release-branch', payload, {
+    }>>('/jenkins/default/release-branch', payload, {
       timeout: 10 * 60 * 1000,
     });
     return response.data;
   },
 
   stopBuild: async (buildNumber: number): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/builds/${buildNumber}/stop`);
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/default/builds/${buildNumber}/stop`);
     return response.data;
   },
 
   getBuildLog: async (buildNumber: number): Promise<ApiResponse<JenkinsBuildLogResult>> => {
-    const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/nn/builds/${buildNumber}/log`, {
+    const response = await api.get<ApiResponse<JenkinsBuildLogResult>>(`/jenkins/default/builds/${buildNumber}/log`, {
       timeout: 120000,
     });
     return response.data;
   },
 
   getBuildPackageSize: async (buildNumber: number, force = false): Promise<ApiResponse<JenkinsPackageSizeAnalysis>> => {
-    const response = await api.get<ApiResponse<JenkinsPackageSizeAnalysis>>(`/jenkins/nn/builds/${buildNumber}/package-size`, {
+    const response = await api.get<ApiResponse<JenkinsPackageSizeAnalysis>>(`/jenkins/default/builds/${buildNumber}/package-size`, {
       timeout: 120000,
       params: force ? { force: 1 } : undefined,
     });
@@ -3365,7 +3365,7 @@ export const jenkinsApi = {
 
   analyzeBuildFailure: async (buildNumber: number, force = false): Promise<ApiResponse<{ jobName: string; buildNumber: number; analysis: JenkinsBuildFailureAnalysis; updatedAt?: string; cached?: boolean }>> => {
     const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number; analysis: JenkinsBuildFailureAnalysis; updatedAt?: string; cached?: boolean }>>(
-      `/jenkins/nn/builds/${buildNumber}/analyze-failure`,
+      `/jenkins/default/builds/${buildNumber}/analyze-failure`,
       { force },
       { timeout: 120000 },
     );
@@ -3374,7 +3374,7 @@ export const jenkinsApi = {
 
   syncBuildDsyms: async (buildNumber: number, force = false): Promise<ApiResponse<JenkinsBuildDsymSync>> => {
     const response = await api.post<ApiResponse<JenkinsBuildDsymSync>>(
-      `/jenkins/nn/builds/${buildNumber}/sync-dsyms`,
+      `/jenkins/default/builds/${buildNumber}/sync-dsyms`,
       { force },
       { timeout: 600000 },
     );
@@ -3382,22 +3382,22 @@ export const jenkinsApi = {
   },
 
   listQualityBuilds: async (): Promise<ApiResponse<JenkinsQualityListResult>> => {
-    const response = await api.get<ApiResponse<JenkinsQualityListResult>>('/jenkins/nn/quality/builds');
+    const response = await api.get<ApiResponse<JenkinsQualityListResult>>('/jenkins/default/quality/builds');
     return response.data;
   },
 
   stopQualityBuild: async (buildNumber: number, payload?: { deviceUdid?: string }): Promise<ApiResponse<{ jobName: string; buildNumber: number }>> => {
-    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/nn/quality/builds/${buildNumber}/stop`, payload || {});
+    const response = await api.post<ApiResponse<{ jobName: string; buildNumber: number }>>(`/jenkins/default/quality/builds/${buildNumber}/stop`, payload || {});
     return response.data;
   },
 
   cleanupQualityWda: async (payload?: { deviceUdid?: string }): Promise<ApiResponse<{ deviceUdid?: string; terminatedDeviceProcesses: number }>> => {
-    const response = await api.post<ApiResponse<{ deviceUdid?: string; terminatedDeviceProcesses: number }>>('/jenkins/nn/quality/wda/cleanup', payload || {});
+    const response = await api.post<ApiResponse<{ deviceUdid?: string; terminatedDeviceProcesses: number }>>('/jenkins/default/quality/wda/cleanup', payload || {});
     return response.data;
   },
 
   previewQualityArtifact: async (url: string): Promise<ApiResponse<JenkinsQualityArtifactPreview>> => {
-    const response = await api.get<ApiResponse<JenkinsQualityArtifactPreview>>('/jenkins/nn/quality/artifact-preview', {
+    const response = await api.get<ApiResponse<JenkinsQualityArtifactPreview>>('/jenkins/default/quality/artifact-preview', {
       params: { url },
       timeout: 30000,
     });
@@ -3405,7 +3405,7 @@ export const jenkinsApi = {
   },
 
   getQualityPerformanceSamples: async (url: string): Promise<ApiResponse<JenkinsQualityPerformanceSamples>> => {
-    const response = await api.get<ApiResponse<JenkinsQualityPerformanceSamples>>('/jenkins/nn/quality/performance-samples', {
+    const response = await api.get<ApiResponse<JenkinsQualityPerformanceSamples>>('/jenkins/default/quality/performance-samples', {
       params: { url },
       timeout: 30000,
     });
@@ -3413,19 +3413,19 @@ export const jenkinsApi = {
   },
 
   listQualityDevicePools: async (): Promise<ApiResponse<QualityDevicePool[]>> => {
-    const response = await api.get<ApiResponse<QualityDevicePool[]>>('/jenkins/nn/quality/device-pools');
+    const response = await api.get<ApiResponse<QualityDevicePool[]>>('/jenkins/default/quality/device-pools');
     assertQualityDevicePoolResponse(response.data, 'list');
     return response.data;
   },
 
   getQualityDevicePoolStatus: async (): Promise<ApiResponse<QualityDevicePoolStatusResult>> => {
-    const response = await api.get<ApiResponse<QualityDevicePoolStatusResult>>('/jenkins/nn/quality/device-pools/status');
+    const response = await api.get<ApiResponse<QualityDevicePoolStatusResult>>('/jenkins/default/quality/device-pools/status');
     assertQualityDevicePoolResponse(response.data, 'status');
     return response.data;
   },
 
   updateQualityDevicePools: async (devicePools: QualityDevicePool[]): Promise<ApiResponse<QualityDevicePool[]>> => {
-    const response = await api.put<ApiResponse<QualityDevicePool[]>>('/jenkins/nn/quality/device-pools', { devicePools });
+    const response = await api.put<ApiResponse<QualityDevicePool[]>>('/jenkins/default/quality/device-pools', { devicePools });
     assertQualityDevicePoolResponse(response.data, 'list');
     return response.data;
   },
@@ -3445,7 +3445,7 @@ export const jenkinsApi = {
       status: number;
       concurrentBuild: boolean;
       hasWdaDerivedDataPath: boolean;
-    }>>('/jenkins/nn/quality/job/sync');
+    }>>('/jenkins/default/quality/job/sync');
     return response.data;
   },
 
@@ -3493,7 +3493,7 @@ export const jenkinsApi = {
       testSuite: JenkinsQualitySuite;
       devicePool: string;
       url: string;
-    }>>('/jenkins/nn/quality', payload);
+    }>>('/jenkins/default/quality', payload);
     return response.data;
   },
 };

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const base = process.env.SERVICES_UI_BASE_URL || 'http://127.0.0.1:5173';
-const products = ['nn', 'beta'].map((id) => ({ id, key: id, name: id === 'nn' ? 'NN' : 'Beta', projectId: `${id}-ios`, active: true, applications: [{ id: `${id}:ios`, productLineId: id, platform: 'ios', name: `${id} iOS`, projectId: `${id}-ios`, active: true, services: ['jenkins'], config: {} }] }));
+const products = ['default', 'beta'].map((id) => ({ id, key: id, name: id === 'default' ? 'Default' : 'Beta', projectId: `${id}-ios`, active: true, applications: [{ id: `${id}:ios`, productLineId: id, platform: 'ios', name: `${id} iOS`, projectId: `${id}-ios`, active: true, services: ['jenkins'], config: {} }] }));
 const developer = { id: 'developer', username: 'release.dev', displayName: '研发', role: 'developer', active: true, productLines: products.map((product) => ({ ...product, role: 'developer', appStoreRelease: false })) };
 const admin = { id: 'admin', username: 'admin', displayName: '管理员', role: 'admin', active: true, productLines: products.map((product) => ({ ...product, role: 'admin' })) };
 let session = admin;
@@ -21,8 +21,8 @@ try {
       const body = req.postDataJSON();
       developer.productLines = body.productLines.map((item) => ({ ...products.find((product) => product.id === item.productLineId), role: item.role, appStoreRelease: item.appStoreRelease }));
       data = developer;
-    } else if (pathname.endsWith('/nn/builds')) data = { builds: [], stats: { total: 0, running: 0, latestBuild: '-', successRate: '0%' }, job: { name: 'fixture', fullName: 'fixture', url: 'https://jenkins.example/job/fixture', buildable: true } };
-    else if (pathname.endsWith('/nn/branches')) data = ['develop', 'release/1.0.0'];
+    } else if (pathname.endsWith('/default/builds')) data = { builds: [], stats: { total: 0, running: 0, latestBuild: '-', successRate: '0%' }, job: { name: 'fixture', fullName: 'fixture', url: 'https://jenkins.example/job/fixture', buildable: true } };
+    else if (pathname.endsWith('/default/branches')) data = ['develop', 'release/1.0.0'];
     else if (pathname.endsWith('/release/preflight')) data = { passed: true, blockers: [], warnings: [], checks: [] };
     else if (pathname.endsWith('/cicd/health')) data = { healthy: true, blockers: [], warnings: [], checks: [], checkedAt: '2026-09-08', elapsedMs: 0 };
     else if (pathname.endsWith('/config/status')) data = {};
@@ -31,9 +31,9 @@ try {
   await page.goto(`${base}/roles`, { waitUntil: 'networkidle' });
   await page.getByRole('tab', { name: '用户角色', exact: true }).click();
   await page.getByRole('row').filter({ hasText: 'release.dev' }).getByRole('button', { name: /编\s*辑/ }).click();
-  await page.getByRole('checkbox', { name: 'NN 应用商店发布权限', exact: true }).check();
+  await page.getByRole('checkbox', { name: 'Default 应用商店发布权限', exact: true }).check();
   assert.equal(await page.getByRole('checkbox', { name: 'Beta 应用商店发布权限', exact: true }).isChecked(), false);
-  await page.waitForFunction(() => document.querySelector('input[aria-label="NN 应用商店发布权限"]')?.checked);
+  await page.waitForFunction(() => document.querySelector('input[aria-label="Default 应用商店发布权限"]')?.checked);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   if (process.env.STORE_GRANT_SCREENSHOT) await page.screenshot({ path: process.env.STORE_GRANT_SCREENSHOT, fullPage: true });
   await page.getByRole('dialog').getByRole('button', { name: /保\s*存/ }).click();
@@ -41,7 +41,7 @@ try {
   assert.equal(developer.productLines[0].appStoreRelease, true);
   assert.equal(developer.productLines[1].appStoreRelease, false);
   session = developer;
-  for (const [product, allowed] of [['nn', true], ['beta', false]]) {
+  for (const [product, allowed] of [['default', true], ['beta', false]]) {
     await page.evaluate((id) => localStorage.setItem('active_product_line_id', id), product);
     await page.goto(`${base}/cicd`, { waitUntil: 'networkidle' });
     const permissions = await page.evaluate(async () => (await import('/src/pages/cicd/cicdPermissions.ts')).getCicdPermissions());

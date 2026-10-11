@@ -7,7 +7,7 @@ import watermarkDecoderService from '../services/WatermarkDecoderService';
 import logger from '../utils/logger';
 
 const router = Router();
-const uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+const uploadDir = process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads';
 
 fsSync.mkdirSync(uploadDir, { recursive: true });
 

@@ -28,7 +28,7 @@ describe('AppStoreConnectService', () => {
       },
     });
 
-    await expect(appStoreConnectService.listTestFlightGroups('nn')).resolves.toEqual([
+    await expect(appStoreConnectService.listTestFlightGroups('default')).resolves.toEqual([
       { id: 'internal-id', name: '测试', isInternal: true },
       { id: 'external-id', name: '外部测试', isInternal: false },
     ]);

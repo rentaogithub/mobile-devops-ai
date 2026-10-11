@@ -50,10 +50,10 @@ export class XCUITestWorkflowService {
   private outputRoot() {
     const base = path.resolve(
       process.env.WORKFLOW_XCUITEST_OUTPUT_DIR
-        || path.join(process.env.DATA_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data'), 'workflow-xcuitest'),
+        || path.join(process.env.DATA_DIR || path.resolve(process.cwd(), '..', 'mobile-devops-ai-data'), 'workflow-xcuitest'),
     );
     const projectId = currentProjectId();
-    return projectId === 'nn-ios' ? base : path.join(base, safeToken(projectId));
+    return projectId === 'mobile-ios' ? base : path.join(base, safeToken(projectId));
   }
 
   async exportCandidate(candidateId: string, input: Record<string, any> = {}) {

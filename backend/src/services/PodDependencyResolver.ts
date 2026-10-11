@@ -10,20 +10,20 @@ import { currentProductLineId } from './ProductLineContext';
  * 基于发布主仓库的 Podfile 为各业务仓库的 podspec 依赖反查版本。
  *
  * 关键假设：
- * - nnios 仓库 URL 固定为 http://git.leigod.top/nn_ios/nnios.git
+ * - mainApp 仓库 URL 固定为 https://github.com/example/mobile-app.git
  * - 业务仓库某分支下每个 .podspec 声明了 s.dependency 'XXX', '...'
  * - 发布主仓库同名分支下 Podfile 里会用 pod 'XXX', '1.2.3' / :git => .. / :branch => ..
  *   的方式给定具体版本，反查时用 pod 名作为 key。
  */
 
-export const NNIOS_REPO_URL = 'http://git.leigod.top/nn_ios/nnios.git';
+export const MAIN_APP_REPO_URL = 'https://github.com/example/mobile-app.git';
 
 function currentMainRepoUrl(): string {
   const config = productLineConfigService.podxConfig(currentProductLineId());
   const configured = config.jenkinsRepoUrl
     || config.publishRepoUrls.find((url) => extractRepoName(url).toLowerCase() === config.publishMainRepo.toLowerCase());
   if (configured) return configured;
-  if (currentProductLineId() === 'nn') return NNIOS_REPO_URL;
+  if (currentProductLineId() === 'default') return MAIN_APP_REPO_URL;
   throw new Error(`当前产品线 ${currentProductLineId()} 未配置发布主仓库地址`);
 }
 
@@ -36,10 +36,10 @@ export interface PodSpecDependency {
   fromSpec: string;
 }
 
-export interface NniosPodSource {
+export interface MainAppPodSource {
   /** 来自 Podfile；保留 third_sdk.rb 兼容历史解析结果 */
   sourceFile: 'Podfile' | 'third_sdk.rb';
-  /** 在 nnios 中写的 pod 名（可能是 'Foo' 或 'Foo/Subspec'） */
+  /** 在 mainApp 中写的 pod 名（可能是 'Foo' 或 'Foo/Subspec'） */
   podName: string;
   /** 第二个参数给的版本号，如 '1.2.3' / '~> 2.0' */
   version?: string;
@@ -58,12 +58,12 @@ export interface NniosPodSource {
 }
 
 export interface ResolvedDependency extends PodSpecDependency {
-  /** 在 nnios 里是否命中 */
+  /** 在 mainApp 里是否命中 */
   resolved: boolean;
   /** 命中的信息（优先主 pod，其次任意 subspec） */
-  match?: NniosPodSource;
+  match?: MainAppPodSource;
   /** 所有匹配（主 pod + subspec），供 UI 展示 */
-  allMatches: NniosPodSource[];
+  allMatches: MainAppPodSource[];
 }
 
 export interface RepoDependencyResult {
@@ -79,17 +79,17 @@ export interface RepoDependencyResult {
 export interface ResolveOptions {
   username?: string;
   password?: string;
-  /** 缓存 nnios 解析结果（同一次请求里多仓库复用） */
-  nniosIndex?: NniosIndex;
+  /** 缓存 mainApp 解析结果（同一次请求里多仓库复用） */
+  mainAppIndex?: MainAppIndex;
   /** 工作目录，默认系统临时目录 */
   workDir?: string;
 }
 
-export interface NniosIndex {
+export interface MainAppIndex {
   branch: string;
-  sources: NniosPodSource[];
-  /** podName.toLowerCase() -> NniosPodSource[]，包含 Foo 和 Foo/Subspec */
-  byName: Map<string, NniosPodSource[]>;
+  sources: MainAppPodSource[];
+  /** podName.toLowerCase() -> MainAppPodSource[]，包含 Foo 和 Foo/Subspec */
+  byName: Map<string, MainAppPodSource[]>;
   /** 解析过程中未找到的文件（仅用于展示） */
   missingFiles: string[];
 }
@@ -263,7 +263,7 @@ export function parsePodspecDependencies(rootDir: string): {
 // -------------- Podfile 解析 --------------
 
 /**
- * 解析单行 pod 声明，返回 NniosPodSource，匹配不到返回 null
+ * 解析单行 pod 声明，返回 MainAppPodSource，匹配不到返回 null
  * 支持示例：
  *   pod 'Foo'
  *   pod 'Foo', '1.2.3'
@@ -271,7 +271,7 @@ export function parsePodspecDependencies(rootDir: string): {
  *   pod 'Foo', :git => 'http://...', :branch => 'develop'
  *   pod "Foo", :tag => '1.0.0'
  */
-export function parsePodLine(line: string, sourceFile: 'Podfile' | 'third_sdk.rb'): NniosPodSource | null {
+export function parsePodLine(line: string, sourceFile: 'Podfile' | 'third_sdk.rb'): MainAppPodSource | null {
   // 跳过注释和空行（整行 # ...，或单引号引起的名字前的 #）
   const trimmed = line.trim();
   if (!trimmed || trimmed.startsWith('#')) return null;
@@ -284,7 +284,7 @@ export function parsePodLine(line: string, sourceFile: 'Podfile' | 'third_sdk.rb
   const podName = nameMatch[2];
   const rest = nameMatch[3] || '';
 
-  const result: NniosPodSource = {
+  const result: MainAppPodSource = {
     sourceFile,
     podName,
     raw: line.trim(),
@@ -340,8 +340,8 @@ function stripInlineComment(s: string): string {
   return s;
 }
 
-export function parseNniosRubyFile(content: string, sourceFile: 'Podfile' | 'third_sdk.rb'): NniosPodSource[] {
-  const out: NniosPodSource[] = [];
+export function parseMainAppRubyFile(content: string, sourceFile: 'Podfile' | 'third_sdk.rb'): MainAppPodSource[] {
+  const out: MainAppPodSource[] = [];
   for (const line of content.split(/\r?\n/)) {
     const parsed = parsePodLine(line, sourceFile);
     if (parsed) out.push(parsed);
@@ -349,24 +349,24 @@ export function parseNniosRubyFile(content: string, sourceFile: 'Podfile' | 'thi
   return out;
 }
 
-export function buildNniosIndex(
+export function buildMainAppIndex(
   branch: string,
   podfileContent: string | null,
   thirdSdkContent: string | null
-): NniosIndex {
-  const sources: NniosPodSource[] = [];
+): MainAppIndex {
+  const sources: MainAppPodSource[] = [];
   const missingFiles: string[] = [];
 
   if (podfileContent != null) {
-    sources.push(...parseNniosRubyFile(podfileContent, 'Podfile'));
+    sources.push(...parseMainAppRubyFile(podfileContent, 'Podfile'));
   } else {
     missingFiles.push('Podfile');
   }
   if (thirdSdkContent != null) {
-    sources.push(...parseNniosRubyFile(thirdSdkContent, 'third_sdk.rb'));
+    sources.push(...parseMainAppRubyFile(thirdSdkContent, 'third_sdk.rb'));
   }
 
-  const byName = new Map<string, NniosPodSource[]>();
+  const byName = new Map<string, MainAppPodSource[]>();
   for (const src of sources) {
     const keyFull = src.podName.toLowerCase();
     const arr = byName.get(keyFull) || [];
@@ -392,12 +392,12 @@ export class PodDependencyResolver {
    * 解析发布主仓库指定分支的 Podfile。
    * 返回 Index；文件缺失时 missingFiles 会记录
    */
-  async loadNniosIndex(
+  async loadMainAppIndex(
     branch: string,
     creds?: { username?: string; password?: string },
     workDir?: string,
     revision?: string
-  ): Promise<NniosIndex> {
+  ): Promise<MainAppIndex> {
     const tmpRoot = workDir || fs.mkdtempSync(path.join(os.tmpdir(), 'pod-deps-'));
     let repoDir: string | undefined;
     try {
@@ -410,13 +410,13 @@ export class PodDependencyResolver {
 
       const podfile = read('Podfile');
 
-      return buildNniosIndex(branch, podfile, null);
+      return buildMainAppIndex(branch, podfile, null);
     } finally {
       if (repoDir && fs.existsSync(repoDir)) {
         try {
           fs.rmSync(repoDir, { recursive: true, force: true });
         } catch (err: any) {
-          logger.warn('清理 nnios 临时目录失败', { dir: repoDir, error: err.message });
+          logger.warn('清理 mainApp 临时目录失败', { dir: repoDir, error: err.message });
         }
       }
       if (!workDir && fs.existsSync(tmpRoot)) {
@@ -430,12 +430,12 @@ export class PodDependencyResolver {
   }
 
   /**
-   * 解析单个仓库 + 分支的 podspec 依赖，用 nniosIndex 回填版本
+   * 解析单个仓库 + 分支的 podspec 依赖，用 mainAppIndex 回填版本
    */
   async resolveRepo(
     repoUrl: string,
     branch: string,
-    nniosIndex: NniosIndex,
+    mainAppIndex: MainAppIndex,
     opts: ResolveOptions = {}
   ): Promise<RepoDependencyResult> {
     const name = extractRepoName(repoUrl);
@@ -451,7 +451,7 @@ export class PodDependencyResolver {
       const { specFiles, deps } = parsePodspecDependencies(repoDir);
 
       const resolved: ResolvedDependency[] = deps.map((d) => {
-        const matches = nniosIndex.byName.get(d.name.toLowerCase()) || [];
+        const matches = mainAppIndex.byName.get(d.name.toLowerCase()) || [];
         // 优先非 subspec（podName 里不含 '/'）
         const main = matches.find((m) => !m.podName.includes('/')) || matches[0];
         return {
@@ -512,29 +512,29 @@ export class PodDependencyResolver {
   }
 
   /**
-   * 批量解析多个仓库，共享同一份 nniosIndex
+   * 批量解析多个仓库，共享同一份 mainAppIndex
    */
   async resolveMany(
     repoUrls: string[],
     branch: string,
     opts: ResolveOptions = {}
   ): Promise<{
-    nnios: { branch: string; missingFiles: string[]; sourceCount: number };
+    mainApp: { branch: string; missingFiles: string[]; sourceCount: number };
     results: RepoDependencyResult[];
   }> {
     const workDir = opts.workDir || fs.mkdtempSync(path.join(os.tmpdir(), 'pod-deps-'));
     try {
-      const nniosIndex =
-        opts.nniosIndex ||
-        (await this.loadNniosIndex(branch, { username: opts.username, password: opts.password }, workDir));
+      const mainAppIndex =
+        opts.mainAppIndex ||
+        (await this.loadMainAppIndex(branch, { username: opts.username, password: opts.password }, workDir));
 
-      // 对 nnios 仓库本身，不再重复扫自己的 podspec 依赖（可能没有 podspec）
+      // 对 mainApp 仓库本身，不再重复扫自己的 podspec 依赖（可能没有 podspec）
       const mainRepoUrl = currentMainRepoUrl();
       const toResolve = repoUrls.filter((u) => extractRepoName(u) !== extractRepoName(mainRepoUrl));
 
       const results = await Promise.all(
         toResolve.map((u) =>
-          this.resolveRepo(u, branch, nniosIndex, {
+          this.resolveRepo(u, branch, mainAppIndex, {
             username: opts.username,
             password: opts.password,
             workDir,
@@ -543,10 +543,10 @@ export class PodDependencyResolver {
       );
 
       return {
-        nnios: {
-          branch: nniosIndex.branch,
-          missingFiles: nniosIndex.missingFiles,
-          sourceCount: nniosIndex.sources.length,
+        mainApp: {
+          branch: mainAppIndex.branch,
+          missingFiles: mainAppIndex.missingFiles,
+          sourceCount: mainAppIndex.sources.length,
         },
         results,
       };

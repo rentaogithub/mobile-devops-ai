@@ -22,7 +22,7 @@ export interface BranchJobOptions {
   password?: string;
   /** 可选：自定义工作目录，默认为 BASE_DIR */
   baseDir?: string;
-  /** nnios 仓库的 Podfile 会被修改，将所有 branch: '...' 替换为目标分支 */
+  /** mainApp 仓库的 Podfile 会被修改，将所有 branch: '...' 替换为目标分支 */
   modifyPodfile?: boolean;
   /** 当前产品线主仓库名；仅主仓库需要更新 Podfile 分支。 */
   mainRepoName?: string;
@@ -80,23 +80,14 @@ export type EventSink = (evt: StreamEvent) => void;
 
 const DEFAULT_BASE_DIR = path.resolve(
   process.env.GIT_WORK_DIR ||
-    path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.nn-ios-platform-data'), '../git-workspace')
+    path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.mobile-devops-ai-data'), '../git-workspace')
 );
 
 /** 脚本中硬编码的默认仓库列表 */
 export const DEFAULT_REPOS: string[] = [
-  'http://git.leigod.top/nn_ios/nnios.git',
-  'http://git.leigod.top/nn_ios/nnbusscom.git',
-  'http://git.leigod.top/nn_ios/nnimmanager.git',
-  'http://git.leigod.top/nn_ios/nnbascicommon.git',
-  'http://git.leigod.top/nn_ios/nnapperance.git',
-  'http://git.leigod.top/nn_ios/nncategory.git',
-  'http://git.leigod.top/nn_ios/nnlogmodule.git',
-  'http://git.leigod.top/nn_ios/nnnetwork.git',
-  'http://git.leigod.top/nn_ios/nnrealreachability.git',
-  'http://git.leigod.top/nn_ios/nnyytext.git',
-  'http://git.leigod.top/nn_ios/nngeneral.git',
-  'http://git.leigod.top/nn_ios/nnswiftscan.git',
+  'https://github.com/example/mobile-app.git',
+  'https://github.com/example/mobile-shared-core.git',
+  'https://github.com/example/mobile-ui-components.git',
 ];
 
 function extractRepoName(repoUrl: string): string {
@@ -201,13 +192,13 @@ function runGit(
 export class GitBranchService {
   /** 供路由获取默认仓库配置 */
   getDefaultRepos(): string[] {
-    return currentProductLineId() === 'nn' ? DEFAULT_REPOS : [];
+    return currentProductLineId() === 'default' ? DEFAULT_REPOS : [];
   }
 
   /** 工作目录（方便前端展示或排查） */
   getBaseDir(custom?: string): string {
     const root = custom ? path.resolve(custom) : DEFAULT_BASE_DIR;
-    if (currentProductLineId() === 'nn') return root;
+    if (currentProductLineId() === 'default') return root;
     return path.join(root, currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_'));
   }
 

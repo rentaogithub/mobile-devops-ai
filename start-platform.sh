@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start nn-ios-platform as a local background service.
+# Start mobile-devops-ai as a local background service.
 # This script is intended for daily platform usage: backend and frontend are
 # both kept in detached screen sessions, with health checks before returning.
 
@@ -17,8 +17,8 @@ BACKEND_DIR="$PROJECT_ROOT/backend"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 BACKEND_LOG="$PROJECT_ROOT/backend-dev.log"
 FRONTEND_LOG="$PROJECT_ROOT/frontend-dev.log"
-BACKEND_SESSION="${BACKEND_SESSION:-nn-ios-platform-backend}"
-FRONTEND_SESSION="${FRONTEND_SESSION:-nn-ios-platform-frontend}"
+BACKEND_SESSION="${BACKEND_SESSION:-mobile-devops-ai-backend}"
+FRONTEND_SESSION="${FRONTEND_SESSION:-mobile-devops-ai-frontend}"
 
 ENV_BACKEND_PORT=""
 if [ -f "$BACKEND_DIR/.env" ]; then
@@ -212,7 +212,7 @@ platform_status() {
   echo "前端：$FRONTEND_URL"
   [ "$frontend_ok" -eq 1 ] && echo "  ok" || echo "  unavailable"
   echo "screen sessions:"
-  screen -ls 2>/dev/null | grep "nn-ios-platform" || true
+  screen -ls 2>/dev/null | grep "mobile-devops-ai" || true
 
   case "$expected" in
     running)

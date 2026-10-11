@@ -16,8 +16,8 @@ const router = Router();
 const symbolizer = new SymbolizerService();
 const storage = new StorageService();
 
-const unknownNNIMFrameRegex = /^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
-const addressOnlyNNIMFrameRegex = /^\d+\s+NNIM\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in NNIM\)(?:\s+\+\s+\d+)?$/gim;
+const unknownMobileAppFrameRegex = /^\d+\s+MobileApp\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
+const addressOnlyMobileAppFrameRegex = /^\d+\s+MobileApp\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in MobileApp\)(?:\s+\+\s+\d+)?$/gim;
 const unknownSystemFrameRegex = /^\d+\s+(?:libsystem_kernel\.dylib|libsystem_pthread\.dylib|libdispatch\.dylib|CoreFoundation|Foundation|UIKitCore|GraphicsServices|dyld)\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim;
 
 function countMatches(log: string, regex: RegExp): number {
@@ -29,13 +29,13 @@ function hasValidSymbolicationResult(originalLog: string, symbolicatedLog: strin
     return false;
   }
 
-  // MetricKit/精简 crash 常见没有 Binary Images，旧结果会保留 NNIM <unknown> 栈。
-  const originalUnknownNNIMCount = countMatches(originalLog, unknownNNIMFrameRegex);
-  if (originalUnknownNNIMCount > 0) {
-    const unresolvedNNIMCount =
-      countMatches(symbolicatedLog, unknownNNIMFrameRegex) +
-      countMatches(symbolicatedLog, addressOnlyNNIMFrameRegex);
-    if (unresolvedNNIMCount >= originalUnknownNNIMCount) {
+  // MetricKit/精简 crash 常见没有 Binary Images，旧结果会保留 MobileApp <unknown> 栈。
+  const originalUnknownMobileAppCount = countMatches(originalLog, unknownMobileAppFrameRegex);
+  if (originalUnknownMobileAppCount > 0) {
+    const unresolvedMobileAppCount =
+      countMatches(symbolicatedLog, unknownMobileAppFrameRegex) +
+      countMatches(symbolicatedLog, addressOnlyMobileAppFrameRegex);
+    if (unresolvedMobileAppCount >= originalUnknownMobileAppCount) {
       return false;
     }
   }
@@ -153,7 +153,7 @@ router.post('/', async (req: Request, res: Response) => {
       });
       
       const historyRecord = historyService.findDuplicateHistory(crashLog, targetUUIDs);
-      // 检查历史记录是否有效，避免修复后仍返回旧的 NNIM <unknown> 结果。
+      // 检查历史记录是否有效，避免修复后仍返回旧的 MobileApp <unknown> 结果。
       const isHistoryValid = historyRecord &&
         hasValidSymbolicationResult(crashLog, historyRecord.symbolicatedLog);
       

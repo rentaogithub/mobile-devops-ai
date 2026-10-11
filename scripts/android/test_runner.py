@@ -90,7 +90,7 @@ class AndroidRunnerTest(unittest.TestCase):
             if 'install' in args:
                 return 'Success'
             if 'dumpsys' in args:
-                return 'versionCode=2\nversionName=2.0'
+                return 'versionCode=2\versionName=2.0'
             self.fail('Device launch must not happen for mismatched installed version')
         with patch.dict(os.environ, APK_SHA256=runner.digest(apk)), patch.object(runner, 'run', side_effect=command):
             with self.assertRaisesRegex(ValueError, 'Installed version mismatch'):
@@ -106,7 +106,7 @@ class AndroidRunnerTest(unittest.TestCase):
             if args[0] == 'apksigner': return ''
             if args[3:] == ('get-state',): return 'device'
             if 'install' in args: return 'Success'
-            if 'dumpsys' in args: return 'versionCode=1\nversionName=1.0'
+            if 'dumpsys' in args: return 'versionCode=1\versionName=1.0'
             if 'pm' in args: return 'package:/data/app/base.apk'
             if 'pull' in args:
                 Path(args[-1]).write_bytes(b'apk')

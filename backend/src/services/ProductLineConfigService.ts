@@ -9,12 +9,12 @@ import { DEFAULT_REPOS } from './GitBranchService';
 import { currentProductLineId } from './ProductLineContext';
 
 export const PRODUCT_LINE_CONFIG_KEYS = [
-  'JENKINS_USER', 'JENKINS_TOKEN', 'JENKINS_NN_JOB', 'JENKINS_NN_QA_JOB', 'JENKINS_NN_REPO_URL',
+  'JENKINS_USER', 'JENKINS_TOKEN', 'JENKINS_JOB', 'JENKINS_QUALITY_JOB', 'JENKINS_REPO_URL',
   'PODX_TARGET_NAME', 'PODX_PRIVATE_SOURCE', 'PODX_GIT_BASE_URL',
   'PODX_PUBLISH_REPOS', 'PODX_PUBLISH_MAIN_REPO', 'PODX_PUBLISH_WORK_DIR', 'PODX_PUBLISH_BASE_BRANCH',
   'PODS_NEXUS_BASE_URL', 'PODS_NEXUS_USER', 'PODS_NEXUS_PASSWORD',
   'GIT_USERNAME', 'GIT_PASSWORD',
-  'NNRTC_JENKINS_BASE_URL', 'NNRTC_JENKINS_JOB', 'NNRTC_JENKINS_USER', 'NNRTC_JENKINS_TOKEN',
+  'MOBILE_RTC_JENKINS_BASE_URL', 'MOBILE_RTC_JENKINS_JOB', 'MOBILE_RTC_JENKINS_USER', 'MOBILE_RTC_JENKINS_TOKEN',
   'SENTRY_PROXY_TARGET', 'SENTRY_ORG', 'SENTRY_PROJECT', 'SENTRY_AUTO_LOGIN', 'SENTRY_LOGIN_USERNAME', 'SENTRY_LOGIN_PASSWORD',
   'PGYER_API_KEY', 'PGYER_APP_KEY', 'PGYER_SHORTCUT_URL',
   'APP_STORE_CONNECT_API_KEY_ID', 'APP_STORE_CONNECT_API_ISSUER_ID', 'APP_STORE_CONNECT_API_PRIVATE_KEY', 'APP_STORE_CONNECT_APP_ID', 'APP_STORE_CONNECT_TESTFLIGHT_GROUPS',
@@ -64,12 +64,12 @@ const SECRET_KEYS = new Set<ProductLineConfigKey>([
   'APPLE_DEVICE_API_PRIVATE_KEY',
   'GIT_PASSWORD',
   'WECHAT_WORK_SECRET',
-  'NNRTC_JENKINS_TOKEN',
+  'MOBILE_RTC_JENKINS_TOKEN',
   'SENTRY_LOGIN_PASSWORD',
 ]);
 
 const URL_KEYS = new Set<ProductLineConfigKey>([
-  'PGYER_SHORTCUT_URL', 'WECHAT_WEBHOOK_URL', 'PODS_NEXUS_BASE_URL', 'NNRTC_JENKINS_BASE_URL', 'SENTRY_PROXY_TARGET',
+  'PGYER_SHORTCUT_URL', 'WECHAT_WEBHOOK_URL', 'PODS_NEXUS_BASE_URL', 'MOBILE_RTC_JENKINS_BASE_URL', 'SENTRY_PROXY_TARGET',
 ]);
 
 function now() {
@@ -90,24 +90,25 @@ function readShellConfigValue(configPath: string, key: string) {
 }
 
 function legacyJenkinsRepoDir() {
-  const configured = String(process.env.NN_IOS_JENKINS_DIR || process.env.JENKINS_NN_IOS_JENKINS_DIR || '').trim();
+  const configured = String(process.env.MOBILE_IOS_JENKINS_DIR || process.env.JENKINS_MOBILE_IOS_DIR || '').trim();
   if (configured) return path.resolve(configured);
   const candidates = [
-    path.resolve(process.cwd(), '../nn-ios-jekins'),
-    path.resolve(process.cwd(), '../../nn-ios-jekins'),
-    path.resolve(__dirname, '../../../../nn-ios-jekins'),
+    path.resolve(process.cwd(), '../mobile-ios-jenkins'),
+    path.resolve(process.cwd(), '../../mobile-ios-jenkins'),
+    path.resolve(__dirname, '../../../../mobile-ios-jenkins'),
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'cicd/jenkins/build_config.sh'))) || candidates[0];
 }
 
-function legacyNNConfigValue(key: ProductLineConfigKey) {
+function legacyDefaultConfigValue(key: ProductLineConfigKey) {
   const repoDir = legacyJenkinsRepoDir();
   const buildConfigPath = path.join(repoDir, 'cicd/jenkins/build_config.sh');
   if (key === 'PGYER_API_KEY' || key === 'PGYER_APP_KEY' || key === 'WECHAT_WEBHOOK_URL') {
     return readShellConfigValue(buildConfigPath, key);
   }
   if (key === 'PGYER_SHORTCUT_URL') {
-    const shortcut = readShellConfigValue(buildConfigPath, key) || 'iC0d';
+    const shortcut = readShellConfigValue(buildConfigPath, key);
+    if (!shortcut) return '';
     return /^https?:\/\//i.test(shortcut) ? shortcut : `https://www.pgyer.com/${shortcut.replace(/^\/+/, '')}`;
   }
   if (key === 'APP_STORE_CONNECT_API_PRIVATE_KEY') {
@@ -131,9 +132,9 @@ function appStorePrivateKeySource(productLineId: string) {
     `).get(productLineId) as { value?: string } | undefined;
     if (row?.value) return '产品线加密配置';
   } catch {
-    // 数据库未初始化时继续检查 nn 的历史配置来源。
+    // 数据库未初始化时继续检查 default 的历史配置来源。
   }
-  if (productLineId !== 'nn') return '';
+  if (productLineId !== 'default') return '';
   if (String(process.env.APP_STORE_CONNECT_API_PRIVATE_KEY || '').trim()) return '环境变量中的私钥';
   const repoDir = legacyJenkinsRepoDir();
   const buildConfigPath = path.join(repoDir, 'cicd/jenkins/build_config.sh');
@@ -153,9 +154,9 @@ function appStorePrivateKeyStorage(productLineId: string) {
       return `平台数据库：${getDatabasePath()}（platform_product_line_configs，产品线 ${productLineId}，加密存储）`;
     }
   } catch {
-    // 数据库未初始化时继续检查 nn 的历史配置来源。
+    // 数据库未初始化时继续检查 default 的历史配置来源。
   }
-  if (productLineId !== 'nn') return '';
+  if (productLineId !== 'default') return '';
   if (String(process.env.APP_STORE_CONNECT_API_PRIVATE_KEY || '').trim()) {
     return '进程环境变量：APP_STORE_CONNECT_API_PRIVATE_KEY（不落盘）';
   }
@@ -175,13 +176,13 @@ function weChatWebhookSource(productLineId: string) {
     `).get(productLineId) as { value?: string } | undefined;
     if (row?.value) return '产品线加密配置';
   } catch {
-    // 数据库未初始化时继续检查 nn 的历史配置来源。
+    // 数据库未初始化时继续检查 default 的历史配置来源。
   }
-  if (productLineId !== 'nn') return '';
+  if (productLineId !== 'default') return '';
   if (String(process.env.WECHAT_WEBHOOK_URL || '').trim()) return '环境变量';
   const buildConfigPath = path.join(legacyJenkinsRepoDir(), 'cicd/jenkins/build_config.sh');
   return readShellConfigValue(buildConfigPath, 'WECHAT_WEBHOOK_URL')
-    ? 'nn-ios-jekins/cicd/jenkins/build_config.sh'
+    ? 'mobile-ios-jenkins/cicd/jenkins/build_config.sh'
     : '';
 }
 
@@ -224,7 +225,7 @@ function isGitUrl(value: string) {
 function defaultGitWorkspaceDir() {
   return path.resolve(
     process.env.GIT_WORK_DIR ||
-      path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.nn-ios-platform-data'), '../git-workspace')
+      path.join(process.env.UPLOAD_DIR || path.join(os.homedir(), '.mobile-devops-ai-data'), '../git-workspace')
   );
 }
 
@@ -267,10 +268,10 @@ class ProductLineConfigService {
       `).get(productLineId, key) as { value?: string; encrypted?: number } | undefined;
       if (row) return row.encrypted ? this.decrypt(String(row.value || '')) : String(row.value || '');
     } catch {
-      // 数据库尚未初始化或测试已关闭数据库时，nn 继续兼容环境变量。
+      // 数据库尚未初始化或测试已关闭数据库时，default 继续兼容环境变量。
     }
-    if (productLineId !== 'nn') return '';
-    return String(process.env[key] || '').trim() || legacyNNConfigValue(key);
+    if (productLineId !== 'default') return '';
+    return String(process.env[key] || '').trim() || legacyDefaultConfigValue(key);
   }
 
   private hasStoredConfig(key: ProductLineConfigKey, productLineId: string) {
@@ -280,10 +281,10 @@ class ProductLineConfigService {
       `).get(productLineId, key);
       if (row) return true;
     } catch {
-      // 数据库尚未初始化时继续检查 nn 的历史配置。
+      // 数据库尚未初始化时继续检查 default 的历史配置。
     }
-    return productLineId === 'nn'
-      && Boolean(String(process.env[key] || '').trim() || legacyNNConfigValue(key));
+    return productLineId === 'default'
+      && Boolean(String(process.env[key] || '').trim() || legacyDefaultConfigValue(key));
   }
 
   setMany(productLineId: string, values: Partial<Record<ProductLineConfigKey, unknown>>, updatedBy?: string) {
@@ -324,10 +325,10 @@ class ProductLineConfigService {
         if (key === 'JENKINS_TOKEN' || key === 'PGYER_API_KEY') values[key] = value;
       } else values[key] = value;
     }
-    if (productLineId === 'nn') {
-      values.JENKINS_NN_JOB ||= 'nn';
-      values.JENKINS_NN_QA_JOB ||= 'nn-auto-quality';
-      values.JENKINS_NN_REPO_URL ||= 'http://git.leigod.top/nn_ios/nnios.git';
+    if (productLineId === 'default') {
+      values.JENKINS_JOB ||= 'default';
+      values.JENKINS_QUALITY_JOB ||= 'mobile-auto-quality';
+      values.JENKINS_REPO_URL ||= 'https://github.com/example/mobile-app.git';
       if (!values.JENKINS_USER && !values.JENKINS_TOKENConfigured) {
         values.JENKINS_USER = 'anonymous';
       }
@@ -360,29 +361,29 @@ class ProductLineConfigService {
 
   podxConfig(productLineId = currentProductLineId(), useLibrarySource = true): ProductLinePodxConfig {
     const productLine = this.findProductLine(productLineId);
-    const jenkinsRepoUrl = this.get('JENKINS_NN_REPO_URL', productLineId)
-      || (productLineId === 'nn' ? 'http://git.leigod.top/nn_ios/nnios.git' : '');
+    const jenkinsRepoUrl = this.get('JENKINS_REPO_URL', productLineId)
+      || (productLineId === 'default' ? 'https://github.com/example/mobile-app.git' : '');
     const configuredPrivateSource = this.get('PODX_PRIVATE_SOURCE', productLineId);
     const privateSourceLocation = gitLocationFromRepoUrl(configuredPrivateSource);
     const mainRepoLocation = gitLocationFromRepoUrl(jenkinsRepoUrl);
     const targetName = this.get('PODX_TARGET_NAME', productLineId)
       || privateSourceLocation.targetName
       || mainRepoLocation.targetName
-      || (productLineId === 'nn' ? 'nn_ios' : productLine?.key || productLineId);
+      || (productLineId === 'default' ? 'mobile_ios' : productLine?.key || productLineId);
     const gitBaseUrl = this.get('PODX_GIT_BASE_URL', productLineId)
       || privateSourceLocation.gitBaseUrl
       || mainRepoLocation.gitBaseUrl
       || this.gitBaseUrlFromRepoUrl(jenkinsRepoUrl, targetName)
-      || (productLineId === 'nn' ? 'http://git.leigod.top' : '');
+      || (productLineId === 'default' ? 'https://github.com/example' : '');
     const privateSource = configuredPrivateSource
-      || (gitBaseUrl && targetName ? `${trimTrailingSlash(gitBaseUrl)}/${targetName}/nnspec.git` : '');
+      || (gitBaseUrl && targetName ? `${trimTrailingSlash(gitBaseUrl)}/${targetName}/mobile-specs.git` : '');
     const publishMainRepo = (jenkinsRepoUrl ? repoNameFromUrl(jenkinsRepoUrl) : '')
       || repoNameFromUrl(this.get('PODX_PUBLISH_MAIN_REPO', productLineId));
     const hasConfiguredComponentRepos = this.hasStoredConfig('PODX_PUBLISH_REPOS', productLineId);
     const configuredComponentRepos = splitList(this.get('PODX_PUBLISH_REPOS', productLineId));
     const componentRepos = hasConfiguredComponentRepos
       ? configuredComponentRepos
-      : productLineId === 'nn'
+      : productLineId === 'default'
         ? DEFAULT_REPOS
           .map(repoNameFromUrl)
           .filter((repo) => repo.toLowerCase() !== publishMainRepo.toLowerCase())
@@ -402,8 +403,8 @@ class ProductLineConfigService {
       publishWorkDir: this.get('PODX_PUBLISH_WORK_DIR', productLineId) || `.mgit-publish/${productLine?.key || productLineId}`,
       publishBaseBranch: this.get('PODX_PUBLISH_BASE_BRANCH', productLineId) || 'develop',
       jenkinsBaseUrl: productLine?.jenkins_base_url || '',
-      jenkinsJob: this.get('JENKINS_NN_JOB', productLineId) || (productLineId === 'nn' ? 'nn' : ''),
-      jenkinsQualityJob: this.get('JENKINS_NN_QA_JOB', productLineId) || (productLineId === 'nn' ? 'nn-auto-quality' : ''),
+      jenkinsJob: this.get('JENKINS_JOB', productLineId) || (productLineId === 'default' ? 'default' : ''),
+      jenkinsQualityJob: this.get('JENKINS_QUALITY_JOB', productLineId) || (productLineId === 'default' ? 'mobile-auto-quality' : ''),
       jenkinsRepoUrl,
     };
   }
@@ -421,9 +422,9 @@ class ProductLineConfigService {
       PODX_PUBLISH_WORK_DIR: config.publishWorkDir,
       PODX_PUBLISH_BASE_BRANCH: config.publishBaseBranch,
       JENKINS_BASE_URL: config.jenkinsBaseUrl,
-      JENKINS_NN_JOB: config.jenkinsJob,
-      JENKINS_NN_QA_JOB: config.jenkinsQualityJob,
-      JENKINS_NN_REPO_URL: config.jenkinsRepoUrl,
+      JENKINS_JOB: config.jenkinsJob,
+      JENKINS_QUALITY_JOB: config.jenkinsQualityJob,
+      JENKINS_REPO_URL: config.jenkinsRepoUrl,
     };
   }
 
@@ -458,7 +459,7 @@ class ProductLineConfigService {
     if (config.jenkinsRepoUrl) lines.push(`jenkins_repo_url: ${yamlScalar(config.jenkinsRepoUrl)}`);
     lines.push(
       '',
-      '# 当前主工程只对应一个产品线；多产品线由 nn-ios-platform 在不同主工程中分别维护。'
+      '# 当前主工程只对应一个产品线；多产品线由 mobile-devops-ai 在不同主工程中分别维护。'
     );
     return lines.join('\n');
   }
@@ -533,7 +534,7 @@ class ProductLineConfigService {
     const repoName = repoNameFromUrl(repoUrl || config.publishMainRepo || config.productLineId);
     if (!repoName) throw new Error('未配置主工程仓库，无法同步 podx.config.yml');
     const root = defaultGitWorkspaceDir();
-    return config.productLineId === 'nn'
+    return config.productLineId === 'default'
       ? path.join(root, repoName)
       : path.join(root, config.productLineId.replace(/[^a-zA-Z0-9_-]/g, '_'), repoName);
   }

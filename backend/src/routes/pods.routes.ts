@@ -7,7 +7,7 @@ import path from 'path';
 import podService from '../services/PodService';
 import logger from '../utils/logger';
 import { requireAnyRole } from '../middleware/auth';
-import { getNNRtcJenkinsConfig } from '../config/externalServices';
+import { getMobileRTCJenkinsConfig } from '../config/externalServices';
 import { workflowIntegrationService } from '../services/WorkflowIntegrationService';
 import { currentProductLineId } from '../services/ProductLineContext';
 import { productLineConfigService } from '../services/ProductLineConfigService';
@@ -29,23 +29,23 @@ router.use((req, res, next) => {
   next();
 });
 const podDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
-const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+const UPLOAD_DIR = process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads';
 const DATA_DIR = process.env.DATA_DIR || path.resolve(UPLOAD_DIR, '..');
-const NNRTC_TASKS_BASE_PATH = process.env.NNRTC_POD_TASKS_PATH || path.join(DATA_DIR, 'nnrtc-pod-tasks.json');
+const MOBILE_RTC_TASKS_BASE_PATH = process.env.MOBILE_RTC_POD_TASKS_PATH || path.join(DATA_DIR, 'mobile-rtc-pod-tasks.json');
 
-function nnrtcTasksPath(productLineId: string) {
-  if (productLineId === 'nn') return NNRTC_TASKS_BASE_PATH;
-  const extension = path.extname(NNRTC_TASKS_BASE_PATH) || '.json';
-  const base = NNRTC_TASKS_BASE_PATH.slice(0, -extension.length);
+function mobileRtcTasksPath(productLineId: string) {
+  if (productLineId === 'default') return MOBILE_RTC_TASKS_BASE_PATH;
+  const extension = path.extname(MOBILE_RTC_TASKS_BASE_PATH) || '.json';
+  const base = MOBILE_RTC_TASKS_BASE_PATH.slice(0, -extension.length);
   return `${base}.${productLineId.replace(/[^A-Za-z0-9_.-]/g, '_')}${extension}`;
 }
 
-type NNRtcTaskStatus = 'pending' | 'running' | 'success' | 'failed';
-interface NNRtcTask {
+type MobileRTCTaskStatus = 'pending' | 'running' | 'success' | 'failed';
+interface MobileRTCTask {
   id: string;
   productLineId: string;
   type: 'publish' | 'replace';
-  status: NNRtcTaskStatus;
+  status: MobileRTCTaskStatus;
   progress: number;
   message: string;
   logs: string[];
@@ -56,33 +56,33 @@ interface NNRtcTask {
   updatedAt: number;
 }
 
-const nnrtcTasks = new Map<string, NNRtcTask>();
+const mobileRtcTasks = new Map<string, MobileRTCTask>();
 const loadedTaskProductLines = new Set<string>();
 
-function persistNNRtcTasks(productLineId = currentProductLineId()) {
+function persistMobileRTCTasks(productLineId = currentProductLineId()) {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    const tasks = Array.from(nnrtcTasks.values())
+    const tasks = Array.from(mobileRtcTasks.values())
       .filter((task) => task.productLineId === productLineId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, 100);
-    fs.writeFileSync(nnrtcTasksPath(productLineId), JSON.stringify({ productLineId, tasks, updatedAt: Date.now() }, null, 2), 'utf-8');
+    fs.writeFileSync(mobileRtcTasksPath(productLineId), JSON.stringify({ productLineId, tasks, updatedAt: Date.now() }, null, 2), 'utf-8');
   } catch (error: any) {
-    logger.warn('保存 NNRtc Pod 任务失败', { error: error.message });
+    logger.warn('保存 MobileRTC Pod 任务失败', { error: error.message });
   }
 }
 
-function loadNNRtcTasks(productLineId = currentProductLineId()) {
+function loadMobileRTCTasks(productLineId = currentProductLineId()) {
   if (loadedTaskProductLines.has(productLineId)) return;
   loadedTaskProductLines.add(productLineId);
   try {
-    const tasksPath = nnrtcTasksPath(productLineId);
+    const tasksPath = mobileRtcTasksPath(productLineId);
     if (!fs.existsSync(tasksPath)) return;
     const parsed = JSON.parse(fs.readFileSync(tasksPath, 'utf-8'));
     const tasks = Array.isArray(parsed?.tasks) ? parsed.tasks : [];
     for (const item of tasks) {
       if (!item?.id) continue;
-      const task: NNRtcTask = {
+      const task: MobileRTCTask = {
         id: String(item.id),
         productLineId,
         type: item.type === 'replace' ? 'replace' : 'publish',
@@ -104,15 +104,15 @@ function loadNNRtcTasks(productLineId = currentProductLineId()) {
         task.logs.push(task.message);
         task.updatedAt = Date.now();
       }
-      nnrtcTasks.set(task.id, task);
+      mobileRtcTasks.set(task.id, task);
     }
-    persistNNRtcTasks(productLineId);
+    persistMobileRTCTasks(productLineId);
   } catch (error: any) {
-    logger.warn('加载 NNRtc Pod 任务失败', { error: error.message });
+    logger.warn('加载 MobileRTC Pod 任务失败', { error: error.message });
   }
 }
 
-loadNNRtcTasks();
+loadMobileRTCTasks();
 
 const upload = multer({
   dest: UPLOAD_DIR,
@@ -146,29 +146,29 @@ function optionalTargetBranch(value: unknown): string | undefined {
   return targetBranch || undefined;
 }
 
-function isNNRtcPackageFile(fileName: string): boolean {
+function isMobileRTCPackageFile(fileName: string): boolean {
   const lowerName = fileName.toLowerCase();
   return lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz');
 }
 
-function isNNRtcTestVersion(version?: string) {
+function isMobileRTCTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
 function buildJenkinsAuthConfig() {
-  const username = productLineConfigService.get('NNRTC_JENKINS_USER')
+  const username = productLineConfigService.get('MOBILE_RTC_JENKINS_USER')
     || productLineConfigService.get('JENKINS_USER');
-  const token = productLineConfigService.get('NNRTC_JENKINS_TOKEN')
+  const token = productLineConfigService.get('MOBILE_RTC_JENKINS_TOKEN')
     || productLineConfigService.get('JENKINS_TOKEN');
   if (!username || !token) return {};
   return { auth: { username, password: token } };
 }
 
-function createNNRtcTask(type: NNRtcTask['type']): NNRtcTask {
-  loadNNRtcTasks();
+function createMobileRTCTask(type: MobileRTCTask['type']): MobileRTCTask {
+  loadMobileRTCTasks();
   const now = Date.now();
-  const task: NNRtcTask = {
-    id: `nnrtc_${type}_${now}_${Math.random().toString(36).slice(2, 8)}`,
+  const task: MobileRTCTask = {
+    id: `mobile_rtc_${type}_${now}_${Math.random().toString(36).slice(2, 8)}`,
     productLineId: currentProductLineId(),
     type,
     status: 'pending',
@@ -178,46 +178,46 @@ function createNNRtcTask(type: NNRtcTask['type']): NNRtcTask {
     createdAt: now,
     updatedAt: now,
   };
-  nnrtcTasks.set(task.id, task);
-  persistNNRtcTasks(task.productLineId);
+  mobileRtcTasks.set(task.id, task);
+  persistMobileRTCTasks(task.productLineId);
   return task;
 }
 
-function updateNNRtcTask(task: NNRtcTask, patch: Partial<NNRtcTask>) {
+function updateMobileRTCTask(task: MobileRTCTask, patch: Partial<MobileRTCTask>) {
   Object.assign(task, patch, { updatedAt: Date.now() });
   if (patch.message) task.logs.push(patch.message);
-  nnrtcTasks.set(task.id, task);
-  persistNNRtcTasks(task.productLineId);
+  mobileRtcTasks.set(task.id, task);
+  persistMobileRTCTasks(task.productLineId);
 }
 
 function scheduleTaskCleanup() {
   const productLineId = currentProductLineId();
   const expireAt = Date.now() - 2 * 60 * 60 * 1000;
-  for (const [id, task] of nnrtcTasks.entries()) {
-    if (task.productLineId === productLineId && task.updatedAt < expireAt) nnrtcTasks.delete(id);
+  for (const [id, task] of mobileRtcTasks.entries()) {
+    if (task.productLineId === productLineId && task.updatedAt < expireAt) mobileRtcTasks.delete(id);
   }
-  persistNNRtcTasks(productLineId);
+  persistMobileRTCTasks(productLineId);
 }
 
-function findNNRtcArtifact(artifacts: any[]) {
+function findMobileRTCArtifact(artifacts: any[]) {
   return artifacts.find((item: any) => {
     const fileName = String(item?.fileName || '').toLowerCase();
     const relativePath = String(item?.relativePath || '').toLowerCase();
     const artifactName = fileName || path.basename(relativePath);
     const isSupportedArchive = artifactName.endsWith('.tgz') || artifactName.endsWith('.tar.gz') || artifactName.endsWith('.zip');
-    const isNNRtcArchive =
-      /^nnrtc.*\.(?:tgz|tar\.gz|zip)$/.test(artifactName) ||
+    const isMobileRTCArchive =
+      /^mobileRtc.*\.(?:tgz|tar\.gz|zip)$/.test(artifactName) ||
       /^(?:nrt|nrtc)\.(?:tgz|tar\.gz|zip)$/.test(artifactName);
-    return isSupportedArchive && isNNRtcArchive;
+    return isSupportedArchive && isMobileRTCArchive;
   });
 }
 
-function isNNRtcReleaseBuildForVersion(branchName: string, version: string) {
+function isMobileRTCReleaseBuildForVersion(branchName: string, version: string) {
   const normalized = String(branchName || '').replace(/^origin\//, '');
   return normalized === `release_${version}` || normalized === `release/${version}`;
 }
 
-function inferNNRtcBuildBranch(build: any, parameters: any[]) {
+function inferMobileRTCBuildBranch(build: any, parameters: any[]) {
   const parameterBranch = String(
     parameters.find((item: any) => String(item?.name || '').toUpperCase() === 'BRANCH')?.value ||
     parameters.find((item: any) => /branch/i.test(String(item?.name || '')))?.value ||
@@ -234,10 +234,10 @@ function inferNNRtcBuildBranch(build: any, parameters: any[]) {
   return matched ? matched[1].replace(/^origin\//, '') : '';
 }
 
-function normalizeNNRtcJenkinsBuildUrl(url?: string) {
+function normalizeMobileRTCJenkinsBuildUrl(url?: string) {
   const rawUrl = String(url || '').trim();
   if (!rawUrl) return undefined;
-  const { baseUrl } = getNNRtcJenkinsConfig();
+  const { baseUrl } = getMobileRTCJenkinsConfig();
   if (!baseUrl) return rawUrl;
   try {
     const parsedUrl = new URL(rawUrl);
@@ -254,8 +254,8 @@ function normalizeNNRtcJenkinsBuildUrl(url?: string) {
   return rawUrl;
 }
 
-async function fetchNNRtcBuildParameters(jobPath: string, buildNumber: number): Promise<any[]> {
-  const { baseUrl } = getNNRtcJenkinsConfig();
+async function fetchMobileRTCBuildParameters(jobPath: string, buildNumber: number): Promise<any[]> {
+  const { baseUrl } = getMobileRTCJenkinsConfig();
   try {
     const response = await axios.get(`${baseUrl}/${jobPath}/${buildNumber}/api/json`, {
       timeout: 8000,
@@ -267,12 +267,12 @@ async function fetchNNRtcBuildParameters(jobPath: string, buildNumber: number): 
     return (Array.isArray(response.data?.actions) ? response.data.actions : [])
       .flatMap((action: any) => Array.isArray(action?.parameters) ? action.parameters : []);
   } catch (error: any) {
-    logger.warn('获取 NNRtc Jenkins 构建参数失败', { buildNumber, error: error.message });
+    logger.warn('获取 MobileRTC Jenkins 构建参数失败', { buildNumber, error: error.message });
     return [];
   }
 }
 
-async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
+async function listMobileRTCJenkinsBuilds(limit = 30): Promise<Array<{
   number: number;
   result: string;
   branchName: string;
@@ -280,7 +280,7 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
   url?: string;
   artifactPath: string;
 }>> {
-  const { baseUrl, jobPath } = getNNRtcJenkinsConfig();
+  const { baseUrl, jobPath } = getMobileRTCJenkinsConfig();
   const safeLimit = Math.max(1, Math.min(Number(limit) || 30, 300));
   const response = await axios.get(`${baseUrl}/${jobPath}/api/json`, {
     timeout: 30000,
@@ -292,15 +292,15 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
   const builds = Array.isArray(response.data?.builds) ? response.data.builds : [];
   const candidates = builds
     .map((build: any) => {
-      const artifact = findNNRtcArtifact(Array.isArray(build?.artifacts) ? build.artifacts : []);
+      const artifact = findMobileRTCArtifact(Array.isArray(build?.artifacts) ? build.artifacts : []);
       if (!artifact) return null;
       if (String(build.result || '') !== 'SUCCESS') return null;
       return {
         number: Number(build.number),
         result: String(build.result || ''),
-        branchName: inferNNRtcBuildBranch(build, []),
+        branchName: inferMobileRTCBuildBranch(build, []),
         timestamp: Number(build.timestamp) || undefined,
-        url: normalizeNNRtcJenkinsBuildUrl(build.url),
+        url: normalizeMobileRTCJenkinsBuildUrl(build.url),
         artifactPath: String(artifact.relativePath || artifact.fileName || ''),
       };
     })
@@ -316,25 +316,25 @@ async function listNNRtcJenkinsBuilds(limit = 30): Promise<Array<{
   const unresolved = candidates.filter((build) => !build.branchName);
   for (let index = 0; index < unresolved.length; index += 4) {
     const batch = unresolved.slice(index, index + 4);
-    const parameterResults = await Promise.all(batch.map((build) => fetchNNRtcBuildParameters(jobPath, build.number)));
+    const parameterResults = await Promise.all(batch.map((build) => fetchMobileRTCBuildParameters(jobPath, build.number)));
     batch.forEach((build, batchIndex) => {
-      build.branchName = inferNNRtcBuildBranch(build, parameterResults[batchIndex]);
+      build.branchName = inferMobileRTCBuildBranch(build, parameterResults[batchIndex]);
     });
   }
 
   return candidates;
 }
 
-async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ filePath: string; fileName: string; artifactUrl: string }> {
+async function downloadMobileRTCJenkinsArtifact(buildNumber: string): Promise<{ filePath: string; fileName: string; artifactUrl: string }> {
   const build = String(buildNumber || '').trim();
   if (!/^\d+$/.test(build)) {
-    const error = new Error('NNRtc Jenkins 构建号必须是数字') as Error & { statusCode?: number };
+    const error = new Error('MobileRTC Jenkins 构建号必须是数字') as Error & { statusCode?: number };
     error.statusCode = 400;
     throw error;
   }
 
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  const { baseUrl, jobPath } = getNNRtcJenkinsConfig();
+  const { baseUrl, jobPath } = getMobileRTCJenkinsConfig();
   const apiUrl = `${baseUrl}/${jobPath}/${build}/api/json`;
   const metaResponse = await axios.get(apiUrl, {
     timeout: 30000,
@@ -342,16 +342,16 @@ async function downloadNNRtcJenkinsArtifact(buildNumber: string): Promise<{ file
     ...buildJenkinsAuthConfig(),
   });
   const artifacts = Array.isArray(metaResponse.data?.artifacts) ? metaResponse.data.artifacts : [];
-  const artifact = findNNRtcArtifact(artifacts);
+  const artifact = findMobileRTCArtifact(artifacts);
 
   if (!artifact?.relativePath) {
     const names = artifacts.map((item: any) => item?.relativePath || item?.fileName).filter(Boolean).join(', ');
-    throw new Error(`构建 #${build} 未找到 nrt.tgz/nrtc.tgz/nnrtc.tgz artifact${names ? `，当前 artifacts: ${names}` : ''}`);
+    throw new Error(`构建 #${build} 未找到 nrt.tgz/nrtc.tgz/mobile-rtc.tgz artifact${names ? `，当前 artifacts: ${names}` : ''}`);
   }
 
   const fileName = String(artifact.fileName || path.basename(artifact.relativePath));
   const artifactUrl = `${baseUrl}/${jobPath}/${build}/artifact/${String(artifact.relativePath).split('/').map(encodeURIComponent).join('/')}`;
-  const filePath = path.join(UPLOAD_DIR, `nnrtc_jenkins_${build}_${Date.now()}_${fileName}`);
+  const filePath = path.join(UPLOAD_DIR, `mobile_rtc_jenkins_${build}_${Date.now()}_${fileName}`);
   const response = await axios.get(artifactUrl, {
     responseType: 'stream',
     timeout: 600000,
@@ -389,24 +389,24 @@ router.post('/publish', podDeveloperMiddleware, upload.single('file'), async (re
 
     logger.info('收到 Pod 组件发布请求', { name, version, lib_type, target_branch: targetBranch, filename: req.file?.originalname });
 
-    const nnrtcPackageType: 'release' | 'test' | undefined = name === 'NNRtc'
-      ? (package_type === 'test' || isNNRtcTestVersion(version) ? 'test' : 'release')
+    const mobileRtcPackageType: 'release' | 'test' | undefined = name === 'MobileRTC'
+      ? (package_type === 'test' || isMobileRTCTestVersion(version) ? 'test' : 'release')
       : undefined;
     const params = {
       name, version, lib_type, lib_name, summary, homepage, authors, license,
       platform_version, dependencies, sys_frameworks, sys_libraries, target_branch: targetBranch,
-      package_type: nnrtcPackageType,
+      package_type: mobileRtcPackageType,
       build_id,
     };
     let component;
     if (!req.file) {
       component = await podService.publishMetadata(params);
-    } else if (name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+    } else if (name === 'MobileRTC' && isMobileRTCPackageFile(req.file.originalname)) {
       tempPath = req.file.path;
-      component = await podService.publishNNRtcPackage(tempPath, req.file.originalname, params);
-    } else if (name === 'leigod_im_cross_sdk' && isNNRtcPackageFile(req.file.originalname)) {
+      component = await podService.publishMobileRTCPackage(tempPath, req.file.originalname, params);
+    } else if (name === 'mobile_im_cross_sdk' && isMobileRTCPackageFile(req.file.originalname)) {
       tempPath = req.file.path;
-      component = await podService.publishLeigodIMCrossSDKPackage(tempPath, req.file.originalname, params);
+      component = await podService.publishMobileIMCrossSDKPackage(tempPath, req.file.originalname, params);
     } else {
       tempPath = req.file.path;
       component = await podService.publish(tempPath, req.file.originalname, params);
@@ -432,25 +432,25 @@ router.post('/publish', podDeveloperMiddleware, upload.single('file'), async (re
 });
 
 /**
- * GET /api/pods/nnrtc/jenkins/builds
- * 获取 NNRtc Jenkins 最近包含 tgz artifact 的构建列表
+ * GET /api/pods/mobile-rtc/jenkins/builds
+ * 获取 MobileRTC Jenkins 最近包含 tgz artifact 的构建列表
  */
-router.get('/nnrtc/jenkins/builds', async (req: Request, res: Response) => {
+router.get('/mobile-rtc/jenkins/builds', async (req: Request, res: Response) => {
   try {
-    const builds = await listNNRtcJenkinsBuilds(Number(req.query.limit || 30));
+    const builds = await listMobileRTCJenkinsBuilds(Number(req.query.limit || 30));
     res.json({ success: true, data: builds });
   } catch (error: any) {
-    logger.error('获取 NNRtc Jenkins 构建列表失败', { error: error.message });
+    logger.error('获取 MobileRTC Jenkins 构建列表失败', { error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
 /**
- * GET /api/pods/nnrtc/jenkins/config
- * 获取 NNRtc Jenkins 配置
+ * GET /api/pods/mobile-rtc/jenkins/config
+ * 获取 MobileRTC Jenkins 配置
  */
-router.get('/nnrtc/jenkins/config', async (_req: Request, res: Response) => {
-  const { baseUrl, jobName, jobUrl } = getNNRtcJenkinsConfig();
+router.get('/mobile-rtc/jenkins/config', async (_req: Request, res: Response) => {
+  const { baseUrl, jobName, jobUrl } = getMobileRTCJenkinsConfig();
   res.json({
     success: true,
     data: {
@@ -462,12 +462,12 @@ router.get('/nnrtc/jenkins/config', async (_req: Request, res: Response) => {
 });
 
 /**
- * GET /api/pods/leigod-im/imsdk/versions
- * 获取 IMSDK 共享目录中的 leigod_im_cross_sdk 版本列表
+ * GET /api/pods/mobile-im/imsdk/versions
+ * 获取 IMSDK 共享目录中的 mobile_im_cross_sdk 版本列表
  */
-router.get('/leigod-im/imsdk/versions', async (_req: Request, res: Response) => {
+router.get('/mobile-im/imsdk/versions', async (_req: Request, res: Response) => {
   try {
-    const versions = podService.listLeigodIMSDKVersions();
+    const versions = podService.listMobileIMSDKVersions();
     res.json({ success: true, data: versions });
   } catch (error: any) {
     logger.error('获取 IMSDK 版本列表失败', { error: error.message });
@@ -476,27 +476,27 @@ router.get('/leigod-im/imsdk/versions', async (_req: Request, res: Response) => 
 });
 
 /**
- * POST /api/pods/leigod-im/imsdk/publish
- * 从 IMSDK 共享目录选择版本发布 leigod_im_cross_sdk
+ * POST /api/pods/mobile-im/imsdk/publish
+ * 从 IMSDK 共享目录选择版本发布 mobile_im_cross_sdk
  */
-router.post('/leigod-im/imsdk/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-im/imsdk/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
-    const { version, target_branch, sys_frameworks, sys_libraries, trigger_nnios_build } = req.body;
+    const { version, target_branch, sys_frameworks, sys_libraries, trigger_main_app_build } = req.body;
     if (!version) {
       return res.status(400).json({ success: false, error: '版本号为必填项' });
     }
     const targetBranch = optionalTargetBranch(target_branch);
 
-    logger.info('从 IMSDK 共享目录发布 leigod_im_cross_sdk', {
+    logger.info('从 IMSDK 共享目录发布 mobile_im_cross_sdk', {
       version,
       target_branch: targetBranch,
-      trigger_nnios_build,
+      trigger_main_app_build,
     });
 
-    const component = await podService.publishLeigodIMCrossSDKFromIMSDK(String(version), {
-      summary: 'leigod_im_cross_sdk',
-      homepage: 'http://git.leigod.top/nn_ios/leigod_im_cross_sdk',
-      authors: 'leigod',
+    const component = await podService.publishMobileIMCrossSDKFromIMSDK(String(version), {
+      summary: 'mobile_im_cross_sdk',
+      homepage: 'https://github.com/example/mobile-im-cross-sdk',
+      authors: 'mobile',
       license: 'MIT',
       platform_version: '12.0',
       sys_frameworks,
@@ -508,16 +508,16 @@ router.post('/leigod-im/imsdk/publish', podDeveloperMiddleware, async (req: Requ
 
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
-    logger.error('从 IMSDK 发布 leigod_im_cross_sdk 失败', { error: error.message });
+    logger.error('从 IMSDK 发布 mobile_im_cross_sdk 失败', { error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
 /**
- * POST /api/pods/nnrtc/jenkins/publish
- * 从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
+ * POST /api/pods/mobile-rtc/jenkins/publish
+ * 从 MobileRTC Jenkins 指定构建 artifact 发布组件（需要管理员权限）
  */
-router.post('/nnrtc/jenkins/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-rtc/jenkins/publish', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
@@ -526,25 +526,25 @@ router.post('/nnrtc/jenkins/publish', podDeveloperMiddleware, async (req: Reques
       return res.status(400).json({ success: false, error: '版本号为必填项' });
     }
     const targetBranch = optionalTargetBranch(target_branch);
-    const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+    const artifact = await downloadMobileRTCJenkinsArtifact(build_number);
     tempPath = artifact.filePath;
 
-    logger.info('从 Jenkins artifact 发布 NNRtc', {
+    logger.info('从 Jenkins artifact 发布 MobileRTC', {
       build_number,
       version,
       target_branch: targetBranch,
       artifactUrl: artifact.artifactUrl,
     });
 
-    const component = await podService.publishNNRtcPackage(tempPath, artifact.fileName, {
-      name: 'NNRtc',
+    const component = await podService.publishMobileRTCPackage(tempPath, artifact.fileName, {
+      name: 'MobileRTC',
       version,
       lib_type: 'framework',
-      lib_name: 'NNRtc.framework',
+      lib_name: 'MobileRTC.framework',
       sys_frameworks,
       sys_libraries,
       target_branch: targetBranch,
-      package_type: package_type === 'test' || isNNRtcTestVersion(version) ? 'test' : 'release',
+      package_type: package_type === 'test' || isMobileRTCTestVersion(version) ? 'test' : 'release',
       build_id: String(build_number || ''),
     });
 
@@ -552,42 +552,42 @@ router.post('/nnrtc/jenkins/publish', podDeveloperMiddleware, async (req: Reques
     workflowIntegrationService.syncPodComponent(component, 'publish_jenkins');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
-    logger.error('从 Jenkins 发布 NNRtc 失败', { error: error.message });
+    logger.error('从 Jenkins 发布 MobileRTC 失败', { error: error.message });
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
 /**
- * POST /api/pods/nnrtc/jenkins/publish-task
- * 后台任务：从 NNRtc Jenkins 指定构建 artifact 发布组件（需要管理员权限）
+ * POST /api/pods/mobile-rtc/jenkins/publish-task
+ * 后台任务：从 MobileRTC Jenkins 指定构建 artifact 发布组件（需要管理员权限）
  */
-router.post('/nnrtc/jenkins/publish-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-rtc/jenkins/publish-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { build_number, version, target_branch, sys_frameworks, sys_libraries, package_type } = req.body;
     if (!version) return res.status(400).json({ success: false, error: '版本号为必填项' });
     const targetBranch = optionalTargetBranch(target_branch);
-    const task = createNNRtcTask('publish');
+    const task = createMobileRTCTask('publish');
     scheduleTaskCleanup();
     res.json({ success: true, data: task });
 
     setImmediate(async () => {
       let tempPath: string | undefined;
       try {
-        updateNNRtcTask(task, { status: 'running', progress: 10, message: `开始发布 NNRtc@${version}` });
-        updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
-        const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+        updateMobileRTCTask(task, { status: 'running', progress: 10, message: `开始发布 MobileRTC@${version}` });
+        updateMobileRTCTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
+        const artifact = await downloadMobileRTCJenkinsArtifact(build_number);
         tempPath = artifact.filePath;
-        const isTestPackage = package_type === 'test' || isNNRtcTestVersion(version);
-        updateNNRtcTask(task, {
+        const isTestPackage = package_type === 'test' || isMobileRTCTestVersion(version);
+        updateMobileRTCTask(task, {
           progress: 45,
-          message: isTestPackage ? '提取 NNRtc.framework 并发布测试包 Pod' : '提取 NNRtc.framework / NNRtc.dSYM 并发布 Pod',
+          message: isTestPackage ? '提取 MobileRTC.framework 并发布测试包 Pod' : '提取 MobileRTC.framework / MobileRTC.dSYM 并发布 Pod',
         });
-        const component = await podService.publishNNRtcPackage(tempPath, artifact.fileName, {
-          name: 'NNRtc',
+        const component = await podService.publishMobileRTCPackage(tempPath, artifact.fileName, {
+          name: 'MobileRTC',
           version,
           lib_type: 'framework',
-          lib_name: 'NNRtc.framework',
+          lib_name: 'MobileRTC.framework',
           sys_frameworks,
           sys_libraries,
           target_branch: targetBranch,
@@ -596,17 +596,17 @@ router.post('/nnrtc/jenkins/publish-task', podDeveloperMiddleware, async (req: R
         });
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         workflowIntegrationService.syncPodComponent(component, 'publish_jenkins');
-        updateNNRtcTask(task, {
+        updateMobileRTCTask(task, {
           status: 'success',
           progress: 100,
-          message: component.warning_message || `NNRtc@${version} 发布完成`,
+          message: component.warning_message || `MobileRTC@${version} 发布完成`,
           data: component,
           warning: component.warning_message,
         });
       } catch (error: any) {
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        logger.error('NNRtc 发布任务失败', { taskId: task.id, error: error.message });
-        updateNNRtcTask(task, {
+        logger.error('MobileRTC 发布任务失败', { taskId: task.id, error: error.message });
+        updateMobileRTCTask(task, {
           status: 'failed',
           progress: 100,
           message: `发布失败: ${error.message}`,
@@ -620,28 +620,28 @@ router.post('/nnrtc/jenkins/publish-task', podDeveloperMiddleware, async (req: R
 });
 
 /**
- * POST /api/pods/nnrtc/:version/jenkins/replace
- * 从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
+ * POST /api/pods/mobile-rtc/:version/jenkins/replace
+ * 从 MobileRTC Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
  */
-router.post('/nnrtc/:version/jenkins/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-rtc/:version/jenkins/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
     const { build_number, target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
-    const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+    const artifact = await downloadMobileRTCJenkinsArtifact(build_number);
     tempPath = artifact.filePath;
 
-    logger.info('从 Jenkins artifact 替换 NNRtc 二进制', {
+    logger.info('从 Jenkins artifact 替换 MobileRTC 二进制', {
       build_number,
       version: req.params.version,
       target_branch: targetBranch,
       artifactUrl: artifact.artifactUrl,
     });
 
-    const current = await podService.getOne('NNRtc', req.params.version);
-    const isTestPackage = current?.package_type === 'test' || isNNRtcTestVersion(req.params.version);
-    const component = await podService.replaceNNRtcPackage(
+    const current = await podService.getOne('MobileRTC', req.params.version);
+    const isTestPackage = current?.package_type === 'test' || isMobileRTCTestVersion(req.params.version);
+    const component = await podService.replaceMobileRTCPackage(
       req.params.version,
       tempPath,
       artifact.fileName,
@@ -654,51 +654,51 @@ router.post('/nnrtc/:version/jenkins/replace', podDeveloperMiddleware, async (re
     workflowIntegrationService.syncPodComponent(component, 'replace_jenkins');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
-    logger.error('从 Jenkins 替换 NNRtc 失败', { error: error.message });
+    logger.error('从 Jenkins 替换 MobileRTC 失败', { error: error.message });
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });
 
 /**
- * POST /api/pods/nnrtc/:version/jenkins/replace-task
- * 后台任务：从 NNRtc Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
+ * POST /api/pods/mobile-rtc/:version/jenkins/replace-task
+ * 后台任务：从 MobileRTC Jenkins 指定构建 artifact 替换已有版本（需要管理员权限）
  */
-router.post('/nnrtc/:version/jenkins/replace-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-rtc/:version/jenkins/replace-task', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { build_number, target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
-    const task = createNNRtcTask('replace');
+    const task = createMobileRTCTask('replace');
     scheduleTaskCleanup();
     res.json({ success: true, data: task });
 
     setImmediate(async () => {
       let tempPath: string | undefined;
       try {
-        updateNNRtcTask(task, { status: 'running', progress: 10, message: `开始替换 NNRtc@${req.params.version}` });
-        updateNNRtcTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
-        const artifact = await downloadNNRtcJenkinsArtifact(build_number);
+        updateMobileRTCTask(task, { status: 'running', progress: 10, message: `开始替换 MobileRTC@${req.params.version}` });
+        updateMobileRTCTask(task, { progress: 25, message: `下载 Jenkins 构建 #${build_number}` });
+        const artifact = await downloadMobileRTCJenkinsArtifact(build_number);
         tempPath = artifact.filePath;
-        const current = await podService.getOne('NNRtc', req.params.version);
-        const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
-        updateNNRtcTask(task, {
+        const current = await podService.getOne('MobileRTC', req.params.version);
+        const syncDSYM = !(current?.package_type === 'test' || isMobileRTCTestVersion(req.params.version));
+        updateMobileRTCTask(task, {
           progress: 45,
-          message: syncDSYM ? '提取 NNRtc.framework / NNRtc.dSYM 并替换 Pod' : '提取 NNRtc.framework 并替换测试包 Pod',
+          message: syncDSYM ? '提取 MobileRTC.framework / MobileRTC.dSYM 并替换 Pod' : '提取 MobileRTC.framework 并替换测试包 Pod',
         });
-        const component = await podService.replaceNNRtcPackage(req.params.version, tempPath, artifact.fileName, targetBranch, String(build_number || ''), syncDSYM);
+        const component = await podService.replaceMobileRTCPackage(req.params.version, tempPath, artifact.fileName, targetBranch, String(build_number || ''), syncDSYM);
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         workflowIntegrationService.syncPodComponent(component, 'replace_jenkins');
-        updateNNRtcTask(task, {
+        updateMobileRTCTask(task, {
           status: 'success',
           progress: 100,
-          message: component.warning_message || `NNRtc@${req.params.version} 替换完成`,
+          message: component.warning_message || `MobileRTC@${req.params.version} 替换完成`,
           data: component,
           warning: component.warning_message,
         });
       } catch (error: any) {
         if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        logger.error('NNRtc 替换任务失败', { taskId: task.id, error: error.message });
-        updateNNRtcTask(task, {
+        logger.error('MobileRTC 替换任务失败', { taskId: task.id, error: error.message });
+        updateMobileRTCTask(task, {
           status: 'failed',
           progress: 100,
           message: `替换失败: ${error.message}`,
@@ -712,43 +712,43 @@ router.post('/nnrtc/:version/jenkins/replace-task', podDeveloperMiddleware, asyn
 });
 
 /**
- * GET /api/pods/nnrtc/tasks
- * 查询最近 NNRtc 发布/替换任务
+ * GET /api/pods/mobile-rtc/tasks
+ * 查询最近 MobileRTC 发布/替换任务
  */
-router.get('/nnrtc/tasks', async (_req: Request, res: Response) => {
-  loadNNRtcTasks();
-  const tasks = Array.from(nnrtcTasks.values())
+router.get('/mobile-rtc/tasks', async (_req: Request, res: Response) => {
+  loadMobileRTCTasks();
+  const tasks = Array.from(mobileRtcTasks.values())
     .filter((task) => task.productLineId === currentProductLineId())
     .sort((a, b) => b.updatedAt - a.updatedAt);
   res.json({ success: true, data: tasks });
 });
 
 /**
- * GET /api/pods/nnrtc/tasks/:taskId
- * 查询 NNRtc 发布/替换任务进度
+ * GET /api/pods/mobile-rtc/tasks/:taskId
+ * 查询 MobileRTC 发布/替换任务进度
  */
-router.get('/nnrtc/tasks/:taskId', async (req: Request, res: Response) => {
-  loadNNRtcTasks();
-  const task = nnrtcTasks.get(req.params.taskId);
+router.get('/mobile-rtc/tasks/:taskId', async (req: Request, res: Response) => {
+  loadMobileRTCTasks();
+  const task = mobileRtcTasks.get(req.params.taskId);
   if (!task || task.productLineId !== currentProductLineId()) return res.status(404).json({ success: false, error: '任务不存在或已过期' });
   res.json({ success: true, data: task, warning: task.warning });
 });
 
 /**
- * POST /api/pods/nnrtc/:version/dsym/backfill
- * 从 Jenkins release 构建补齐 NNRtc 正式包 dSYM，不重新发布 Pod
+ * POST /api/pods/mobile-rtc/:version/dsym/backfill
+ * 从 Jenkins release 构建补齐 MobileRTC 正式包 dSYM，不重新发布 Pod
  */
-router.post('/nnrtc/:version/dsym/backfill', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-rtc/:version/dsym/backfill', podDeveloperMiddleware, async (req: Request, res: Response) => {
   let tempPath: string | undefined;
 
   try {
     const version = req.params.version;
-    if (isNNRtcTestVersion(version)) {
-      await podService.syncNNRtcDSYMFromPackage('', '', version);
+    if (isMobileRTCTestVersion(version)) {
+      await podService.syncMobileRTCDSYMFromPackage('', '', version);
       return res.json({ success: true, data: { version, skipped: true }, warning: '测试包不需要 dSYM，已清理同版本 dSYM' });
     }
 
-    const existing = await podService.hasNNRtcDSYM(version);
+    const existing = await podService.hasMobileRTCDSYM(version);
     if (existing && !req.body?.force) {
       return res.json({ success: true, data: { version, exists: true } });
     }
@@ -756,22 +756,22 @@ router.post('/nnrtc/:version/dsym/backfill', podDeveloperMiddleware, async (req:
     const buildNumber = String(req.body?.build_number || '').trim();
     let targetBuild = buildNumber;
     if (!targetBuild) {
-      const builds = await listNNRtcJenkinsBuilds(100);
-      const matched = builds.find((build) => isNNRtcReleaseBuildForVersion(build.branchName, version));
+      const builds = await listMobileRTCJenkinsBuilds(100);
+      const matched = builds.find((build) => isMobileRTCReleaseBuildForVersion(build.branchName, version));
       if (!matched) {
-        throw new Error(`未找到 release_${version} 对应的 NNRtc Jenkins 构建`);
+        throw new Error(`未找到 release_${version} 对应的 MobileRTC Jenkins 构建`);
       }
       targetBuild = String(matched.number);
     }
 
-    const artifact = await downloadNNRtcJenkinsArtifact(targetBuild);
+    const artifact = await downloadMobileRTCJenkinsArtifact(targetBuild);
     tempPath = artifact.filePath;
-    await podService.syncNNRtcDSYMFromPackage(tempPath, artifact.fileName, version, targetBuild);
+    await podService.syncMobileRTCDSYMFromPackage(tempPath, artifact.fileName, version, targetBuild);
     if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
 
     res.json({ success: true, data: { version, buildNumber: targetBuild, artifactUrl: artifact.artifactUrl } });
   } catch (error: any) {
-    logger.error('补齐 NNRtc dSYM 失败', { version: req.params.version, error: error.message });
+    logger.error('补齐 MobileRTC dSYM 失败', { version: req.params.version, error: error.message });
     if (tempPath && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
@@ -857,7 +857,7 @@ router.post('/:name/:version/retry', podDeveloperMiddleware, async (req: Request
 router.post('/:name/:version/sync-branch', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const current = await podService.getOne(req.params.name, req.params.version);
-    const isTestPackage = current?.package_type === 'test' || isNNRtcTestVersion(req.params.version);
+    const isTestPackage = current?.package_type === 'test' || isMobileRTCTestVersion(req.params.version);
     const targetBranch = req.body?.target_branch
       ? requireTargetBranch(req.body.target_branch)
       : (isTestPackage ? undefined : requireTargetBranch(req.body?.target_branch));
@@ -905,12 +905,12 @@ router.post('/:name/:version/replace', podDeveloperMiddleware, upload.single('fi
     const targetBranch = requireTargetBranch(target_branch);
 
     let component;
-    if (req.params.name === 'NNRtc' && isNNRtcPackageFile(req.file.originalname)) {
+    if (req.params.name === 'MobileRTC' && isMobileRTCPackageFile(req.file.originalname)) {
       const current = await podService.getOne(req.params.name, req.params.version);
-      const syncDSYM = !(current?.package_type === 'test' || isNNRtcTestVersion(req.params.version));
-      component = await podService.replaceNNRtcPackage(req.params.version, tempPath, req.file.originalname, targetBranch, undefined, syncDSYM);
-    } else if (req.params.name === 'leigod_im_cross_sdk') {
-      throw new Error('leigod_im_cross_sdk 只能从 smb://192.168.3.30/share/IMSDK 对应版本包替换');
+      const syncDSYM = !(current?.package_type === 'test' || isMobileRTCTestVersion(req.params.version));
+      component = await podService.replaceMobileRTCPackage(req.params.version, tempPath, req.file.originalname, targetBranch, undefined, syncDSYM);
+    } else if (req.params.name === 'mobile_im_cross_sdk') {
+      throw new Error('mobile_im_cross_sdk 只能从 smb://files.example.com/share/IMSDK 对应版本包替换');
     } else {
       component = await podService.replaceZip(req.params.name, req.params.version, tempPath, req.file.originalname, targetBranch);
     }
@@ -926,18 +926,18 @@ router.post('/:name/:version/replace', podDeveloperMiddleware, upload.single('fi
 });
 
 /**
- * POST /api/pods/leigod-im/:version/imsdk/replace
- * 从 IMSDK 共享目录对应版本替换 leigod_im_cross_sdk 二进制
+ * POST /api/pods/mobile-im/:version/imsdk/replace
+ * 从 IMSDK 共享目录对应版本替换 mobile_im_cross_sdk 二进制
  */
-router.post('/leigod-im/:version/imsdk/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/mobile-im/:version/imsdk/replace', podDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const { target_branch } = req.body;
     const targetBranch = requireTargetBranch(target_branch);
-    const component = await podService.replaceLeigodIMCrossSDKFromIMSDK(req.params.version, targetBranch);
+    const component = await podService.replaceMobileIMCrossSDKFromIMSDK(req.params.version, targetBranch);
     workflowIntegrationService.syncPodComponent(component, 'replace_imsdk');
     res.json({ success: true, data: component, warning: component.warning_message });
   } catch (error: any) {
-    logger.error('从 IMSDK 替换 leigod_im_cross_sdk 失败', { version: req.params.version, error: error.message });
+    logger.error('从 IMSDK 替换 mobile_im_cross_sdk 失败', { version: req.params.version, error: error.message });
     res.status(error.statusCode || 500).json({ success: false, error: error.message });
   }
 });

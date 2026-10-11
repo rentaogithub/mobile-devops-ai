@@ -64,11 +64,11 @@ export class SentryIssueService {
   private readonly sessionTtlMs = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 
   private configValue(key: 'SENTRY_PROXY_TARGET' | 'SENTRY_ORG' | 'SENTRY_PROJECT' | 'SENTRY_AUTO_LOGIN' | 'SENTRY_LOGIN_USERNAME' | 'SENTRY_LOGIN_PASSWORD', legacyFallback = '') {
-    return productLineConfigService.get(key) || (currentProductLineId() === 'nn' ? legacyFallback : '');
+    return productLineConfigService.get(key) || (currentProductLineId() === 'default' ? legacyFallback : '');
   }
 
   private target() {
-    return this.configValue('SENTRY_PROXY_TARGET', process.env.SENTRY_PROXY_TARGET || 'http://172.31.2.239:9000').replace(/\/+$/, '');
+    return this.configValue('SENTRY_PROXY_TARGET', process.env.SENTRY_PROXY_TARGET || 'https://sentry.example.com').replace(/\/+$/, '');
   }
 
   private loginState() {
@@ -92,7 +92,7 @@ export class SentryIssueService {
     await this.ensureLogin();
 
     const organization = options.organization || this.configValue('SENTRY_ORG', process.env.SENTRY_ORG || 'sentry');
-    const project = options.project || this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'nn-ios');
+    const project = options.project || this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'mobile-ios');
     if (!organization || !project) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Sentry Organization 或 Project`);
     const period = options.period || '24h';
     const limit = Math.min(Math.max(options.limit || 5, 1), 20);
@@ -239,7 +239,7 @@ export class SentryIssueService {
     }
 
     const organization = this.configValue('SENTRY_ORG', process.env.SENTRY_ORG || 'sentry');
-    const project = this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'nn-ios');
+    const project = this.configValue('SENTRY_PROJECT', process.env.SENTRY_PROJECT || 'mobile-ios');
     if (!organization || !project) return issueId;
     const queryCandidates = [
       `issue:${issueId}`,

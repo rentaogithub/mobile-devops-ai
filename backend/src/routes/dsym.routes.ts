@@ -16,7 +16,7 @@ const dsymDeveloperMiddleware = requireAnyRole(['developer', 'admin']);
 
 // 配置 Multer
 const upload = multer({
-  dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
+  dest: process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads',
   limits: {
     fileSize: parseInt(process.env.MAX_FILE_SIZE || '524288000'), // 500MB
   },
@@ -24,9 +24,9 @@ const upload = multer({
 
 const fileHandler = new FileHandlerService();
 const storage = new StorageService();
-const uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+const uploadDir = process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads';
 
-function isNNRtcTestVersion(version?: string) {
+function isMobileRTCTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
@@ -41,10 +41,10 @@ async function saveDSYMToStorage(dsymPath: string): Promise<{
   logger.info('UUID 提取完成', { uuid });
 
   const appInfo = await fileHandler.extractAppInfo(dsymPath);
-  if (appInfo.appName === 'NNRtc' && isNNRtcTestVersion(appInfo.version)) {
+  if (appInfo.appName === 'MobileRTC' && isMobileRTCTestVersion(appInfo.version)) {
     throw new AppError(
       ErrorCode.INVALID_FILE_FORMAT,
-      'NNRtc 测试包不允许上传 dSYM，请使用正式包 dSYM',
+      'MobileRTC 测试包不允许上传 dSYM，请使用正式包 dSYM',
       400
     );
   }

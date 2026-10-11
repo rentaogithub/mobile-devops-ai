@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LABEL="${PYMOBILEDEVICE3_TUNNELD_LABEL:-com.nn-ios-platform.pymobiledevice3-tunneld}"
+LABEL="${PYMOBILEDEVICE3_TUNNELD_LABEL:-com.example.mobiledevops.pymobiledevice3-tunneld}"
 PLIST_PATH="/Library/LaunchDaemons/${LABEL}.plist"
 HOST="${PYMOBILEDEVICE3_TUNNELD_HOST:-127.0.0.1}"
 PORT="${PYMOBILEDEVICE3_TUNNELD_PORT:-49151}"

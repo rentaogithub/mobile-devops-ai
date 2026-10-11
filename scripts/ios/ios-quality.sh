@@ -5,11 +5,11 @@ fi
 
 set -euo pipefail
 
-# Jenkins nn-auto-quality job entry script.
+# Jenkins mobile-auto-quality job entry script.
 # Runs on the local Mac with USB iPhone, Xcode and WebDriverAgent.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PLATFORM_ROOT_DIR="${NN_IOS_PLATFORM_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+PLATFORM_ROOT_DIR="${MOBILE_DEVOPS_PLATFORM_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 
 SOURCE_BUILD_NUMBER="${SOURCE_BUILD_NUMBER:-}"
 QUALITY_STARTED_AT_EPOCH="${QUALITY_STARTED_AT_EPOCH:-$(date +%s)}"
@@ -30,7 +30,7 @@ fi
 DEVICE_POOL_LABEL_DISPLAY="${DEVICE_POOL_LABEL// \[suite:monkey\]/}"
 DEVICE_UDID="${DEVICE_UDID:-${DEVICE_SELECTOR:-}}"
 DEVICE_CLOUD="${DEVICE_CLOUD:-LocalMac}"
-APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
+APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.example.mobileapp.dev}"
 SKIP_APP_INSTALL="${SKIP_APP_INSTALL:-0}"
 if [[ "${PACKAGE_URL}" == skip-install:* ]]; then
   SKIP_APP_INSTALL="1"
@@ -97,7 +97,7 @@ WDA_PROJECT_PATH="${WDA_PROJECT_PATH:-${WDA_PROJECT:-}}"
 WDA_SCHEME="${WDA_SCHEME:-WebDriverAgentRunner}"
 WDA_START_TIMEOUT_SECONDS="${WDA_START_TIMEOUT_SECONDS:-300}"
 WDA_DEVELOPMENT_TEAM="${WDA_DEVELOPMENT_TEAM:-${QA_WDA_DEVELOPMENT_TEAM:-LX4548D2Q6}}"
-WDA_BUNDLE_ID="${WDA_BUNDLE_ID:-${QA_WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}}"
+WDA_BUNDLE_ID="${WDA_BUNDLE_ID:-${QA_WDA_BUNDLE_ID:-com.example.WebDriverAgentRunner}}"
 WDA_DERIVED_DATA_PATH="${WDA_DERIVED_DATA_PATH:-${RESULT_DIR}/wda-derived-data}"
 WDA_XCODEBUILD_EXTRA_ARGS="${WDA_XCODEBUILD_EXTRA_ARGS:-}"
 MONKEY_RUNTIME_WDA_URL="${WDA_URL}"
@@ -131,7 +131,7 @@ MONKEY_FORBIDDEN_PAGE_TEXTS="${MONKEY_FORBIDDEN_PAGE_TEXTS:-DoKit,Dokit,www.doki
 MONKEY_FORBIDDEN_REGION_RATIO="${MONKEY_FORBIDDEN_REGION_RATIO:-0.78,0.18,1.0,0.72}"
 MONKEY_FORBIDDEN_PADDING="${MONKEY_FORBIDDEN_PADDING:-16}"
 MONKEY_BUSINESS_AWARE="${MONKEY_BUSINESS_AWARE:-1}"
-MONKEY_BUSINESS_MAP_PATH="${MONKEY_BUSINESS_MAP_PATH:-${PLATFORM_ROOT_DIR}/config/nnios-business-map.json}"
+MONKEY_BUSINESS_MAP_PATH="${MONKEY_BUSINESS_MAP_PATH:-${PLATFORM_ROOT_DIR}/config/mobile-app-business-map.json}"
 MONKEY_BUSINESS_DOMAINS="${MONKEY_BUSINESS_DOMAINS:-login,im,community,voice_room,profile,playwith}"
 MONKEY_GUARDED_ACTION_POLICY="${MONKEY_GUARDED_ACTION_POLICY:-read_only}"
 MONKEY_BUSINESS_WEIGHT_CORE="${MONKEY_BUSINESS_WEIGHT_CORE:-40}"
@@ -212,9 +212,9 @@ cleanup_wda_automation_session() {
     pkill -f "iproxy.*${wda_port}:8100.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
   fi
   pkill -f "xcodebuild.*${WDA_SCHEME:-WebDriverAgentRunner}.*${SELECTED_DEVICE}" >/dev/null 2>&1 || true
-  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}" || true
+  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.example.WebDriverAgentRunner}" || true
   sleep 1
-  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.nndev.WebDriverAgentRunner}" || true
+  terminate_device_process_matching "WebDriverAgentRunner|WebDriverAgent|xctrunner|${WDA_BUNDLE_ID:-com.example.WebDriverAgentRunner}" || true
   terminate_device_process_matching "AutomationModeUI|automationmode-writer" || true
 }
 
@@ -747,7 +747,7 @@ def analyze_exceptions(device_log_path, quality_log_path, bundle_id):
         line = raw_line.strip()
         if not line:
             continue
-        if bundle_id and bundle_id not in line and not any(token in line for token in ("NNIM", "SpringBoard", "ReportCrash", "JetsamEvent")):
+        if bundle_id and bundle_id not in line and not any(token in line for token in ("MobileApp", "SpringBoard", "ReportCrash", "JetsamEvent")):
             continue
         matched = []
         for name, pattern in patterns:
@@ -799,8 +799,8 @@ def analyze_crash_reports(crash_dir, bundle_id):
             report_app = str(metadata.get("app_name") or metadata.get("name") or "")
             is_target_app = (
                 (bundle_id and (bundle_id in text or bundle_id in name or report_bundle == bundle_id))
-                or report_app == "NNIM"
-                or name.startswith("NNIM.")
+                or report_app == "MobileApp"
+                or name.startswith("MobileApp.")
             )
             if bundle_id and not is_target_app:
                 ignored_files.append(rel(full_path))
@@ -1409,13 +1409,13 @@ if isinstance(monkey_duration_ms, (int, float)):
 
 result = {
     "schema_version": "quality.task.result.v1",
-    "task_id": f"jenkins:nn-auto-quality:{build_number}" if build_number else "",
+    "task_id": f"jenkins:mobile-auto-quality:{build_number}" if build_number else "",
     "task_type": "ios_monkey" if summary.get("testSuite") == "monkey" else f"ios_{summary.get('testSuite') or 'quality'}",
     "status": status,
     "passed": status == "success",
-    "project_id": "nn-ios",
+    "project_id": "mobile-ios",
     "app": {
-        "name": "NNIM",
+        "name": "MobileApp",
         "bundle_id": summary.get("bundleId") or summary.get("detectedBundleId") or "",
         "version": summary.get("appVersion") or "",
         "build": summary.get("sourceBuildNumber") or "",
@@ -2020,7 +2020,7 @@ def walk(value):
         for child in value:
             walk(child)
 walk(data)
-candidates = sorted({item for item in bundle_ids if item.startswith("com.nn")})
+candidates = sorted({item for item in bundle_ids if item.startswith("com.default")})
 print(("1" if target in bundle_ids else "0") + "\t" + ",".join(candidates))
 PY
 )" || parsed=""
@@ -2645,7 +2645,7 @@ start_pymobiledevice3_performance_sampling() {
     "${pymobiledevice3_cmd}" developer dvt sysmon process monitor process \
       --udid "${SELECTED_DEVICE}" \
       --tunnel '' \
-      -f "name=${DETECTED_EXECUTABLE_NAME:-NNIM}" \
+      -f "name=${DETECTED_EXECUTABLE_NAME:-MobileApp}" \
       --choose first \
       --interval 1000 \
       -o "${PERFORMANCE_SAMPLE_FILE}" >>"${perf_log}" 2>&1
@@ -3423,7 +3423,7 @@ for name in sorted(os.listdir(stack_dir)) if os.path.isdir(stack_dir) else []:
 def score_row(row, elapsed):
     raw = row["raw"]
     score = 0
-    if re.search(r"NNIM|NNApperance|NNLibrary|UIKit|Swift|Objective|main", raw, re.I):
+    if re.search(r"MobileApp|SampleAppearance|SampleLibrary|UIKit|Swift|Objective|main", raw, re.I):
         score += 4
     if re.search(r"0x[0-9a-f]+|\\+\\s*\\d+|\\[|\\]", raw, re.I):
         score += 2
@@ -3826,9 +3826,9 @@ def is_target_report(text, name):
     report_app = str(metadata.get("app_name") or metadata.get("name") or "")
     return (
         (bundle_id and (report_bundle == bundle_id or bundle_id in text or bundle_id in name))
-        or report_app == "NNIM"
-        or name.startswith("NNIM")
-        or "NNIM" in name
+        or report_app == "MobileApp"
+        or name.startswith("MobileApp")
+        or "MobileApp" in name
     )
 
 if not os.path.isdir(crash_dir):
@@ -3926,7 +3926,7 @@ for root_dir in scan_dirs:
         for name in names:
             if not re.search(r"\.(ips|crash|log)$", name, re.I):
                 continue
-            if "NNIM" not in name and bundle_id not in name:
+            if "MobileApp" not in name and bundle_id not in name:
                 continue
             path = os.path.join(root, name)
             try:
@@ -3950,8 +3950,8 @@ for root_dir in scan_dirs:
                 continue
             is_target = (
                 (bundle_id and (report_bundle == bundle_id or bundle_id in text))
-                or report_app == "NNIM"
-                or name.startswith("NNIM")
+                or report_app == "MobileApp"
+                or name.startswith("MobileApp")
             )
             if not is_target:
                 continue
@@ -6554,9 +6554,9 @@ def load_business_flow_presets():
     candidates = []
     platform_root = os.environ.get("PLATFORM_ROOT_DIR") or ""
     if platform_root:
-        candidates.append(os.path.join(platform_root, "config", "nnios-business-flow-presets.json"))
+        candidates.append(os.path.join(platform_root, "config", "mobile-app-business-flow-presets.json"))
     if business_map_path:
-        candidates.append(os.path.join(os.path.dirname(business_map_path), "nnios-business-flow-presets.json"))
+        candidates.append(os.path.join(os.path.dirname(business_map_path), "mobile-app-business-flow-presets.json"))
     for path in candidates:
         data = read_json(path, {})
         features = data.get("features") if isinstance(data, dict) else None
@@ -7649,7 +7649,7 @@ run_replay_flow_test() {
     missing_replay_parameters+=("REPLAY_FLOW_EXECUTION_MANIFEST_ID")
   fi
   if [ "${#missing_replay_parameters[@]}" -gt 0 ]; then
-    REPLAY_FLOW_MESSAGE="Jenkins 未传入回放质检参数：${missing_replay_parameters[*]}。请同步 nn-auto-quality Job 配置后重试。"
+    REPLAY_FLOW_MESSAGE="Jenkins 未传入回放质检参数：${missing_replay_parameters[*]}。请同步 mobile-auto-quality Job 配置后重试。"
     log "${REPLAY_FLOW_MESSAGE}"
     return 2
   fi
@@ -7730,7 +7730,7 @@ if db_path_arg:
     candidates.append(db_path_arg)
 if platform_root:
     candidates.append(f"{platform_root}-data/database.sqlite")
-    candidates.append(os.path.join(os.path.dirname(platform_root), "nn-ios-platform-data", "database.sqlite"))
+    candidates.append(os.path.join(os.path.dirname(platform_root), "mobile-devops-ai-data", "database.sqlite"))
 
 seen = set()
 for db_path in candidates:
@@ -7879,7 +7879,7 @@ if [ "${SKIP_APP_INSTALL}" = "1" ]; then
   installed_app_status=0
   verify_installed_app "${LAUNCH_BUNDLE_ID}" || installed_app_status=$?
   if [ "${installed_app_status}" = "1" ]; then
-    fail "设备上未安装 ${LAUNCH_BUNDLE_ID}。已检测到的 NN App：${INSTALLED_APP_CANDIDATES:-无}。请核对构建渠道与 Bundle ID，或取消“使用设备上已安装的 App”。"
+    fail "设备上未安装 ${LAUNCH_BUNDLE_ID}。已检测到的业务 App：${INSTALLED_APP_CANDIDATES:-无}。请核对构建渠道与 Bundle ID，或取消“使用设备上已安装的 App”。"
   elif [ "${installed_app_status}" = "2" ]; then
     fail "无法读取设备已安装应用列表，不能确认 ${LAUNCH_BUNDLE_ID} 是否安装。请确认 iPhone 已解锁、已信任打包机且 USB 连接稳定。"
   fi

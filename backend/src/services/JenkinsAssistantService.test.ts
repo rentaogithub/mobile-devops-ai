@@ -85,7 +85,7 @@ describe('Jenkins assistant closed-loop operations', () => {
       building: true,
       branchName: 'develop',
       deployTarget: 'Pgyer',
-      url: 'http://jenkins/job/nn/1585/',
+      url: 'http://jenkins/job/default/1585/',
     } as any);
 
     await expect(service.getBuildSubmissionStatus({
@@ -120,7 +120,7 @@ describe('Jenkins assistant closed-loop operations', () => {
       building: false,
       branchName: 'develop',
       deployTarget: 'Pgyer',
-      url: 'http://jenkins/job/nn/1585/',
+      url: 'http://jenkins/job/default/1585/',
     } as any);
 
     await expect(service.getBuildSubmissionStatus({

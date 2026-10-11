@@ -211,12 +211,12 @@ export class DeviceReplayFlowExecutionService {
 
   constructor(
     private adapter: DeviceReplayRuntimeAdapter = defaultAdapter,
-    private runRoot = path.resolve(process.env.DEVICE_REPLAY_RUN_DIR || path.join(process.cwd(), '../nn-ios-platform-data/device-replay-runs')),
+    private runRoot = path.resolve(process.env.DEVICE_REPLAY_RUN_DIR || path.join(process.cwd(), '../mobile-devops-ai-data/device-replay-runs')),
   ) {}
 
   private currentRunRoot() {
     const projectId = currentProjectId();
-    return projectId === 'nn-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    return projectId === 'mobile-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
   }
 
   start(flow: DeviceReplayFlowDsl, suppliedInputs: Record<string, unknown>, actor: string, isAdmin: boolean) {

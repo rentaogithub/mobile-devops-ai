@@ -17,7 +17,7 @@ export interface PairingSession {
     appDeviceId?: string;
     userId?: number | string;
     nickName?: string;
-    nnNumber?: number | string;
+    externalNumber?: number | string;
   };
   createdAt: number;
   pairedAt?: number;
@@ -224,7 +224,7 @@ class PairingService {
       return `device:${deviceId}`;
     }
 
-    const user = this.normalized(deviceInfo.userId) || this.normalized(deviceInfo.nnNumber);
+    const user = this.normalized(deviceInfo.userId) || this.normalized(deviceInfo.externalNumber);
     const name = this.normalized(deviceInfo.name);
     const model = this.normalized(deviceInfo.model);
     if (!user || !name || !model) return null;
@@ -243,7 +243,7 @@ class PairingService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
         pairing_id TEXT PRIMARY KEY,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         token TEXT NOT NULL,
         status TEXT NOT NULL,
         device_info TEXT,
@@ -257,7 +257,7 @@ class PairingService {
     `);
     const columns = this.db.prepare('PRAGMA table_info(realtime_log_pairing_sessions)').all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === 'product_line_id')) {
-      this.db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+      this.db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pairing_sessions(product_line_id, status, last_active_at DESC)');
   }
@@ -281,7 +281,7 @@ class PairingService {
     rows.forEach((row) => {
       const session: PairingSession = {
         pairingId: row.pairing_id,
-        productLineId: row.product_line_id || 'nn',
+        productLineId: row.product_line_id || 'default',
         token: row.token,
         status: row.status,
         deviceInfo: this.parseDeviceInfo(row.device_info),

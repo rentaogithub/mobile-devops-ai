@@ -9,8 +9,8 @@ import logger from '../utils/logger';
 import { buildOpCookieHeader, clearOpAccessToken, getOpAccessToken, updateOpAccessToken, updateOpCookieJar } from '../services/OpCookieJar';
 
 const router = Router();
-const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.example.com').replace(/\/+$/, '');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 const OP_STATIC_CACHE_DIR = process.env.OP_STATIC_CACHE_DIR || path.join(DATA_DIR, 'op-static-cache');
 const OP_STATIC_CACHE_TTL_MS = Number(process.env.OP_STATIC_CACHE_TTL_MS || 365 * 24 * 60 * 60 * 1000);
 const OP_STATIC_CACHE_CONTROL = 'public, max-age=31536000, immutable';
@@ -305,8 +305,8 @@ function buildOpAuthBootstrapScript(): string {
   }
   function patchAuthExpiryHooks() {
     try {
-      if (window.__nnOpAuthExpiryPatched) return;
-      window.__nnOpAuthExpiryPatched = true;
+      if (window.__mobileOpAuthExpiryPatched) return;
+      window.__mobileOpAuthExpiryPatched = true;
       var rawFetch = window.fetch;
       if (rawFetch) {
         window.fetch = function () {
@@ -620,7 +620,7 @@ router.use((req: Request, res: Response) => {
       target: targetURL.toString(),
       error: error.message,
     });
-    res.status(502).send('OP 代理请求失败，请确认服务器可以访问 https://op.nn.com/。');
+    res.status(502).send('OP 代理请求失败，请确认服务器可以访问 https://op.example.com/。');
   });
 
   proxyReq.setTimeout(30000, () => {

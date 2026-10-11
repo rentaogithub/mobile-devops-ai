@@ -14,7 +14,7 @@ import { SymbolicationCacheService } from './SymbolicationCacheService';
 import { buildSentryCookieHeader, updateSentryCookieJar } from './SentryCookieJar';
 
 describe('product line isolation', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-product-lines-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-product-lines-'));
   const auth = new AuthService();
   const workflow = new WorkflowService();
   const crashGovernance = new CrashGovernanceService();
@@ -38,7 +38,7 @@ describe('product line isolation', () => {
     const beta = auth.createProductLine({
       key: 'beta',
       name: 'Beta',
-      jenkinsBaseUrl: 'http://192.168.50.20:8080/',
+      jenkinsBaseUrl: 'http://192.0.2.20:8080/',
     })!;
     const member = auth.createUser({
       username: 'multi.product',
@@ -46,19 +46,19 @@ describe('product line isolation', () => {
       password: 'password123',
       role: 'tester',
       productLines: [
-        { productLineId: 'nn', role: 'tester' },
+        { productLineId: 'default', role: 'tester' },
         { productLineId: beta.id, role: 'developer' },
       ],
     })!;
 
     expect(member.productLines).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'nn', role: 'tester' }),
+      expect.objectContaining({ id: 'default', role: 'tester' }),
       expect.objectContaining({ id: beta.id, role: 'developer' }),
     ]));
 
     const betaContext = { ...beta, role: 'developer' as const };
     await runWithProductLine(betaContext, async () => {
-      expect(getJenkinsBaseUrl()).toBe('http://192.168.50.20:8080');
+      expect(getJenkinsBaseUrl()).toBe('http://192.0.2.20:8080');
       await storage.saveDSYMInfo({
         uuid: '22222222-2222-2222-2222-222222222222',
         appName: 'BetaApp',
@@ -90,24 +90,24 @@ describe('product line isolation', () => {
   it('keeps external service addresses and secrets isolated per product line', async () => {
     const previousJenkinsToken = process.env.JENKINS_TOKEN;
     const previousWeChatWebhook = process.env.WECHAT_WEBHOOK_URL;
-    process.env.JENKINS_TOKEN = 'nn-global-token';
-    process.env.WECHAT_WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=nn-global-secret';
+    process.env.JENKINS_TOKEN = 'default-global-token';
+    process.env.WECHAT_WEBHOOK_URL = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=default-global-secret';
 
     try {
       const alpha = auth.createProductLine({
         key: 'alpha',
         name: 'Alpha',
-        jenkinsBaseUrl: 'https://10.20.30.40:9443/jenkins/',
+        jenkinsBaseUrl: 'https://198.51.100.20:9443/jenkins/',
       })!;
       const empty = auth.createProductLine({ key: 'empty', name: 'Empty' })!;
 
       productLineConfigService.setMany(alpha.id, {
         JENKINS_USER: 'alpha-ci',
         JENKINS_TOKEN: 'alpha-token',
-        JENKINS_NN_JOB: 'alpha/app-build',
-        JENKINS_NN_QA_JOB: 'alpha/app-quality',
-        JENKINS_NN_REPO_URL: 'https://git.example.com/alpha_ios/alpha-ios.git',
-        PODX_PRIVATE_SOURCE: 'https://git.example.com/alpha_ios/nnspec.git',
+        JENKINS_JOB: 'alpha/app-build',
+        JENKINS_QUALITY_JOB: 'alpha/app-quality',
+        JENKINS_REPO_URL: 'https://git.example.com/alpha_ios/alpha-ios.git',
+        PODX_PRIVATE_SOURCE: 'https://git.example.com/alpha_ios/mobile-specs.git',
         PODX_PUBLISH_REPOS: 'alpha-core',
         PODX_PUBLISH_MAIN_REPO: 'alpha-ios',
         PODX_PUBLISH_WORK_DIR: '.mgit-publish/alpha',
@@ -120,7 +120,7 @@ describe('product line isolation', () => {
       }, 'test-admin');
 
       await runWithProductLine({ ...alpha, role: 'admin' }, async () => {
-        expect(getJenkinsBaseUrl()).toBe('https://10.20.30.40:9443/jenkins');
+        expect(getJenkinsBaseUrl()).toBe('https://198.51.100.20:9443/jenkins');
         expect(getJenkinsConfig()).toEqual(expect.objectContaining({
           username: 'alpha-ci',
           token: 'alpha-token',
@@ -130,7 +130,7 @@ describe('product line isolation', () => {
         }));
         expect(productLineConfigService.podxConfig()).toEqual(expect.objectContaining({
           targetName: 'alpha_ios',
-          privateSource: 'https://git.example.com/alpha_ios/nnspec.git',
+          privateSource: 'https://git.example.com/alpha_ios/mobile-specs.git',
           gitBaseUrl: 'https://git.example.com',
           overlayFile: 'Podfile.overlay',
           publishRepos: ['alpha-ios', 'alpha-core'],
@@ -146,12 +146,12 @@ describe('product line isolation', () => {
           PODX_PRODUCT_LINE: alpha.id,
           PODX_TARGET_NAME: 'alpha_ios',
           PODX_PUBLISH_REPOS: 'alpha-ios,alpha-core',
-          JENKINS_NN_JOB: 'alpha/app-build',
+          JENKINS_JOB: 'alpha/app-build',
         }));
         const podxConfigYaml = productLineConfigService.podxConfigYaml();
         expect(podxConfigYaml).toContain('product_line: "alpha"');
         expect(podxConfigYaml).toContain('target_name: "alpha_ios"');
-        expect(podxConfigYaml).toContain('private_source: "https://git.example.com/alpha_ios/nnspec.git"');
+        expect(podxConfigYaml).toContain('private_source: "https://git.example.com/alpha_ios/mobile-specs.git"');
         expect(podxConfigYaml).toContain('overlay_file: "Podfile.overlay"');
         expect(podxConfigYaml).toContain('publish_main_repo: "alpha-ios"');
         expect(podxConfigYaml).toContain('- "alpha-ios"');
@@ -236,17 +236,17 @@ describe('product line isolation', () => {
     expect(productLine.bundleId).toBe('com.example.newapp');
   });
 
-  it('shows the effective legacy Jenkins defaults for the nn product line', () => {
-    const config = productLineConfigService.adminView('nn') as Record<string, unknown>;
-    expect(config.JENKINS_NN_JOB).toBe('nn');
-    expect(config.JENKINS_NN_QA_JOB).toBe('nn-auto-quality');
-    expect(config.JENKINS_NN_REPO_URL).toBe('http://git.leigod.top/nn_ios/nnios.git');
-    expect(config.PODX_PRIVATE_SOURCE).toBe('http://git.leigod.top/nn_ios/nnspec.git');
-    expect(config.PODX_PUBLISH_MAIN_REPO).toBe('nnios');
+  it('shows the effective legacy Jenkins defaults for the default product line', () => {
+    const config = productLineConfigService.adminView('default') as Record<string, unknown>;
+    expect(config.JENKINS_JOB).toBe('default');
+    expect(config.JENKINS_QUALITY_JOB).toBe('mobile-auto-quality');
+    expect(config.JENKINS_REPO_URL).toBe('https://github.com/example/mobile-app.git');
+    expect(config.PODX_PRIVATE_SOURCE).toBe('https://github.com/example/mobile-specs.git');
+    expect(config.PODX_PUBLISH_MAIN_REPO).toBe('mobile-app');
     expect(config.PODX_PUBLISH_BASE_BRANCH).toBe('develop');
-    expect(String(config.PODX_PUBLISH_REPOS).split('\n')).toHaveLength(11);
-    expect(String(config.PODX_PUBLISH_REPOS)).not.toContain('nnios');
-    expect(productLineConfigService.podxConfig('nn').publishRepos).toHaveLength(12);
+    expect(String(config.PODX_PUBLISH_REPOS).split('\n')).toHaveLength(2);
+    expect(String(config.PODX_PUBLISH_REPOS)).not.toContain('mobile-app');
+    expect(productLineConfigService.podxConfig('default').publishRepos).toHaveLength(3);
     if (!process.env.JENKINS_USER && !process.env.JENKINS_TOKEN) {
       expect(config.JENKINS_USER).toBe('anonymous');
       expect(config.JENKINS_TOKENConfigured).toBe(false);
@@ -254,11 +254,11 @@ describe('product line isolation', () => {
   });
 
   it('keeps an explicitly emptied component repository list instead of restoring defaults', () => {
-    productLineConfigService.setMany('nn', { PODX_PUBLISH_REPOS: '' }, 'test-admin');
+    productLineConfigService.setMany('default', { PODX_PUBLISH_REPOS: '' }, 'test-admin');
 
-    const config = productLineConfigService.adminView('nn') as Record<string, unknown>;
+    const config = productLineConfigService.adminView('default') as Record<string, unknown>;
     expect(config.PODX_PUBLISH_REPOS).toBe('');
-    expect(productLineConfigService.podxConfig('nn').publishRepos).toEqual(['nnios']);
+    expect(productLineConfigService.podxConfig('default').publishRepos).toEqual(['mobile-app']);
   });
 
   it('isolates Crash records, Sentry cookies and symbolication cache between product lines', async () => {

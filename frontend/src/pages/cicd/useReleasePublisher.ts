@@ -119,7 +119,7 @@ export function useReleasePublisher({
         message.error(preflightResponse.data?.blockers?.[0]?.message || '发布前预检未通过');
         return;
       }
-      const response = await jenkinsApi.publishNN({
+      const response = await jenkinsApi.publishMobile({
         deployTarget: publishTarget,
         branch: publishBranch.trim(),
         appVersion: resolvedPublishAppVersion || undefined,

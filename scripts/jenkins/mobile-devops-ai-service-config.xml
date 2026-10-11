@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <project>
   <actions/>
-  <description>nn-ios-platform 服务运维 Job。在平台所在的 Jenkins 节点上启动、停止、重启或查看前后端状态。平台路径和端口由 Job 固定，只有登录的 Jenkins 管理员可执行构建。</description>
+  <description>mobile-devops-ai 服务运维 Job。在平台所在的 Jenkins 节点上启动、停止、重启或查看前后端状态。平台路径和端口由 Job 固定，只有登录的 Jenkins 管理员可执行构建。</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -46,7 +46,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PA
 export BUILD_ID=dontKillMe
 export JENKINS_NODE_COOKIE=dontKillMe
 
-PLATFORM_DIR="__NN_IOS_PLATFORM_DIR__"
+PLATFORM_DIR="__MOBILE_DEVOPS_PLATFORM_DIR__"
 if [ ! -f "$PLATFORM_DIR/start-platform.sh" ]; then
   echo "ERROR: 平台目录无效。"
   echo "Expected file: $PLATFORM_DIR/start-platform.sh"

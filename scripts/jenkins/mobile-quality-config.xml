@@ -1,14 +1,14 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <project>
   <actions/>
-  <description>nn-ios local iPhone automatic quality job. Triggered by nn-ios-platform.</description>
+  <description>mobile-ios local iPhone automatic quality job. Triggered by mobile-devops-ai.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
       <parameterDefinitions>
         <hudson.model.StringParameterDefinition>
           <name>SOURCE_JOB</name>
-          <defaultValue>nn</defaultValue>
+          <defaultValue>default</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -109,7 +109,7 @@
         <hudson.model.StringParameterDefinition>
           <name>PLATFORM_TASK_ID</name>
           <defaultValue></defaultValue>
-          <description>nn-ios-platform 工作流任务 ID，用于状态串联和业务编排兜底恢复。</description>
+          <description>mobile-devops-ai 工作流任务 ID，用于状态串联和业务编排兜底恢复。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -134,7 +134,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>APP_BUNDLE_ID</name>
-          <defaultValue>com.nndev.im</defaultValue>
+          <defaultValue>com.example.mobileapp.dev</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -209,7 +209,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>WDA_BUNDLE_ID</name>
-          <defaultValue>com.nndev.WebDriverAgentRunner</defaultValue>
+          <defaultValue>com.example.WebDriverAgentRunner</defaultValue>
           <description>可选：WebDriverAgentRunner Bundle ID，签名冲突时可配置唯一 ID。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
@@ -294,7 +294,7 @@
         <hudson.model.StringParameterDefinition>
           <name>MONKEY_FORBIDDEN_TEXTS</name>
           <defaultValue>debug,Debug,DEBUG,调试,调试工具,日志,控制台,FLEX,Doraemon,DoraemonKit,DoraemonEntryWindow,DoKit,Dokit,www.dokit.cn</defaultValue>
-          <description>Monkey 禁止点击的 UI 文案/控件关键词，逗号分隔，大小写不敏感。命中节点 frame 后会动态避开，用于屏蔽 NN iOS debug/DoraemonEntryWindow 调试悬浮框。</description>
+          <description>Monkey 禁止点击的 UI 文案/控件关键词，逗号分隔，大小写不敏感。命中节点 frame 后会动态避开，用于屏蔽业务 App 的 iOS debug/DoraemonEntryWindow 调试悬浮框。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
@@ -382,9 +382,9 @@
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
-          <name>NN_IOS_PLATFORM_DIR</name>
+          <name>MOBILE_DEVOPS_PLATFORM_DIR</name>
           <defaultValue></defaultValue>
-          <description>nn-ios-platform 在 Jenkins 打包机上的实际目录。平台触发质检时会自动传入，手动构建时可填写。</description>
+          <description>mobile-devops-ai 在 Jenkins 打包机上的实际目录。平台触发质检时会自动传入，手动构建时可填写。</description>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
@@ -404,15 +404,15 @@ set -e
 export PATH="/opt/homebrew/bin:$HOME/.appium/node_modules/.bin:$PATH"
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
-PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
+PLATFORM_DIR="${MOBILE_DEVOPS_PLATFORM_DIR:-}"
 if [ -z "$PLATFORM_DIR" ] &amp;&amp; [ -n "${WORKSPACE:-}" ] &amp;&amp; [ -f "$WORKSPACE/scripts/ios/ios-quality.sh" ]; then
   PLATFORM_DIR="$WORKSPACE"
 fi
 if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/ios/ios-quality.sh" ]; then
-  echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
-  echo "Expected file: \$NN_IOS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
-  echo "When triggered by nn-ios-platform, this parameter is passed automatically."
-  echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
+  echo "ERROR: MOBILE_DEVOPS_PLATFORM_DIR is not configured or invalid."
+  echo "Expected file: \$MOBILE_DEVOPS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
+  echo "When triggered by mobile-devops-ai, this parameter is passed automatically."
+  echo "For manual Jenkins builds, fill MOBILE_DEVOPS_PLATFORM_DIR with the platform project directory."
   exit 2
 fi
 cd "$PLATFORM_DIR"

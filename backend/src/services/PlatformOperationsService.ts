@@ -150,8 +150,8 @@ export class PlatformOperationsService {
   }
 
   private syncRequest(source: SyncSource) {
-    if (source === 'jenkins') return { path: '/api/jenkins/nn/builds', timeoutMs: 45_000 };
-    if (source === 'quality') return { path: '/api/jenkins/nn/quality/builds', timeoutMs: 45_000 };
+    if (source === 'jenkins') return { path: '/api/jenkins/default/builds', timeoutMs: 45_000 };
+    if (source === 'quality') return { path: '/api/jenkins/default/quality/builds', timeoutMs: 45_000 };
     if (source === 'dsym') return { path: '/api/dsym/list', timeoutMs: 30_000 };
     if (source === 'pods') return { path: '/api/pods/list', timeoutMs: 30_000 };
     return {
@@ -206,8 +206,8 @@ export class PlatformOperationsService {
 
   async dependencies() {
     const probes = await Promise.all([
-      this.probe('jenkins', '/api/jenkins/nn/builds', 20_000),
-      this.probe('devices', '/api/jenkins/nn/quality/device-pools/status', 15_000),
+      this.probe('jenkins', '/api/jenkins/default/builds', 20_000),
+      this.probe('devices', '/api/jenkins/default/quality/device-pools/status', 15_000),
       this.probe('sentry', '/api/sentry-analysis/issues', 30_000, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

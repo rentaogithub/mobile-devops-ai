@@ -6,9 +6,9 @@ describe('SymbolizerService simplified crash load address inference', () => {
   it('parses mixed JSON-header sampled hang reports as text logs', () => {
     const parser = new CrashLogParser();
     const parsed = parser.parseCrashLog([
-      '{"bug_type":"228","app_name":"NNIM"}',
+      '{"bug_type":"228","app_name":"MobileApp"}',
       'Incident Identifier: D6718F0D-3223-4EE2-AC47-1BFE70B7C96D',
-      'Reason:           UIKit-runloop-NNIM: timeout 9850ms',
+      'Reason:           UIKit-runloop-MobileApp: timeout 9850ms',
       '',
       '  Thread 0xf1aeb    Thread name "SDKTaskManager-TaskWorker-0"',
       '  60  ??? (<32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62> + 1053172) [0x10feb91f4]',
@@ -27,11 +27,11 @@ describe('SymbolizerService simplified crash load address inference', () => {
     service.symbolicateWithAtos = jest.fn(async () => new Map([
       [
         '0x10feb91f4',
-        'void* std::__1::__thread_proxy<...>(void*) (in leigod_im_cross_sdk) (thread.h:207)',
+        'void* std::__1::__thread_proxy<...>(void*) (in mobile_im_cross_sdk) (thread.h:207)',
       ],
       [
         '0x10feb79b4',
-        'im_sdk::common::TaskManager::worker(int, std::__1::shared_ptr<im_sdk::common::TaskData>) (in leigod_im_cross_sdk) (TaskManager.cpp:156)',
+        'im_sdk::common::TaskManager::worker(int, std::__1::shared_ptr<im_sdk::common::TaskData>) (in mobile_im_cross_sdk) (TaskManager.cpp:156)',
       ],
     ]));
 
@@ -46,19 +46,19 @@ describe('SymbolizerService simplified crash load address inference', () => {
 
     const result = await service.symbolicateUUIDOffsetFrames(
       log,
-      '/tmp/leigod_im_cross_sdk.dSYM',
+      '/tmp/mobile_im_cross_sdk.dSYM',
       '32AA34A5-8A47-3BE0-97AF-CF3E2BF70B62',
-      'leigod_im_cross_sdk'
+      'mobile_im_cross_sdk'
     );
 
     expect(service.symbolicateWithAtos).toHaveBeenCalledWith(
       ['0x10feb91f4', '0x10feb79b4'],
-      '/tmp/leigod_im_cross_sdk.dSYM',
+      '/tmp/mobile_im_cross_sdk.dSYM',
       '0x10fdb8000',
       { includeAddressOnly: true }
     );
     expect(result.symbolicatedCount).toBe(2);
-    expect(result.symbolicatedLog).toContain('leigod_im_cross_sdk  0x10feb91f4 void* std::__1::__thread_proxy');
+    expect(result.symbolicatedLog).toContain('mobile_im_cross_sdk  0x10feb91f4 void* std::__1::__thread_proxy');
     expect(result.symbolicatedLog).toContain('TaskManager.cpp:156');
     expect(result.symbolicatedLog).toContain('(blocked by turnstile waiting for this thread)');
   });
@@ -67,11 +67,11 @@ describe('SymbolizerService simplified crash load address inference', () => {
     const service = new SymbolizerService() as any;
     const crashLog = [
       'Thread 0 Crashed:',
-      '7   NNIM                            0x200e28cd0         <unknown> + 4309814480',
-      '8   NNIM                            0x20142794c         <unknown> + 4316100940',
+      '7   MobileApp                            0x200e28cd0         <unknown> + 4309814480',
+      '8   MobileApp                            0x20142794c         <unknown> + 4316100940',
     ].join('\n');
 
-    const loadAddress = service.extractLoadAddressForBinary(crashLog, 'NNIM');
+    const loadAddress = service.extractLoadAddressForBinary(crashLog, 'MobileApp');
 
     expect(loadAddress).toBe('0x200000000');
   });
@@ -81,23 +81,23 @@ describe('SymbolizerService simplified crash load address inference', () => {
     const frames: StackFrame[] = [
       {
         index: 7,
-        binaryName: 'NNIM',
+        binaryName: 'MobileApp',
         address: '0x200e28cd0',
         symbol: '<unknown>',
         offset: '4309814480',
-        line: '7  NNIM  0x200e28cd0  <unknown> + 4309814480',
+        line: '7  MobileApp  0x200e28cd0  <unknown> + 4309814480',
       },
       {
         index: 8,
-        binaryName: 'NNIM',
+        binaryName: 'MobileApp',
         address: '0x20142794c',
         symbol: '<unknown>',
         offset: '4316100940',
-        line: '8  NNIM  0x20142794c  <unknown> + 4316100940',
+        line: '8  MobileApp  0x20142794c  <unknown> + 4316100940',
       },
     ];
 
-    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'NNIM');
+    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'MobileApp');
 
     expect(candidates[0]).toBe('0x200000000');
     expect(candidates).toContain('0x200e28000');
@@ -108,15 +108,15 @@ describe('SymbolizerService simplified crash load address inference', () => {
     const frames: StackFrame[] = [
       {
         index: 3,
-        binaryName: 'NNIM',
+        binaryName: 'MobileApp',
         address: '0x200e28cd0',
         symbol: '<unknown>',
         offset: '123456',
-        line: '3  NNIM  0x200e28cd0  <unknown> + 123456',
+        line: '3  MobileApp  0x200e28cd0  <unknown> + 123456',
       },
     ];
 
-    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'NNIM');
+    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'MobileApp');
 
     expect(candidates[0]).toBe('0x200e0aa90');
   });
@@ -126,15 +126,15 @@ describe('SymbolizerService simplified crash load address inference', () => {
     const frames: StackFrame[] = [
       {
         index: 5,
-        binaryName: 'NNRtc',
+        binaryName: 'MobileRTC',
         address: '0x103c03650',
         symbol: '<unknown>',
         offset: '4357895760',
-        line: '5  NNRtc  0x103c03650  <unknown> + 4357895760',
+        line: '5  MobileRTC  0x103c03650  <unknown> + 4357895760',
       },
     ];
 
-    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'NNRtc');
+    const candidates = service.inferLoadAddressesFromSimplifiedStack(frames, 'MobileRTC');
 
     expect(candidates[0]).toBe('0x103c00000');
   });
@@ -151,7 +151,7 @@ describe('SymbolizerService simplified crash load address inference', () => {
 
     const result = await service.symbolicateWithCandidateLoadAddresses(
       ['0x100001000', '0x100002000'],
-      '/tmp/NNIM.dSYM',
+      '/tmp/MobileApp.dSYM',
       ['0x100000000', '0x100001000']
     );
 
@@ -161,9 +161,9 @@ describe('SymbolizerService simplified crash load address inference', () => {
   it('does not count address-only atos output as a real symbol unless requested', () => {
     const service = new SymbolizerService() as any;
 
-    expect(service.isUsableAtosSymbol('0x00003650 (in NNRtc)', '0x103c03650')).toBe(false);
+    expect(service.isUsableAtosSymbol('0x00003650 (in MobileRTC)', '0x103c03650')).toBe(false);
     expect(
-      service.isUsableAtosSymbol('0x00003650 (in NNRtc)', '0x103c03650', true)
+      service.isUsableAtosSymbol('0x00003650 (in MobileRTC)', '0x103c03650', true)
     ).toBe(true);
   });
 
@@ -173,12 +173,12 @@ describe('SymbolizerService simplified crash load address inference', () => {
       async (addresses: string[], _dsymPath: string, loadAddress: string, options?: { includeAddressOnly?: boolean }) => {
         if (options?.includeAddressOnly) {
           return new Map(
-            addresses.map((address) => [address, `0x00003650 (in NNRtc)`])
+            addresses.map((address) => [address, `0x00003650 (in MobileRTC)`])
           );
         }
 
         if (loadAddress === '0x103c00000') {
-          return new Map([['0x103c11460', 'ParseInt<int> (in NNRtc) (time_zone_format.cc:242)']]);
+          return new Map([['0x103c11460', 'ParseInt<int> (in MobileRTC) (time_zone_format.cc:242)']]);
         }
 
         return new Map();
@@ -187,12 +187,12 @@ describe('SymbolizerService simplified crash load address inference', () => {
 
     const result = await service.symbolicateWithCandidateLoadAddresses(
       ['0x103c11460', '0x103c03650'],
-      '/tmp/NNRtc.dSYM',
+      '/tmp/MobileRTC.dSYM',
       ['0x103c00000', '0x100000000']
     );
 
     expect(result.get('0x103c11460')).toContain('ParseInt<int>');
-    expect(result.get('0x103c03650')).toBe('0x00003650 (in NNRtc)');
+    expect(result.get('0x103c03650')).toBe('0x00003650 (in MobileRTC)');
   });
 
   it('prefers the best system library candidate load address', async () => {

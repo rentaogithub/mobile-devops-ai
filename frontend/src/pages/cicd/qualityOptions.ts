@@ -8,14 +8,14 @@ import {
 export type DeployTarget = 'Pgyer' | 'TestFlight' | 'AppStore';
 export type QualityReportKind = 'monkey' | 'stutter' | 'business_flow' | 'replay_flow' | 'generic';
 
-export const PRODUCTION_BUNDLE_ID = 'com.nnhuyu.im';
-export const DEVELOPMENT_BUNDLE_ID = 'com.nndev.im';
+export const PRODUCTION_BUNDLE_ID = 'com.example.mobileapp';
+export const DEVELOPMENT_BUNDLE_ID = 'com.example.mobileapp.dev';
 export type InstalledAppBundleId = typeof DEVELOPMENT_BUNDLE_ID | typeof PRODUCTION_BUNDLE_ID;
 export const INSTALLED_APP_BUNDLE_OPTIONS: Array<{ label: string; value: InstalledAppBundleId }> = [
   { label: `开发环境（${DEVELOPMENT_BUNDLE_ID}）`, value: DEVELOPMENT_BUNDLE_ID },
   { label: `生产环境（${PRODUCTION_BUNDLE_ID}）`, value: PRODUCTION_BUNDLE_ID },
 ];
-export const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：nn-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称。';
+export const QUALITY_JOB_MISSING_MESSAGE = '未找到 Jenkins 自动质检 Job：mobile-auto-quality，请先在 Jenkins 中创建该 Job，或通过 JENKINS_QUALITY_JOB 配置正确 Job 名称。';
 
 export const DEPLOY_TARGET_OPTIONS: { label: string; value: DeployTarget }[] = [
   { label: '蒲公英', value: 'Pgyer' },

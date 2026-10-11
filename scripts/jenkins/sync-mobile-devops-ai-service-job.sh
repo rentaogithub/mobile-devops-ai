@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [ -z "${BASH_VERSION:-}" ]; then
-  echo "ERROR: please run this script with bash: bash scripts/jenkins/sync-nn-ios-platform-service-job.sh" >&2
+  echo "ERROR: please run this script with bash: bash scripts/jenkins/sync-mobile-devops-ai-service-job.sh" >&2
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/backend/.env}"
-CONFIG_TEMPLATE="${CONFIG_TEMPLATE:-$SCRIPT_DIR/nn-ios-platform-service-config.xml}"
+CONFIG_TEMPLATE="${CONFIG_TEMPLATE:-$SCRIPT_DIR/mobile-devops-ai-service-config.xml}"
 
 read_env() {
   local key="$1"
@@ -24,7 +24,7 @@ JENKINS_USER="${JENKINS_USER:-$(read_env JENKINS_USER)}"
 JENKINS_TOKEN="${JENKINS_TOKEN:-$(read_env JENKINS_TOKEN)}"
 
 JENKINS_BASE_URL="${JENKINS_BASE_URL:-http://127.0.0.1:8080}"
-JENKINS_PLATFORM_SERVICE_JOB="${JENKINS_PLATFORM_SERVICE_JOB:-nn-ios-platform-service}"
+JENKINS_PLATFORM_SERVICE_JOB="${JENKINS_PLATFORM_SERVICE_JOB:-mobile-devops-ai-service}"
 JENKINS_BASE_URL="${JENKINS_BASE_URL%/}"
 
 if [ ! -f "$CONFIG_TEMPLATE" ]; then
@@ -45,7 +45,7 @@ from pathlib import Path
 
 template_path, output_path, project_root = sys.argv[1:]
 template = Path(template_path).read_text(encoding="utf-8")
-placeholder = "__NN_IOS_PLATFORM_DIR__"
+placeholder = "__MOBILE_DEVOPS_PLATFORM_DIR__"
 if template.count(placeholder) != 1:
     raise SystemExit(f"ERROR: expected exactly one {placeholder} placeholder")
 Path(output_path).write_text(

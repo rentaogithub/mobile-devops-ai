@@ -47,7 +47,7 @@ type ApiRequestSample = {
   retCode: string;
   retMsg: string;
   costMs?: number;
-  nntid: string;
+  traceId: string;
   createdAt: string;
   requestTime: string;
 };
@@ -71,41 +71,41 @@ type ApiDocDiff = {
 };
 
 const services = {
-  'open-api': { name: 'NN第三方API接口接入', source: 'https://test1-doc.nn.com/doc.html#/NN第三方API接口接入' },
-  'nn-assist-frontend': { name: '帮助中心前端接口', source: 'https://test1-doc.nn.com/doc.html#/帮助中心前端接口' },
-  'nn-assist-client': { name: '帮助中心客户端接口', source: 'https://test1-doc.nn.com/doc.html#/帮助中心客户端接口' },
-  'u-nnpc': { name: 'PC接入层', source: 'https://test1-doc.nn.com/doc.html#/PC接入层' },
-  'user-query': { name: '用户查询服务', source: 'https://test1-doc.nn.com/doc.html#/用户查询服务' },
-  'u-mobile': { name: '移动端接入层', source: 'https://test1-doc.nn.com/doc.html#/移动端接入层' },
-  'u-miniapp': { name: 'NN小程序接入层', source: 'https://test1-doc.nn.com/doc.html#/NN小程序接入层' },
-  'nchannel': { name: '社区频道接口文档', source: 'https://test1-doc.nn.com/doc.html#/社区频道接口文档' },
-  'activity': { name: '活动中心-C端', source: 'https://test1-doc.nn.com/doc.html#/活动中心-C端' },
-  'speed-platform': { name: '武汉用户加速器接入', source: 'https://test1-doc.nn.com/doc.html#/武汉用户加速器接入' },
-  'wan-app': { name: 'NN陪玩：app接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：app接口' },
-  'wan-client': { name: 'NN陪玩：客户端接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：客户端接口' },
-  'wan-short-link': { name: 'NN陪玩：短链接口', source: 'https://test1-doc.nn.com/doc.html#/NN陪玩：短链接口' },
-  'nn-risk-v1': { name: 'NN风控审核服务:V1', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:V1' },
-  'nn-risk-admin': { name: 'NN风控审核服务:管理后台', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:管理后台' },
-  'nn-risk-activity': { name: 'NN风控审核服务:活动风控', source: 'https://test1-doc.nn.com/doc.html#/NN风控审核服务:活动风控' },
-  'operation-server': { name: 'operationServer', source: 'https://test1-doc.nn.com/doc.html#/operationServer' },
-  'im-friend': { name: '雷神IM好友服务客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM好友服务客户端接口' },
-  'im-user': { name: '雷神IM用户客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神IM用户客户端接口' },
-  'order-open-api': { name: 'order-open-api', source: 'https://test1-doc.nn.com/doc.html#/order-open-api' },
-  'wan-v1': { name: 'v1-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v1-NN陪玩接口' },
-  'wan-v2': { name: 'v2-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v2-NN陪玩接口' },
-  'wan-v3': { name: 'v3-NN陪玩接口', source: 'https://test1-doc.nn.com/doc.html#/v3-NN陪玩接口' },
-  'wan-taobao': { name: '淘宝相关接口', source: 'https://test1-doc.nn.com/doc.html#/淘宝相关接口' },
-  'short-link-api': { name: 'NN短链服务:API', source: 'https://test1-doc.nn.com/doc.html#/NN短链服务:API' },
-  'leigod-rtc': { name: '雷神rtc客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神rtc客户端接口' },
-  'privilege': { name: '雷神用户权益客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神用户权益客户端接口' },
-  'leigod-market-nn': { name: '雷神营销渠道服务(NN)客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神营销渠道服务(NN)客户端接口' },
-  'nn-game': { name: '雷神赛事客户端接口', source: 'https://test1-doc.nn.com/doc.html#/雷神赛事客户端接口' },
-  'cmp-bff': { name: '渠道中台bff客户端接口', source: 'https://test1-doc.nn.com/doc.html#/渠道中台bff客户端接口' },
-  'gamehub': { name: 'GameHub客户端接口', source: 'https://test1-doc.nn.com/doc.html#/GameHub客户端接口' },
-  'union-server': { name: 'unionServer', source: 'https://test1-doc.nn.com/doc.html#/unionServer' },
-  'nn-status': { name: 'NN状态服务', source: 'https://test1-doc.nn.com/doc.html#/NN状态服务' },
-  'nn-version': { name: 'NN版本服务', source: 'https://test1-doc.nn.com/doc.html#/NN版本服务' },
-  'fdfs': { name: '文件服务', source: 'https://test1-doc.nn.com/doc.html#/文件服务' },
+  'open-api': { name: '第三方 API 接入', source: 'https://api-docs.example.com/doc.html#/第三方 API 接入' },
+  'default-assist-frontend': { name: '帮助中心前端接口', source: 'https://api-docs.example.com/doc.html#/帮助中心前端接口' },
+  'default-assist-client': { name: '帮助中心客户端接口', source: 'https://api-docs.example.com/doc.html#/帮助中心客户端接口' },
+  'desktop-api': { name: 'PC接入层', source: 'https://api-docs.example.com/doc.html#/PC接入层' },
+  'user-query': { name: '用户查询服务', source: 'https://api-docs.example.com/doc.html#/用户查询服务' },
+  'u-mobile': { name: '移动端接入层', source: 'https://api-docs.example.com/doc.html#/移动端接入层' },
+  'u-miniapp': { name: '小程序接入层', source: 'https://api-docs.example.com/doc.html#/小程序接入层' },
+  'community-channel': { name: '社区频道接口文档', source: 'https://api-docs.example.com/doc.html#/社区频道接口文档' },
+  'activity': { name: '活动中心-C端', source: 'https://api-docs.example.com/doc.html#/活动中心-C端' },
+  'speed-platform': { name: '加速服务接入', source: 'https://api-docs.example.com/doc.html#/加速服务接入' },
+  'wan-app': { name: '陪玩业务：app接口', source: 'https://api-docs.example.com/doc.html#/陪玩业务：app接口' },
+  'wan-client': { name: '陪玩业务：客户端接口', source: 'https://api-docs.example.com/doc.html#/陪玩业务：客户端接口' },
+  'wan-short-link': { name: '陪玩业务：短链接口', source: 'https://api-docs.example.com/doc.html#/陪玩业务：短链接口' },
+  'default-risk-v1': { name: '风控审核服务:V1', source: 'https://api-docs.example.com/doc.html#/风控审核服务:V1' },
+  'default-risk-admin': { name: '风控审核服务:管理后台', source: 'https://api-docs.example.com/doc.html#/风控审核服务:管理后台' },
+  'default-risk-activity': { name: '风控审核服务:活动风控', source: 'https://api-docs.example.com/doc.html#/风控审核服务:活动风控' },
+  'operation-server': { name: 'operationServer', source: 'https://api-docs.example.com/doc.html#/operationServer' },
+  'im-friend': { name: 'IM好友服务客户端接口', source: 'https://api-docs.example.com/doc.html#/IM好友服务客户端接口' },
+  'im-user': { name: 'IM用户客户端接口', source: 'https://api-docs.example.com/doc.html#/IM用户客户端接口' },
+  'order-open-api': { name: 'order-open-api', source: 'https://api-docs.example.com/doc.html#/order-open-api' },
+  'wan-v1': { name: 'v1-陪玩业务接口', source: 'https://api-docs.example.com/doc.html#/v1-陪玩业务接口' },
+  'wan-v2': { name: 'v2-陪玩业务接口', source: 'https://api-docs.example.com/doc.html#/v2-陪玩业务接口' },
+  'wan-v3': { name: 'v3-陪玩业务接口', source: 'https://api-docs.example.com/doc.html#/v3-陪玩业务接口' },
+  'wan-taobao': { name: '淘宝相关接口', source: 'https://api-docs.example.com/doc.html#/淘宝相关接口' },
+  'short-link-api': { name: '短链服务:API', source: 'https://api-docs.example.com/doc.html#/短链服务:API' },
+  'mobile-rtc': { name: 'RTC客户端接口', source: 'https://api-docs.example.com/doc.html#/RTC客户端接口' },
+  'privilege': { name: '用户权益客户端接口', source: 'https://api-docs.example.com/doc.html#/用户权益客户端接口' },
+  'mobile-market-default': { name: '营销渠道服务客户端接口', source: 'https://api-docs.example.com/doc.html#/营销渠道服务客户端接口' },
+  'default-game': { name: '赛事客户端接口', source: 'https://api-docs.example.com/doc.html#/赛事客户端接口' },
+  'cmp-bff': { name: '渠道中台bff客户端接口', source: 'https://api-docs.example.com/doc.html#/渠道中台bff客户端接口' },
+  'gamehub': { name: 'GameHub客户端接口', source: 'https://api-docs.example.com/doc.html#/GameHub客户端接口' },
+  'union-server': { name: 'unionServer', source: 'https://api-docs.example.com/doc.html#/unionServer' },
+  'default-status': { name: '状态服务', source: 'https://api-docs.example.com/doc.html#/状态服务' },
+  'default-version': { name: '版本服务', source: 'https://api-docs.example.com/doc.html#/版本服务' },
+  'fdfs': { name: '文件服务', source: 'https://api-docs.example.com/doc.html#/文件服务' },
 };
 
 const businessResponseCodes = [
@@ -308,7 +308,7 @@ const sampleValue = (
   if (resolved.type === 'integer' || resolved.type === 'number') {
     if (/count|total|num|size|page/.test(key)) return 1;
     if (/time|timestamp/.test(key)) return Date.now();
-    return /id$|_id$|uid|userid|nnnumber/.test(key) ? 10001 : 0;
+    return /id$|_id$|uid|userid|externalnumber/.test(key) ? 10001 : 0;
   }
   if (resolved.type === 'boolean') return /success|enable|valid|ok/.test(key);
   if (resolved.format === 'date-time' || /time|date/.test(key)) return new Date().toISOString();

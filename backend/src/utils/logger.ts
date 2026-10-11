@@ -19,7 +19,7 @@ const logger = winston.createLogger({
     winston.format.splat(),
     winston.format.json()
   ),
-  defaultMeta: { service: 'ios-crash-symbolizer' },
+  defaultMeta: { service: 'mobile-devops-ai' },
   transports: [
     // 错误日志
     new winston.transports.File({

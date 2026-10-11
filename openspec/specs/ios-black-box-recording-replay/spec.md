@@ -2,7 +2,7 @@
 
 ## Purpose
 
-定义 `nn-ios-platform` 当前已经具备的纯黑盒 iOS 真机录制、补标、流程生成、编排、执行和证据能力。本文件描述当前基线；后续目标行为通过 `openspec/changes` 中的 delta spec 管理。
+定义 `mobile-devops-ai` 当前已经具备的纯黑盒 iOS 真机录制、补标、流程生成、编排、执行和证据能力。本文件描述当前基线；后续目标行为通过 `openspec/changes` 中的 delta spec 管理。
 
 ## Requirements
 

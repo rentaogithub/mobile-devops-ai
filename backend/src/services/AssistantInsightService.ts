@@ -137,7 +137,7 @@ export class AssistantInsightService {
       version: String(row.version || ''),
       status: String(row.status || ''),
       package_type: row.package_type ? String(row.package_type) : undefined,
-      nnios_branch: row.nnios_branch ? String(row.nnios_branch) : undefined,
+      main_app_branch: row.main_app_branch ? String(row.main_app_branch) : undefined,
       podspec_content: String(row.podspec_content || ''),
     }));
     const versions = all.filter((item) => item.name === name).map((item) => item.version).sort((left, right) => right.localeCompare(left, undefined, { numeric: true }));
@@ -152,7 +152,7 @@ export class AssistantInsightService {
     return {
       kind: 'pods_impact',
       componentLibrary: componentLibraryService.status(),
-      component: { name: target.name, version: target.version, status: target.status, packageType: target.package_type, branch: target.nnios_branch },
+      component: { name: target.name, version: target.version, status: target.status, packageType: target.package_type, branch: target.main_app_branch },
       latestVersion,
       upgradeAvailable: latestVersion !== target.version,
       dependencies,

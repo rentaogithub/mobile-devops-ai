@@ -4,12 +4,12 @@ import { chromium } from 'playwright';
 
 const baseURL = process.env.DELIVERY_UI_BASE_URL || 'http://127.0.0.1:5173';
 const products = [
-  { id: 'nn', key: 'nn', name: 'NN', projectId: 'nn-ios', active: true, role: 'admin' },
+  { id: 'default', key: 'default', name: 'Default', projectId: 'mobile-ios', active: true, role: 'admin' },
   { id: 'beta', key: 'beta', name: 'Beta', projectId: 'beta-ios', active: true, role: 'admin' },
 ];
 const user = { id: 'ui-admin', username: 'ui-admin', displayName: '验收用户', role: 'admin', active: true, productLines: products };
 const fixture = {
-  projectId: 'nn-ios', buildNumber: '101', status: 'blocked',
+  projectId: 'mobile-ios', buildNumber: '101', status: 'blocked',
   summary: '交付存在阻断项，请先处理下列证据与问题', evaluatedAt: '2026-09-07T10:00:00Z',
   limitations: ['依据当前产品线已同步快照，不能替代 Jenkins 发布前实时复核。', '发布观察按版本聚合，回归候选仍需核对执行构建。'],
   context: { commitHash: 'abc123', branch: 'release/1.0.0', releaseVersion: '1.0.0', updatedAt: '2026-09-07T09:58:00Z' },
@@ -39,7 +39,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   await page.addInitScript((user) => {
     localStorage.setItem('auth_user', JSON.stringify(user));
-    localStorage.setItem('active_product_line_id', 'nn');
+    localStorage.setItem('active_product_line_id', 'default');
   }, user);
   await page.route('**/api/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname;

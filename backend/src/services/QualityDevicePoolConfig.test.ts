@@ -7,7 +7,7 @@ describe('local iOS device-pool configuration upgrades', () => {
   let dir: string;
   const originalEnv = { ...process.env };
   const pool = { label: 'USB iPhone', value: 'ios-default', devices: [{ udid: 'device-1' }] };
-  const scoped = () => path.join(dir, 'product-lines', 'nn', 'quality-device-pools.json');
+  const scoped = () => path.join(dir, 'product-lines', 'default', 'quality-device-pools.json');
   const save = (file: string, deviceId: string) => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ devicePools: [{ ...pool, deviceId }] }));

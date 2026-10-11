@@ -467,7 +467,7 @@ export class ReplayFlowAssetService {
     };
   }
 
-  listPublishedVersions(projectId = 'nn-ios'): ReplayFlowVersionSummary[] {
+  listPublishedVersions(projectId = 'mobile-ios'): ReplayFlowVersionSummary[] {
     return (getDatabase().prepare(`
       SELECT v.id, v.asset_id, a.name AS asset_name, v.version_number, v.dsl_json,
              v.release_notes, v.created_by, v.created_at

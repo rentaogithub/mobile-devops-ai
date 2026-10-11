@@ -326,7 +326,7 @@ export class AssistantService {
       { text: '查询最近 Jenkins 主工程构建', toolName: 'cicd_list_builds' },
       { text: '分析构建 #12345 失败原因', toolName: 'cicd_analyze_build_failure' },
       { text: '生成过去 24 小时移动端质量日报', toolName: 'quality_daily_report', roles: ['tester', 'developer', 'admin'] },
-      { text: '分析 NNRtc 组件升级影响范围', toolName: 'pods_analyze_impact', domains: ['pods'] },
+      { text: '分析 MobileRTC 组件升级影响范围', toolName: 'pods_analyze_impact', domains: ['pods'] },
     ];
     return this.sampleSuggestions(suggestions
       .filter((item) => (toolNames.has(item.toolName) || item.domains?.some((domain) => toolDomains.has(domain as any)))

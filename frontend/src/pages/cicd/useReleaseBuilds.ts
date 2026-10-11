@@ -38,7 +38,7 @@ export function useReleaseBuilds({
     setErrorCode('');
     setErrorHint('');
     try {
-      const response = await jenkinsApi.listNNBuilds({ deployTarget: target, branch });
+      const response = await jenkinsApi.listMobileBuilds({ deployTarget: target, branch });
       setData(response.data || null);
       return response.data || null;
     } catch (err: any) {

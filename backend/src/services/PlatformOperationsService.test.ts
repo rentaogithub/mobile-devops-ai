@@ -15,7 +15,7 @@ describe('local-device dependency health', () => {
     operations = new PlatformOperationsService();
     jest.mocked(hasCurrentApplicationServices).mockReturnValue(true);
     fetchJson = jest.spyOn(operations as any, 'fetchJson').mockImplementation(async (endpoint: unknown) => {
-      if (endpoint === '/api/jenkins/nn/quality/device-pools/status') {
+      if (endpoint === '/api/jenkins/default/quality/device-pools/status') {
         return { data: { pools: [{ stats: { total: 1, online: 1, idle: 1 } }] } };
       }
       return { data: { builds: [], issues: [] } };
@@ -28,7 +28,7 @@ describe('local-device dependency health', () => {
     expect(result.status).toBe('healthy');
     expect(Object.keys(result.dependencies).sort()).toEqual(['devices', 'jenkins', 'openai', 'sentry', 'xcuiTestRunner']);
     expect(fetchJson.mock.calls.map(([endpoint]) => endpoint).sort()).toEqual([
-      '/api/jenkins/nn/builds', '/api/jenkins/nn/quality/device-pools/status', '/api/sentry-analysis/issues',
+      '/api/jenkins/default/builds', '/api/jenkins/default/quality/device-pools/status', '/api/sentry-analysis/issues',
     ]);
     expect(result.dependencies.devices).toMatchObject({ status: 'up', detail: { online: 1 } });
   });

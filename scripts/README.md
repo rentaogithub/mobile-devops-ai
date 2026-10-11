@@ -2,7 +2,7 @@
 
 ## 自动质检
 
-日常自动质检默认走打包机本机 USB 真机。Jenkins `nn-auto-quality` 调用：
+日常自动质检默认走打包机本机 USB 真机。Jenkins `mobile-auto-quality` 调用：
 
 ```bash
 sh scripts/ios/ios-quality.sh
@@ -15,19 +15,19 @@ sh scripts/ios/ios-quality.sh
 3. 获取安装包：优先使用 Jenkins 本地 IPA，其次从 `XCARCHIVE_PATH/Products/Applications/*.app` 生成临时 IPA，最后才尝试外部 URL。
 4. 从 IPA 或 `.xcarchive` 自动识别真实 Bundle ID，启动 App，生成 `quality-results/**` 日志和 JUnit 报告。
 
-Jenkins `nn-auto-quality` 的 `Execute shell` 不写死平台目录。平台触发质检时会自动传入 `NN_IOS_PLATFORM_DIR`；手动点 `Build with Parameters` 时才需要填写该参数：
+Jenkins `mobile-auto-quality` 的 `Execute shell` 不写死平台目录。平台触发质检时会自动传入 `MOBILE_DEVOPS_PLATFORM_DIR`；手动点 `Build with Parameters` 时才需要填写该参数：
 
 ```bash
 set -e
-PLATFORM_DIR="${NN_IOS_PLATFORM_DIR:-}"
+PLATFORM_DIR="${MOBILE_DEVOPS_PLATFORM_DIR:-}"
 if [ -z "$PLATFORM_DIR" ] && [ -n "${WORKSPACE:-}" ] && [ -f "$WORKSPACE/scripts/ios/ios-quality.sh" ]; then
   PLATFORM_DIR="$WORKSPACE"
 fi
 if [ -z "$PLATFORM_DIR" ] || [ ! -f "$PLATFORM_DIR/scripts/ios/ios-quality.sh" ]; then
-  echo "ERROR: NN_IOS_PLATFORM_DIR is not configured or invalid."
-  echo "Expected file: $NN_IOS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
-  echo "When triggered by nn-ios-platform, this parameter is passed automatically."
-  echo "For manual Jenkins builds, fill NN_IOS_PLATFORM_DIR with the platform project directory."
+  echo "ERROR: MOBILE_DEVOPS_PLATFORM_DIR is not configured or invalid."
+  echo "Expected file: $MOBILE_DEVOPS_PLATFORM_DIR/scripts/ios/ios-quality.sh"
+  echo "When triggered by mobile-devops-ai, this parameter is passed automatically."
+  echo "For manual Jenkins builds, fill MOBILE_DEVOPS_PLATFORM_DIR with the platform project directory."
   exit 2
 fi
 cd "$PLATFORM_DIR"
@@ -45,7 +45,7 @@ bash scripts/ios/ios-quality.sh
 | `XCARCHIVE_PATH` | 打包机本地 `.xcarchive` 路径，可从 `Products/Applications/*.app` 生成临时 IPA |
 | `DEVICE_POOL` | 平台设备池 value |
 | `DEVICE_UDID` | 指定真机 UDID，留空自动选择第一台 |
-| `APP_BUNDLE_ID` | 启动校验的 Bundle ID，蒲公英渠道默认 `com.nndev.im` |
+| `APP_BUNDLE_ID` | 启动校验的 Bundle ID，蒲公英渠道默认 `com.example.mobileapp.dev` |
 | `TEST_SUITE` | 测试套件：`smoke`、`login`、`im`、`rtc`、`monkey`、`full` |
 | `REQUESTED_TEST_SUITE` | 平台原始选择的质检套件，空值时使用 `TEST_SUITE` |
 | `RUN_MONKEY` | 设为 `1` 时执行 Monkey 随机测试 |
@@ -87,7 +87,7 @@ bash scripts/ios/ios-quality.sh
 | `PERF_FPS_AVG_WARN` | FPS 平均值预警阈值，默认 `45` |
 | `PERF_FPS_MIN_WARN` | FPS 最低值预警阈值，默认 `20` |
 
-当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.nndev.im`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
+当前自动质检只启动蒲公英渠道包，默认 Bundle ID 为 `com.example.mobileapp.dev`。如果日志中出现 `Installing 'com.xxx'` 但后续启动的是另一个 Bundle ID，说明 Jenkins 参数或平台环境变量 `QA_APP_BUNDLE_ID` 覆盖了默认值。iOS 17+ 设备上如果 `tidevice launch` 报 `DeveloperImage not found`，脚本会自动尝试 `xcrun devicectl device process launch`；仍失败时，需要确认打包机 Xcode 版本支持该 iOS 系统版本。
 
 如果 `devicectl` 报 `The device must be paired before it can be connected`，说明 Jenkins 运行用户还没有完成 Xcode/CoreDevice 配对。脚本会自动执行一次：
 
@@ -107,18 +107,18 @@ sh scripts/ios/pair-and-launch-ios.sh
 
 ```bash
 sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E
-sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E com.nndev.im
+sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E com.example.mobileapp.dev
 ```
 
 ### 同步 Jenkins Job
 
-仓库里的 `scripts/jenkins/nn-auto-quality-config.xml` 是 `nn-auto-quality` 的标准配置。修改模板后，需要同步到 Jenkins 实例：
+仓库里的 `scripts/jenkins/mobile-quality-config.xml` 是 `mobile-auto-quality` 的标准配置。修改模板后，需要同步到 Jenkins 实例：
 
 ```bash
-bash scripts/jenkins/sync-nn-auto-quality-job.sh
+bash scripts/jenkins/sync-mobile-quality-job.sh
 ```
 
-脚本默认读取 `backend/.env` 中的 `JENKINS_BASE_URL` 和 `JENKINS_NN_QA_JOB`。如果 Jenkins 不允许匿名更新配置，需要在 `backend/.env` 或命令行环境中配置：
+脚本默认读取 `backend/.env` 中的 `JENKINS_BASE_URL` 和 `JENKINS_QUALITY_JOB`。如果 Jenkins 不允许匿名更新配置，需要在 `backend/.env` 或命令行环境中配置：
 
 ```bash
 JENKINS_USER=admin
@@ -129,12 +129,12 @@ JENKINS_TOKEN=your-api-token
 
 ### 平台服务启停 Job
 
-`nn-ios-platform-service` 是独立的平台运维 Job，支持通过 `ACTION` 参数执行 `status`、`start`、`stop` 或 `restart`。默认是只读的 `status`，并且禁止多个启停构建并发执行。Jenkins 启用登录权限后，管理员可直接选择 `stop` 或 `restart`，不再叠加容易遗漏的确认框。
+`mobile-devops-ai-service` 是独立的平台运维 Job，支持通过 `ACTION` 参数执行 `status`、`start`、`stop` 或 `restart`。默认是只读的 `status`，并且禁止多个启停构建并发执行。Jenkins 启用登录权限后，管理员可直接选择 `stop` 或 `restart`，不再叠加容易遗漏的确认框。
 
 同步到 Jenkins：
 
 ```bash
-bash scripts/jenkins/sync-nn-ios-platform-service-job.sh
+bash scripts/jenkins/sync-mobile-devops-ai-service-job.sh
 ```
 
 同步脚本会把当前仓库绝对路径固定到 Jenkins Job 执行脚本中，不在构建页面暴露可编辑的目录或端口参数。仓库迁移后需重新执行一次同步。Job 最长运行 5 分钟，构建记录保留 30 天且最多 30 次。可通过 `backend/.env` 中的 `JENKINS_PLATFORM_SERVICE_JOB` 自定义 Job 名称，认证仍复用 `JENKINS_USER` 和 `JENKINS_TOKEN`。

@@ -343,11 +343,11 @@ The duration SHALL belong to the quality task rather than the Replay Flow Asset.
 
 - **GIVEN** the quality task enables **使用设备上已安装的 App**
 - **WHEN** the runner prepares the assigned device
-- **THEN** the System SHALL require the user to select `com.nndev.im` or `com.nnhuyu.im`, defaulting the selection from the build channel
+- **THEN** the System SHALL require the user to select `com.example.mobileapp.dev` or `com.example.mobileapp`, defaulting the selection from the build channel
 - **AND** SHALL verify that exact Bundle ID is installed before starting the quality path
 - **AND** SHALL launch the App before starting or connecting WDA
 - **AND** MAY start WDA and use WDA activation as a fallback when the native launch channel is unavailable
-- **AND** SHALL report the installed NN Bundle IDs when the selected Bundle ID is absent
+- **AND** SHALL report the installed business App Bundle IDs when the selected Bundle ID is absent
 
 #### Scenario: Main flow fails during an iteration
 

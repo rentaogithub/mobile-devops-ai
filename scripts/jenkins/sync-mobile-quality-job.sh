@@ -2,14 +2,14 @@
 set -euo pipefail
 
 if [ -z "${BASH_VERSION:-}" ]; then
-  echo "ERROR: please run this script with bash: bash scripts/jenkins/sync-nn-auto-quality-job.sh" >&2
+  echo "ERROR: please run this script with bash: bash scripts/jenkins/sync-mobile-quality-job.sh" >&2
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-$PROJECT_ROOT/backend/.env}"
-CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/nn-auto-quality-config.xml}"
+CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/mobile-quality-config.xml}"
 
 read_env() {
   local key="$1"
@@ -19,12 +19,12 @@ read_env() {
 }
 
 JENKINS_BASE_URL="${JENKINS_BASE_URL:-$(read_env JENKINS_BASE_URL)}"
-JENKINS_NN_QA_JOB="${JENKINS_NN_QA_JOB:-$(read_env JENKINS_NN_QA_JOB)}"
+JENKINS_QUALITY_JOB="${JENKINS_QUALITY_JOB:-$(read_env JENKINS_QUALITY_JOB)}"
 JENKINS_USER="${JENKINS_USER:-$(read_env JENKINS_USER)}"
 JENKINS_TOKEN="${JENKINS_TOKEN:-$(read_env JENKINS_TOKEN)}"
 
 JENKINS_BASE_URL="${JENKINS_BASE_URL:-http://127.0.0.1:8080}"
-JENKINS_NN_QA_JOB="${JENKINS_NN_QA_JOB:-nn-auto-quality}"
+JENKINS_QUALITY_JOB="${JENKINS_QUALITY_JOB:-mobile-auto-quality}"
 JENKINS_BASE_URL="${JENKINS_BASE_URL%/}"
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -43,9 +43,9 @@ if [ -n "${JENKINS_USER:-}" ] && [ -n "${JENKINS_TOKEN:-}" ]; then
 fi
 
 echo "Jenkins: $JENKINS_BASE_URL"
-echo "Job: $JENKINS_NN_QA_JOB"
+echo "Job: $JENKINS_QUALITY_JOB"
 
-job_api="$JENKINS_BASE_URL/job/$JENKINS_NN_QA_JOB/api/json"
+job_api="$JENKINS_BASE_URL/job/$JENKINS_QUALITY_JOB/api/json"
 job_status="$(curl "${curl_args[@]}" -o /dev/null -w "%{http_code}" "$job_api" || true)"
 if [ "$job_status" = "000" ] || [ -z "$job_status" ]; then
   echo "ERROR: cannot connect Jenkins job API: $job_api" >&2
@@ -64,14 +64,14 @@ fi
 
 if [ "$job_status" = "200" ]; then
   echo "Updating existing Jenkins job..."
-  http_status="$(curl "${post_args[@]}" --data-binary "@$CONFIG_FILE" "$JENKINS_BASE_URL/job/$JENKINS_NN_QA_JOB/config.xml" || echo "curl_failed")"
+  http_status="$(curl "${post_args[@]}" --data-binary "@$CONFIG_FILE" "$JENKINS_BASE_URL/job/$JENKINS_QUALITY_JOB/config.xml" || echo "curl_failed")"
 else
   echo "Creating Jenkins job..."
-  http_status="$(curl "${post_args[@]}" --data-binary "@$CONFIG_FILE" "$JENKINS_BASE_URL/createItem?name=$JENKINS_NN_QA_JOB" || echo "curl_failed")"
+  http_status="$(curl "${post_args[@]}" --data-binary "@$CONFIG_FILE" "$JENKINS_BASE_URL/createItem?name=$JENKINS_QUALITY_JOB" || echo "curl_failed")"
 fi
 
 if [ "$http_status" = "200" ] || [ "$http_status" = "201" ] || [ "$http_status" = "302" ]; then
-  echo "✅ Jenkins job synced: $JENKINS_BASE_URL/job/$JENKINS_NN_QA_JOB/"
+  echo "✅ Jenkins job synced: $JENKINS_BASE_URL/job/$JENKINS_QUALITY_JOB/"
   exit 0
 fi
 

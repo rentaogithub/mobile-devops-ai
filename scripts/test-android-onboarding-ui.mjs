@@ -2,8 +2,8 @@
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 const baseURL = process.env.ANDROID_UI_BASE_URL || 'http://127.0.0.1:5173';
-const ios = { id: 'nn:ios', productLineId: 'nn', platform: 'ios', name: 'NN iOS', packageId: '', projectId: 'nn-ios', active: true, config: {} };
-const product = { id: 'nn', key: 'nn', name: 'NN', projectId: 'nn-ios', active: true, role: 'admin', applications: [ios] };
+const ios = { id: 'default:ios', productLineId: 'default', platform: 'ios', name: '示例 iOS 应用', packageId: '', projectId: 'mobile-ios', active: true, config: {} };
+const product = { id: 'default', key: 'default', name: 'Default', projectId: 'mobile-ios', active: true, role: 'admin', applications: [ios] };
 const user = { id: 'ui-admin', username: 'ui-admin', displayName: '管理员', role: 'admin', active: true, productLines: [product] };
 const runs = [];
 const requests = [];
@@ -20,13 +20,13 @@ try {
     requests.push({ path: pathname, method: req.method(), app: req.headers()['x-application-id'] });
     let data = [];
     if (pathname === '/api/auth/me') data = { user };
-    else if (pathname === '/api/auth/product-lines/nn/applications') {
-      if (req.method() === 'POST') { const body = req.postDataJSON(); product.applications.push({ ...body, id: 'nn-android', productLineId: 'nn', projectId: 'nn-ios:android', active: true }); }
+    else if (pathname === '/api/auth/product-lines/default/applications') {
+      if (req.method() === 'POST') { const body = req.postDataJSON(); product.applications.push({ ...body, id: 'default-android', productLineId: 'default', projectId: 'mobile-ios:android', active: true }); }
       data = product.applications;
     } else if (pathname === '/api/android/readiness') data = { configured: true, missing: [], acceptance: 'pending_external_validation' };
     else if (pathname === '/api/android/runs' && req.method() === 'GET') data = runs;
     else if (pathname === '/api/android/runs' && req.method() === 'POST') {
-      const body = req.postDataJSON(); assert.equal(req.headers()['x-application-id'], 'nn-android');
+      const body = req.postDataJSON(); assert.equal(req.headers()['x-application-id'], 'default-android');
       assert.match(body.requestKey, /^[\w-]{8,100}$/);
       if (body.kind === 'build') assert.equal(body.commit, 'a'.repeat(40));
       const run = { id: `run-${runs.length + 1}`, kind: body.kind, status: 'queued', jobName: `android/${body.kind}`, createdAt: new Date().toISOString(), config: { commit: 'a'.repeat(40), sourceRunId: body.sourceRunId }, result: {} };
@@ -39,7 +39,7 @@ try {
   await page.goto(`${baseURL}/applications`, { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: '接入 Android 应用' }).click();
   await page.getByRole('button', { name: /保\s*存/ }).click();
-  await page.getByLabel('应用名称', { exact: true }).fill('NN Android');
+  await page.getByLabel('应用名称', { exact: true }).fill('示例 Android 应用');
   await page.getByLabel('applicationId（创建后不可修改）', { exact: true }).fill('com.test.android');
   await page.getByLabel('Git 仓库 URL（HTTPS / SSH，无密码）', { exact: true }).fill('https://git.example/app.git');
   await page.getByLabel('Jenkins APK 构建 Job', { exact: true }).fill('android/build');
@@ -47,8 +47,8 @@ try {
   await page.getByLabel('APK 相对路径', { exact: true }).fill('app/build/app.apk');
   await page.getByLabel('Android 测试设备序列号', { exact: true }).fill('test-device');
   await page.getByRole('button', { name: /保\s*存/ }).click();
-  await page.getByRole('row').filter({ hasText: 'NN Android' }).getByRole('button', { name: '进入应用' }).click();
-  await page.getByRole('heading', { name: 'Android 交付 · NN Android' }).waitFor();
+  await page.getByRole('row').filter({ hasText: '示例 Android 应用' }).getByRole('button', { name: '进入应用' }).click();
+  await page.getByRole('heading', { name: 'Android 交付 · 示例 Android 应用' }).waitFor();
   assert.equal(await page.getByText('组件库', { exact: true }).count(), 0);
   await page.getByRole('textbox', { name: 'Git Commit' }).fill('a'.repeat(40));
   await page.getByRole('button', { name: '构建 APK', exact: true }).click();

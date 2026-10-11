@@ -11,7 +11,7 @@ import { jenkinsAssistantService } from './JenkinsAssistantService';
 import { isAssistantOriginAllowed } from '../routes/assistant.routes';
 
 describe('assistant identity, permissions and audit', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-assistant-test-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-assistant-test-'));
   const auth = new AuthService();
   const registry = new AssistantToolRegistry();
   const audits = new AssistantAuditService();
@@ -120,7 +120,7 @@ describe('assistant identity, permissions and audit', () => {
 
   it('accepts same-origin browser requests through a development proxy but rejects cross-site requests', () => {
     expect(isAssistantOriginAllowed({
-      origin: 'http://10.1.106.95:5173',
+      origin: 'http://192.0.2.10:5173',
       host: '127.0.0.1:3000',
       'sec-fetch-site': 'same-origin',
     })).toBe(true);
@@ -409,14 +409,14 @@ describe('assistant identity, permissions and audit', () => {
       missingSuites: [],
     });
     const trigger = jest.spyOn(jenkinsAssistantService, 'triggerRelease').mockResolvedValueOnce({
-      jobName: 'nn',
+      jobName: 'default',
       branch: 'release/1.2.3',
       jenkinsBranch: 'origin/release/1.2.3',
       deployTarget: 'TestFlight',
       sourceBuildNumber: 456,
       releaseGate: { id: 'gate_456', status: 'passed' },
       queueUrl: null,
-      url: 'http://jenkins/job/nn/',
+      url: 'http://jenkins/job/default/',
     });
     jest.spyOn(assistantModelGateway, 'start').mockResolvedValueOnce({
       text: '',

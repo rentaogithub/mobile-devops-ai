@@ -746,7 +746,7 @@ function buildActionRecommendations(input: {
         priority: 'high',
         title: '符号化失败集中在缺 dSYM',
         description: `${item.count} 条未解决 Crash 因缺 dSYM 无法准确归因，影响 ${item.eventCount} 次事件。`,
-        action: '按 App 版本筛选记录，补齐主包、leigod_im_cross_sdk、NNRtc 等相关 dSYM 后重新符号化。',
+        action: '按 App 版本筛选记录，补齐主包、mobile_im_cross_sdk、MobileRTC 等相关 dSYM 后重新符号化。',
         relatedCategory: item.category,
         count: item.count,
       });
@@ -810,7 +810,7 @@ function buildActionRecommendations(input: {
 function normalizeExcludedVersions(versions: unknown): string[] {
   const raw = Array.isArray(versions)
     ? versions
-    : String(versions || (currentProductLineId() === 'nn' ? process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0' : '')).split(',');
+    : String(versions || (currentProductLineId() === 'default' ? process.env.SENTRY_EXCLUDED_APP_VERSIONS || '10.0.0' : '')).split(',');
   return Array.from(new Set(
     raw
       .map((version) => String(version || '').trim())
@@ -873,7 +873,7 @@ export class CrashGovernanceService {
         last_sync_error TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         UNIQUE(product_line_id, source, source_issue_id)
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_updated
@@ -887,7 +887,7 @@ export class CrashGovernanceService {
         record_id INTEGER NOT NULL,
         notification_type TEXT NOT NULL,
         sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         UNIQUE(product_line_id, record_id, notification_type)
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_notifications_record
@@ -896,7 +896,7 @@ export class CrashGovernanceService {
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         PRIMARY KEY (product_line_id, key)
       );
       CREATE TABLE IF NOT EXISTS crash_governance_events (
@@ -910,7 +910,7 @@ export class CrashGovernanceService {
         note TEXT,
         related_record_ids_json TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        product_line_id TEXT NOT NULL DEFAULT 'nn'
+        product_line_id TEXT NOT NULL DEFAULT 'default'
       );
       CREATE INDEX IF NOT EXISTS idx_crash_governance_events_record
         ON crash_governance_events(record_id, created_at DESC);
@@ -918,7 +918,7 @@ export class CrashGovernanceService {
     const ensureProductColumn = (table: string) => {
       const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       if (!columns.some((column) => column.name === 'product_line_id')) {
-        this.db.exec(`ALTER TABLE ${table} ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'`);
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'`);
       }
     };
     ensureProductColumn('crash_governance_records');
@@ -980,7 +980,7 @@ export class CrashGovernanceService {
           last_sync_error TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           UNIQUE(product_line_id, source, source_issue_id)
         );
         INSERT INTO crash_governance_records (
@@ -1000,7 +1000,7 @@ export class CrashGovernanceService {
           analysis_status, analysis_error, governance_status, owner, fixed_version, fixed_remark, ignore_reason,
           history_id, quality_task_id, release_record_id, dsym_coverage_status, dsym_coverage_json,
           retry_count, last_synced_at, last_sync_error, created_at, updated_at,
-          COALESCE(NULLIF(product_line_id, ''), 'nn')
+          COALESCE(NULLIF(product_line_id, ''), 'default')
         FROM crash_governance_records_legacy;
         DROP TABLE crash_governance_records_legacy;
       `);
@@ -1013,13 +1013,13 @@ export class CrashGovernanceService {
           record_id INTEGER NOT NULL,
           notification_type TEXT NOT NULL,
           sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           UNIQUE(product_line_id, record_id, notification_type)
         );
         INSERT INTO crash_governance_notifications (
           id, record_id, notification_type, sent_at, product_line_id
         )
-        SELECT id, record_id, notification_type, sent_at, COALESCE(NULLIF(product_line_id, ''), 'nn')
+        SELECT id, record_id, notification_type, sent_at, COALESCE(NULLIF(product_line_id, ''), 'default')
         FROM crash_governance_notifications_legacy;
         DROP TABLE crash_governance_notifications_legacy;
       `);
@@ -1032,11 +1032,11 @@ export class CrashGovernanceService {
           key TEXT NOT NULL,
           value TEXT NOT NULL,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           PRIMARY KEY (product_line_id, key)
         );
         INSERT INTO crash_governance_config (key, value, updated_at, product_line_id)
-        SELECT key, value, updated_at, 'nn' FROM crash_governance_config_legacy;
+        SELECT key, value, updated_at, 'default' FROM crash_governance_config_legacy;
         DROP TABLE crash_governance_config_legacy;
       `);
     }

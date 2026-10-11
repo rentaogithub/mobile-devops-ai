@@ -24,7 +24,7 @@ interface ApiTimelineRow {
   costMs: number | null;
   retCode: string;
   retMsg: string;
-  nntid: string;
+  traceId: string;
   trackId: string;
   parameters: string;
   responseBody: string;
@@ -70,7 +70,7 @@ export interface BusinessLogAnalysis {
   retCodeCounts: Array<{ retCode: string; count: number }>;
   versions: string[];
   userIds: string[];
-  nntidIssueCount: number;
+  traceIdIssueCount: number;
   suggestions: string[];
   functionGroups: Array<{ key: string; label: string; logs: ParsedBusinessLog[]; warnings: number; eventCounts: Array<{ event: string; count: number }> }>;
 }
@@ -411,16 +411,16 @@ function humanizeApiOperationName(path: string): string {
 function humanizeApiPath(path: string): string {
   const normalized = path.split('?')[0];
   const known: Array<[RegExp, string]> = [
-    [/\/nchannel\/channel\/business\/enterPersonalTopicServerByIdV2/i, '进入个人话题服务器，通常用于社区首页或话题频道初始化'],
-    [/\/nchannel\/server\/channel\/queryNotEmpty/i, '查询当前可展示的非空频道'],
-    [/\/nchannel\/channel\/business\/\d+\/newAllKindTeamListByServerId/i, '拉取指定社区服务器下的组队列表'],
-    [/\/nchannel\/server\/channel\/pageQuery/i, '分页查询社区频道列表'],
-    [/\/nchannel\/server\/room\/page\/config\/v1\/enterServerBalanceV1/i, '读取进入服务器时的负载均衡配置'],
-    [/\/nchannel\/channel\/auth\/config\/server\/role\/userIds/i, '查询服务器角色对应的用户列表'],
-    [/\/nchannel\/channel\/business\/getUserChannelAndMemberByUserIds/i, '查询用户所在频道和成员信息'],
+    [/\/community-channel\/channel\/business\/enterPersonalTopicServerByIdV2/i, '进入个人话题服务器，通常用于社区首页或话题频道初始化'],
+    [/\/community-channel\/server\/channel\/queryNotEmpty/i, '查询当前可展示的非空频道'],
+    [/\/community-channel\/channel\/business\/\d+\/newAllKindTeamListByServerId/i, '拉取指定社区服务器下的组队列表'],
+    [/\/community-channel\/server\/channel\/pageQuery/i, '分页查询社区频道列表'],
+    [/\/community-channel\/server\/room\/page\/config\/v1\/enterServerBalanceV1/i, '读取进入服务器时的负载均衡配置'],
+    [/\/community-channel\/channel\/auth\/config\/server\/role\/userIds/i, '查询服务器角色对应的用户列表'],
+    [/\/community-channel\/channel\/business\/getUserChannelAndMemberByUserIds/i, '查询用户所在频道和成员信息'],
     [/\/u-mobile\/api\/v1\/taskCenter\/points\/monthly/i, '查询用户本月任务中心积分'],
-    [/\/nchannel\/channel\/business\/\d+\/getLabelCacheByServerId/i, '读取社区服务器标签缓存'],
-    [/\/nchannel\/channel\/business\/getPluginUserNumber/i, '查询插件关联用户数量'],
+    [/\/community-channel\/channel\/business\/\d+\/getLabelCacheByServerId/i, '读取社区服务器标签缓存'],
+    [/\/community-channel\/channel\/business\/getPluginUserNumber/i, '查询插件关联用户数量'],
     [/\/ncoperation\/api\/v2\/TmInfo\/getTmInfo/i, '获取运营侧 TM 配置信息'],
     [/\/user-query\/user\/info\/batchQuery/i, '批量查询用户资料'],
   ];
@@ -783,7 +783,7 @@ function semanticFields(fields: Record<string, string>): string[] {
     ['conversationId', '会话'],
     ['sessionId', 'Session'],
     ['messageId', '消息ID'],
-    ['nntid', 'nntid'],
+    ['traceId', 'traceId'],
     ['trackId', 'trackId'],
   ];
   return labels
@@ -830,7 +830,7 @@ const commonSemanticFieldLabels: Array<[string, string]> = [
   ['costMs', '耗时'],
   ['userId', '用户'],
   ['uid', 'UID'],
-  ['nnNumber', 'NN 号'],
+  ['externalNumber', '外部账号'],
   ['roomId', '房间'],
   ['channelId', '频道'],
   ['serverId', '服务器'],
@@ -846,7 +846,7 @@ const commonSemanticFieldLabels: Array<[string, string]> = [
   ['state', '状态'],
   ['token', 'token'],
   ['version', '版本'],
-  ['nntid', 'nntid'],
+  ['traceId', 'traceId'],
   ['trackId', 'trackId'],
 ];
 
@@ -891,7 +891,7 @@ function getSemanticCategory(log: ParsedBusinessLog): SemanticCategory {
   if (/click|tap|gesture|input|button|用户点击/i.test(text)) return '用户交互';
   if (/launch|foreground|background|lifecycle|viewdid|页面|启动/i.test(text)) return '生命周期';
   if (/cost|耗时|fps|memory|性能/i.test(text)) return '性能';
-  if (/sdk|nnrtc|nnimsdk|push|third/i.test(text)) return '第三方SDK';
+  if (/sdk|mobileRtc|imsdk|push|third/i.test(text)) return '第三方SDK';
   return '业务状态变更';
 }
 
@@ -981,7 +981,7 @@ function extractSdkFunction(line: string): string {
   const bracketNames = [...plain.matchAll(/\[([A-Za-z_][\w:<>~.-]+)\]/g)]
     .map((item) => item[1])
     .filter((name) => !invalidNames.has(name.toLowerCase()))
-    .filter((name) => /[A-Z_]/.test(name) && !/^nnrtc-[iwe]$/i.test(name));
+    .filter((name) => /[A-Z_]/.test(name) && !/^mobileRtc-[iwe]$/i.test(name));
   if (bracketNames.length) return bracketNames[bracketNames.length - 1];
 
   const functionCall = [...plain.matchAll(/\b([A-Za-z_][\w:<>~.-]+)\s*\(/g)]
@@ -1365,15 +1365,15 @@ function explainRealtimeBusinessLog(log: ParsedBusinessLog): SemanticLogItem {
   ]);
 
   if (/heartbeat|ping|pong/.test(event)) {
-    return makeSemanticLogItem(log, moduleEventTitle('NNRealtimeLog', log.event, '实时心跳'), `${status}。判断长连接心跳是否稳定，心跳异常通常会带来断线或延迟。${summary ? `关键字段：${summary}。` : ''}`, ['NNRealtimeLog', status]);
+    return makeSemanticLogItem(log, moduleEventTitle('MobileRealtimeLog', log.event, '实时心跳'), `${status}。判断长连接心跳是否稳定，心跳异常通常会带来断线或延迟。${summary ? `关键字段：${summary}。` : ''}`, ['MobileRealtimeLog', status]);
   }
   if (/connect|reconnect|restore/.test(event)) {
-    return makeSemanticLogItem(log, moduleEventTitle('NNRealtimeLog', log.event, '实时连接恢复/重连'), `${status}。判断实时通道是否重新建立，以及订阅是否需要恢复。${summary ? `关键字段：${summary}。` : ''}`, ['NNRealtimeLog', status]);
+    return makeSemanticLogItem(log, moduleEventTitle('MobileRealtimeLog', log.event, '实时连接恢复/重连'), `${status}。判断实时通道是否重新建立，以及订阅是否需要恢复。${summary ? `关键字段：${summary}。` : ''}`, ['MobileRealtimeLog', status]);
   }
   if (/dispatch|receive|message|subscribe/.test(event)) {
-    return makeSemanticLogItem(log, moduleEventTitle('NNRealtimeLog', log.event, '实时消息分发'), `${status}。确认实时消息是否收到、分发到业务模块或订阅频道。${summary ? `关键字段：${summary}。` : ''}`, ['NNRealtimeLog', status]);
+    return makeSemanticLogItem(log, moduleEventTitle('MobileRealtimeLog', log.event, '实时消息分发'), `${status}。确认实时消息是否收到、分发到业务模块或订阅频道。${summary ? `关键字段：${summary}。` : ''}`, ['MobileRealtimeLog', status]);
   }
-  return fallbackModuleExplanation(log, 'NNRealtimeLog', status, '用于判断实时通道、心跳、订阅和消息分发状态。');
+  return fallbackModuleExplanation(log, 'MobileRealtimeLog', status, '用于判断实时通道、心跳、订阅和消息分发状态。');
 }
 
 function explainApiBusinessLog(log: ParsedBusinessLog): SemanticLogItem {
@@ -1389,7 +1389,7 @@ function explainApiBusinessLog(log: ParsedBusinessLog): SemanticLogItem {
     ['retMsg', '消息'],
     ['errorMsg', '错误信息'],
     ['reason', '原因'],
-    ['nntid', 'nntid'],
+    ['traceId', 'traceId'],
     ['trackId', 'trackId'],
     ['costMs', '耗时'],
   ]);
@@ -1425,7 +1425,7 @@ function explainBusinessLog(log: ParsedBusinessLog): SemanticLogItem {
   if (log.category === 'Message') return explainMessageBusinessLog(log);
   if (log.category === 'Push') return explainPushBusinessLog(log);
   if (log.category === 'Web') return explainWebBusinessLog(log);
-  if (log.category === 'NNRealtimeLog') return explainRealtimeBusinessLog(log);
+  if (log.category === 'MobileRealtimeLog') return explainRealtimeBusinessLog(log);
   const fields = semanticFields(log.fields);
   const status = semanticStatusText(log.level, log.fields);
   return makeSemanticLogItem(
@@ -1450,7 +1450,7 @@ function explainApiRow(row: ApiTimelineRow): SemanticLogItem {
     return humanizeEventName(event.event);
   }).filter(Boolean).join('，');
   const resultText = row.status === 'pending'
-    ? '没有匹配到响应，可能是请求还没结束、响应日志缺失或 nntid 未对上'
+    ? '没有匹配到响应，可能是请求还没结束、响应日志缺失或 traceId 未对上'
     : row.status === 'failed'
       ? `接口存在异常${row.retCode !== '-' ? `，retCode=${row.retCode}` : ''}${row.retMsg !== '-' ? `，消息=${row.retMsg}` : ''}${relatedText ? `，关联事件=${relatedText}` : ''}`
       : '返回成功';
@@ -1460,8 +1460,8 @@ function explainApiRow(row: ApiTimelineRow): SemanticLogItem {
     : row.status === 'failed'
       ? `接口存在异常${costText ? `，${costText}` : ''}`
       : `接口返回成功${costText ? `，${costText}` : ''}`;
-  const nntidText = row.nntid !== '-' ? `nntid=${row.nntid}。` : '';
-  const detail = row.status === 'success' ? nntidText : `${resultText}。${nntidText}`;
+  const traceIdText = row.traceId !== '-' ? `traceId=${row.traceId}。` : '';
+  const detail = row.status === 'success' ? traceIdText : `${resultText}。${traceIdText}`;
   return {
     key: row.key,
     time: row.requestTime || row.responseTime || '-',
@@ -1646,8 +1646,8 @@ function extractBusinessLogTime(line: string): string {
 }
 
 function normalizeLogCategory(line: string, categoryMatches: string[], time: string): string {
-  if (/\[IMSDK\]|\[nnimsdk-[^\]]+\]/i.test(line)) return 'IM SDK';
-  if (/\[RTCSDK\]|\[nnrtc-[^\]]+\]/i.test(line)) return 'RTC SDK';
+  if (/\[IMSDK\]|\[imsdk-[^\]]+\]/i.test(line)) return 'IM SDK';
+  if (/\[RTCSDK\]|\[mobileRtc-[^\]]+\]/i.test(line)) return 'RTC SDK';
 
   const candidates = categoryMatches.filter((item) => item !== time && !item.includes(':'));
   if (candidates.includes('RTC_API') || candidates.includes('RTC')) return 'RTC';
@@ -1756,30 +1756,30 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     .sort((left, right) => right.failedCount - left.failedCount || right.maxCostMs - left.maxCostMs || right.requestCount - left.requestCount)
     .slice(0, 30);
 
-  const responsesByNntid = new Map<string, ParsedBusinessLog[]>();
+  const responsesByTraceId = new Map<string, ParsedBusinessLog[]>();
   apiResponses.forEach((response) => {
-    const nntid = response.fields.nntid || '';
-    if (!nntid) return;
-    responsesByNntid.set(nntid, [...(responsesByNntid.get(nntid) || []), response]);
+    const traceId = response.fields.traceId || '';
+    if (!traceId) return;
+    responsesByTraceId.set(traceId, [...(responsesByTraceId.get(traceId) || []), response]);
   });
   const usedResponses = new Set<ParsedBusinessLog>();
   const apiTimeline: ApiTimelineRow[] = apiRequests.map((request, index) => {
-    const nntid = request.fields.nntid || '';
-    const response = nntid ? responsesByNntid.get(nntid)?.shift() : undefined;
+    const traceId = request.fields.traceId || '';
+    const response = traceId ? responsesByTraceId.get(traceId)?.shift() : undefined;
     if (response) usedResponses.add(response);
     const retCode = response?.fields.retCode || '';
     const status: 'success' | 'failed' | 'pending' = response
       ? (retCode && !['0', '100', '200'].includes(retCode) ? 'failed' : 'success')
       : 'pending';
     return {
-      key: `${nntid || request.time}-${index}`,
+      key: `${traceId || request.time}-${index}`,
       requestTime: request.time,
       responseTime: response?.time || '-',
       api: normalizeApiKey(request.fields.api || response?.fields.api),
       costMs: response?.fields.costMs ? Number(response.fields.costMs) : null,
       retCode: retCode || '-',
       retMsg: response?.fields.retMsg || '-',
-      nntid: nntid || '-',
+      traceId: traceId || '-',
       trackId: response?.fields.trackId || '-',
       parameters: request.fields.parameters || '-',
       responseBody: response?.fields.response || extractResponseFieldFromLogLine(response?.line || '') || '-',
@@ -1796,14 +1796,14 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     const retCode = response.fields.retCode || '';
     const status: 'success' | 'failed' = retCode && !['0', '100', '200'].includes(retCode) ? 'failed' : 'success';
     apiTimeline.push({
-      key: `response-only-${response.fields.nntid || response.time}-${index}`,
+      key: `response-only-${response.fields.traceId || response.time}-${index}`,
       requestTime: response.time || '-',
       responseTime: response.time || '-',
       api: normalizeApiKey(response.fields.api),
       costMs: null,
       retCode: retCode || '-',
       retMsg: response.fields.retMsg || '-',
-      nntid: response.fields.nntid || '-',
+      traceId: response.fields.traceId || '-',
       trackId: response.fields.trackId || '-',
       parameters: '-',
       responseBody: response.fields.response || extractResponseFieldFromLogLine(response.line) || '-',
@@ -1816,13 +1816,13 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     });
   });
 
-  const apiTimelineByNntid = new Map<string, ApiTimelineRow>();
+  const apiTimelineByTraceId = new Map<string, ApiTimelineRow>();
   apiTimeline.forEach((row) => {
-    if (row.nntid && row.nntid !== '-') apiTimelineByNntid.set(row.nntid, row);
+    if (row.traceId && row.traceId !== '-') apiTimelineByTraceId.set(row.traceId, row);
   });
   apiRelatedEvents.forEach((event, index) => {
-    const nntid = event.fields.nntid || '';
-    const matchedRow = nntid ? apiTimelineByNntid.get(nntid) : undefined;
+    const traceId = event.fields.traceId || '';
+    const matchedRow = traceId ? apiTimelineByTraceId.get(traceId) : undefined;
     if (matchedRow) {
       matchedRow.relatedEvents = [...(matchedRow.relatedEvents || []), event];
       if (event.level !== 'info' && matchedRow.status === 'success') matchedRow.status = 'failed';
@@ -1833,14 +1833,14 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
       return;
     }
     apiTimeline.push({
-      key: `api-related-${event.fields.nntid || event.time}-${index}`,
+      key: `api-related-${event.fields.traceId || event.time}-${index}`,
       requestTime: event.time || '-',
       responseTime: event.time || '-',
       api: normalizeApiKey(event.fields.api || event.fields.url || event.fields.path),
       costMs: event.fields.costMs ? Number(event.fields.costMs) : null,
       retCode: event.fields.retCode || event.fields.code || '-',
       retMsg: event.fields.retMsg || event.fields.errorMsg || event.fields.reason || '-',
-      nntid: event.fields.nntid || '-',
+      traceId: event.fields.traceId || '-',
       trackId: event.fields.trackId || '-',
       parameters: event.fields.parameters || '-',
       responseBody: event.fields.response || extractResponseFieldFromLogLine(event.line) || '-',
@@ -1853,11 +1853,11 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     });
   });
 
-  const requestNntids = new Set(apiRequests.map((log) => log.fields.nntid).filter(Boolean));
-  const responseNntids = new Set(apiResponses.map((log) => log.fields.nntid).filter(Boolean));
-  let nntidIssueCount = 0;
-  requestNntids.forEach((nntid) => {
-    if (!responseNntids.has(nntid)) nntidIssueCount += 1;
+  const requestTraceIds = new Set(apiRequests.map((log) => log.fields.traceId).filter(Boolean));
+  const responseTraceIds = new Set(apiResponses.map((log) => log.fields.traceId).filter(Boolean));
+  let traceIdIssueCount = 0;
+  requestTraceIds.forEach((traceId) => {
+    if (!responseTraceIds.has(traceId)) traceIdIssueCount += 1;
   });
 
   const versions = Array.from(new Set(parsedLogs.map((log) => log.fields.version).filter(Boolean))).slice(0, 8);
@@ -1869,7 +1869,7 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
   const suggestions: string[] = [];
   if (failedResponses.length) suggestions.push(`发现 ${failedResponses.length} 条非成功 retCode，优先查看异常响应列表。`);
   if (slowResponses.length) suggestions.push(`发现 ${slowResponses.length} 条接口耗时 >= 500ms，建议关注慢请求 Top。`);
-  if (nntidIssueCount) suggestions.push(`发现 ${nntidIssueCount} 个请求 nntid 未匹配到响应，可能存在超时、丢日志或请求未完成。`);
+  if (traceIdIssueCount) suggestions.push(`发现 ${traceIdIssueCount} 个请求 traceId 未匹配到响应，可能存在超时、丢日志或请求未完成。`);
   if (!suggestions.length) suggestions.push('未发现明显异常 retCode 或慢请求，可结合用户操作路径继续检索关键 event。');
 
   const groupMap = new Map<string, { key: string; label: string; logs: ParsedBusinessLog[] }>();
@@ -1943,7 +1943,7 @@ export function analyzeBusinessLogLines(lines: string[], source: string): Busine
     retCodeCounts: topCounts(apiResponses.map((log) => log.fields.retCode || 'empty'), 12).map((item) => ({ retCode: item.event, count: item.count })),
     versions,
     userIds,
-    nntidIssueCount,
+    traceIdIssueCount,
     suggestions,
     functionGroups,
   };
@@ -2181,7 +2181,7 @@ function BusinessLogAnalysisModalComponent({ open, analysisResult, onCancel }: B
         formatJsonText(record.responseBody),
         record.retCode,
         record.retMsg,
-        record.nntid,
+        record.traceId,
         record.trackId,
       ].join('\n').toLowerCase().includes(normalizedApiSearchText))
       : dataSource;

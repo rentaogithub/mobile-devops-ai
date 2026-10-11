@@ -11,19 +11,19 @@ describe('ApiRouteSearchService', () => {
   let previousDatasetDir: string | undefined;
 
   beforeEach(() => {
-    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-route-search-'));
-    datasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-capability-dataset-'));
-    previousRepoPath = process.env.NNIOS_REPO_PATH;
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-route-search-'));
+    datasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-capability-dataset-'));
+    previousRepoPath = process.env.MAIN_APP_REPO_PATH;
     previousDatasetDir = process.env.ASSISTANT_CAPABILITY_DATASET_DIR;
-    process.env.NNIOS_REPO_PATH = repoDir;
+    process.env.MAIN_APP_REPO_PATH = repoDir;
     process.env.ASSISTANT_CAPABILITY_DATASET_DIR = datasetDir;
   });
 
   afterEach(() => {
     if (previousRepoPath === undefined) {
-      delete process.env.NNIOS_REPO_PATH;
+      delete process.env.MAIN_APP_REPO_PATH;
     } else {
-      process.env.NNIOS_REPO_PATH = previousRepoPath;
+      process.env.MAIN_APP_REPO_PATH = previousRepoPath;
     }
     if (previousDatasetDir === undefined) {
       delete process.env.ASSISTANT_CAPABILITY_DATASET_DIR;
@@ -35,16 +35,16 @@ describe('ApiRouteSearchService', () => {
   });
 
   it('does not search iOS project source code for cross-platform results', () => {
-    fs.mkdirSync(path.join(repoDir, 'Development Pods', 'NNLibrary', 'Classes', 'TXLogin'), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, 'Development Pods', 'SampleLibrary', 'Classes', 'TXLogin'), { recursive: true });
     fs.writeFileSync(
-      path.join(repoDir, 'Development Pods', 'NNLibrary', 'Classes', 'TXLogin', 'TXCaptchaWebView.m'),
+      path.join(repoDir, 'Development Pods', 'SampleLibrary', 'Classes', 'TXLogin', 'TXCaptchaWebView.m'),
       'NSString *loginBridge = @"jsbridge://login/captcha";\n',
       'utf8',
     );
-    fs.mkdirSync(path.join(repoDir, 'NNApp', 'Login'), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, 'SampleApp', 'Login'), { recursive: true });
     fs.writeFileSync(
-      path.join(repoDir, 'NNApp', 'Login', 'LoginRoute.m'),
-      'NSString *loginRoute = @"nn://login"; // JSBridge login route\n',
+      path.join(repoDir, 'SampleApp', 'Login', 'LoginRoute.m'),
+      'NSString *loginRoute = @"default://login"; // JSBridge login route\n',
       'utf8',
     );
 
@@ -95,7 +95,7 @@ describe('ApiRouteSearchService', () => {
       capability: '带玩主页',
       category: '游戏服务',
       description: '打开带玩用户主页。',
-      codeSnippet: 'nn://{host}/game/profile/{userId}',
+      codeSnippet: 'default://{host}/game/profile/{userId}',
       inputs: ['host', 'userId'],
     });
   });
@@ -107,7 +107,7 @@ describe('ApiRouteSearchService', () => {
       capability: '打开明明鼠聊天',
       category: '消息',
       description: '打开明明鼠聊天。',
-      codeSnippet: 'nn://{host}/chat/c2c/inbox-msg',
+      codeSnippet: 'default://{host}/chat/c2c/inbox-msg',
       inputs: ['host'],
     });
   });
@@ -121,7 +121,7 @@ describe('ApiRouteSearchService', () => {
         capability: '战队主页',
         category: '游戏服务',
         description: '打开指定战队主页。',
-        route: 'nn://{host}/game/team/{teamId}',
+        route: 'default://{host}/game/team/{teamId}',
         aliases: ['战队主页', 'team profile'],
         parameters: ['host', 'teamId'],
         outputs: ['打开战队主页'],
@@ -133,7 +133,7 @@ describe('ApiRouteSearchService', () => {
     expect(result.rows[0]).toMatchObject({
       capability: '战队主页',
       category: '游戏服务',
-      codeSnippet: 'nn://{host}/game/team/{teamId}',
+      codeSnippet: 'default://{host}/game/team/{teamId}',
       source: 'route-tool',
     });
   });
@@ -144,8 +144,8 @@ describe('ApiRouteSearchService', () => {
     expect(result.rows[0]).toMatchObject({
       capability: '获取 Token',
       methodName: 'getToken',
-      description: '获取 NN 当前登录用户的 token。',
-      codeSnippet: 'NNJSBridge.getToken()',
+      description: '获取业务 App 当前登录用户的 token。',
+      codeSnippet: 'SampleJSBridge.getToken()',
     });
   });
 
@@ -157,7 +157,7 @@ describe('ApiRouteSearchService', () => {
       capability: '跳转到其它 H5 页面',
       methodName: 'navigateTo',
       description: '跳转到其它 H5 页面。',
-      codeSnippet: 'NNJSBridge.navigateTo("https://www.nn.com/")',
+      codeSnippet: 'SampleJSBridge.navigateTo("https://www.example.com/")',
     });
   });
 
@@ -168,7 +168,7 @@ describe('ApiRouteSearchService', () => {
       capability: '获取社区频道信息',
       methodName: 'getCommunityChannelInfo',
       description: '获取当前社区频道信息。',
-      codeSnippet: 'NNJSBridge.getCommunityChannelInfo()',
+      codeSnippet: 'SampleJSBridge.getCommunityChannelInfo()',
       outputs: ['社区信息', '频道信息'],
     });
   });

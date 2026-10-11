@@ -478,10 +478,10 @@ export default function HistoryPage() {
     ].filter(Boolean).join('\n'));
 
     const groups = new Set<ModuleFilter>();
-    if (/\bnnrtc\b/i.test(searchable)) {
+    if (/\bmobileRtc\b/i.test(searchable)) {
       groups.add('rtc');
     }
-    if (/leigod im cross sdk|im sdk/i.test(searchable)) {
+    if (/mobile im cross sdk|im sdk/i.test(searchable)) {
       groups.add('im');
     }
     if (groups.size === 0) {

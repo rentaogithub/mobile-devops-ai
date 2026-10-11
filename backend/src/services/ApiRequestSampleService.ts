@@ -20,7 +20,7 @@ interface PendingRequest {
   api: string;
   parameters: unknown;
   token: string;
-  nntid: string;
+  traceId: string;
   createdAt: string;
 }
 
@@ -51,53 +51,53 @@ export interface ApiRequestSample {
   costMs?: number;
   uid: string;
   deviceId: string;
-  nntid: string;
+  traceId: string;
   createdAt: string;
   requestTime: string;
 }
 
 const requestEnvironments: Record<Exclude<RequestEnvironment, 'unknown'>, string[]> = {
-  release: ['opapi.nnraytheon.com'],
-  test: ['test-opapi.nn.com'],
-  test1: ['test1-opapi.nn.com'],
+  release: ['api.example.com'],
+  test: ['test-opapi.example.com'],
+  test1: ['test1-opapi.example.com'],
 };
 
 const runtimeRequestParamKeys = new Set(['timestamp', 'token']);
 const serviceBasePaths: Record<string, string> = {
   'open-api': '/openApi',
-  'nn-assist-frontend': '/nn-assist',
-  'nn-assist-client': '/nn-assist',
-  'u-nnpc': '/u-nnpc',
+  'default-assist-frontend': '/default-assist',
+  'default-assist-client': '/default-assist',
+  'desktop-api': '/desktop-api',
   'user-query': '/user-query',
   'u-mobile': '/u-mobile',
   'u-miniapp': '/u-miniapp',
-  nchannel: '/nchannel',
+  'community-channel': '/community-channel',
   activity: '/activity',
   'speed-platform': '/speed-platform',
   'wan-app': '/wan',
   'wan-client': '/wan',
   'wan-short-link': '/wan',
-  'nn-risk-v1': '/nn-risk',
-  'nn-risk-admin': '/nn-risk',
-  'nn-risk-activity': '/nn-risk',
+  'default-risk-v1': '/default-risk',
+  'default-risk-admin': '/default-risk',
+  'default-risk-activity': '/default-risk',
   'operation-server': '/ncoperation',
   'im-friend': '/im-friend',
   'im-user': '/im-user',
-  'order-open-api': '/nnorder',
+  'order-open-api': '/order',
   'wan-v1': '/wan',
   'wan-v2': '/wan',
   'wan-v3': '/wan',
   'wan-taobao': '/wan',
   'short-link-api': '/short-link-business',
-  'leigod-rtc': '/leigod-rtc',
+  'mobile-rtc': '/mobile-rtc',
   privilege: '/privilege',
-  'leigod-market-nn': '/leigod-market-nn',
-  'nn-game': '/nn-game',
+  'mobile-market-default': '/mobile-market-default',
+  'default-game': '/default-game',
   'cmp-bff': '/cmp-bff',
   gamehub: '/gamehub',
-  'union-server': '/nn-union',
-  'nn-status': '/nn-status',
-  'nn-version': '/nn-version',
+  'union-server': '/default-union',
+  'default-status': '/default-status',
+  'default-version': '/default-version',
   fdfs: '/fdfs',
 };
 
@@ -108,7 +108,7 @@ class ApiRequestSampleService {
     getDatabase().prepare(`
       CREATE TABLE IF NOT EXISTS api_request_samples (
         id TEXT PRIMARY KEY,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         sample_key TEXT NOT NULL UNIQUE,
         source TEXT NOT NULL,
         source_ref TEXT DEFAULT '',
@@ -129,16 +129,17 @@ class ApiRequestSampleService {
         cost_ms INTEGER,
         uid TEXT DEFAULT '',
         device_id TEXT DEFAULT '',
-        nntid TEXT DEFAULT '',
+        trace_id TEXT DEFAULT '',
         created_at TEXT NOT NULL,
         request_time TEXT DEFAULT ''
       )
     `).run();
     this.ensureColumn('api_request_samples', 'token', 'TEXT DEFAULT ""');
-    this.ensureColumn('api_request_samples', 'product_line_id', "TEXT NOT NULL DEFAULT 'nn'");
+    this.ensureColumn('api_request_samples', 'product_line_id', "TEXT NOT NULL DEFAULT 'default'");
+    this.ensureColumn('api_request_samples', 'trace_id', 'TEXT DEFAULT ""');
     getDatabase().prepare(`
       CREATE TABLE IF NOT EXISTS api_request_invalid_tokens (
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         token TEXT NOT NULL,
         environment TEXT NOT NULL,
         reason TEXT DEFAULT '',
@@ -151,7 +152,7 @@ class ApiRequestSampleService {
       getDatabase().exec(`
         ALTER TABLE api_request_invalid_tokens RENAME TO api_request_invalid_tokens_legacy;
         CREATE TABLE api_request_invalid_tokens (
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           token TEXT NOT NULL,
           environment TEXT NOT NULL,
           reason TEXT DEFAULT '',
@@ -159,7 +160,7 @@ class ApiRequestSampleService {
           PRIMARY KEY (product_line_id, token, environment)
         );
         INSERT INTO api_request_invalid_tokens (product_line_id, token, environment, reason, invalid_at)
-        SELECT 'nn', token, environment, reason, invalid_at FROM api_request_invalid_tokens_legacy;
+        SELECT 'default', token, environment, reason, invalid_at FROM api_request_invalid_tokens_legacy;
         DROP TABLE api_request_invalid_tokens_legacy;
       `);
     }
@@ -180,9 +181,9 @@ class ApiRequestSampleService {
 
     if (parsed.event === 'api_request') {
       const api = parsed.fields.api || '';
-      const nntid = parsed.fields.nntid || crypto.randomUUID();
+      const traceId = parsed.fields.traceId || crypto.randomUUID();
       const productLineId = options.productLineId || currentProductLineId();
-      this.pendingRequests.set(`${productLineId}:${nntid}`, {
+      this.pendingRequests.set(`${productLineId}:${traceId}`, {
         productLineId,
         source: options.source,
         sourceRef: options.sourceRef || '',
@@ -190,16 +191,16 @@ class ApiRequestSampleService {
         api,
         parameters: this.parseJsonValue(parsed.fields.parameters),
         token: parsed.fields.token || this.extractToken(this.parseJsonValue(parsed.fields.parameters)),
-        nntid,
+        traceId,
         createdAt: options.timestamp || new Date().toISOString(),
       });
       return 0;
     }
 
-    const nntid = parsed.fields.nntid || '';
+    const traceId = parsed.fields.traceId || '';
     const productLineId = options.productLineId || currentProductLineId();
-    const pendingKey = `${productLineId}:${nntid}`;
-    const pending = nntid ? this.pendingRequests.get(pendingKey) : undefined;
+    const pendingKey = `${productLineId}:${traceId}`;
+    const pending = traceId ? this.pendingRequests.get(pendingKey) : undefined;
     if (!pending && !parsed.fields.api) return 0;
     const api = pending?.api || parsed.fields.api || '';
     const sample = this.buildSample({
@@ -213,13 +214,13 @@ class ApiRequestSampleService {
       retCode: parsed.fields.retCode || '',
       retMsg: parsed.fields.retMsg || '',
       costMs: Number(parsed.fields.costMs || 0) || undefined,
-      nntid,
+      traceId,
       uid: parsed.fields.uid || parsed.fields.userId || '',
       deviceId: parsed.fields.deviceId || '',
       createdAt: options.timestamp || new Date().toISOString(),
       requestTime: pending?.createdAt || parsed.time || '',
     });
-    if (nntid) this.pendingRequests.delete(pendingKey);
+    if (traceId) this.pendingRequests.delete(pendingKey);
     return sample ? this.saveSample(sample) : 0;
   }
 
@@ -288,7 +289,7 @@ class ApiRequestSampleService {
     }
     return rows.map((row) => ({
       id: row.id,
-      productLineId: row.product_line_id || 'nn',
+      productLineId: row.product_line_id || 'default',
       source: row.source,
       sourceRef: row.source_ref || '',
       service: row.service,
@@ -308,7 +309,7 @@ class ApiRequestSampleService {
       costMs: row.cost_ms ?? undefined,
       uid: row.uid || '',
       deviceId: row.device_id || '',
-      nntid: row.nntid || '',
+      traceId: row.trace_id || '',
       createdAt: row.created_at,
       requestTime: row.request_time || '',
     }));
@@ -365,7 +366,7 @@ class ApiRequestSampleService {
     retCode: string;
     retMsg: string;
     costMs?: number;
-    nntid: string;
+    traceId: string;
     uid: string;
     deviceId: string;
     createdAt: string;
@@ -386,7 +387,7 @@ class ApiRequestSampleService {
       INSERT INTO api_request_samples (
         id, product_line_id, sample_key, source, source_ref, service, method, path, full_path, environment,
         headers_json, query_json, path_params_json, body_json, token, response_json, status_code,
-        ret_code, ret_msg, cost_ms, uid, device_id, nntid, created_at, request_time
+        ret_code, ret_msg, cost_ms, uid, device_id, trace_id, created_at, request_time
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(sample_key) DO UPDATE SET
         token = excluded.token,
@@ -419,7 +420,7 @@ class ApiRequestSampleService {
       sample.costMs ?? null,
       sample.uid,
       sample.deviceId,
-      sample.nntid,
+      sample.traceId,
       sample.createdAt,
       sample.requestTime,
     );
@@ -595,7 +596,7 @@ class ApiRequestSampleService {
     const parts = this.splitParameters(input.parameters, operation.method);
     const sampleKey = crypto
       .createHash('sha1')
-      .update([input.productLineId || currentProductLineId(), input.nntid, input.source, operation.service, operation.method, operation.path, JSON.stringify(input.parameters || {})].join('|'))
+      .update([input.productLineId || currentProductLineId(), input.traceId, input.source, operation.service, operation.method, operation.path, JSON.stringify(input.parameters || {})].join('|'))
       .digest('hex');
     return {
       sampleKey,
@@ -619,7 +620,7 @@ class ApiRequestSampleService {
       statusCode: undefined,
       uid: input.uid,
       deviceId: input.deviceId,
-      nntid: input.nntid,
+      traceId: input.traceId,
       createdAt: input.createdAt,
       requestTime: input.requestTime,
     };

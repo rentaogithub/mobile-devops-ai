@@ -27,7 +27,7 @@ export function extractLastStackCall(symbolicatedLog: string): string | undefine
 /**
  * 提取崩溃模块和位置
  * 从 Thread 0 Crashed 的第一行提取模块名、类名和方法名
- * 格式：NNIM - ClassName(methodName)
+ * 格式：MobileApp - ClassName(methodName)
  */
 export function extractCrashModule(symbolicatedLog: string): string | undefined {
   const hangInfo = extractRunloopHangInfo(symbolicatedLog);

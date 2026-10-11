@@ -28,22 +28,22 @@ function resolveProductLine(req: Request, user: PlatformUser | null) {
   const requested = String(req.headers['x-product-line-id'] || decodedCookieProductLineId || '').trim();
   const isInternalRequest = String(req.headers['x-platform-internal-token'] || '') === internalRequestToken;
   if (isInternalRequest) {
-    const productLine = authService.findProductLine(requested || 'nn');
+    const productLine = authService.findProductLine(requested || 'default');
     return productLine?.active ? { ...productLine, role: 'admin' as PlatformRole } : null;
   }
   const available = user?.productLines || [];
   if (user?.role === 'admin') {
-    const productLine = authService.findProductLine(requested || available[0]?.id || 'nn');
+    const productLine = authService.findProductLine(requested || available[0]?.id || 'default');
     if (!productLine || !productLine.active) return null;
     return { ...productLine, role: 'admin' as PlatformRole };
   }
   if (!user) {
-    const productLine = authService.findProductLine(requested || 'nn');
-    if (!productLine || productLine.id !== 'nn' || !productLine.active) return null;
+    const productLine = authService.findProductLine(requested || 'default');
+    if (!productLine || productLine.id !== 'default' || !productLine.active) return null;
     return { ...productLine, role: 'guest' as PlatformRole };
   }
   return available.find((item) => item.id === requested || item.key === requested || item.projectId === requested)
-    || (!requested ? available.find((item) => item.id === 'nn') || available[0] : undefined)
+    || (!requested ? available.find((item) => item.id === 'default') || available[0] : undefined)
     || null;
 }
 

@@ -14,7 +14,7 @@ import { apiRequestSampleService } from '../services/ApiRequestSampleService';
 import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
-const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.nn.com').replace(/\/+$/, '');
+const OP_TARGET = (process.env.OP_PROXY_TARGET || 'https://op.example.com').replace(/\/+$/, '');
 const execFileAsync = promisify(execFile);
 
 interface PreviewLogFile {
@@ -113,7 +113,7 @@ function isBusinessLogFile(entryName: string): boolean {
   const filename = path.basename(entryName);
   return (
     /^logs.*\.log$/i.test(filename) ||
-    /^app_nn_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
+    /^app_mobile_\d{8}_\d{6}(?:_\d+)?\.log$/i.test(filename) ||
     /(?:^|[_-])\d{8}[_-]\d{6}(?:[_-]\d+)?\.log$/i.test(filename)
   );
 }
@@ -324,7 +324,7 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
     }
 
     const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), feedbackLogTempPrefix()));
-    const archivePath = path.join(tempDir, 'nn-logs.zip');
+    const archivePath = path.join(tempDir, 'default-logs.zip');
     await fsPromises.writeFile(archivePath, archive);
 
     let files: PreviewLogFile[] = [];
@@ -333,7 +333,7 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
       files = await extractAllLogsWithUnzip(archivePath, tempDir);
     } catch (unzipError) {
       unzipErrorMessage = unzipError instanceof Error ? unzipError.message : String(unzipError);
-      logger.warn('unzip 解压 NN 日志失败，回退到 bsdtar', { error: unzipErrorMessage });
+      logger.warn('unzip 解压 业务日志失败，回退到 bsdtar', { error: unzipErrorMessage });
       files = await extractAllLogsWithBsdtar(archivePath, tempDir);
     }
 
@@ -346,9 +346,9 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
     for (const file of files) {
       const content = await fsPromises.readFile(file.path, 'utf8');
       const normalizedName = file.path.replace(/\\/g, '/').toLowerCase();
-      const sdkPrefix = /(?:^|[/_.-])(?:im|imsdk|nnimsdk)(?:[/_.-]|$)/.test(normalizedName)
+      const sdkPrefix = /(?:^|[/_.-])(?:im|imsdk|imsdk)(?:[/_.-]|$)/.test(normalizedName)
         ? '[IMSDK] '
-        : /(?:^|[/_.-])(?:rtc|rtcsdk|nnrtc)(?:[/_.-]|$)/.test(normalizedName)
+        : /(?:^|[/_.-])(?:rtc|rtcsdk|mobileRtc)(?:[/_.-]|$)/.test(normalizedName)
           ? '[RTCSDK] '
           : '';
       const fileLines = content.split(/\r?\n/).filter((line) => line.trim());
@@ -376,8 +376,8 @@ router.post('/analyze-archive', express.raw({ type: ['application/zip', 'applica
       },
     });
   } catch (error: any) {
-    logger.error(`分析 NN 日志压缩包失败: ${error.message}`);
-    res.status(500).json({ success: false, error: error.message || '分析 NN 日志压缩包失败' });
+    logger.error(`分析 业务日志压缩包失败: ${error.message}`);
+    res.status(500).json({ success: false, error: error.message || '分析 业务日志压缩包失败' });
   }
 });
 

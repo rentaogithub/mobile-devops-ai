@@ -29,7 +29,7 @@ function migrateDatabase(): void {
     db.prepare(`
       INSERT OR IGNORE INTO platform_product_lines (
         id, key, name, project_id, bundle_id, active, created_at, updated_at
-      ) VALUES ('nn', 'nn', 'NN', 'nn-ios', NULL, 1, ?, ?)
+      ) VALUES ('default', 'default', 'Default', 'mobile-ios', NULL, 1, ?, ?)
     `).run(timestamp, timestamp);
     const applicationColumns = db.prepare('PRAGMA table_info(platform_applications)').all() as any[];
     if (!applicationColumns.some((column) => column.name === 'services_json')) db.exec('ALTER TABLE platform_applications ADD COLUMN services_json TEXT');
@@ -54,7 +54,7 @@ function migrateDatabase(): void {
       db.prepare(`
         UPDATE platform_product_lines
         SET jenkins_base_url = COALESCE(NULLIF(jenkins_base_url, ''), ?), updated_at = ?
-        WHERE id = 'nn'
+        WHERE id = 'default'
       `).run(legacyJenkinsBaseUrl, timestamp);
     }
 
@@ -70,7 +70,7 @@ function migrateDatabase(): void {
 
     if (!tableInfo.some((col: any) => col.name === 'product_line_id')) {
       console.log('Adding product_line_id column to dsym_info...');
-      db.exec("ALTER TABLE dsym_info ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+      db.exec("ALTER TABLE dsym_info ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
     }
     const legacyDsymIndexes = db.prepare('PRAGMA index_list(dsym_info)').all() as any[];
     if (legacyDsymIndexes.some((index: any) => index.origin === 'u' && index.unique === 1)) {
@@ -88,7 +88,7 @@ function migrateDatabase(): void {
             file_size INTEGER NOT NULL,
             notes TEXT,
             related_app_version TEXT,
-            product_line_id TEXT NOT NULL DEFAULT 'nn',
+            product_line_id TEXT NOT NULL DEFAULT 'default',
             upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
           );
           INSERT INTO dsym_info_product_scoped (
@@ -205,7 +205,7 @@ function migrateDatabase(): void {
 
     if (!hasHistoryProductLineId) {
       console.log('Adding product_line_id column to symbolication_history...');
-      db.exec("ALTER TABLE symbolication_history ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+      db.exec("ALTER TABLE symbolication_history ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_history_product_line ON symbolication_history(product_line_id, created_at DESC)');
 
@@ -223,7 +223,7 @@ function migrateDatabase(): void {
       db.exec(`
         ALTER TABLE sentry_issue_symbolication_history RENAME TO sentry_issue_symbolication_history_legacy;
         CREATE TABLE sentry_issue_symbolication_history (
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           issue_id TEXT NOT NULL,
           short_id TEXT,
           permalink TEXT,
@@ -234,7 +234,7 @@ function migrateDatabase(): void {
         INSERT INTO sentry_issue_symbolication_history (
           product_line_id, issue_id, short_id, permalink, history_id, updated_at
         )
-        SELECT 'nn', issue_id, short_id, permalink, history_id, updated_at
+        SELECT 'default', issue_id, short_id, permalink, history_id, updated_at
         FROM sentry_issue_symbolication_history_legacy;
         DROP TABLE sentry_issue_symbolication_history_legacy;
       `);
@@ -247,14 +247,14 @@ function migrateDatabase(): void {
     const registrationColumns = db.prepare('PRAGMA table_info(platform_user_registration_requests)').all() as any[];
     if (!registrationColumns.some((col: any) => col.name === 'product_line_id')) {
       console.log('Adding product_line_id column to platform_user_registration_requests...');
-      db.exec("ALTER TABLE platform_user_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+      db.exec("ALTER TABLE platform_user_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
     }
 
     db.prepare(`
       INSERT OR IGNORE INTO platform_product_line_memberships (
         product_line_id, user_id, role, created_at, updated_at
       )
-      SELECT 'nn', id,
+      SELECT 'default', id,
         CASE WHEN role IN ('guest', 'tester', 'developer', 'product') THEN role ELSE 'guest' END,
         ?, ?
       FROM platform_users
@@ -302,13 +302,13 @@ function migrateDatabase(): void {
 
     const assistantAuditColumns = db.prepare('PRAGMA table_info(assistant_action_audits)').all() as any[];
     if (!assistantAuditColumns.some((column) => column.name === 'project_id')) {
-      db.exec("ALTER TABLE assistant_action_audits ADD COLUMN project_id TEXT NOT NULL DEFAULT 'nn-ios'");
+      db.exec("ALTER TABLE assistant_action_audits ADD COLUMN project_id TEXT NOT NULL DEFAULT 'mobile-ios'");
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_assistant_audits_project ON assistant_action_audits(project_id, created_at DESC)');
 
     const pairingColumns = db.prepare('PRAGMA table_info(realtime_log_pairing_sessions)').all() as any[];
     if (!pairingColumns.some((column) => column.name === 'product_line_id')) {
-      db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+      db.exec("ALTER TABLE realtime_log_pairing_sessions ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pairing_sessions(product_line_id, status, last_active_at DESC)');
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "========================================"
-echo "nn-ios Monkey runtime setup"
+echo "mobile-ios Monkey runtime setup"
 echo "========================================"
 
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"

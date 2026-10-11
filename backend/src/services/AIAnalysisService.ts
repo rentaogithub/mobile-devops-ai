@@ -578,7 +578,7 @@ ${compactLog}`;
           className = parts[0];
           methodName = parts.slice(1).join('.');
           
-          // 检查是否是扩展方法（通常以特定前缀开头，如 nn_、custom_ 等）
+          // 检查是否是扩展方法（通常以特定前缀开头，如 custom_、custom_ 等）
           // 或者类名是系统类（UIImageView、UIView 等）
           const systemClasses = ['UIImageView', 'UIView', 'UIViewController', 'UITableView', 'UICollectionView', 'UIButton', 'UILabel', 'UITextField'];
           if (systemClasses.some(cls => className.includes(cls))) {

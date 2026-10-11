@@ -4,7 +4,7 @@
 系统 SHALL 按产品线和应用独立保存服务选择。系统 MUST 区分未迁移配置与显式关闭全部服务；Android MUST NOT 启用仅支持 iOS 的 Podx。
 
 #### Scenario: 双平台崩溃提供商
-GIVEN NN iOS 与 NN Android
+GIVEN 示例 iOS 应用 与 示例 Android 应用
 WHEN 分别选择 Sentry 和 Bugly
 THEN 两端分别展示相应服务，配置、菜单和执行能力互不覆盖。
 

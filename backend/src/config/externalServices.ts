@@ -3,7 +3,7 @@ import { getDatabase } from '../database';
 import { currentProductLineId } from '../services/ProductLineContext';
 import { productLineConfigService, ProductLineConfigKey } from '../services/ProductLineConfigService';
 
-const DEFAULT_SERVICE_HOST = '10.1.2.175';
+const DEFAULT_SERVICE_HOST = 'jenkins.example.com';
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function trimTrailingSlash(value: string) {
@@ -85,7 +85,7 @@ export function getJenkinsBaseUrl(productLineId = currentProductLineId()) {
   } catch {
     // 数据库尚未初始化时继续使用环境变量，兼容启动早期调用。
   }
-  if (productLineId !== 'nn') return '';
+  if (productLineId !== 'default') return '';
   return resolveServiceUrl(envValue('JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`));
 }
 
@@ -94,26 +94,26 @@ export function getProductLineConfig(key: ProductLineConfigKey, productLineId = 
 }
 
 export function getJenkinsConfig(productLineId = currentProductLineId()) {
-  const isLegacyProductLine = productLineId === 'nn';
+  const isLegacyProductLine = productLineId === 'default';
   return {
     baseUrl: getJenkinsBaseUrl(productLineId),
     username: getProductLineConfig('JENKINS_USER', productLineId),
     token: getProductLineConfig('JENKINS_TOKEN', productLineId),
-    jobName: getProductLineConfig('JENKINS_NN_JOB', productLineId) || (isLegacyProductLine ? 'nn' : ''),
-    qualityJobName: getProductLineConfig('JENKINS_NN_QA_JOB', productLineId) || (isLegacyProductLine ? 'nn-auto-quality' : ''),
-    repoUrl: getProductLineConfig('JENKINS_NN_REPO_URL', productLineId) || (isLegacyProductLine ? 'http://git.leigod.top/nn_ios/nnios.git' : ''),
+    jobName: getProductLineConfig('JENKINS_JOB', productLineId) || (isLegacyProductLine ? 'default' : ''),
+    qualityJobName: getProductLineConfig('JENKINS_QUALITY_JOB', productLineId) || (isLegacyProductLine ? 'mobile-auto-quality' : ''),
+    repoUrl: getProductLineConfig('JENKINS_REPO_URL', productLineId) || (isLegacyProductLine ? 'https://github.com/example/mobile-app.git' : ''),
   };
 }
 
-export function getNNRtcJenkinsConfig() {
+export function getMobileRTCJenkinsConfig() {
   const productLineId = currentProductLineId();
-  const isLegacyProductLine = productLineId === 'nn';
+  const isLegacyProductLine = productLineId === 'default';
   const baseUrl = trimTrailingSlash(
-    getProductLineConfig('NNRTC_JENKINS_BASE_URL', productLineId)
-      || (isLegacyProductLine ? envValue('NNRTC_JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`) : '')
+    getProductLineConfig('MOBILE_RTC_JENKINS_BASE_URL', productLineId)
+      || (isLegacyProductLine ? envValue('MOBILE_RTC_JENKINS_BASE_URL', `http://${DEFAULT_SERVICE_HOST}:8080`) : '')
   );
-  const jobName = getProductLineConfig('NNRTC_JENKINS_JOB', productLineId)
-    || (isLegacyProductLine ? envValue('NNRTC_JENKINS_JOB', 'nnrtc-ios-build') : '');
+  const jobName = getProductLineConfig('MOBILE_RTC_JENKINS_JOB', productLineId)
+    || (isLegacyProductLine ? envValue('MOBILE_RTC_JENKINS_JOB', 'mobile-rtc-ios-build') : '');
   const jobPath = encodeJenkinsJobPath(jobName);
 
   return {
@@ -126,18 +126,18 @@ export function getNNRtcJenkinsConfig() {
 
 export function getDSYMSourceConfig() {
   return {
-    nnRtcArchiveSmbUrl: envValue('DSYM_NNRTC_ARCHIVE_SMB_URL'),
+    mobileRtcArchiveSmbUrl: envValue('DSYM_MOBILE_RTC_ARCHIVE_SMB_URL'),
     screenShareUrl: envValue('DSYM_SCREEN_SHARE_URL'),
   };
 }
 
 export function getExternalServicesPublicConfig() {
-  const nnrtcJenkins = getNNRtcJenkinsConfig();
+  const mobileRtcJenkins = getMobileRTCJenkinsConfig();
   return {
-    nnrtcJenkins: {
-      baseUrl: nnrtcJenkins.baseUrl,
-      jobName: nnrtcJenkins.jobName,
-      jobUrl: nnrtcJenkins.jobUrl,
+    mobileRtcJenkins: {
+      baseUrl: mobileRtcJenkins.baseUrl,
+      jobName: mobileRtcJenkins.jobName,
+      jobUrl: mobileRtcJenkins.jobUrl,
     },
     dsymSources: getDSYMSourceConfig(),
   };

@@ -29,10 +29,10 @@ export interface ServiceApplication {
 // NULL/absent selections retain pre-service-selection behavior; [] explicitly disables all.
 export function defaultApplicationServices(platform: ServicePlatform, productLineId: string): ApplicationServiceId[] {
   if (platform === 'ios') return applicationServiceCatalog.filter((item) => item.nativePlatforms.includes('ios')).map((item) => item.id);
-  return ['jenkins', 'devices', 'quality', ...(productLineId === 'nn' ? ['bugly' as const] : [])];
+  return ['jenkins', 'devices', 'quality', ...(productLineId === 'default' ? ['bugly' as const] : [])];
 }
 export function selectedServices(app?: ServiceApplication | null): ApplicationServiceId[] {
-  return app?.services ?? defaultApplicationServices(app?.platform || 'ios', app?.productLineId || 'nn');
+  return app?.services ?? defaultApplicationServices(app?.platform || 'ios', app?.productLineId || 'default');
 }
 export function hasApplicationServices(app: ServiceApplication | null | undefined, services: ApplicationServiceId[]) {
   const selected = selectedServices(app);
@@ -47,7 +47,7 @@ export const pageServiceRequirements: [string, ApplicationServiceId[]][] = [
 ];
 export function requiredServicesForPage(path: string) { return pageServiceRequirements.find(([prefix]) => path === prefix || path.startsWith(prefix + '/'))?.[1] || []; }
 export const apiServiceRequirements: [string, ApplicationServiceId[]][] = [
-  ['/jenkins/nn/quality', ['jenkins', 'quality']], ['/jenkins', ['jenkins']], ['/quality', ['quality']],
+  ['/jenkins/default/quality', ['jenkins', 'quality']], ['/jenkins', ['jenkins']], ['/quality', ['quality']],
   ['/dsym', ['dsym']], ['/symbolicate', ['dsym']], ['/history', ['dsym']], ['/cleanup', ['dsym']], ['/config', ['dsym']],
   ['/pods', ['podx']], ['/git', ['podx']], ['/sentry-analysis', ['sentry']], ['/device-control', ['devices']], ['/apple-devices', ['apple-devices']],
   ['/pairing', ['logs']], ['/user-query-records', ['logs']], ['/feedback-log', ['logs']], ['/watermark', ['watermark']], ['/wechat', ['wechat']],

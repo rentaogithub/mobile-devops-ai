@@ -13,7 +13,7 @@ import logger from '../utils/logger';
 
 const router = Router();
 const upload = multer({ dest: assistantAttachmentService.uploadDir, limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
-const ASSISTANT_CLIENT_COOKIE = 'nn_assistant_client';
+const ASSISTANT_CLIENT_COOKIE = 'mobile_devops_assistant_client';
 const ASSISTANT_CLIENT_TTL_SECONDS = 365 * 24 * 60 * 60;
 
 function cookieValue(req: Request, name: string) {

@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 
 describe('CrashGovernanceService', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-crash-governance-test-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-crash-governance-test-'));
   let closeDatabase: () => void;
   let initializeDatabase: () => void;
   let getDatabase: () => any;
@@ -28,7 +28,7 @@ describe('CrashGovernanceService', () => {
   it('keeps online Sentry statistics separate from quality and manual evidence', () => {
     service.upsertSentryIssue({
       id: 'sentry-1',
-      shortId: 'NN-IOS-1',
+      shortId: 'MOBILE-IOS-1',
       title: '线上崩溃',
       level: 'error',
       count: '8',
@@ -71,15 +71,15 @@ describe('CrashGovernanceService', () => {
       suggestions: ['检查发送消息回调中的对象持有关系'],
       severity: 'critical' as const,
       affectedComponents: ['IM'],
-      crashModule: 'NNIM',
-      crashLocation: 'NNChatViewController.sendMessage:1024',
+      crashModule: 'MobileApp',
+      crashLocation: 'SampleChatViewController.sendMessage:1024',
     };
 
     const first = service.upsertSentryIssue({
       id: 'sentry-fingerprint-a',
-      shortId: 'NN-IOS-FP-A',
+      shortId: 'MOBILE-IOS-FP-A',
       title: '聊天发送崩溃 A',
-      culprit: 'NNChatViewController.sendMessage',
+      culprit: 'SampleChatViewController.sendMessage',
       level: 'fatal',
       count: '31',
       userCount: 3,
@@ -90,9 +90,9 @@ describe('CrashGovernanceService', () => {
     });
     const second = service.upsertSentryIssue({
       id: 'sentry-fingerprint-b',
-      shortId: 'NN-IOS-FP-B',
+      shortId: 'MOBILE-IOS-FP-B',
       title: '聊天发送崩溃 B',
-      culprit: 'NNChatViewController.sendMessage',
+      culprit: 'SampleChatViewController.sendMessage',
       level: 'fatal',
       count: '29',
       userCount: 4,
@@ -101,7 +101,7 @@ describe('CrashGovernanceService', () => {
     }, {
       analysis: {
         ...analysis,
-        crashLocation: 'NNChatViewController.sendMessage:2048',
+        crashLocation: 'SampleChatViewController.sendMessage:2048',
       },
     });
 
@@ -123,9 +123,9 @@ describe('CrashGovernanceService', () => {
   it('summarizes crash insights by type, module and reason', () => {
     service.upsertSentryIssue({
       id: 'sentry-insight-identified',
-      shortId: 'NN-IOS-INSIGHT-ID',
+      shortId: 'MOBILE-IOS-INSIGHT-ID',
       title: 'IM 发送崩溃',
-      culprit: 'NNChatViewController.sendMessage',
+      culprit: 'SampleChatViewController.sendMessage',
       level: 'fatal',
       count: '13',
       userCount: 5,
@@ -138,13 +138,13 @@ describe('CrashGovernanceService', () => {
         suggestions: ['检查发送消息回调'],
         severity: 'critical',
         affectedComponents: ['IM'],
-        crashModule: 'NNIM',
-        crashLocation: 'NNChatViewController.sendMessage:88',
+        crashModule: 'MobileApp',
+        crashLocation: 'SampleChatViewController.sendMessage:88',
       },
     });
     service.upsertSentryIssue({
       id: 'sentry-insight-unidentified',
-      shortId: 'NN-IOS-INSIGHT-UNKNOWN',
+      shortId: 'MOBILE-IOS-INSIGHT-UNKNOWN',
       title: '未识别崩溃',
       level: 'error',
       count: '3',
@@ -160,7 +160,7 @@ describe('CrashGovernanceService', () => {
       expect.objectContaining({ name: 'EXC_BAD_ACCESS' }),
     ]));
     expect(dashboard.crashInsightSummary.topModules).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'NNIM' }),
+      expect.objectContaining({ name: 'MobileApp' }),
     ]));
     expect(dashboard.crashInsightSummary.topReasons).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'IM 发送崩溃' }),
@@ -181,14 +181,14 @@ describe('CrashGovernanceService', () => {
       suggestions: ['检查社区列表刷新回调'],
       severity: 'high' as const,
       affectedComponents: ['Community'],
-      crashModule: 'NNIM',
-      crashLocation: 'NNCommunityViewController.reloadData:88',
+      crashModule: 'MobileApp',
+      crashLocation: 'SampleCommunityViewController.reloadData:88',
     };
     const first = service.upsertSentryIssue({
       id: 'sentry-fingerprint-detail-a',
-      shortId: 'NN-IOS-FP-DETAIL-A',
+      shortId: 'MOBILE-IOS-FP-DETAIL-A',
       title: '社区刷新崩溃 A',
-      culprit: 'NNCommunityViewController.reloadData',
+      culprit: 'SampleCommunityViewController.reloadData',
       level: 'error',
       count: '6',
       userCount: 2,
@@ -199,9 +199,9 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-fingerprint-detail-b',
-      shortId: 'NN-IOS-FP-DETAIL-B',
+      shortId: 'MOBILE-IOS-FP-DETAIL-B',
       title: '社区刷新崩溃 B',
-      culprit: 'NNCommunityViewController.reloadData',
+      culprit: 'SampleCommunityViewController.reloadData',
       level: 'error',
       count: '9',
       userCount: 4,
@@ -210,7 +210,7 @@ describe('CrashGovernanceService', () => {
     }, {
       analysis: {
         ...analysis,
-        crashLocation: 'NNCommunityViewController.reloadData:128',
+        crashLocation: 'SampleCommunityViewController.reloadData:128',
       },
     });
 
@@ -238,14 +238,14 @@ describe('CrashGovernanceService', () => {
       suggestions: ['检查同类入口'],
       severity: 'high' as const,
       affectedComponents: ['IM'],
-      crashModule: 'NNIM',
-      crashLocation: 'NNSharedController.open:66',
+      crashModule: 'MobileApp',
+      crashLocation: 'SampleSharedController.open:66',
     };
     const first = service.upsertSentryIssue({
       id: 'sentry-fingerprint-bulk-a',
-      shortId: 'NN-IOS-FP-BULK-A',
+      shortId: 'MOBILE-IOS-FP-BULK-A',
       title: '同类批量治理 A',
-      culprit: 'NNSharedController.open',
+      culprit: 'SampleSharedController.open',
       level: 'error',
       count: '4',
       userCount: 1,
@@ -255,9 +255,9 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-fingerprint-bulk-b',
-      shortId: 'NN-IOS-FP-BULK-B',
+      shortId: 'MOBILE-IOS-FP-BULK-B',
       title: '同类批量治理 B',
-      culprit: 'NNSharedController.open',
+      culprit: 'SampleSharedController.open',
       level: 'error',
       count: '5',
       userCount: 2,
@@ -265,7 +265,7 @@ describe('CrashGovernanceService', () => {
     }, {
       analysis: {
         ...analysis,
-        crashLocation: 'NNSharedController.open:88',
+        crashLocation: 'SampleSharedController.open:88',
       },
     });
 
@@ -294,7 +294,7 @@ describe('CrashGovernanceService', () => {
   it('records governance status update events for a single issue', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-governance-event-single',
-      shortId: 'NN-IOS-EVENT-SINGLE',
+      shortId: 'MOBILE-IOS-EVENT-SINGLE',
       title: '单条治理留痕',
       level: 'error',
       count: '1',
@@ -324,7 +324,7 @@ describe('CrashGovernanceService', () => {
   it('lists recent governance events with filters and record summaries', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-governance-event-list',
-      shortId: 'NN-IOS-EVENT-LIST',
+      shortId: 'MOBILE-IOS-EVENT-LIST',
       title: '治理记录列表',
       level: 'error',
       count: '2',
@@ -352,7 +352,7 @@ describe('CrashGovernanceService', () => {
         operator: '审计管理员',
         record: expect.objectContaining({
           sourceIssueId: 'sentry-governance-event-list',
-          shortId: 'NN-IOS-EVENT-LIST',
+          shortId: 'MOBILE-IOS-EVENT-LIST',
           appVersion: '10.29.0',
         }),
       }),
@@ -362,7 +362,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes recent governance activity in dashboard', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-governance-activity',
-      shortId: 'NN-IOS-ACTIVITY',
+      shortId: 'MOBILE-IOS-ACTIVITY',
       title: '治理动态统计',
       level: 'error',
       count: '3',
@@ -398,7 +398,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes governance status distribution for online crashes', () => {
     const first = service.upsertSentryIssue({
       id: 'sentry-governance-distribution-new',
-      shortId: 'NN-IOS-DIST-NEW',
+      shortId: 'MOBILE-IOS-DIST-NEW',
       title: '治理状态分布新问题',
       level: 'error',
       count: '7',
@@ -407,7 +407,7 @@ describe('CrashGovernanceService', () => {
     });
     const second = service.upsertSentryIssue({
       id: 'sentry-governance-distribution-fixed',
-      shortId: 'NN-IOS-DIST-FIXED',
+      shortId: 'MOBILE-IOS-DIST-FIXED',
       title: '治理状态分布已修复',
       level: 'error',
       count: '5',
@@ -449,7 +449,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes and filters owner open crash todos', () => {
     const openRecord = service.upsertSentryIssue({
       id: 'sentry-owner-todo-open',
-      shortId: 'NN-IOS-OWNER-OPEN',
+      shortId: 'MOBILE-IOS-OWNER-OPEN',
       title: '负责人待办未解决',
       level: 'fatal',
       count: '11',
@@ -464,7 +464,7 @@ describe('CrashGovernanceService', () => {
     });
     const fixedRecord = service.upsertSentryIssue({
       id: 'sentry-owner-todo-fixed',
-      shortId: 'NN-IOS-OWNER-FIXED',
+      shortId: 'MOBILE-IOS-OWNER-FIXED',
       title: '负责人待办已修复不计入',
       level: 'fatal',
       count: '99',
@@ -479,7 +479,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-owner-todo-unassigned',
-      shortId: 'NN-IOS-OWNER-UNASSIGNED',
+      shortId: 'MOBILE-IOS-OWNER-UNASSIGNED',
       title: '负责人待办未分配',
       level: 'error',
       count: '2',
@@ -539,7 +539,7 @@ describe('CrashGovernanceService', () => {
   it('exports governance events as escaped csv with filters', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-governance-export',
-      shortId: 'NN-IOS-EXPORT',
+      shortId: 'MOBILE-IOS-EXPORT',
       title: '导出治理记录, 包含"特殊"字符',
       level: 'error',
       count: '1',
@@ -554,22 +554,22 @@ describe('CrashGovernanceService', () => {
 
     const csv = service.exportGovernanceEventsCsv({
       toStatus: 'ignored',
-      keyword: 'NN-IOS-EXPORT',
+      keyword: 'MOBILE-IOS-EXPORT',
     });
 
     expect(csv).toContain('"时间","操作范围","原状态","目标状态","操作人","关联记录","Issue","App版本","Crash标题","备注"');
     expect(csv).toContain('"导出管理员"');
-    expect(csv).toContain('"NN-IOS-EXPORT"');
+    expect(csv).toContain('"MOBILE-IOS-EXPORT"');
     expect(csv).toContain('"99.30.0"');
     expect(csv).toContain('"导出治理记录, 包含""特殊""字符"');
     expect(csv).toContain('"重复问题 已有单独 Issue"');
-    expect(csv).not.toContain('NN-IOS-ACTIVITY');
+    expect(csv).not.toContain('MOBILE-IOS-ACTIVITY');
   });
 
   it('classifies symbolication failures into actionable categories', () => {
     service.upsertSentryIssue({
       id: 'sentry-symbolication-category',
-      shortId: 'NN-IOS-SYM-CAT',
+      shortId: 'MOBILE-IOS-SYM-CAT',
       title: '符号化失败分类',
       level: 'error',
       count: '1',
@@ -591,7 +591,7 @@ describe('CrashGovernanceService', () => {
   it('filters governance records by symbolication failure category', () => {
     service.upsertSentryIssue({
       id: 'sentry-symbolication-missing-dsym',
-      shortId: 'NN-IOS-SYM-MISSING',
+      shortId: 'MOBILE-IOS-SYM-MISSING',
       title: '缺少符号文件',
       level: 'error',
       count: '1',
@@ -600,7 +600,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-symbolication-uuid-mismatch',
-      shortId: 'NN-IOS-SYM-UUID',
+      shortId: 'MOBILE-IOS-SYM-UUID',
       title: 'UUID 不匹配',
       level: 'error',
       count: '1',
@@ -632,7 +632,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes symbolication failure categories in dashboard', () => {
     service.upsertSentryIssue({
       id: 'sentry-symbolication-breakdown-a',
-      shortId: 'NN-IOS-SYM-BREAK-A',
+      shortId: 'MOBILE-IOS-SYM-BREAK-A',
       title: '符号化失败分布 A',
       level: 'error',
       count: '5',
@@ -642,7 +642,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-symbolication-breakdown-b',
-      shortId: 'NN-IOS-SYM-BREAK-B',
+      shortId: 'MOBILE-IOS-SYM-BREAK-B',
       title: '符号化失败分布 B',
       level: 'error',
       count: '7',
@@ -684,7 +684,7 @@ describe('CrashGovernanceService', () => {
   it('clears symbolication failure category after a later successful symbolication', () => {
     service.upsertSentryIssue({
       id: 'sentry-symbolication-clear',
-      shortId: 'NN-IOS-SYM-CLEAR',
+      shortId: 'MOBILE-IOS-SYM-CLEAR',
       title: '符号化失败后重试成功',
       level: 'error',
       count: '1',
@@ -711,7 +711,7 @@ describe('CrashGovernanceService', () => {
   it('marks a fixed Sentry crash as regression when it appears in another version', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-regression',
-      shortId: 'NN-IOS-REG',
+      shortId: 'MOBILE-IOS-REG',
       title: '已修复后复现',
       level: 'fatal',
       count: '1',
@@ -727,7 +727,7 @@ describe('CrashGovernanceService', () => {
 
     const nextRecord = service.upsertSentryIssue({
       id: 'sentry-regression',
-      shortId: 'NN-IOS-REG',
+      shortId: 'MOBILE-IOS-REG',
       title: '已修复后复现',
       level: 'fatal',
       count: '3',
@@ -744,7 +744,7 @@ describe('CrashGovernanceService', () => {
   it('adds Crash governance risks to release gates as warnings by default and blockers when requested', () => {
     service.upsertSentryIssue({
       id: 'sentry-gate',
-      shortId: 'NN-IOS-GATE',
+      shortId: 'MOBILE-IOS-GATE',
       title: '发布版本高风险崩溃',
       level: 'error',
       count: '30',
@@ -778,7 +778,7 @@ describe('CrashGovernanceService', () => {
   it('adds online Crash governance to release health verification', () => {
     service.upsertSentryIssue({
       id: 'sentry-release-health-critical',
-      shortId: 'NN-IOS-HEALTH-CRITICAL',
+      shortId: 'MOBILE-IOS-HEALTH-CRITICAL',
       title: '发布后线上高风险崩溃',
       level: 'fatal',
       count: '12',
@@ -786,7 +786,7 @@ describe('CrashGovernanceService', () => {
       maxAppVersion: '10.4.0',
     });
 
-    const health = gateService.evaluateReleaseHealth('nn-ios', '10.4.0');
+    const health = gateService.evaluateReleaseHealth('mobile-ios', '10.4.0');
 
     expect(health.status).toBe('critical');
     expect(health.crashHealth.highRiskCount).toBe(1);
@@ -801,7 +801,7 @@ describe('CrashGovernanceService', () => {
   it('treats dSYM missing and symbolication failures as release health warnings', () => {
     service.upsertSentryIssue({
       id: 'sentry-release-health-dsym',
-      shortId: 'NN-IOS-HEALTH-DSYM',
+      shortId: 'MOBILE-IOS-HEALTH-DSYM',
       title: '符号文件缺失崩溃',
       level: 'info',
       count: '1',
@@ -816,7 +816,7 @@ describe('CrashGovernanceService', () => {
       WHERE source = 'sentry' AND source_issue_id = 'sentry-release-health-dsym'
     `).run();
 
-    const health = gateService.evaluateReleaseHealth('nn-ios', '10.5.0');
+    const health = gateService.evaluateReleaseHealth('mobile-ios', '10.5.0');
 
     expect(health.status).toBe('warning');
     expect(health.crashHealth.dsymMissingCount).toBe(1);
@@ -838,7 +838,7 @@ describe('CrashGovernanceService', () => {
       crashType: 'EXC_CRASH',
     });
 
-    const health = gateService.evaluateReleaseHealth('nn-ios', '10.6.0');
+    const health = gateService.evaluateReleaseHealth('mobile-ios', '10.6.0');
 
     expect(health.status).toBe('unknown');
     expect(health.crashHealth.openCrashCount).toBe(0);
@@ -849,7 +849,7 @@ describe('CrashGovernanceService', () => {
   it('filters governance records by version, source, status and keyword', () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-filter-target',
-      shortId: 'NN-IOS-FILTER',
+      shortId: 'MOBILE-IOS-FILTER',
       title: '筛选目标崩溃',
       level: 'error',
       count: '2',
@@ -862,7 +862,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-filter-other',
-      shortId: 'NN-IOS-FILTER-OTHER',
+      shortId: 'MOBILE-IOS-FILTER-OTHER',
       title: '其他版本崩溃',
       level: 'error',
       count: '2',
@@ -890,7 +890,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes release version health in the governance dashboard', () => {
     service.upsertSentryIssue({
       id: 'sentry-version-health',
-      shortId: 'NN-IOS-VERSION-HEALTH',
+      shortId: 'MOBILE-IOS-VERSION-HEALTH',
       title: '版本健康高风险崩溃',
       level: 'fatal',
       count: '5',
@@ -918,7 +918,7 @@ describe('CrashGovernanceService', () => {
     for (let index = 0; index < 125; index += 1) {
       service.upsertSentryIssue({
         id: `sentry-dashboard-full-${index}`,
-        shortId: `NN-IOS-DASH-${index}`,
+        shortId: `MOBILE-IOS-DASH-${index}`,
         title: `Dashboard 全量统计 ${index}`,
         level: 'warning',
         count: '1',
@@ -938,7 +938,7 @@ describe('CrashGovernanceService', () => {
   it('summarizes Sentry sync health failures in the governance dashboard', () => {
     service.upsertSentryIssue({
       id: 'sentry-sync-health',
-      shortId: 'NN-IOS-SYNC',
+      shortId: 'MOBILE-IOS-SYNC',
       title: '同步失败观测',
       level: 'warning',
       count: '1',
@@ -973,7 +973,7 @@ describe('CrashGovernanceService', () => {
   it('refreshes dSYM coverage for a governance record by id', async () => {
     const record = service.upsertSentryIssue({
       id: 'sentry-refresh-coverage',
-      shortId: 'NN-IOS-COVERAGE',
+      shortId: 'MOBILE-IOS-COVERAGE',
       title: '重查 dSYM 覆盖',
       level: 'error',
       count: '1',
@@ -997,7 +997,7 @@ describe('CrashGovernanceService', () => {
   it('refreshes dSYM coverage for all governance records in a version', async () => {
     service.upsertSentryIssue({
       id: 'sentry-refresh-version-1',
-      shortId: 'NN-IOS-COVERAGE-V1',
+      shortId: 'MOBILE-IOS-COVERAGE-V1',
       title: '批量重查 dSYM 覆盖 1',
       level: 'error',
       count: '1',
@@ -1006,7 +1006,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-refresh-version-2',
-      shortId: 'NN-IOS-COVERAGE-V2',
+      shortId: 'MOBILE-IOS-COVERAGE-V2',
       title: '批量重查 dSYM 覆盖 2',
       level: 'warning',
       count: '1',
@@ -1015,7 +1015,7 @@ describe('CrashGovernanceService', () => {
     });
     service.upsertSentryIssue({
       id: 'sentry-refresh-version-other',
-      shortId: 'NN-IOS-COVERAGE-OTHER',
+      shortId: 'MOBILE-IOS-COVERAGE-OTHER',
       title: '其他版本不应重查',
       level: 'warning',
       count: '1',

@@ -659,7 +659,7 @@ function RemoteBranchesPanel() {
     repoName?: string;
     branch?: string;
     result?: GitRepoDependencyResult;
-    nniosInfo?: { branch: string; missingFiles: string[]; sourceCount: number };
+    mainAppInfo?: { branch: string; missingFiles: string[]; sourceCount: number };
     error?: string;
   }>({ open: false, loading: false });
 
@@ -756,7 +756,7 @@ function RemoteBranchesPanel() {
         repoName,
         branch,
         result,
-        nniosInfo: res.data.nnios,
+        mainAppInfo: res.data.mainApp,
         error: result?.ok === false ? result.error : undefined,
       });
     } catch (err: any) {
@@ -1026,7 +1026,7 @@ interface PodDepsModalState {
   repoName?: string;
   branch?: string;
   result?: GitRepoDependencyResult;
-  nniosInfo?: { branch: string; missingFiles: string[]; sourceCount: number };
+  mainAppInfo?: { branch: string; missingFiles: string[]; sourceCount: number };
   error?: string;
 }
 
@@ -1092,14 +1092,14 @@ function PodDepsModal({
                 已解析 {resolvedCount} / {totalCount}
               </Tag>
               <Text type="secondary">
-                版本来源：发布主仓库 <Tag>{state.nniosInfo?.branch}</Tag> 分支的 Podfile
+                版本来源：发布主仓库 <Tag>{state.mainAppInfo?.branch}</Tag> 分支的 Podfile
               </Text>
             </Space>
-            {state.nniosInfo?.missingFiles && state.nniosInfo.missingFiles.length > 0 && (
+            {state.mainAppInfo?.missingFiles && state.mainAppInfo.missingFiles.length > 0 && (
               <Alert
                 type="warning"
                 showIcon
-                message={`发布主仓库未找到：${state.nniosInfo.missingFiles.join(', ')}`}
+                message={`发布主仓库未找到：${state.mainAppInfo.missingFiles.join(', ')}`}
               />
             )}
             {state.result.specFiles.length > 0 && (
@@ -1395,7 +1395,7 @@ export default function GitPage() {
             name="username"
             rules={[{ required: true, message: '请输入用户名' }]}
           >
-            <Input placeholder="例如 rentao" autoComplete="off" />
+            <Input placeholder="例如 git-user" autoComplete="off" />
           </Form.Item>
           <Form.Item
             label="Git 密码 / Token"

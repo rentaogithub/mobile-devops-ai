@@ -41,7 +41,7 @@ interface AssistantResolutionInput {
   productLineId?: string;
 }
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 
 function semanticDir() {
   return process.env.ASSISTANT_SEMANTIC_DIR || path.join(DATA_DIR, 'assistant-semantic');

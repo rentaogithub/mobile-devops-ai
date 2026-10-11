@@ -9,8 +9,8 @@ describe('BusinessSemanticService', () => {
     expect(businessSemanticService.resolveAssistantAction('诊断构建 #12345 的交付链路，还缺哪些证据', ['workflow_delivery_readiness', 'platform_cross_system_diagnosis'])).toMatchObject({ toolName: 'workflow_delivery_readiness', args: { buildNumber: '12345' } });
     expect(businessSemanticService.resolveAssistantAction('构建 #12345 的交付诊断', [])).toBeUndefined();
   });
-  const semanticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-semantic-test-'));
-  const capabilityDatasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-semantic-capability-test-'));
+  const semanticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-semantic-test-'));
+  const capabilityDatasetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-semantic-capability-test-'));
 
   beforeAll(() => {
     process.env.ASSISTANT_SEMANTIC_DIR = semanticDir;
@@ -23,7 +23,7 @@ describe('BusinessSemanticService', () => {
         capability: '社区大厅（闲聊）',
         category: '社区（community）',
         description: '打开指定社区大厅。',
-        route: 'nn://{host}/community/hall/{serverId}',
+        route: 'default://{host}/community/hall/{serverId}',
         aliases: ['社区大厅', '闲聊', 'community hall'],
         parameters: ['host', 'serverId'],
         outputs: ['打开指定社区大厅'],
@@ -113,7 +113,7 @@ describe('BusinessSemanticService', () => {
     expect(businessSemanticService.resolveAssistantAction('给 candidate reg_1 生成 XCUITest', tools)).toMatchObject({ toolName: 'workflow_generate_xcuitest', args: { candidateId: 'reg_1' } });
     expect(businessSemanticService.resolveAssistantAction('查询 5.15.0 的 Crash 历史记录', tools)).toMatchObject({ toolName: 'crash_list_history', args: { version: '5.15.0', limit: 20 } });
     expect(businessSemanticService.resolveAssistantAction('读取历史 12 的 Crash 日志', tools)).toMatchObject({ toolName: 'crash_get_history', args: { historyId: 12 } });
-    expect(businessSemanticService.resolveAssistantAction('分析 NNRtc 组件升级影响范围', tools)).toMatchObject({ toolName: 'pods_analyze_impact', args: { name: 'NNRtc' } });
+    expect(businessSemanticService.resolveAssistantAction('分析 MobileRTC 组件升级影响范围', tools)).toMatchObject({ toolName: 'pods_analyze_impact', args: { name: 'MobileRTC' } });
   });
 
   it('scores direct business matches above loose room matches', () => {
@@ -123,7 +123,7 @@ describe('BusinessSemanticService', () => {
       { value: '查询当前用户进房之后的信息', weight: 3 },
     ]);
     const loose = businessSemanticService.scoreFields(query, [
-      { value: '/activity/nnActInfo/room/report', weight: 5 },
+      { value: '/activity/actionInfo/room/report', weight: 5 },
       { value: '语音房停留三分钟上报', weight: 3 },
     ]);
     expect(direct).toBeGreaterThan(loose);

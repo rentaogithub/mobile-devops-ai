@@ -6,7 +6,7 @@ import { WorkflowService } from './WorkflowService';
 import { QualityGateService } from './QualityGateService';
 
 describe('mobile workflow foundation', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-workflow-test-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-workflow-test-'));
   const workflowService = new WorkflowService();
   const gateService = new QualityGateService();
 
@@ -26,7 +26,7 @@ describe('mobile workflow foundation', () => {
     const artifact = workflowService.createArtifact({
       id: 'artifact_build_100',
       artifactType: 'ios_app_build',
-      name: 'NNIM Build #100',
+      name: 'MobileApp Build #100',
       buildNumber: '100',
       commitHash: 'abc123',
     });

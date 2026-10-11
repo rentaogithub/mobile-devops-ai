@@ -15,7 +15,7 @@ type StoredOpAuth = {
 
 const OP_AUTH_MAX_AGE_MS = Number(process.env.OP_AUTH_MAX_AGE_MS || 12 * 60 * 60 * 1000);
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 const COOKIE_JAR_PATH = process.env.OP_COOKIE_JAR_PATH || path.join(DATA_DIR, 'op-cookie-jar.json');
 const OP_AUTH_PATH = process.env.OP_AUTH_PATH || path.join(DATA_DIR, 'op-auth.json');
 const opSessionCookies = new Map<string, StoredCookie>();

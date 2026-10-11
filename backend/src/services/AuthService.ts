@@ -52,7 +52,7 @@ export interface PlatformRegistrationRequest {
   reviewedAt?: string;
 }
 
-const SESSION_COOKIE = 'nn_platform_session';
+const SESSION_COOKIE = 'mobile_devops_session';
 const SESSION_TTL_MS = Math.max(60 * 60 * 1000, Number(process.env.AUTH_SESSION_TTL_HOURS || 24 * 30) * 60 * 60 * 1000);
 const VALID_ROLES: PlatformRole[] = ['guest', 'tester', 'developer', 'product', 'admin'];
 const SELF_REGISTER_ROLES: PlatformRole[] = ['guest', 'tester', 'developer', 'product'];
@@ -125,7 +125,7 @@ function registrationRequestFromRow(row: any): PlatformRegistrationRequest | nul
     username: String(row.username),
     displayName: String(row.display_name),
     requestedRole: role,
-    productLineId: String(row.product_line_id || 'nn'),
+    productLineId: String(row.product_line_id || 'default'),
     productLineName: row.product_line_name ? String(row.product_line_name) : undefined,
     status,
     reviewerUserId: row.reviewer_user_id ? String(row.reviewer_user_id) : undefined,
@@ -138,11 +138,11 @@ function registrationRequestFromRow(row: any): PlatformRegistrationRequest | nul
 }
 
 function normalizeUsername(value: string) {
-  return String(value || '').trim().replace(/@nn\.com$/i, '').toLowerCase();
+  return String(value || '').trim().replace(/@default\.com$/i, '').toLowerCase();
 }
 
 function validateUsername(username: string) {
-  if (!/^[a-z0-9_.-]{2,64}$/.test(username)) throw new Error('NN 邮箱前缀需为 2-64 位字母、数字、点、下划线或连字符');
+  if (!/^[a-z0-9_.-]{2,64}$/.test(username)) throw new Error('邮箱前缀需为 2-64 位字母、数字、点、下划线或连字符');
 }
 
 function validatePassword(password: string) {
@@ -257,7 +257,7 @@ export class AuthService {
       params.jenkinsBaseUrl = this.normalizeServiceUrl(input.jenkinsBaseUrl, 'Jenkins 服务地址') || null;
     }
     if (input.active !== undefined) {
-      if (id === 'nn' && input.active === false) throw new Error('默认 NN 产品线不能停用');
+      if (id === 'default' && input.active === false) throw new Error('默认产品线不能停用');
       fields.push('active = @active');
       params.active = input.active ? 1 : 0;
     }
@@ -436,7 +436,7 @@ export class AuthService {
     validatePassword(input.password);
     validateRole(input.role);
     if (input.role !== 'admin') {
-      const memberships = input.productLines?.length ? input.productLines : [{ productLineId: 'nn', role: input.role }];
+      const memberships = input.productLines?.length ? input.productLines : [{ productLineId: 'default', role: input.role }];
       memberships.forEach((membership) => {
         validateRole(membership.role, SELF_REGISTER_ROLES);
         this.validateAppStoreGrant(membership);
@@ -451,7 +451,7 @@ export class AuthService {
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `).run(id, username, String(input.displayName || username).trim().slice(0, 120), this.hashPassword(input.password), input.role, timestamp, timestamp);
     if (input.role !== 'admin') {
-      this.setUserProductLines(id, input.productLines?.length ? input.productLines : [{ productLineId: 'nn', role: input.role }]);
+      this.setUserProductLines(id, input.productLines?.length ? input.productLines : [{ productLineId: 'default', role: input.role }]);
     }
     return this.hydrateUser(getDatabase().prepare('SELECT * FROM platform_users WHERE id = ?').get(id));
   }
@@ -468,7 +468,7 @@ export class AuthService {
     validateUsername(username);
     validateRegistrationPassword(username, input.password);
     validateRole(input.requestedRole, SELF_REGISTER_ROLES);
-    const productLine = this.findProductLine(input.productLineId || 'nn');
+    const productLine = this.findProductLine(input.productLineId || 'default');
     if (!productLine || !productLine.active) throw new Error('申请的产品线不存在或已停用');
 
     const existingUser = db.prepare('SELECT id FROM platform_users WHERE username = ?').get(username);
@@ -525,7 +525,7 @@ export class AuthService {
 
       const timestamp = now();
       const userId = randomUUID();
-      const productLine = this.findProductLine(row.product_line_id || 'nn');
+      const productLine = this.findProductLine(row.product_line_id || 'default');
       if (!productLine || !productLine.active) throw new Error('申请的产品线不存在或已停用');
       db.prepare(`
         INSERT INTO platform_users (id, username, display_name, password_hash, role, active, created_at, updated_at)

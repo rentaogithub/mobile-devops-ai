@@ -82,7 +82,7 @@ function mergeCredentials(body: { username?: string; password?: string }): {
 
 function defaultReposForCurrentProductLine(): string[] {
   const repos = productLineConfigService.publishRepoUrls(currentProductLineId());
-  return repos.length > 0 ? repos : (currentProductLineId() === 'nn' ? DEFAULT_REPOS : []);
+  return repos.length > 0 ? repos : (currentProductLineId() === 'default' ? DEFAULT_REPOS : []);
 }
 
 function requestedReposOrDefault(repos?: string[]): string[] {

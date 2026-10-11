@@ -91,7 +91,7 @@ export function useBuildLogModal() {
 
   const downloadBuildLog = () => {
     if (!selectedBuildLog) return;
-    downloadTextFile(`nn-${selectedBuildLog.build.number}.log`, selectedBuildLog.log || '');
+    downloadTextFile(`default-${selectedBuildLog.build.number}.log`, selectedBuildLog.log || '');
   };
 
   const updateSelectedBuildAppStoreRelease = (buildNumber: number, appStoreRelease: JenkinsAppStoreRelease) => {

@@ -28,7 +28,7 @@
     "check": "node scripts/run-with-supported-node.mjs check:actual",
     "check:actual": "npm run typecheck:actual && npm run test:actual",
     "start": "node scripts/run-with-supported-node.mjs start:actual",
-    "start:actual": "npm run ensure:native && env UPLOAD_DIR=nn-ios-platform-data/uploads DSYM_DIR=nn-ios-platform-data/dsyms DB_PATH=nn-ios-platform-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
+    "start:actual": "npm run ensure:native && env UPLOAD_DIR=mobile-devops-ai-data/uploads DSYM_DIR=mobile-devops-ai-data/dsyms DB_PATH=mobile-devops-ai-data/database.sqlite node --env-file=backend/.env backend/dist/index.js",
     "start:dev-backend": "node scripts/run-with-supported-node.mjs start:actual"
   },
   "devDependencies": {

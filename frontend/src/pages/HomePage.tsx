@@ -105,7 +105,7 @@ const fallbackSuggestions: Array<{ text: string; roles?: AuthUser['role'][]; too
   { text: '查询最近 Jenkins 主工程构建', toolName: 'cicd_list_builds', domain: 'cicd' },
   { text: '分析最近一次 Jenkins 失败构建，并给出修复和重建建议', roles: ['tester', 'developer', 'admin'] },
   { text: '生成过去 24 小时移动端质量日报', roles: ['tester', 'developer', 'admin'] },
-  { text: '分析 NNRtc 组件升级影响范围', toolName: 'pods_analyze_impact', domain: 'pods', roles: ['developer', 'admin'] },
+  { text: '分析 MobileRTC 组件升级影响范围', toolName: 'pods_analyze_impact', domain: 'pods', roles: ['developer', 'admin'] },
 ];
 
 const roleLabels: Record<string, string> = {
@@ -134,7 +134,7 @@ const toolPromptExamples: Record<string, string[]> = {
   api_search: ['搜索登录相关 API 定义和使用', '查询获取用户信息相关 API 文档', '搜索社区频道相关 API 定义'],
   routes_search: ['查询登录相关路由能力说明', '查询打开私聊页面的路由说明', '查询社区大厅闲聊的路由定义', '查询带玩主页的路由'],
   cross_platform_search: ['查询登录相关跨端能力说明', '查询获取 token 的 jsbridge', '查询跳转到其它 H5 页面的跨端能力', 'getCommunityChannelInfo 是什么'],
-  pods_analyze_impact: ['分析 NNRtc 组件升级影响范围', '分析指定 CocoaPods 组件升级影响和验证范围'],
+  pods_analyze_impact: ['分析 MobileRTC 组件升级影响范围', '分析指定 CocoaPods 组件升级影响和验证范围'],
   workflow_overview: ['查看质量中心概览、最新任务和最新问题', '查看质量中心今日风险概览'],
   workflow_list_issues: ['查询质量中心高风险未关闭 Issue', '查询最近质量中心 P0/P1 问题'],
   workflow_list_tasks: ['查询最近构建、质检和回归任务', '查看最近自动化回归任务状态'],
@@ -152,7 +152,7 @@ const toolPromptExamples: Record<string, string[]> = {
   dsym_diagnose_missing: ['按 UUID 或版本诊断 dSYM 是否缺失', '诊断指定 UUID 是否缺少 dSYM'],
   sentry_list_issues: ['查询最近 24 小时新增线上 Crash', '查看线上 Crash Top 风险'],
   sentry_find_user_issues: ['按 UID 精确查询最近 Sentry 崩溃', '查询 UID 131088950 最近的 Sentry 崩溃'],
-  sentry_get_issue_context: ['读取指定 Sentry Issue 的诊断上下文', '查看 Sentry Issue NN-IOS-123 的上下文'],
+  sentry_get_issue_context: ['读取指定 Sentry Issue 的诊断上下文', '查看 Sentry Issue MOBILE-IOS-123 的上下文'],
   cicd_list_builds: ['查询最近 Jenkins 主工程构建', '查看 develop 分支最近构建结果'],
   cicd_get_build_log: ['读取指定 Jenkins 构建日志尾部', '查看 Jenkins 构建 #12345 的失败日志'],
   cicd_analyze_build_failure: ['分析指定失败构建的根因', '分析构建 #12345 失败原因'],

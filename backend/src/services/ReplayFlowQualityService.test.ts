@@ -6,7 +6,7 @@ function version(id: string, assetId: string, assetName: string, versionNumber: 
     assetId,
     assetName,
     versionNumber,
-    projectId: 'nn-ios',
+    projectId: 'mobile-ios',
     flow: {
       schemaVersion: '1.0',
       id: assetId,

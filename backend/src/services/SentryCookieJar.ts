@@ -28,7 +28,7 @@ function isSentryCookieName(name: string): boolean {
 
 function getDefaultDatabasePath(): string {
   const projectRoot = path.resolve(__dirname, '../../../');
-  return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite'));
+  return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'mobile-devops-ai-data', 'database.sqlite'));
 }
 
 function getCookieJarPath(productLineId = currentProductLineId()): string {
@@ -36,7 +36,7 @@ function getCookieJarPath(productLineId = currentProductLineId()): string {
     process.env.SENTRY_COOKIE_JAR_PATH ||
     path.join(path.dirname(getDefaultDatabasePath()), 'sentry-cookie-jar.json')
   );
-  if (productLineId === 'nn') return basePath;
+  if (productLineId === 'default') return basePath;
   const extension = path.extname(basePath) || '.json';
   return `${basePath.slice(0, -extension.length)}.${productLineId.replace(/[^A-Za-z0-9_.-]/g, '_')}${extension}`;
 }

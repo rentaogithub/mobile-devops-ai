@@ -30,9 +30,9 @@ function getDefaultSentryIssueQuery() {
 }
 
 function governanceConfigResponse() {
-  const legacy = currentProductLineId() === 'nn';
+  const legacy = currentProductLineId() === 'default';
   const sentryOrganization = productLineConfigService.get('SENTRY_ORG') || (legacy ? process.env.SENTRY_ORG || 'sentry' : '');
-  const sentryProject = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'nn-ios' : '');
+  const sentryProject = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'mobile-ios' : '');
   return {
     ...crashGovernanceService.getConfig(),
     sentryOrganization,
@@ -57,7 +57,7 @@ function ensureSentryIssueHistoryTable() {
   const db = getDatabase();
   db.exec(`
     CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
-      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      product_line_id TEXT NOT NULL DEFAULT 'default',
       issue_id TEXT NOT NULL,
       short_id TEXT,
       permalink TEXT,
@@ -1613,15 +1613,15 @@ router.post('/fetch-and-analyze', async (req: Request, res: Response) => {
 });
 
 const globalCrashGovernanceSync = globalThis as typeof globalThis & {
-  __nnCrashGovernanceSyncStarted?: boolean;
+  __mobileCrashGovernanceSyncStarted?: boolean;
 };
 
 if (
   process.env.NODE_ENV !== 'test' &&
   process.env.CRASH_GOVERNANCE_AUTO_SYNC !== 'false' &&
-  !globalCrashGovernanceSync.__nnCrashGovernanceSyncStarted
+  !globalCrashGovernanceSync.__mobileCrashGovernanceSyncStarted
 ) {
-  globalCrashGovernanceSync.__nnCrashGovernanceSyncStarted = true;
+  globalCrashGovernanceSync.__mobileCrashGovernanceSyncStarted = true;
   const intervalMs = Math.max(Number(process.env.CRASH_GOVERNANCE_SYNC_INTERVAL_MS || 10 * 60 * 1000), 60 * 1000);
   const runBackgroundSync = async () => {
     try {

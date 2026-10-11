@@ -15,8 +15,8 @@ import { productLineConfigService } from '../services/ProductLineConfigService';
 import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
-const DEFAULT_SENTRY_TARGET = 'http://172.31.2.239:9000';
-const DEFAULT_SENTRY_PUBLIC_URL = 'https://data.nn.com/sentry';
+const DEFAULT_SENTRY_TARGET = 'https://sentry.example.com';
+const DEFAULT_SENTRY_PUBLIC_URL = 'https://sentry.example.com';
 const SENTRY_PUBLIC_URL = (process.env.SENTRY_PUBLIC_URL || DEFAULT_SENTRY_PUBLIC_URL).replace(/\/+$/, '');
 const SENTRY_SESSION_TTL_MS = Number(process.env.SENTRY_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 
@@ -39,14 +39,14 @@ const sentryLoginStates = new Map<string, { promise: Promise<void> | null; lastL
 
 function currentSentryProxyConfig(): SentryProxyConfig {
   const productLineId = currentProductLineId();
-  const legacy = productLineId === 'nn';
+  const legacy = productLineId === 'default';
   const target = (
     productLineConfigService.get('SENTRY_PROXY_TARGET')
     || (legacy ? process.env.SENTRY_PROXY_TARGET || DEFAULT_SENTRY_TARGET : '')
   ).replace(/\/+$/, '');
   if (!target) throw new Error(`当前产品线 ${productLineId} 未配置 Sentry 服务地址`);
   const org = productLineConfigService.get('SENTRY_ORG') || (legacy ? process.env.SENTRY_ORG || 'sentry' : '');
-  const project = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'nn-ios' : '');
+  const project = productLineConfigService.get('SENTRY_PROJECT') || (legacy ? process.env.SENTRY_PROJECT || 'mobile-ios' : '');
   const configuredDefaultPath = legacy ? String(process.env.SENTRY_DEFAULT_PATH || '').trim() : '';
   const defaultPath = configuredDefaultPath || (org && project
     ? `/organizations/${encodeURIComponent(org)}/projects/${encodeURIComponent(project)}/`
@@ -104,16 +104,16 @@ function rewriteSentryJavaScript(body: string): string {
 }
 
 function stripInjectedIssueBridge(body: string): string {
-  return body.replace(/\n?<script data-nn-sentry-issue-bridge>[\s\S]*?<\/script>\n?/g, '');
+  return body.replace(/\n?<script data-default-sentry-issue-bridge>[\s\S]*?<\/script>\n?/g, '');
 }
 
 function injectSentryIssueBridge(body: string): string {
-  if (!body.includes('</body>') || body.includes('data-nn-sentry-issue-bridge')) {
+  if (!body.includes('</body>') || body.includes('data-default-sentry-issue-bridge')) {
     return body;
   }
 
   const bridgeScript = `
-<script data-nn-sentry-issue-bridge>
+<script data-default-sentry-issue-bridge>
 (function () {
   function parseIssue(url, title) {
     try {
@@ -121,12 +121,12 @@ function injectSentryIssueBridge(body: string): string {
       var match = parsed.pathname.match(/\\/issues\\/([^/?#]+)/);
       if (!match) {
         return {
-          type: 'nn-sentry-issue-selected',
+          type: 'default-sentry-issue-selected',
           issue: null
         };
       }
       return {
-        type: 'nn-sentry-issue-selected',
+        type: 'default-sentry-issue-selected',
         issue: {
           id: decodeURIComponent(match[1]),
           title: (title || '').trim() || decodeURIComponent(match[1]),

@@ -48,7 +48,7 @@ if (currentMajor === supportedMajor) {
   run(targetScript);
 }
 
-if (process.env.NN_PLATFORM_NODE_REEXEC === "1") {
+if (process.env.MOBILE_DEVOPS_NODE_REEXEC === "1") {
   console.error(
     `[node-runtime] Node ${process.version} does not match the project's native-module runtime. ` +
       `Please use Node ${supportedMajor}.`
@@ -73,7 +73,7 @@ if (!fallbackNodePath) {
 console.log(`[node-runtime] switch Node ${process.version} -> ${fallbackNodePath}/node for npm run ${targetScript}`);
 run(targetScript, {
   ...process.env,
-  NN_PLATFORM_NODE_REEXEC: "1",
+  MOBILE_DEVOPS_NODE_REEXEC: "1",
   PATH: `${fallbackNodePath}:${process.env.PATH || ""}`,
   npm_config_prefix: dirname(fallbackNodePath)
 });

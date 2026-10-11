@@ -1,6 +1,6 @@
-# nn-watermark-decode
+# default-watermark-decode
 
-Rust decoder for NN screenshot UID dot watermark.
+Rust decoder for Mobile DevOps AI screenshot UID dot watermark.
 
 The tool focuses on the current payload:
 

@@ -236,7 +236,7 @@ export class StorageService {
       uploadTime: row.upload_time,
       notes: row.notes || undefined,
       relatedAppVersions,
-      productLineId: row.product_line_id || 'nn',
+      productLineId: row.product_line_id || 'default',
     };
   }
 }

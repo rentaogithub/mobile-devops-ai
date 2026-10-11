@@ -104,7 +104,7 @@ export class AssistantAuditService {
     if (!row) return null;
     return {
       id: row.id,
-      projectId: row.project_id || 'nn-ios',
+      projectId: row.project_id || 'mobile-ios',
       userId: row.user_id,
       username: row.username,
       toolName: row.tool_name,

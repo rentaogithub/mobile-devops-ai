@@ -255,9 +255,9 @@ export class HistoryService {
       return true;
     }
 
-    const oldUnknownNNIMCount = this.countUnknownNNIMFrames(duplicate.symbolicatedLog);
-    const newUnknownNNIMCount = this.countUnknownNNIMFrames(params.symbolicatedLog);
-    if (oldUnknownNNIMCount > 0 && newUnknownNNIMCount < oldUnknownNNIMCount) {
+    const oldUnknownMobileAppCount = this.countUnknownMobileAppFrames(duplicate.symbolicatedLog);
+    const newUnknownMobileAppCount = this.countUnknownMobileAppFrames(params.symbolicatedLog);
+    if (oldUnknownMobileAppCount > 0 && newUnknownMobileAppCount < oldUnknownMobileAppCount) {
       return true;
     }
 
@@ -266,9 +266,9 @@ export class HistoryService {
     return oldUnknownSystemCount > 0 && newUnknownSystemCount < oldUnknownSystemCount;
   }
 
-  private countUnknownNNIMFrames(log: string): number {
-    const unknownCount = (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
-    const addressOnlyCount = (log.match(/^\d+\s+NNIM\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in NNIM\)(?:\s+\+\s+\d+)?$/gim) || []).length;
+  private countUnknownMobileAppFrames(log: string): number {
+    const unknownCount = (log.match(/^\d+\s+MobileApp\s+0x[0-9a-f]+\s+<unknown>\s+\+\s+\d+$/gim) || []).length;
+    const addressOnlyCount = (log.match(/^\d+\s+MobileApp\s+0x[0-9a-f]+\s+0x[0-9a-f]+\s+\(in MobileApp\)(?:\s+\+\s+\d+)?$/gim) || []).length;
     return unknownCount + addressOnlyCount;
   }
 
@@ -651,7 +651,7 @@ export class HistoryService {
 
     return {
       id: row.id,
-      productLineId: row.product_line_id || 'nn',
+      productLineId: row.product_line_id || 'default',
       appVersion: row.app_version,
       versionDetected: row.version_detected === 1,
       crashType: row.crash_type,
@@ -693,7 +693,7 @@ export class HistoryService {
     }
 
     const organization = productLineConfigService.get('SENTRY_ORG')
-      || (currentProductLineId() === 'nn' ? process.env.SENTRY_ORG || 'sentry' : '');
+      || (currentProductLineId() === 'default' ? process.env.SENTRY_ORG || 'sentry' : '');
     if (!organization) return undefined;
     return `/organizations/${encodeURIComponent(organization)}/issues/${encodeURIComponent(issueId)}/`;
   }

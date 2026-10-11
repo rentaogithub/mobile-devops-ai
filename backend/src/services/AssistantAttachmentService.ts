@@ -20,7 +20,7 @@ const ALLOWED_EXTENSIONS = new Set(['.crash', '.ips', '.txt']);
 const TTL_MS = 15 * 60 * 1000;
 
 export class AssistantAttachmentService {
-  readonly uploadDir = path.join(os.tmpdir(), 'nn-ios-assistant-uploads');
+  readonly uploadDir = path.join(os.tmpdir(), 'mobile-ios-assistant-uploads');
   private readonly attachments = new Map<string, AssistantAttachment>();
 
   constructor() {

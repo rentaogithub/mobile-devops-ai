@@ -339,10 +339,10 @@ export class DeviceRecordingService {
 
   private rootDirectory() {
     const base = path.resolve(
-      process.env.DEVICE_RECORDING_DIR || path.join(process.cwd(), '../nn-ios-platform-data/device-recordings'),
+      process.env.DEVICE_RECORDING_DIR || path.join(process.cwd(), '../mobile-devops-ai-data/device-recordings'),
     );
     const projectId = currentProjectId();
-    return projectId === 'nn-ios' ? base : path.join(base, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    return projectId === 'mobile-ios' ? base : path.join(base, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
   }
 
   async start(title: string, actor: string, isAdmin: boolean) {

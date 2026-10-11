@@ -64,7 +64,7 @@ export const authUtils = {
     localStorage.setItem(AUTH_USER_KEY, JSON.stringify(normalizeUser(user)));
     const selectedId = localStorage.getItem(ACTIVE_PRODUCT_LINE_KEY);
     const active = user.productLines.find((item) => item.id === selectedId)
-      || user.productLines.find((item) => item.id === 'nn')
+      || user.productLines.find((item) => item.id === 'default')
       || user.productLines[0];
     if (active) persistActiveProductLineCookie(active.id);
     syncApplicationCookie(authUtils.getActiveApplication());
@@ -101,7 +101,7 @@ export const authUtils = {
     if (!user?.productLines.length) return null;
     const selectedId = localStorage.getItem(ACTIVE_PRODUCT_LINE_KEY);
     return user.productLines.find((item) => item.id === selectedId)
-      || user.productLines.find((item) => item.id === 'nn')
+      || user.productLines.find((item) => item.id === 'default')
       || user.productLines[0];
   },
 

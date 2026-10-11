@@ -6,7 +6,7 @@ let db: Database.Database | null = null;
 
 export function getDatabasePath(): string {
   const projectRoot = path.resolve(__dirname, '../../../');
-  return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'nn-ios-platform-data', 'database.sqlite'));
+  return path.resolve(process.env.DB_PATH || path.join(projectRoot, 'mobile-devops-ai-data', 'database.sqlite'));
 }
 
 export function getDatabase(): Database.Database {

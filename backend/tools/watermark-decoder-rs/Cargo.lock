@@ -102,7 +102,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nn-watermark-decode"
+name = "default-watermark-decode"
 version = "0.1.0"
 dependencies = [
  "image",

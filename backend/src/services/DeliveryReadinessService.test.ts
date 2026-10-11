@@ -13,7 +13,7 @@ import { qualityGateService } from './QualityGateService';
 import { workflowService } from './WorkflowService';
 
 describe('delivery readiness evidence', () => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-delivery-'));
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'default-delivery-'));
   const previousDB = process.env.DB_PATH;
   const previousSuites = process.env.RELEASE_GATE_REQUIRED_SUITES;
   const service = new DeliveryReadinessService();
@@ -107,7 +107,7 @@ describe('delivery readiness evidence', () => {
     const response = await request(app).get('/api/workflow/delivery/101?projectId=other');
     expect(response.status).toBe(200);
     expect(response.body.data.counts).toEqual(service.diagnose('101').counts);
-    expect(response.body.data.projectId).toBe('nn-ios');
+    expect(response.body.data.projectId).toBe('mobile-ios');
     expect((await request(app).get('/api/workflow/delivery/abc')).status).toBe(400);
     expect((await request(app).get('/api/workflow/delivery/101').set('X-Product-Line-Id', 'delivery-beta')).status).toBe(401);
   });
@@ -149,8 +149,8 @@ describe('delivery readiness evidence', () => {
   });
 
   it('distinguishes missing observations from normal observed metrics', () => {
-    expect(qualityGateService.evaluateReleaseHealth('nn-ios', '2.0.0').status).toBe('unknown');
+    expect(qualityGateService.evaluateReleaseHealth('mobile-ios', '2.0.0').status).toBe('unknown');
     workflowService.addReleaseObservation({ releaseVersion: '2.0.0', metric: 'crash_free_sessions', value: 100, status: 'normal' });
-    expect(qualityGateService.evaluateReleaseHealth('nn-ios', '2.0.0').status).toBe('healthy');
+    expect(qualityGateService.evaluateReleaseHealth('mobile-ios', '2.0.0').status).toBe('healthy');
   });
 });

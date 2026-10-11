@@ -89,7 +89,7 @@ function configuredMainAppNames(): Set<string> {
     config.publishMainRepo,
     config.targetName,
   ];
-  if (currentProductLineId() === 'nn') names.push('NNIM', 'NNIOS', 'NN');
+  if (currentProductLineId() === 'default') names.push('MobileApp', 'MAIN_APP');
   return new Set(names.map(normalizedAppName).filter(Boolean));
 }
 
@@ -186,9 +186,9 @@ export class DSYMMatcherService {
       return dsym.filePath;
     }
 
-    const baseDsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'nn-ios-platform-data', 'dsyms');
+    const baseDsymDir = process.env.DSYM_DIR || path.resolve(process.cwd(), '..', 'mobile-devops-ai-data', 'dsyms');
     const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
-    const dsymDir = currentProductLineId() === 'nn' ? baseDsymDir : path.join(baseDsymDir, safeProductLineId);
+    const dsymDir = currentProductLineId() === 'default' ? baseDsymDir : path.join(baseDsymDir, safeProductLineId);
     const dsymName = path.basename(dsym.filePath || `${dsym.appName}.dSYM`);
     const candidates = [
       path.join(dsymDir, dsym.uuid, dsymName),

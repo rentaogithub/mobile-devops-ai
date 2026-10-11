@@ -5,7 +5,7 @@ import {
 } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
-const PROTOCOL_JUMP_URL = 'https://fe-tools.nn.com/protocol-jump.html';
+const PROTOCOL_JUMP_URL = 'https://fe-tools.example.com/protocol-jump.html';
 
 export default function RoutesPage() {
   return (

@@ -119,7 +119,7 @@ export class DeviceControlService {
   }
 
   async listDevices(): Promise<DeviceControlDevice[]> {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-ios-device-control-'));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mobile-ios-device-control-'));
     const outputPath = path.join(tempDir, 'devices.json');
     try {
       await execFileAsync('xcrun', ['devicectl', 'list', 'devices', '--json-output', outputPath, '--quiet'], {
@@ -262,7 +262,7 @@ export class DeviceControlService {
 
   private async startSession(device: DeviceControlDevice, generation: number): Promise<DeviceControlStatus> {
     const runtimeRoot = path.resolve(
-      process.env.DEVICE_CONTROL_RUNTIME_DIR || path.join(os.tmpdir(), 'nn-ios-device-control-runtime'),
+      process.env.DEVICE_CONTROL_RUNTIME_DIR || path.join(os.tmpdir(), 'mobile-ios-device-control-runtime'),
     );
     const deviceRuntime = path.join(runtimeRoot, safePathPart(device.udid));
     fs.mkdirSync(deviceRuntime, { recursive: true });

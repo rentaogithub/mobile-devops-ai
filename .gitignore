@@ -14,7 +14,7 @@ backend/.env
 
 # ===== 运行时数据（与代码分离） =====
 dSYMTool-data/
-nn-ios-platform-data/
+mobile-devops-ai-data/
 builds/
 logs/
 backend/logs/
@@ -52,7 +52,7 @@ blob-report/
 .code-review-graph/
 
 # ===== 本机进程管理配置 =====
-deploy/launchd/com.nn.ios.sonic-agent.plist
+deploy/launchd/com.mobile-devops-ai.ios.sonic-agent.plist
 scripts/sonic/run-agent-foreground.sh
 scripts/start-dev.sh
 

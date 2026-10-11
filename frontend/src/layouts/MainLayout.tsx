@@ -371,7 +371,7 @@ export default function MainLayout() {
               <Spin tip="正在恢复登录状态..." />
             </div>
           ) : (
-            platformRouteAllowed ? <Outlet key={`${activeProductLine?.id || 'public-nn'}:${activeApplication?.id || 'ios'}:${JSON.stringify(activeApplication?.services)}:${JSON.stringify(activeApplication?.serviceOptions)}:${activeApplication?.componentLibraryId || 'default-library'}`} /> : <Navigate to={serviceLanding} replace />
+            platformRouteAllowed ? <Outlet key={`${activeProductLine?.id || 'public-default'}:${activeApplication?.id || 'ios'}:${JSON.stringify(activeApplication?.services)}:${JSON.stringify(activeApplication?.serviceOptions)}:${activeApplication?.componentLibraryId || 'default-library'}`} /> : <Navigate to={serviceLanding} replace />
           )}
         </div>
       </Content>

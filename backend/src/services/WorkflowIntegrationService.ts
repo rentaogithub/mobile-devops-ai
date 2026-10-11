@@ -22,7 +22,7 @@ function compact(value: unknown, maxLength = 1000) {
 }
 
 function workflowScope() {
-  return currentProductLineId() === 'nn' ? 'nn' : token(currentProjectId());
+  return currentProductLineId() === 'default' ? 'default' : token(currentProjectId());
 }
 
 function productLabel() {
@@ -31,7 +31,7 @@ function productLabel() {
 
 function scopedArtifactId(kind: string, ...parts: unknown[]) {
   const suffix = parts.map(token).join('_');
-  return currentProductLineId() === 'nn'
+  return currentProductLineId() === 'default'
     ? `artifact_${kind}_${suffix}`
     : `artifact_${kind}_${workflowScope()}_${suffix}`;
 }
@@ -374,7 +374,7 @@ export class WorkflowIntegrationService {
         metadata: { action, component: componentSummary },
       });
       const task = workflowService.upsertTask({
-        id: currentProductLineId() === 'nn'
+        id: currentProductLineId() === 'default'
           ? `pod:${token(action)}:${token(name)}:${token(version)}`
           : `pod:${workflowScope()}:${token(action)}:${token(name)}:${token(version)}`,
         taskType: 'pod_delivery',

@@ -22,11 +22,11 @@ export function getProductLineContext(): ProductLineContextValue | undefined {
 }
 
 export function currentProductLineId(): string {
-  return getProductLineContext()?.id || 'nn';
+  return getProductLineContext()?.id || 'default';
 }
 
 export function currentProjectId(): string {
-  return getProductLineContext()?.application?.projectId || getProductLineContext()?.projectId || 'nn-ios';
+  return getProductLineContext()?.application?.projectId || getProductLineContext()?.projectId || 'mobile-ios';
 }
 
 export function currentApplication() { return getProductLineContext()?.application; }

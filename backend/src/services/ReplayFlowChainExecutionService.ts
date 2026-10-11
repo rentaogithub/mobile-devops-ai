@@ -84,12 +84,12 @@ export class ReplayFlowChainExecutionService {
   constructor(
     private assets: ReplayFlowAssetService = replayFlowAssetService,
     private replayExecutor: Pick<DeviceReplayFlowExecutionService, 'start' | 'waitForCompletion' | 'stop'> = deviceReplayFlowExecutionService,
-    private runRoot = path.resolve(process.env.REPLAY_FLOW_CHAIN_RUN_DIR || path.join(process.cwd(), '../nn-ios-platform-data/replay-flow-chain-runs')),
+    private runRoot = path.resolve(process.env.REPLAY_FLOW_CHAIN_RUN_DIR || path.join(process.cwd(), '../mobile-devops-ai-data/replay-flow-chain-runs')),
   ) {}
 
   private currentRunRoot() {
     const projectId = currentProjectId();
-    return projectId === 'nn-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    return projectId === 'mobile-ios' ? this.runRoot : path.join(this.runRoot, projectId.replace(/[^A-Za-z0-9_.-]/g, '_'));
   }
 
   start(mainAssetId: string, suppliedInputs: Record<string, unknown>, actor: string, isAdmin: boolean) {

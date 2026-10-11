@@ -160,7 +160,7 @@ app.get('/logs/view', (req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NN Browser Log</title>
+  <title>Mobile DevOps AI Browser Log</title>
   <style>
     body { margin: 0; background: #101114; color: #e6e6e6; font-family: Menlo, Monaco, Consolas, monospace; }
     header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #1b1d22; border-bottom: 1px solid #333842; }
@@ -174,7 +174,7 @@ app.get('/logs/view', (req, res) => {
 </head>
 <body>
   <header>
-    <strong>NN Browser Log</strong>
+    <strong>Mobile DevOps AI Browser Log</strong>
     <button onclick="logs.innerHTML=''">Clear</button>
     <span id="status">Connecting...</span>
   </header>

@@ -17,7 +17,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [password, setPassword] = useState('');
   const [requestedRole, setRequestedRole] = useState<PlatformRole | undefined>(undefined);
   const [productLines, setProductLines] = useState<PlatformProductLine[]>([]);
-  const [productLineId, setProductLineId] = useState('nn');
+  const [productLineId, setProductLineId] = useState('default');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -39,7 +39,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
   const handleSubmit = async () => {
     if (!username.trim() || !password.trim()) {
-      message.warning('请输入 NN 邮箱前缀和密码');
+      message.warning('请输入 邮箱前缀和密码');
       return;
     }
 
@@ -74,7 +74,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const handleRegister = async () => {
     const nextUsername = username.trim();
     if (!nextUsername) {
-      message.warning('请输入 NN 邮箱前缀');
+      message.warning('请输入 邮箱前缀');
       return;
     }
     if (!requestedRole) {
@@ -158,7 +158,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
 
           <Input
             size="large"
-            placeholder="NN 邮箱前缀"
+            placeholder="邮箱前缀"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             onKeyDown={handleKeyPress}
@@ -228,7 +228,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           {mode === 'register' && (
             <Input.Password
               size="large"
-              placeholder="默认密码：NN 邮箱前缀 + 123"
+              placeholder="默认密码：邮箱前缀 + 123"
               prefix={<LockOutlined />}
               value={registrationPassword}
               readOnly

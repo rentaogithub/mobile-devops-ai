@@ -7,7 +7,7 @@ function normalizedName(value: unknown) {
 
 export function isMainAppDSYM(dsym: DSYMInfo, appVersion?: string | null): boolean {
   const activeProductLine = authUtils.getActiveProductLine();
-  if (activeProductLine?.id === 'nn' && dsym.appName.trim().toUpperCase() === 'NNIM') return true;
+  if (activeProductLine?.id === 'default' && dsym.appName.trim().toUpperCase() === 'MobileApp') return true;
   if (normalizedName(activeProductLine?.name) === normalizedName(dsym.appName)) return true;
   const hasRelatedVersions = Array.isArray(dsym.relatedAppVersions) && dsym.relatedAppVersions.length > 0;
   return !hasRelatedVersions && (!appVersion || dsym.version.trim() === appVersion.trim());

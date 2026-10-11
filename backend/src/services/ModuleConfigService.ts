@@ -11,18 +11,18 @@ export class ModuleConfigService {
   private dataDir: string;
 
   private defaultModules(): string[] {
-    return currentProductLineId() === 'nn' ? ['NNIM', 'NNRtc', 'leigod_im_cross_sdk'] : [];
+    return currentProductLineId() === 'default' ? ['MobileApp', 'MobileRTC', 'mobile_im_cross_sdk'] : [];
   }
 
   constructor() {
     // 使用与数据库相同的数据目录
-    this.dataDir = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+    this.dataDir = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
     this.ensureConfigFile();
   }
 
   private get configPath(): string {
     const productLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
-    return path.join(this.dataDir, productLineId === 'nn' ? 'module-config.json' : `module-config.${productLineId}.json`);
+    return path.join(this.dataDir, productLineId === 'default' ? 'module-config.json' : `module-config.${productLineId}.json`);
   }
 
   /**

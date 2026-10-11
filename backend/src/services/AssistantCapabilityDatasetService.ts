@@ -33,7 +33,7 @@ interface CapabilityDatasetFile {
   items: CapabilityDatasetDoc[];
 }
 
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 
 function datasetDir() {
   return process.env.ASSISTANT_CAPABILITY_DATASET_DIR || path.join(DATA_DIR, 'assistant-capabilities');
@@ -174,8 +174,8 @@ export class AssistantCapabilityDatasetService {
 
   async syncFromEntrances(options: { routesUrl?: string; crossPlatformUrl?: string } = {}) {
     const results = [];
-    const routesUrl = options.routesUrl || process.env.ROUTE_CAPABILITY_SOURCE_URL || 'https://fe-tools.nn.com/protocol-jump.html';
-    const crossPlatformUrl = options.crossPlatformUrl || process.env.CROSS_PLATFORM_CAPABILITY_SOURCE_URL || 'https://fe-tools.nn.com/js-sdk-example/index.html';
+    const routesUrl = options.routesUrl || process.env.ROUTE_CAPABILITY_SOURCE_URL || 'https://fe-tools.example.com/protocol-jump.html';
+    const crossPlatformUrl = options.crossPlatformUrl || process.env.CROSS_PLATFORM_CAPABILITY_SOURCE_URL || 'https://fe-tools.example.com/js-sdk-example/index.html';
 
     results.push(await this.syncRoutesFromEntrance(routesUrl));
     results.push(await this.syncCrossPlatformFromEntrance(crossPlatformUrl));
@@ -237,7 +237,7 @@ export class AssistantCapabilityDatasetService {
       ],
       parameters: this.bridgeInputs(item),
       outputs: ['调用结果'],
-      usage: `来自跨端能力入口：通过 NNJSBridge.${item.method} 调用。`,
+      usage: `来自跨端能力入口：通过 SampleJSBridge.${item.method} 调用。`,
       status: '跨端能力入口同步',
     })));
     return this.syncCapabilities({ source: 'cross-platform', replace: true, items });
@@ -336,8 +336,8 @@ export class AssistantCapabilityDatasetService {
 
   private bridgeCodeSnippet(item: any) {
     const inputs = this.bridgeInputs(item);
-    if (!inputs.length) return `NNJSBridge.${item.method}()`;
-    return `NNJSBridge.${item.method}(${inputs.map((input: string) => `<${input}>`).join(', ')})`;
+    if (!inputs.length) return `SampleJSBridge.${item.method}()`;
+    return `SampleJSBridge.${item.method}(${inputs.map((input: string) => `<${input}>`).join(', ')})`;
   }
 }
 

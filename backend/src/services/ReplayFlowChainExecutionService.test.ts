@@ -10,7 +10,7 @@ import { ReplayFlowChainExecutionService } from './ReplayFlowChainExecutionServi
 function recording(id: string, title: string): DeviceRecording {
   return {
     id,
-    projectId: 'nn-ios',
+    projectId: 'mobile-ios',
     title,
     owner: 'admin',
     status: 'stopped',
@@ -53,7 +53,7 @@ class FakeReplayExecutor {
     const failed = this.failedFlowIds.has(flow.id);
     const run: ReplayFlowRun = {
       id,
-      projectId: 'nn-ios',
+      projectId: 'mobile-ios',
       flowId: flow.id,
       flowName: flow.name,
       schemaVersion: flow.schemaVersion,

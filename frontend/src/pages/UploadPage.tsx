@@ -137,7 +137,7 @@ export default function UploadPage() {
             <li>上传成功后，可以在"管理"页面查看和管理已上传的 dSYM 文件</li>
             <li>
               <strong>远程协助：</strong>
-              如需帮助，可通过 VNC 远程桌面访问：<Text code>vnc://10.1.103.96</Text>
+              如需帮助，请在产品线配置中填写可访问的远程桌面地址。
             </li>
           </ul>
         }

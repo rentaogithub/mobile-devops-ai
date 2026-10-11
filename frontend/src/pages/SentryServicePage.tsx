@@ -2126,7 +2126,7 @@ export default function SentryServicePage() {
             <BarChartOutlined style={{ color: '#1677ff', fontSize: 22 }} />
             <div>
               <Title level={2} style={{ margin: 0 }}>Sentry 服务</Title>
-              <Text type="secondary">查看 NN iOS 项目的线上崩溃与事件。</Text>
+              <Text type="secondary">查看示例 iOS 应用的线上崩溃与事件。</Text>
             </div>
           </Space>
           <Space>

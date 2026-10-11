@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.nndev.im}"
+APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.example.mobileapp.dev}"
 DEVICE_UDID="${DEVICE_UDID:-${1:-}}"
 
 export PATH="$HOME/.local/bin:$HOME/Library/Python/3.9/bin:$HOME/Library/Python/3.10/bin:$HOME/Library/Python/3.11/bin:$HOME/Library/Python/3.12/bin:$HOME/Library/Python/3.13/bin:$HOME/Library/Python/3.14/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -15,12 +15,12 @@ Usage:
 
 Env:
   DEVICE_UDID     指定设备 UDID；未传时自动选择 tidevice list 第一台 USB iPhone
-  APP_BUNDLE_ID   启动的 Bundle ID，默认 com.nndev.im
+  APP_BUNDLE_ID   启动的 Bundle ID，默认 com.example.mobileapp.dev
 
 Examples:
   sh scripts/ios/pair-and-launch-ios.sh
   sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E
-  sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E com.nndev.im
+  sh scripts/ios/pair-and-launch-ios.sh 00008101-0015192E0178001E com.example.mobileapp.dev
 EOF
 }
 

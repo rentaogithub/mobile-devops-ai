@@ -164,7 +164,7 @@ def convert_ips_to_crash(ips_file, crash_file):
 if __name__ == '__main__':
     if len(sys.argv) != 3:
         print("用法: python3 ips-to-crash.py input.ips output.crash")
-        print("示例: python3 ips-to-crash.py NNIM-2025-11-26.ips NNIM-2025-11-26.crash")
+        print("示例: python3 ips-to-crash.py MobileApp-2025-11-26.ips MobileApp-2025-11-26.crash")
         sys.exit(1)
     
     input_file = sys.argv[1]

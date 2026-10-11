@@ -111,7 +111,7 @@ it.each(['M4HNX7MUD2', 'LX4548D2Q6'])('verifies the actual team %s before saving
       expect(productLineConfigService.setMany).not.toHaveBeenCalled();
     } else {
       expect(response.status).toBe(200);
-      expect(productLineConfigService.setMany).toHaveBeenCalledWith('nn', {
+      expect(productLineConfigService.setMany).toHaveBeenCalledWith('default', {
         APPLE_DEVICE_TEAM_ID: 'LX4548D2Q6', APPLE_DEVICE_API_KEY_ID: 'DEVKEY',
         APPLE_DEVICE_API_ISSUER_ID: 'development-issuer',
         APPLE_DEVICE_API_PRIVATE_KEY: expect.stringContaining('BEGIN PRIVATE KEY'),
@@ -126,7 +126,7 @@ afterAll(() => getDatabase().close());
 it('shows the real Apple list and cache even when legacy local hiding records exist', async () => {
   getDatabase().exec('CREATE TABLE apple_device_list_removals (product_line_id TEXT, team_id TEXT, udid TEXT, removed_at INTEGER)');
   try {
-    getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)').run('nn', 'LX4548D2Q6', udid, Date.now());
+    getDatabase().prepare('INSERT INTO apple_device_list_removals VALUES (?, ?, ?, ?)').run('default', 'LX4548D2Q6', udid, Date.now());
     appleRequest.mockResolvedValueOnce({ data: { data: [device] } });
     const live = await request(app).get('/devices');
     expect(live.body.data).toMatchObject({ total: 1, source: 'apple', devices: [{ udid }] });

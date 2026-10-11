@@ -8,7 +8,7 @@ import { ReplayFlowAssetError, ReplayFlowAssetService, recordingSourceFingerprin
 function recording(): DeviceRecording {
   return {
     id: 'recording-1',
-    projectId: 'nn-ios',
+    projectId: 'mobile-ios',
     title: '社区搜索',
     owner: 'admin',
     status: 'stopped',

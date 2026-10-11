@@ -2,7 +2,7 @@ import { Typography, Card, Space } from 'antd';
 import { MobileOutlined } from '@ant-design/icons';
 
 const { Title, Paragraph } = Typography;
-const JS_SDK_EXAMPLE_URL = 'https://fe-tools.nn.com/js-sdk-example/index.html';
+const JS_SDK_EXAMPLE_URL = 'https://fe-tools.example.com/js-sdk-example/index.html';
 
 export default function CrossPlatformPage() {
   return (

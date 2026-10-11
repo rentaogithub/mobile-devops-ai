@@ -314,10 +314,10 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     if (channel === 'im' || channel === 'rtc') {
       return channel;
     }
-    if (line && (line.includes('[IMSDK]') || /\[nnimsdk-[^\]]+\]/.test(line))) {
+    if (line && (line.includes('[IMSDK]') || /\[imsdk-[^\]]+\]/.test(line))) {
       return 'im';
     }
-    if (line && (line.includes('[RTCSDK]') || /\[nnrtc-[^\]]+\]/i.test(line))) {
+    if (line && (line.includes('[RTCSDK]') || /\[mobileRtc-[^\]]+\]/i.test(line))) {
       return 'rtc';
     }
     return 'business';
@@ -394,9 +394,9 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
       setSession(nextSession);
 
       // 生成二维码内容
-      // App 扫码后只连接明确的 nn-ios-platform WebSocket 服务地址。
+      // App 扫码后只连接明确的 mobile-devops-ai WebSocket 服务地址。
       const qrData = JSON.stringify({
-        type: 'nn_log_pair',
+        type: 'mobile_log_pair',
         p: pairingId,
         t: token,
         u: resolvedWsUrls,
@@ -560,13 +560,13 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
         if (data.type === 'logArchivePreparing') {
           setIsDownloadingLogs(true);
           setDownloadProgress(0);
-          message.info('正在打包 NN 日志...');
+          message.info('正在打包 业务日志...');
           return;
         }
         if (data.type === 'logArchiveStart') {
           logArchiveRef.current = {
             requestId: data.requestId,
-            fileName: data.fileName || `nn-logs-${Date.now()}.zip`,
+            fileName: data.fileName || `default-logs-${Date.now()}.zip`,
             totalBytes: Number(data.totalBytes || 0),
             receivedBytes: 0,
             chunks: [],
@@ -587,7 +587,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
           logArchiveRef.current = null;
           setIsDownloadingLogs(false);
           setDownloadProgress(0);
-          message.error(data.message || 'NN 日志下载失败');
+          message.error(data.message || '业务日志下载失败');
           return;
         }
 
@@ -639,10 +639,10 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     };
   };
 
-  const requestNNLogsDownload = () => {
+  const requestMobileLogsDownload = () => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      message.warning('日志流未连接，无法下载 NN 日志');
+      message.warning('日志流未连接，无法下载 业务日志');
       return;
     }
     const requestId = makeRequestId();
@@ -675,15 +675,15 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     try {
       const result = await feedbackLogApi.analyzeArchive(blob);
       if (!result.lines.length) {
-        message.warning('下载的 NN 日志中没有可分析的业务日志');
+        message.warning('下载的 业务日志中没有可分析的业务日志');
         return;
       }
-      setAnalysisResult(analyzeBusinessLogLines(result.lines, `下载 NN 日志 ${fileName}`));
+      setAnalysisResult(analyzeBusinessLogLines(result.lines, `下载 业务日志 ${fileName}`));
       setAnalysisOpen(true);
       const fileText = result.files.length ? `，文件 ${result.files.length} 个` : '';
-      message.success(`NN 日志分析完成，共 ${result.lineCount} 行${fileText}`);
+      message.success(`业务日志分析完成，共 ${result.lineCount} 行${fileText}`);
     } catch (error: any) {
-      message.warning(error?.message || 'NN 日志已下载，但分析失败');
+      message.warning(error?.message || '业务日志已下载，但分析失败');
     } finally {
       setIsAnalyzingDownloadedLogs(false);
     }
@@ -749,7 +749,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
     logArchiveRef.current = null;
     setIsDownloadingLogs(false);
     setDownloadProgress(100);
-    message.success('NN 日志已下载到电脑');
+    message.success('业务日志已下载到电脑');
     void analyzeDownloadedLogArchive(blob, archive.fileName);
   };
 
@@ -912,7 +912,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
               实时日志 - 扫码配对
             </Title>
             <Paragraph type="secondary">
-              通过 NN App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
+              通过 业务 App 扫描二维码，连接设备实时日志服务，在浏览器中查看设备运行日志
             </Paragraph>
           </div>
           {state !== 'streaming' && (
@@ -969,7 +969,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                   <Space direction="vertical" size={0}>
                     <span>{record.deviceInfo?.nickName || '-'}</span>
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      NN: {record.deviceInfo?.nnNumber || '-'}
+                      外部账号: {record.deviceInfo?.externalNumber || '-'}
                       {record.deviceInfo?.userId ? ` / UID: ${record.deviceInfo.userId}` : ''}
                     </Text>
                   </Space>
@@ -1045,7 +1045,7 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
             <QrcodeOutlined style={{ fontSize: 64, color: '#1677ff', marginBottom: 24 }} />
             <Title level={5}>连接设备实时日志</Title>
             <Paragraph type="secondary" style={{ maxWidth: 520, margin: '0 auto 24px' }}>
-              点击生成二维码，然后在 NN App 中通过 Debug → 实时日志 → 扫描二维码进行配对。
+              点击生成二维码，然后在 业务 App 中通过 Debug → 实时日志 → 扫描二维码进行配对。
               配对成功后，设备日志将通过服务器中转实时展示在浏览器中。
             </Paragraph>
             <Button type="primary" size="large" icon={<QrcodeOutlined />} onClick={startPairing}>
@@ -1084,11 +1084,11 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                   <Space>
                     <Spin size="small" />
                     <Text type="secondary">等待 App 扫码配对...</Text>
-                    <Tag color="blue">协议 nn_log_pair</Tag>
+                    <Tag color="blue">协议 mobile_log_pair</Tag>
                   </Space>
                 </div>
                 <Paragraph type="secondary" style={{ fontSize: 13 }}>
-                  请在 NN App 中打开：Debug → 实时日志 → 扫描二维码
+                  请在 业务 App 中打开：Debug → 实时日志 → 扫描二维码
                 </Paragraph>
                 <Paragraph
                   copyable={{ text: qrValue }}
@@ -1133,11 +1133,11 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                   <Space>
                     <Spin size="small" />
                     <Text type="secondary">等待 App 扫码配对...</Text>
-                    <Tag color="blue">协议 nn_log_pair</Tag>
+                    <Tag color="blue">协议 mobile_log_pair</Tag>
                   </Space>
                 </div>
                 <Paragraph type="secondary" style={{ fontSize: 13 }}>
-                  请在 NN App 中打开：Debug → 实时日志 → 扫描二维码
+                  请在 业务 App 中打开：Debug → 实时日志 → 扫描二维码
                 </Paragraph>
                 <Paragraph
                   copyable={{ text: qrValue }}
@@ -1196,9 +1196,9 @@ export default function LogsPairPage({ embedded = false, pairingMode = 'inline' 
                 size="small"
                 icon={<DownloadOutlined />}
                 loading={isDownloadingLogs || isAnalyzingDownloadedLogs}
-                onClick={requestNNLogsDownload}
+                onClick={requestMobileLogsDownload}
               >
-                {isDownloadingLogs ? `下载中 ${downloadProgress}%` : isAnalyzingDownloadedLogs ? '分析中' : '下载 NN 日志'}
+                {isDownloadingLogs ? `下载中 ${downloadProgress}%` : isAnalyzingDownloadedLogs ? '分析中' : '下载 业务日志'}
               </Button>
               <Popconfirm
                 title="清理旧日志"

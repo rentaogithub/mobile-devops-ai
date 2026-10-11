@@ -19,7 +19,7 @@ router.use((req, res, next) => {
   return productLineContextMiddleware(req, res, () => requireApplicationPlatform('ios')(req, res, () => requireApplicationServices('apple-devices')(req, res, next)));
 });
 const appleConfigUpload = multer({
-  dest: process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads',
+  dest: process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads',
   limits: { fileSize: 1024 * 1024 },
 });
 
@@ -110,7 +110,7 @@ function ensureAppleDeviceTables() {
   if (appleDeviceTablesReady) return;
   getDatabase().exec(`
     CREATE TABLE IF NOT EXISTS apple_developer_devices (
-      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      product_line_id TEXT NOT NULL DEFAULT 'default',
       id TEXT NOT NULL,
       name TEXT NOT NULL DEFAULT '',
       udid TEXT NOT NULL,
@@ -126,7 +126,7 @@ function ensureAppleDeviceTables() {
     CREATE INDEX IF NOT EXISTS idx_apple_developer_devices_platform ON apple_developer_devices(platform, added_date DESC);
     CREATE TABLE IF NOT EXISTS apple_device_registration_requests (
       id TEXT PRIMARY KEY,
-      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      product_line_id TEXT NOT NULL DEFAULT 'default',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       status TEXT NOT NULL,
@@ -147,7 +147,7 @@ function ensureAppleDeviceTables() {
       DROP INDEX IF EXISTS idx_apple_developer_devices_platform;
       ALTER TABLE apple_developer_devices RENAME TO apple_developer_devices_legacy;
       CREATE TABLE apple_developer_devices (
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         id TEXT NOT NULL,
         name TEXT NOT NULL DEFAULT '',
         udid TEXT NOT NULL,
@@ -162,14 +162,14 @@ function ensureAppleDeviceTables() {
       );
       INSERT INTO apple_developer_devices (
         product_line_id, id, name, udid, platform, status, device_class, model, added_date, synced_at
-      ) SELECT 'nn', id, name, udid, platform, status, device_class, model, added_date, synced_at
+      ) SELECT 'default', id, name, udid, platform, status, device_class, model, added_date, synced_at
         FROM apple_developer_devices_legacy;
       DROP TABLE apple_developer_devices_legacy;
     `);
   }
   const requestColumns = getDatabase().prepare('PRAGMA table_info(apple_device_registration_requests)').all() as Array<{ name: string }>;
   if (!requestColumns.some((column) => column.name === 'product_line_id')) {
-    getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'nn'");
+    getDatabase().exec("ALTER TABLE apple_device_registration_requests ADD COLUMN product_line_id TEXT NOT NULL DEFAULT 'default'");
   }
   if (!deviceColumns.some((column) => column.name === 'account_scope')) {
     getDatabase().exec("ALTER TABLE apple_developer_devices ADD COLUMN account_scope TEXT NOT NULL DEFAULT ''");
@@ -199,7 +199,7 @@ function registrationRequestFromRow(row: any): RegistrationRequest {
   }
   return {
     id: row.id,
-    productLineId: row.product_line_id || 'nn',
+    productLineId: row.product_line_id || 'default',
     accountScope: row.account_scope || '',
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0),
@@ -346,7 +346,7 @@ function saveAppleDevices(devices: ReturnType<typeof normalizeAppleDevice>[]) {
 }
 
 function readLocalAppleDevicesByDevicectl(): LocalAppleDeviceInfo[] {
-  const outputPath = path.join(os.tmpdir(), `nn-ios-devicectl-devices-${process.pid}-${Date.now()}.json`);
+  const outputPath = path.join(os.tmpdir(), `mobile-ios-devicectl-devices-${process.pid}-${Date.now()}.json`);
   try {
     execFileSync('xcrun', ['devicectl', 'list', 'devices', '--json-output', outputPath, '--quiet'], {
       timeout: 10000,
@@ -409,7 +409,7 @@ function readApplePrivateKey() {
 }
 
 function requiredAppleTeamId() {
-  return currentProductLineId() === 'nn' ? 'LX4548D2Q6' : '';
+  return currentProductLineId() === 'default' ? 'LX4548D2Q6' : '';
 }
 
 function appleAccountScope() {
@@ -598,11 +598,11 @@ function createMobileConfig(baseUrl: string, sessionId: string) {
   <key>PayloadDescription</key>
   <string>采集 iOS 设备 Identifier，用于注册 Apple 开发者设备。</string>
   <key>PayloadDisplayName</key>
-  <string>NN iOS 设备注册</string>
+  <string>Mobile DevOps AI iOS 设备注册</string>
   <key>PayloadIdentifier</key>
-  <string>com.nn-ios-platform.device-enroll.${escapeXml(sessionId)}</string>
+  <string>com.example.mobiledevops.device-enroll.${escapeXml(sessionId)}</string>
   <key>PayloadOrganization</key>
-  <string>NN iOS Platform</string>
+  <string>Mobile DevOps AI iOS Platform</string>
   <key>PayloadType</key>
   <string>Profile Service</string>
   <key>PayloadUUID</key>
@@ -631,13 +631,13 @@ function createCompletionMobileConfig(req: Request, session: EnrollmentSession) 
       <key>IsRemovable</key>
       <true/>
       <key>Label</key>
-      <string>NN 设备注册</string>
+      <string>Mobile DevOps AI 设备注册</string>
       <key>PayloadDescription</key>
       <string>打开移动管理平台。</string>
       <key>PayloadDisplayName</key>
-      <string>NN 设备注册</string>
+      <string>Mobile DevOps AI 设备注册</string>
       <key>PayloadIdentifier</key>
-      <string>com.nn-ios-platform.device-enroll.webclip.${escapeXml(session.id)}</string>
+      <string>com.example.mobiledevops.device-enroll.webclip.${escapeXml(session.id)}</string>
       <key>PayloadType</key>
       <string>com.apple.webClip.managed</string>
       <key>PayloadUUID</key>
@@ -653,11 +653,11 @@ function createCompletionMobileConfig(req: Request, session: EnrollmentSession) 
   <key>PayloadDescription</key>
   <string>设备 Identifier 已采集。UDID：${escapeXml(session.device?.udid || '')}</string>
   <key>PayloadDisplayName</key>
-  <string>NN iOS 设备注册完成</string>
+  <string>Mobile DevOps AI iOS 设备注册完成</string>
   <key>PayloadIdentifier</key>
-  <string>com.nn-ios-platform.device-enroll.completed.${escapeXml(session.id)}</string>
+  <string>com.example.mobiledevops.device-enroll.completed.${escapeXml(session.id)}</string>
   <key>PayloadOrganization</key>
-  <string>NN iOS Platform</string>
+  <string>Mobile DevOps AI iOS Platform</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadType</key>
@@ -970,7 +970,7 @@ router.get('/enroll/:id', (req, res) => {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NN iOS 设备注册</title>
+  <title>Mobile DevOps AI iOS 设备注册</title>
   <style>
     body { margin: 0; padding: 28px 18px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f8fb; color: #1f2937; }
     main { max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 22px; box-shadow: 0 8px 30px rgba(15, 23, 42, .08); }
@@ -997,7 +997,7 @@ router.get('/enroll/:id/profile.mobileconfig', (req, res) => {
     return;
   }
   res.setHeader('Content-Type', 'application/x-apple-aspen-config; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="nn-ios-device-enroll.mobileconfig"');
+  res.setHeader('Content-Disposition', 'attachment; filename="mobile-ios-device-enroll.mobileconfig"');
   res.send(createMobileConfig(publicBaseUrl(req), req.params.id));
 });
 

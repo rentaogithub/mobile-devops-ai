@@ -16,8 +16,8 @@ export class FileHandlerService {
   private maxFileSize: number;
 
   constructor() {
-    this.uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
-    this.dsymDir = process.env.DSYM_DIR || '../../nn-ios-platform-data/dsyms';
+    this.uploadDir = process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads';
+    this.dsymDir = process.env.DSYM_DIR || '../../mobile-devops-ai-data/dsyms';
     this.maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '524288000'); // 500MB
 
     // 确保目录存在
@@ -194,7 +194,7 @@ export class FileHandlerService {
    */
   async moveToPermanentStorage(dsymPath: string, uuid: string): Promise<string> {
     const productLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
-    const productDsymDir = productLineId === 'nn' ? this.dsymDir : path.join(this.dsymDir, productLineId);
+    const productDsymDir = productLineId === 'default' ? this.dsymDir : path.join(this.dsymDir, productLineId);
     const targetDir = path.join(productDsymDir, uuid);
     const dsymName = path.basename(dsymPath);
     const targetPath = path.join(targetDir, dsymName);
@@ -564,8 +564,8 @@ export class FileHandlerService {
         // 第三方库可能没有 Info.plist，尝试从二进制文件中提取版本
         console.warn('未找到 Info.plist，尝试从二进制文件提取版本号');
         
-        // 针对 NNRtc 等特定库，尝试从 DWARF 文件中提取版本字符串
-        if (appName.toLowerCase().includes('nnrtc') || appName.toLowerCase().includes('rtc')) {
+        // 针对 MobileRTC 等特定库，尝试从 DWARF 文件中提取版本字符串
+        if (appName.toLowerCase().includes('mobileRtc') || appName.toLowerCase().includes('rtc')) {
           try {
             const extractedVersion = await this.extractVersionFromBinary(dwarfPath, appName);
             if (extractedVersion) {
@@ -636,14 +636,14 @@ export class FileHandlerService {
         // otool 可能失败，继续尝试其他方法
       }
 
-      // 方法3: 针对 NNRtc，尝试查找特定的版本标识
-      if (appName.toLowerCase().includes('nnrtc')) {
+      // 方法3: 针对 MobileRTC，尝试查找特定的版本标识
+      if (appName.toLowerCase().includes('mobileRtc')) {
         try {
-          const { stdout: nnrtcVersion } = await execAsync(
-            `strings "${binaryPath}" | grep -i "nnrtc" | grep -E "[0-9]+\\.[0-9]+" | head -3`
+          const { stdout: mobileRtcVersion } = await execAsync(
+            `strings "${binaryPath}" | grep -i "mobileRtc" | grep -E "[0-9]+\\.[0-9]+" | head -3`
           );
-          if (nnrtcVersion.trim()) {
-            const lines = nnrtcVersion.trim().split('\n');
+          if (mobileRtcVersion.trim()) {
+            const lines = mobileRtcVersion.trim().split('\n');
             for (const line of lines) {
               const versionMatch = line.match(/(\d+\.\d+(?:\.\d+)?)/);
               if (versionMatch) {

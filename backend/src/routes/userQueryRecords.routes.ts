@@ -12,7 +12,7 @@ interface IncomingUserRecord {
   nickName?: string;
   telNum?: string;
   email?: string;
-  nnNumber?: string;
+  externalNumber?: string;
   userType_dictText?: string;
   status_dictText?: string;
   registerCanal?: string;
@@ -23,14 +23,14 @@ interface IncomingUserRecord {
 function ensureTable() {
   getDatabase().prepare(`
     CREATE TABLE IF NOT EXISTS user_query_records (
-      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      product_line_id TEXT NOT NULL DEFAULT 'default',
       record_key TEXT NOT NULL,
       id TEXT,
       user_id TEXT,
       nick_name TEXT,
       tel_num TEXT,
       email TEXT,
-      nn_number TEXT,
+      external_number TEXT,
       user_type_text TEXT,
       status_text TEXT,
       register_canal TEXT,
@@ -47,14 +47,14 @@ function ensureTable() {
     getDatabase().exec(`
       ALTER TABLE user_query_records RENAME TO user_query_records_legacy;
       CREATE TABLE user_query_records (
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         record_key TEXT NOT NULL,
         id TEXT,
         user_id TEXT,
         nick_name TEXT,
         tel_num TEXT,
         email TEXT,
-        nn_number TEXT,
+        external_number TEXT,
         user_type_text TEXT,
         status_text TEXT,
         register_canal TEXT,
@@ -66,9 +66,9 @@ function ensureTable() {
         PRIMARY KEY (product_line_id, record_key)
       );
       INSERT INTO user_query_records (
-        product_line_id, record_key, id, user_id, nick_name, tel_num, email, nn_number,
+        product_line_id, record_key, id, user_id, nick_name, tel_num, email, external_number,
         user_type_text, status_text, register_canal, create_time, search_key, remark, last_query_at, updated_at
-      ) SELECT 'nn', record_key, id, user_id, nick_name, tel_num, email, nn_number,
+      ) SELECT 'default', record_key, id, user_id, nick_name, tel_num, email, external_number,
         user_type_text, status_text, register_canal, create_time, search_key, remark, last_query_at, updated_at
         FROM user_query_records_legacy;
       DROP TABLE user_query_records_legacy;
@@ -98,7 +98,7 @@ function listRecords() {
       nick_name AS nickName,
       tel_num AS telNum,
       email,
-      nn_number AS nnNumber,
+      external_number AS externalNumber,
       user_type_text AS userType_dictText,
       status_text AS status_dictText,
       register_canal AS registerCanal,
@@ -137,7 +137,7 @@ router.post('/batch', (req: Request, res: Response) => {
         nick_name,
         tel_num,
         email,
-        nn_number,
+        external_number,
         user_type_text,
         status_text,
         register_canal,
@@ -154,7 +154,7 @@ router.post('/batch', (req: Request, res: Response) => {
         @nickName,
         @telNum,
         @email,
-        @nnNumber,
+        @externalNumber,
         @userTypeText,
         @statusText,
         @registerCanal,
@@ -170,7 +170,7 @@ router.post('/batch', (req: Request, res: Response) => {
         nick_name = excluded.nick_name,
         tel_num = excluded.tel_num,
         email = excluded.email,
-        nn_number = excluded.nn_number,
+        external_number = excluded.external_number,
         user_type_text = excluded.user_type_text,
         status_text = excluded.status_text,
         register_canal = excluded.register_canal,
@@ -194,7 +194,7 @@ router.post('/batch', (req: Request, res: Response) => {
           nickName: normalizeText(record.nickName),
           telNum: normalizeText(record.telNum),
           email: normalizeText(record.email),
-          nnNumber: normalizeText(record.nnNumber),
+          externalNumber: normalizeText(record.externalNumber),
           userTypeText: normalizeText(record.userType_dictText),
           statusText: normalizeText(record.status_dictText),
           registerCanal: normalizeText(record.registerCanal),

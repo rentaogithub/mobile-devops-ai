@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS dsym_info (
   file_size INTEGER NOT NULL,
   notes TEXT,
   related_app_version TEXT,  -- 关联的主应用版本（用于组件库）
-  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  product_line_id TEXT NOT NULL DEFAULT 'default',
   upload_time DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS symbolication_history (
   is_fixed INTEGER DEFAULT 0,  -- 是否已修复（0: 未修复, 1: 已修复）
   fixed_version TEXT,  -- 修复版本号
   fixed_remark TEXT,  -- 修复备注
-  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  product_line_id TEXT NOT NULL DEFAULT 'default',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_created_at ON symbolication_history(created_at DE
 
 -- Sentry Issue 与符号化历史的关联（按产品线隔离）
 CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
-  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  product_line_id TEXT NOT NULL DEFAULT 'default',
   issue_id TEXT NOT NULL,
   short_id TEXT,
   permalink TEXT,
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS sentry_issue_symbolication_history (
 -- 实时日志配对会话表
 CREATE TABLE IF NOT EXISTS realtime_log_pairing_sessions (
   pairing_id TEXT PRIMARY KEY,
-  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  product_line_id TEXT NOT NULL DEFAULT 'default',
   token TEXT NOT NULL,
   status TEXT NOT NULL,
   device_info TEXT,
@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_realtime_log_pairing_product ON realtime_log_pair
 -- 移动研发 Workflow：构建产物与血缘
 CREATE TABLE IF NOT EXISTS workflow_artifacts (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   artifact_type TEXT NOT NULL,
   name TEXT NOT NULL,
   version TEXT,
@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_artifacts_commit ON workflow_artifacts(p
 -- 移动研发 Workflow：统一任务
 CREATE TABLE IF NOT EXISTS workflow_tasks (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   task_type TEXT NOT NULL,
   suite TEXT,
   status TEXT NOT NULL,
@@ -129,7 +129,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_tasks_external ON workflow_tasks(source,
 -- 移动研发 Workflow：统一问题中心
 CREATE TABLE IF NOT EXISTS workflow_issues (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   fingerprint TEXT NOT NULL,
   source TEXT NOT NULL,
   source_ref TEXT,
@@ -164,7 +164,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_issues_build ON workflow_issues(project_
 -- 任意实体之间的血缘关系，例如 commit -> build -> ipa -> dSYM -> quality task -> issue
 CREATE TABLE IF NOT EXISTS workflow_relations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   from_type TEXT NOT NULL,
   from_id TEXT NOT NULL,
   relation TEXT NOT NULL,
@@ -181,7 +181,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_relations_to ON workflow_relations(proje
 -- Workflow 事件流，作为后续自动化、审计和 AI 学习的数据源
 CREATE TABLE IF NOT EXISTS workflow_events (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   event_type TEXT NOT NULL,
   entity_type TEXT NOT NULL,
   entity_id TEXT NOT NULL,
@@ -196,7 +196,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON workflow_events(project_i
 -- 质量基线与发布门禁
 CREATE TABLE IF NOT EXISTS workflow_quality_baselines (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   metric TEXT NOT NULL,
   scope TEXT NOT NULL DEFAULT 'app',
   branch TEXT NOT NULL DEFAULT '*',
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS workflow_quality_baselines (
 
 CREATE TABLE IF NOT EXISTS workflow_release_gates (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   build_number TEXT NOT NULL,
   commit_hash TEXT,
   branch TEXT,
@@ -228,7 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_release_gates_build ON workflow_release_
 -- Monkey 失败路径转确定性回归候选
 CREATE TABLE IF NOT EXISTS workflow_regression_candidates (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   issue_id TEXT,
   source_task_id TEXT,
   title TEXT NOT NULL,
@@ -251,7 +251,7 @@ CREATE TABLE IF NOT EXISTS workflow_regression_candidates (
 -- 第三阶段：知识库、AI 评测和发布观察
 CREATE TABLE IF NOT EXISTS workflow_knowledge_entries (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   kind TEXT NOT NULL,
   fingerprint TEXT,
   title TEXT NOT NULL,
@@ -269,7 +269,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_knowledge_kind ON workflow_knowledge_ent
 
 CREATE TABLE IF NOT EXISTS workflow_ai_evaluations (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   capability TEXT NOT NULL,
   model TEXT,
   prompt_version TEXT,
@@ -288,7 +288,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_ai_evaluations_capability ON workflow_ai
 
 CREATE TABLE IF NOT EXISTS workflow_release_observations (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   release_version TEXT NOT NULL,
   build_number TEXT,
   channel TEXT,
@@ -306,7 +306,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_release_observations_release ON workflow
 -- iOS 黑盒自动化：回放流程资产
 CREATE TABLE IF NOT EXISTS replay_flow_assets (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   name TEXT NOT NULL,
   description TEXT,
   owner TEXT NOT NULL,
@@ -491,7 +491,7 @@ CREATE TABLE IF NOT EXISTS platform_user_registration_requests (
   display_name TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   requested_role TEXT NOT NULL,
-  product_line_id TEXT NOT NULL DEFAULT 'nn',
+  product_line_id TEXT NOT NULL DEFAULT 'default',
   status TEXT NOT NULL DEFAULT 'pending',
   reviewer_user_id TEXT,
   reviewer_username TEXT,
@@ -515,7 +515,7 @@ CREATE TABLE IF NOT EXISTS platform_config (
 -- AI 会话只持久化实际工具调用与审批，不保存普通聊天正文
 CREATE TABLE IF NOT EXISTS assistant_action_audits (
   id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL DEFAULT 'nn-ios',
+  project_id TEXT NOT NULL DEFAULT 'mobile-ios',
   user_id TEXT NOT NULL,
   username TEXT NOT NULL,
   tool_name TEXT NOT NULL,

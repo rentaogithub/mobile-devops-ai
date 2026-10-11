@@ -72,7 +72,7 @@ const DEPLOY_TARGETS = new Set(['Pgyer', 'TestFlight', 'AppStore']);
 const QA_TEST_SUITES = new Set(['smoke', 'im', 'rtc', 'monkey', 'stutter', 'business_flow', 'replay_flow', 'full']);
 const QA_STUTTER_SCENARIOS = new Set(['community', 'im', 'voice_room']);
 const QA_MONKEY_DURATION_SECONDS = new Set(['300', '1800', '3600', '14400', '28800']);
-const INSTALLED_APP_BUNDLE_IDS = new Set(['com.nndev.im', 'com.nnhuyu.im']);
+const INSTALLED_APP_BUNDLE_IDS = new Set(['com.example.mobileapp.dev', 'com.example.mobileapp']);
 const RELEASE_BUILD_LIST_LIMIT = Math.min(
   200,
   Math.max(20, Number(process.env.JENKINS_RELEASE_BUILD_LIST_LIMIT || 50) || 50),
@@ -91,7 +91,7 @@ const JENKINS_ORPHAN_BUILD_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_ST
 const RELEASE_SYNC_INTERVAL_MS = Math.max(15000, Number(process.env.JENKINS_RELEASE_SYNC_INTERVAL_MS || 60000) || 60000);
 const RELEASE_SYNC_SCAN_LIMIT = Math.min(80, Math.max(10, Number(process.env.JENKINS_RELEASE_SYNC_SCAN_LIMIT || 40) || 40));
 const RELEASE_SYNC_CONCURRENCY = Math.min(8, Math.max(1, Number(process.env.JENKINS_RELEASE_SYNC_CONCURRENCY || 4) || 4));
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
 const BUILD_FAILURE_ANALYSIS_CACHE_FILE = 'jenkins-build-failure-analysis.json';
 const BUILD_DSYM_SYNC_CACHE_FILE = 'jenkins-build-dsym-sync.json';
@@ -101,7 +101,7 @@ const APPSTORE_RELEASE_CACHE_FILE = 'jenkins-appstore-release.json';
 const RELEASE_REQUEST_CACHE_FILE = 'jenkins-release-requests.json';
 const RELEASE_ORDER_CACHE_FILE = 'jenkins-release-orders.json';
 const JENKINS_BRANCH_CACHE_FILE = 'jenkins-branches.json';
-const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/nn/quality/local-artifact';
+const LOCAL_QUALITY_ARTIFACT_ROUTE = '/api/jenkins/default/quality/local-artifact';
 const QUALITY_HANG_ANALYSIS_CACHE = new Map<string, any>();
 const fileHandler = new FileHandlerService();
 const storage = new StorageService();
@@ -134,7 +134,7 @@ function readableProductLineDataPath(fileName: string, legacyFileName = fileName
   const scopedPath = productLineDataPath(fileName);
   if (fs.existsSync(scopedPath)) return scopedPath;
   const legacyPath = path.join(DATA_DIR, legacyFileName);
-  return currentProductLineId() === 'nn' && fs.existsSync(legacyPath) ? legacyPath : scopedPath;
+  return currentProductLineId() === 'default' && fs.existsSync(legacyPath) ? legacyPath : scopedPath;
 }
 
 function ensureProductLineDataDir() {
@@ -169,9 +169,9 @@ function readEnvFileValue(key: string): string {
 function getRuntimeEnv(key: string): string {
   if ((PRODUCT_LINE_CONFIG_KEYS as readonly string[]).includes(key)) {
     const configured = getProductLineConfig(key as any);
-    if (configured || currentProductLineId() !== 'nn') return configured;
+    if (configured || currentProductLineId() !== 'default') return configured;
   }
-  if (currentProductLineId() !== 'nn' && (
+  if (currentProductLineId() !== 'default' && (
     /^(JENKINS_|PGYER_|APP_STORE_CONNECT_|TESTFLIGHT_)/.test(key)
     || key === 'ASC_APP_ID'
     || key === 'WECHAT_WEBHOOK_URL'
@@ -355,7 +355,7 @@ function normalizeBusinessFlowPlan(input: any) {
 }
 
 function getPlatformRootDir() {
-  const configured = String(getRuntimeEnv('NN_IOS_PLATFORM_DIR') || '').trim();
+  const configured = String(getRuntimeEnv('MOBILE_DEVOPS_PLATFORM_DIR') || '').trim();
   if (configured) return configured;
 
   const candidates = [
@@ -369,10 +369,10 @@ function getPlatformRootDir() {
 }
 
 function productLineQualityConfigPath(fileName: 'business-map.json' | 'business-flow-presets.json') {
-  if (currentProductLineId() === 'nn') {
+  if (currentProductLineId() === 'default') {
     const legacyName = fileName === 'business-map.json'
-      ? 'nnios-business-map.json'
-      : 'nnios-business-flow-presets.json';
+      ? 'mobile-app-business-map.json'
+      : 'mobile-app-business-flow-presets.json';
     return path.join(getPlatformRootDir(), 'config', legacyName);
   }
   const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -380,7 +380,7 @@ function productLineQualityConfigPath(fileName: 'business-map.json' | 'business-
 }
 
 function requireProductLineBusinessMap(testSuite: string) {
-  const configuredPath = currentProductLineId() === 'nn'
+  const configuredPath = currentProductLineId() === 'default'
     ? String(getRuntimeEnv('QA_MONKEY_BUSINESS_MAP_PATH') || '').trim()
     : '';
   const businessMapPath = configuredPath || productLineQualityConfigPath('business-map.json');
@@ -391,17 +391,17 @@ function requireProductLineBusinessMap(testSuite: string) {
 }
 
 function getMainRepoLocalDir() {
-  if (currentProductLineId() !== 'nn') {
+  if (currentProductLineId() !== 'default') {
     return productLineConfigService.mainProjectDirectory(currentProductLineId());
   }
-  const configured = String(getRuntimeEnv('NNIOS_REPO_LOCAL') || '').trim();
+  const configured = String(getRuntimeEnv('MAIN_APP_REPO_LOCAL') || '').trim();
   if (configured) return path.resolve(configured);
 
   const platformRoot = getPlatformRootDir();
   const candidates = [
-    path.resolve(platformRoot, '..', 'nnios'),
-    path.resolve(process.cwd(), '..', 'nnios'),
-    path.resolve(process.cwd(), '..', '..', 'nnios'),
+    path.resolve(platformRoot, '..', 'mobile-app'),
+    path.resolve(process.cwd(), '..', 'mobile-app'),
+    path.resolve(process.cwd(), '..', '..', 'mobile-app'),
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, '.git'))) || candidates[0];
 }
@@ -424,20 +424,20 @@ function readShellConfigValue(configPath: string, key: string): string {
 }
 
 function getJenkinsRepoLocalDir() {
-  const configured = String(getRuntimeEnv('NN_IOS_JENKINS_DIR') || getRuntimeEnv('JENKINS_NN_IOS_JENKINS_DIR') || '').trim();
+  const configured = String(getRuntimeEnv('MOBILE_IOS_JENKINS_DIR') || getRuntimeEnv('JENKINS_MOBILE_IOS_DIR') || '').trim();
   if (configured) return path.resolve(configured);
   const platformRoot = getPlatformRootDir();
   const candidates = [
-    path.resolve(platformRoot, '..', 'nn-ios-jekins'),
-    path.resolve(process.cwd(), '..', 'nn-ios-jekins'),
-    path.resolve(process.cwd(), '..', '..', 'nn-ios-jekins'),
+    path.resolve(platformRoot, '..', 'mobile-ios-jenkins'),
+    path.resolve(process.cwd(), '..', 'mobile-ios-jenkins'),
+    path.resolve(process.cwd(), '..', '..', 'mobile-ios-jenkins'),
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'cicd/jenkins/build_config.sh'))) || candidates[0];
 }
 
 function getMgitPublishRepos(repoDir: string) {
   const configPath = path.join(repoDir, 'podx.config.yml');
-  if (!fs.existsSync(configPath)) return ['nnios'];
+  if (!fs.existsSync(configPath)) return ['mobile-app'];
   const lines = fs.readFileSync(configPath, 'utf-8').split(/\r?\n/);
   const repos: string[] = [];
   let inPublishRepos = false;
@@ -451,7 +451,7 @@ function getMgitPublishRepos(repoDir: string) {
     const match = line.match(/^\s*-\s*([a-zA-Z0-9_.-]+)\s*$/);
     if (match) repos.push(match[1]);
   }
-  return repos.length > 0 ? repos : ['nnios'];
+  return repos.length > 0 ? repos : ['mobile-app'];
 }
 
 function repoUrlForMgitRepo(repo: string) {
@@ -468,7 +468,7 @@ function repoUrlForMgitRepo(repo: string) {
 function getCurrentProductLineMgitPublishRepos(repoDir: string, productLineId: string) {
   const repos = productLineConfigService.podxConfig(productLineId).publishRepos;
   if (repos.length > 0) return repos;
-  if (productLineId === 'nn') return getMgitPublishRepos(repoDir);
+  if (productLineId === 'default') return getMgitPublishRepos(repoDir);
   throw new Error(`当前产品线 ${productLineId} 未配置发布仓库`);
 }
 
@@ -814,7 +814,7 @@ async function getQualityDevicePoolRuntimeStatus() {
 }
 
 async function syncQualityJenkinsJobConfig() {
-  const configPath = path.join(getPlatformRootDir(), 'scripts/jenkins/nn-auto-quality-config.xml');
+  const configPath = path.join(getPlatformRootDir(), 'scripts/jenkins/mobile-quality-config.xml');
   if (!fs.existsSync(configPath)) {
     throw new Error(`未找到 Jenkins 质检 Job 配置模板：${configPath}`);
   }
@@ -1072,7 +1072,7 @@ function buildCacheKey(buildNumber: number) {
 function readBuildCacheValue(values: any, buildNumber: number) {
   if (!values || typeof values !== 'object') return null;
   return values[buildCacheKey(buildNumber)]
-    || (currentProductLineId() === 'nn' ? values[String(buildNumber)] : null)
+    || (currentProductLineId() === 'default' ? values[String(buildNumber)] : null)
     || null;
 }
 
@@ -2469,7 +2469,7 @@ function defaultProcessName() {
   const productLine = authService.findProductLine(currentProductLineId());
   const configuredTarget = productLineConfigService.podxConfig(currentProductLineId()).targetName.trim();
   const bundleProcessName = String(productLine?.bundleId || '').split('.').filter(Boolean).pop() || '';
-  return configuredTarget || bundleProcessName || String(productLine?.name || '').trim() || (currentProductLineId() === 'nn' ? 'NNIM' : '');
+  return configuredTarget || bundleProcessName || String(productLine?.name || '').trim() || (currentProductLineId() === 'default' ? 'MobileApp' : '');
 }
 
 async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: string) {
@@ -2519,7 +2519,7 @@ async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: s
     await storage.deleteDSYM(existing.uuid);
   }
 
-  const uploadDir = process.env.UPLOAD_DIR || '../../nn-ios-platform-data/uploads';
+  const uploadDir = process.env.UPLOAD_DIR || '../../mobile-devops-ai-data/uploads';
   const tempDir = path.join(uploadDir, `appstore_dsym_${Date.now()}_${Math.random().toString(36).slice(2)}`);
   let dsymPath = '';
   let permanentPath = '';
@@ -2553,7 +2553,7 @@ async function saveMainAppDSYMFromXcarchive(xcarchivePath: string, appVersion: s
 }
 
 function pickDSYMSyncComponentDependencies(dependencies: ThirdSdkDependency[]) {
-  const targetNames = new Set(['leigod_im_cross_sdk', 'NNRtc']);
+  const targetNames = new Set(['mobile_im_cross_sdk', 'MobileRTC']);
   return dependencies
     .filter((item) => targetNames.has(item.name))
     .map((item) => ({
@@ -3373,7 +3373,7 @@ async function stopJenkinsBuild(jobName: string, buildNumber: number) {
 async function cleanupDeviceWebDriverAgent(deviceUdid?: string) {
   const udid = String(deviceUdid || '').trim();
   if (!udid) return 0;
-  const outputPath = path.join(os.tmpdir(), `nn-quality-device-processes-${Date.now()}.json`);
+  const outputPath = path.join(os.tmpdir(), `default-quality-device-processes-${Date.now()}.json`);
   let terminated = 0;
   try {
     await execFileAsync('xcrun', ['devicectl', 'device', 'info', 'processes', '--device', udid, '--json-output', outputPath, '--quiet'], { timeout: 10000 });
@@ -4398,7 +4398,7 @@ async function fetchThirdSdkDependencies(branch: string, revision?: string): Pro
   try {
     const normalizedBranch = normalizeBranchName(branch || 'develop') || 'develop';
     const normalizedRevision = revision && /^[0-9a-f]{7,40}$/i.test(revision) ? revision : undefined;
-    const index = await podDepsResolver.loadNniosIndex(normalizedBranch, getGitCredentials(), undefined, normalizedRevision);
+    const index = await podDepsResolver.loadMainAppIndex(normalizedBranch, getGitCredentials(), undefined, normalizedRevision);
     const dependencies = index.sources
       .filter((item) => item.sourceFile === 'Podfile')
       .map((item) => ({
@@ -4880,7 +4880,7 @@ async function fetchRecentJenkinsBuildBranches(jobPath: string) {
   return branches.filter(Boolean);
 }
 
-router.get('/nn/branches', async (_req: Request, res: Response) => {
+router.get('/default/branches', async (_req: Request, res: Response) => {
   const warnings: string[] = [];
   let remoteBranches: string[] = [];
   let buildBranches: string[] = [];
@@ -4928,7 +4928,7 @@ router.get('/nn/branches', async (_req: Request, res: Response) => {
   });
 });
 
-router.get('/nn/builds', async (req: Request, res: Response) => {
+router.get('/default/builds', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultJobName());
     const deployTargetFilter = normalizeDeployTarget(String(req.query.deployTarget || ''));
@@ -5036,7 +5036,7 @@ router.get('/nn/builds', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
+router.get('/default/builds/:number/log', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
@@ -5120,7 +5120,7 @@ router.get('/nn/builds/:number/log', async (req: Request, res: Response) => {
   }
 });
 
-router.get('/nn/builds/:number/package-size', async (req: Request, res: Response) => {
+router.get('/default/builds/:number/package-size', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
@@ -5166,7 +5166,7 @@ router.get('/nn/builds/:number/package-size', async (req: Request, res: Response
   }
 });
 
-router.post('/nn/builds/:number/sync-dsyms', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/default/builds/:number/sync-dsyms', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -5190,7 +5190,7 @@ router.post('/nn/builds/:number/sync-dsyms', cicdDeveloperMiddleware, async (req
   }
 });
 
-router.post('/nn/builds/:number/submit-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/builds/:number/submit-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -5323,7 +5323,7 @@ router.post('/nn/builds/:number/submit-app-store-review', cicdAppStoreReleaseMid
   }
 });
 
-router.post('/nn/builds/:number/cancel-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/builds/:number/cancel-app-store-review', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -5421,7 +5421,7 @@ router.post('/nn/builds/:number/cancel-app-store-review', cicdAppStoreReleaseMid
   }
 });
 
-router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Response) => {
+router.post('/default/builds/:number/analyze-failure', async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultJobName());
     const buildNumber = Number(req.params.number);
@@ -5518,7 +5518,7 @@ router.post('/nn/builds/:number/analyze-failure', async (req: Request, res: Resp
   }
 });
 
-router.get('/nn/quality/local-artifact', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.get('/default/quality/local-artifact', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const filePath = path.resolve(String(req.query.path || ''));
     if (!isAllowedLocalQualityArtifact(filePath) || !fs.existsSync(filePath)) {
@@ -5536,7 +5536,7 @@ router.get('/nn/quality/local-artifact', cicdTestReleaseMiddleware, async (req: 
   }
 });
 
-router.get('/nn/quality/artifact-preview', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.get('/default/quality/artifact-preview', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const artifactUrl = String(req.query.url || '').trim();
     if (!artifactUrl) {
@@ -5590,7 +5590,7 @@ router.get('/nn/quality/artifact-preview', cicdTestReleaseMiddleware, async (req
   }
 });
 
-router.get('/nn/quality/performance-samples', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.get('/default/quality/performance-samples', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const artifactUrl = String(req.query.url || '').trim();
     if (!artifactUrl) {
@@ -5628,7 +5628,7 @@ router.get('/nn/quality/performance-samples', cicdTestReleaseMiddleware, async (
   }
 });
 
-router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.get('/default/quality/builds', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const jobPath = encodeJobPath(defaultQaJobName());
     const tree = [
@@ -5749,7 +5749,7 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
     if (error.response?.status === 404) {
       res.status(404).json({
         success: false,
-        error: `未找到 Jenkins 自动质检 Job：${defaultQaJobName()}，请先在 Jenkins 中创建或通过 JENKINS_NN_QA_JOB 配置正确 Job 名称`,
+        error: `未找到 Jenkins 自动质检 Job：${defaultQaJobName()}，请先在 Jenkins 中创建或通过 JENKINS_QUALITY_JOB 配置正确 Job 名称`,
         status: 404,
       });
       return;
@@ -5762,14 +5762,14 @@ router.get('/nn/quality/builds', cicdTestReleaseMiddleware, async (req: Request,
   }
 });
 
-router.get('/nn/quality/device-pools', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
+router.get('/default/quality/device-pools', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   res.json({
     success: true,
     data: getQualityDevicePools(),
   });
 });
 
-router.get('/nn/quality/device-pools/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
+router.get('/default/quality/device-pools/status', cicdTestReleaseMiddleware, async (_req: Request, res: Response) => {
   try {
     res.json({
       success: true,
@@ -5783,7 +5783,7 @@ router.get('/nn/quality/device-pools/status', cicdTestReleaseMiddleware, async (
   }
 });
 
-router.put('/nn/quality/device-pools', cicdAdminMiddleware, async (req: Request, res: Response) => {
+router.put('/default/quality/device-pools', cicdAdminMiddleware, async (req: Request, res: Response) => {
   try {
     const pools = (Array.isArray(req.body?.devicePools) ? req.body.devicePools : [])
       .map(normalizeQualityDevicePool)
@@ -5823,7 +5823,7 @@ router.put('/nn/quality/device-pools', cicdAdminMiddleware, async (req: Request,
   }
 });
 
-router.post('/nn/quality/job/sync', cicdAdminMiddleware, async (_req: Request, res: Response) => {
+router.post('/default/quality/job/sync', cicdAdminMiddleware, async (_req: Request, res: Response) => {
   try {
     const data = await syncQualityJenkinsJobConfig();
     res.json({
@@ -5839,7 +5839,7 @@ router.post('/nn/quality/job/sync', cicdAdminMiddleware, async (_req: Request, r
   }
 });
 
-router.post('/nn/release-gate/preview', cicdReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/release-gate/preview', cicdReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const gateBuildNumber = Number(req.body?.gateBuildNumber);
     const branch = normalizeBranchName(String(req.body?.branch || ''));
@@ -5858,7 +5858,7 @@ router.post('/nn/release-gate/preview', cicdReleaseMiddleware, async (req: Reque
   }
 });
 
-router.post('/nn/app-store/release-guard', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/app-store/release-guard', cicdAppStoreReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const branch = normalizeBranchName(String(req.body?.branch || ''));
     if (!isReleaseBranch(branch)) {
@@ -5885,7 +5885,7 @@ router.post('/nn/app-store/release-guard', cicdAppStoreReleaseMiddleware, async 
   }
 });
 
-router.post('/nn/release/preflight', cicdReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/release/preflight', cicdReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const data = await buildReleasePreflight({
       branch: String(req.body?.branch || ''),
@@ -5908,7 +5908,7 @@ router.post('/nn/release/preflight', cicdReleaseMiddleware, async (req: Request,
   }
 });
 
-router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: Response) => {
+router.get('/default/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: Response) => {
   const checks: any[] = [];
   const startedAt = Date.now();
   try {
@@ -5983,7 +5983,7 @@ router.get('/nn/cicd/health', cicdReleaseMiddleware, async (_req: Request, res: 
   });
 });
 
-router.post('/nn/build', releaseChannelAuthorizationMiddleware, async (req: Request, res: Response) => {
+router.post('/default/build', releaseChannelAuthorizationMiddleware, async (req: Request, res: Response) => {
   let releaseOrder: any = null;
   try {
     const gateBuildNumberValue = req.body?.gateBuildNumber;
@@ -6075,7 +6075,7 @@ router.post('/nn/build', releaseChannelAuthorizationMiddleware, async (req: Requ
   }
 });
 
-router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
+router.post('/default/release-branch', cicdDeveloperMiddleware, async (req: Request, res: Response) => {
   try {
     const targetBranch = normalizeBranchName(String(req.body?.targetBranch || req.body?.branch || ''));
     const baseBranch = normalizeBranchName(String(req.body?.baseBranch || 'develop')) || 'develop';
@@ -6187,7 +6187,7 @@ router.post('/nn/release-branch', cicdDeveloperMiddleware, async (req: Request, 
   }
 });
 
-router.post('/nn/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -6216,7 +6216,7 @@ router.post('/nn/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Re
   }
 });
 
-router.post('/nn/quality/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/quality/builds/:number/stop', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const buildNumber = Number(req.params.number);
     if (!Number.isFinite(buildNumber) || buildNumber <= 0) {
@@ -6246,7 +6246,7 @@ router.post('/nn/quality/builds/:number/stop', cicdTestReleaseMiddleware, async 
   }
 });
 
-router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   try {
     const deviceUdid = String(req.body?.deviceUdid || req.body?.device_udid || '').trim();
     const result = await cleanupLocalQualityProcesses(deviceUdid);
@@ -6265,7 +6265,7 @@ router.post('/nn/quality/wda/cleanup', cicdTestReleaseMiddleware, async (req: Re
   }
 });
 
-router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
+router.post('/default/quality', cicdTestReleaseMiddleware, async (req: Request, res: Response) => {
   let replayFlowConfiguration: ReplayFlowQualityConfiguration | null = null;
   try {
     const jobPath = encodeJobPath(defaultQaJobName());
@@ -6338,7 +6338,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
     const forceInstalledProductionApp = publishChannel === 'TestFlight' || publishChannel === 'AppStore';
     const skipInstall = forceInstalledProductionApp || req.body?.skipInstall === true || String(req.body?.skipInstall || '').trim() === '1';
     const productBundleId = authService.findProductLine(currentProductLineId())?.bundleId;
-    const defaultAppBundleId = productBundleId || (currentProductLineId() === 'nn' ? (skipInstall ? 'com.nnhuyu.im' : 'com.nndev.im') : '');
+    const defaultAppBundleId = productBundleId || (currentProductLineId() === 'default' ? (skipInstall ? 'com.example.mobileapp' : 'com.example.mobileapp.dev') : '');
     const appBundleId = String(
       req.body?.appBundleId
       || req.body?.bundleId
@@ -6351,7 +6351,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       });
       return;
     }
-    if (skipInstall && currentProductLineId() === 'nn' && !INSTALLED_APP_BUNDLE_IDS.has(appBundleId)) {
+    if (skipInstall && currentProductLineId() === 'default' && !INSTALLED_APP_BUNDLE_IDS.has(appBundleId)) {
       res.status(400).json({
         success: false,
         error: `使用设备已安装 App 时，请选择 ${Array.from(INSTALLED_APP_BUNDLE_IDS).join(' 或 ')}`,
@@ -6524,7 +6524,7 @@ router.post('/nn/quality', cicdTestReleaseMiddleware, async (req: Request, res: 
       PERF_STUTTER_COUNT_WARN: getRuntimeEnv('QA_PERF_STUTTER_COUNT_WARN') || '3',
       PERF_FRAME_STUTTER_WARN_MS: getRuntimeEnv('QA_PERF_FRAME_STUTTER_WARN_MS') || '16.67',
       PERF_FRAME_STUTTER_SEVERE_MS: getRuntimeEnv('QA_PERF_FRAME_STUTTER_SEVERE_MS') || '33.34',
-      NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
+      MOBILE_DEVOPS_PLATFORM_DIR: getPlatformRootDir(),
       PLATFORM_TASK_ID: String(platformTask?.id || ''),
     });
 

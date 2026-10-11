@@ -96,7 +96,7 @@ function safeDisplayName(value: unknown, username: string) {
 
 function safeUsername(value: unknown) {
   const username = normalizeText(value, 80);
-  return username.replace(/@nn\.com$/i, '');
+  return username.replace(/@default\.com$/i, '');
 }
 
 function getRoleLabel(role: string) {

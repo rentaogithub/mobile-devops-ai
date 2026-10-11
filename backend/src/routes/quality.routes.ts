@@ -28,12 +28,12 @@ function defaultQaJobName() {
   if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Jenkins 自动质检 Job`);
   return value;
 }
-const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'nn-ios-platform-data');
+const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), '..', 'mobile-devops-ai-data');
 const QUALITY_DEVICE_POOLS_CONFIG_FILE = 'quality-device-pools.json';
 const LOCAL_ARTIFACT_ROUTE = '/api/quality/artifacts/local';
 const ACTIVE_TASK_STATUSES = new Set(['created', 'queued', 'preparing', 'installing', 'running', 'collecting', 'analyzing', 'reporting', 'notifying']);
 const QUALITY_ORPHAN_TASK_STALE_MS = Number(process.env.JENKINS_ORPHAN_BUILD_STALE_MS || 10 * 60 * 1000);
-const INSTALLED_APP_BUNDLE_IDS = new Set(['com.nndev.im', 'com.nnhuyu.im']);
+const INSTALLED_APP_BUNDLE_IDS = new Set(['com.example.mobileapp.dev', 'com.example.mobileapp']);
 
 const DEFAULT_QUALITY_DEVICE_POOLS = [
   { label: 'iOS 默认设备池', value: 'ios-default', description: '打包机当前可用 USB iOS 真机。' },
@@ -52,7 +52,7 @@ function currentProductName() {
 
 function qualityTaskId(buildNumber: number) {
   const legacyId = `jenkins:${defaultQaJobName()}:${buildNumber}`;
-  return currentProductLineId() === 'nn' ? legacyId : `jenkins:${currentProjectId()}:${defaultQaJobName()}:${buildNumber}`;
+  return currentProductLineId() === 'default' ? legacyId : `jenkins:${currentProjectId()}:${defaultQaJobName()}:${buildNumber}`;
 }
 
 function encodeJobPath(jobName: string) {
@@ -201,15 +201,15 @@ function getQualityDevicePools() {
 }
 
 function getPlatformRootDir() {
-  const configured = String(process.env.NN_IOS_PLATFORM_DIR || '').trim();
+  const configured = String(process.env.MOBILE_DEVOPS_PLATFORM_DIR || '').trim();
   if (configured) return configured;
   const candidates = [process.cwd(), path.resolve(process.cwd(), '..')];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, 'scripts/ios/ios-quality.sh'))) || process.cwd();
 }
 
 function productLineBusinessMapPath() {
-  if (currentProductLineId() === 'nn') {
-    return path.join(getPlatformRootDir(), 'config', 'nnios-business-map.json');
+  if (currentProductLineId() === 'default') {
+    return path.join(getPlatformRootDir(), 'config', 'mobile-app-business-map.json');
   }
   const safeProductLineId = currentProductLineId().replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(getPlatformRootDir(), 'config', 'product-lines', safeProductLineId, 'business-map.json');
@@ -272,9 +272,9 @@ function normalizeTaskId(value: string) {
   const workflowTask = text ? workflowService.getTask(text) : null;
   const externalId = String(workflowTask?.externalId || '');
   const buildNumber = Number(
-    text.match(/(?:jenkins:)?(?:nn-auto-quality:)?(\d+)$/)?.[1] ||
+    text.match(/(?:jenkins:)?(?:mobile-auto-quality:)?(\d+)$/)?.[1] ||
     text.match(/^qa-(\d+)-/)?.[1] ||
-    externalId.match(/(?:nn-auto-quality:|\/)(\d+)(?:\/|$)/)?.[1] ||
+    externalId.match(/(?:mobile-auto-quality:|\/)(\d+)(?:\/|$)/)?.[1] ||
     text
   );
   return Number.isFinite(buildNumber) && buildNumber > 0 ? buildNumber : 0;
@@ -617,9 +617,9 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   if (!sourceBuild) throw new Error('app.build 或 buildNumber 不能为空');
   const appBundleId = String(
     app.bundle_id
-    || (currentProductLineId() === 'nn' ? process.env.QA_APP_BUNDLE_ID : '')
+    || (currentProductLineId() === 'default' ? process.env.QA_APP_BUNDLE_ID : '')
     || authService.findProductLine(currentProductLineId())?.bundleId
-    || (currentProductLineId() === 'nn' ? 'com.nndev.im' : '')
+    || (currentProductLineId() === 'default' ? 'com.example.mobileapp.dev' : '')
   ).trim();
   if (!appBundleId) {
     throw new Error(`当前产品线 ${currentProductLineId()} 未配置 Bundle ID，无法触发自动质检`);
@@ -635,8 +635,8 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
   const effectiveDurationSeconds = replayFlowConfiguration?.manifest.durationSeconds || durationSeconds;
   const publishChannel = String(payload.publishChannel || app.publish_channel || app.publishChannel || '').trim();
   const defaultInstalledAppBundleId = publishChannel === 'TestFlight' || publishChannel === 'AppStore'
-    ? 'com.nnhuyu.im'
-    : 'com.nndev.im';
+    ? 'com.example.mobileapp'
+    : 'com.example.mobileapp.dev';
   const skipInstalledApp = app.skip_install === true
     || String(app.skip_install || '').trim() === '1'
     || payload.skipAppInstall === true
@@ -726,7 +726,7 @@ async function triggerJenkinsQuality(req: Request, payload: any) {
     REPLAY_FLOW_DURATION_SECONDS: replayFlowConfiguration ? String(replayFlowConfiguration.manifest.durationSeconds) : '',
     REPLAY_FLOW_STOP_ON_FAILURE: replayFlowConfiguration?.manifest.stopOnFailure ? '1' : '0',
     STUTTER_SCENARIO: String(payload.stutter?.scenario || payload.stutterScenario || 'community'),
-    NN_IOS_PLATFORM_DIR: getPlatformRootDir(),
+    MOBILE_DEVOPS_PLATFORM_DIR: getPlatformRootDir(),
   });
 
   let response;

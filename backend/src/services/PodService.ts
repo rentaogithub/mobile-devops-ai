@@ -28,14 +28,14 @@ export interface PodComponent {
   warning_message?: string;
   package_type?: 'release' | 'test';
   build_id?: string;
-  nnios_branch?: string;
+  main_app_branch?: string;
 }
 
 interface PodUploadParams {
   name: string;
   version: string;
   lib_type?: 'framework' | 'static_library'; // 库类型：framework 或 .a 静态库
-  lib_name?: string;          // 库文件名，如 NNRtc.framework 或 libNNRtc.a
+  lib_name?: string;          // 库文件名，如 MobileRTC.framework 或 libMobileRTC.a
   summary?: string;
   homepage?: string;
   authors?: string;
@@ -47,10 +47,10 @@ interface PodUploadParams {
   target_branch?: string;     // 发布后同步到发布主仓库的目标分支
   package_type?: 'release' | 'test';
   build_id?: string;
-  nnios_branch?: string;
+  main_app_branch?: string;
 }
 
-export interface LeigodIMSDKVersion {
+export interface MobileIMSDKVersion {
   version: string;
   path: string;
   packageName?: string;
@@ -59,11 +59,11 @@ export interface LeigodIMSDKVersion {
   updatedAt?: string;
 }
 
-const LEGACY_NEXUS_BASE_URL = 'http://172.31.4.4:9091/repository/nn_ios';
-const LEGACY_NEXUS_USER = 'admin';
-const LEGACY_NEXUS_PASS = 'admin123';
-const LEGACY_SPEC_REPO_URL = 'http://rentao:renyang%40666@git.leigod.top/nn_ios/nnspec.git';
-const LEGACY_NNIOS_REPO_URL = process.env.NNIOS_REPO_URL || 'http://git.leigod.top/nn_ios/nnios.git';
+const DEFAULT_NEXUS_BASE_URL = '';
+const DEFAULT_NEXUS_USER = '';
+const DEFAULT_NEXUS_PASS = '';
+const DEFAULT_SPEC_REPO_URL = 'https://github.com/example/mobile-specs.git';
+const DEFAULT_MAIN_APP_REPO_URL = process.env.MAIN_APP_REPO_URL || 'https://github.com/example/mobile-app.git';
 
 function scopedName(value: string) {
   return value.replace(/[^A-Za-z0-9_.-]/g, '_');
@@ -71,20 +71,20 @@ function scopedName(value: string) {
 
 function nexusBaseUrl() {
   const configured = productLineConfigService.get('PODS_NEXUS_BASE_URL', currentComponentCatalogProductLineId());
-  const value = configured || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_BASE_URL : '');
+  const value = configured || (currentComponentCatalogProductLineId() === 'default' ? DEFAULT_NEXUS_BASE_URL : '');
   if (!value) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置 Pods Nexus 仓库地址`);
   return value.replace(/\/+$/, '');
 }
 
 function nexusCredentials() {
-  const username = productLineConfigService.get('PODS_NEXUS_USER', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_USER : '');
-  const password = productLineConfigService.get('PODS_NEXUS_PASSWORD', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_NEXUS_PASS : '');
+  const username = productLineConfigService.get('PODS_NEXUS_USER', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'default' ? DEFAULT_NEXUS_USER : '');
+  const password = productLineConfigService.get('PODS_NEXUS_PASSWORD', currentComponentCatalogProductLineId()) || (currentComponentCatalogProductLineId() === 'default' ? DEFAULT_NEXUS_PASS : '');
   if (!username || !password) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置 Pods Nexus 账号或密码`);
   return { username, password };
 }
 
 function specRepoUrl() {
-  const value = productLineConfigService.podxConfig(currentComponentCatalogProductLineId(), false).privateSource || (currentComponentCatalogProductLineId() === 'nn' ? LEGACY_SPEC_REPO_URL : '');
+  const value = productLineConfigService.podxConfig(currentComponentCatalogProductLineId(), false).privateSource || (currentComponentCatalogProductLineId() === 'default' ? DEFAULT_SPEC_REPO_URL : '');
   if (!value) throw new Error(`当前产品线 ${currentComponentCatalogProductLineId()} 未配置私有 Specs 源`);
   return value;
 }
@@ -95,7 +95,7 @@ function specRepoLocal() {
 }
 
 function mainRepoUrl() {
-  const value = productLineConfigService.podxConfig().jenkinsRepoUrl || (currentProductLineId() === 'nn' ? LEGACY_NNIOS_REPO_URL : '');
+  const value = productLineConfigService.podxConfig().jenkinsRepoUrl || (currentProductLineId() === 'default' ? DEFAULT_MAIN_APP_REPO_URL : '');
   if (!value) throw new Error(`当前产品线 ${currentProductLineId()} 未配置发布主仓库`);
   return value;
 }
@@ -103,17 +103,17 @@ function mainRepoUrl() {
 function mainRepoLocal() {
   const config = productLineConfigService.podxConfig();
   if (config.publishWorkDir) return path.resolve(config.publishWorkDir);
-  if (currentProductLineId() === 'nn' && process.env.NNIOS_REPO_LOCAL) return path.resolve(process.env.NNIOS_REPO_LOCAL);
+  if (currentProductLineId() === 'default' && process.env.MAIN_APP_REPO_LOCAL) return path.resolve(process.env.MAIN_APP_REPO_LOCAL);
   const base = process.env.GIT_WORK_DIR || path.join(process.env.UPLOAD_DIR || '/tmp', '../git-workspace');
   return path.resolve(base, scopedName(currentProductLineId()), config.publishMainRepo || 'main');
 }
-const LEIGOD_IM_SDK_DIR_CANDIDATES = [
-  process.env.LEIGOD_IM_SDK_DIR,
+const MOBILE_IM_SDK_DIR_CANDIDATES = [
+  process.env.MOBILE_IM_SDK_DIR,
   '/Volumes/IMSDK',
   '/Volumes/share/IMSDK',
   '/Volumes/share',
 ].filter(Boolean) as string[];
-const LEIGOD_IM_SDK_SMB_URL = 'smb://192.168.3.30/share/IMSDK';
+const MOBILE_IM_SDK_SMB_URL = 'smb://files.example.com/share/IMSDK';
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -123,12 +123,12 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function isNNRtcTestVersion(version?: string) {
+function isMobileRTCTestVersion(version?: string) {
   return /(?:_test|-test)$/.test(String(version || ''));
 }
 
-function isPrivateNniosComponent(name: string) {
-  return ['NNRtc', 'leigod_im_cross_sdk'].includes(String(name || '').trim());
+function isPrivateMainAppComponent(name: string) {
+  return ['MobileRTC', 'mobile_im_cross_sdk'].includes(String(name || '').trim());
 }
 
 function arrayify<T = any>(value: T | T[] | undefined | null): T[] {
@@ -136,7 +136,7 @@ function arrayify<T = any>(value: T | T[] | undefined | null): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function normalizeNNRtcTestVersion(version: string) {
+function normalizeMobileRTCTestVersion(version: string) {
   if (version.endsWith('-test')) return version;
   if (version.endsWith('_test')) return version.replace(/_test$/, '-test');
   return `${version}-test`;
@@ -175,7 +175,7 @@ export class PodService {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pods_components (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         name TEXT NOT NULL,
         version TEXT NOT NULL,
         summary TEXT DEFAULT '',
@@ -187,7 +187,7 @@ export class PodService {
         error_message TEXT,
         package_type TEXT,
         build_id TEXT,
-        nnios_branch TEXT,
+        main_app_branch TEXT,
         UNIQUE(product_line_id, name, version)
       );
     `);
@@ -201,7 +201,7 @@ export class PodService {
         ALTER TABLE pods_components RENAME TO pods_components_legacy;
         CREATE TABLE pods_components (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          product_line_id TEXT NOT NULL DEFAULT 'nn',
+          product_line_id TEXT NOT NULL DEFAULT 'default',
           name TEXT NOT NULL,
           version TEXT NOT NULL,
           summary TEXT DEFAULT '',
@@ -213,14 +213,14 @@ export class PodService {
           error_message TEXT,
           package_type TEXT,
           build_id TEXT,
-          nnios_branch TEXT,
+          main_app_branch TEXT,
           UNIQUE(product_line_id, name, version)
         );
         INSERT INTO pods_components (
           id, product_line_id, name, version, summary, homepage, source_zip_url, podspec_content,
-          upload_time, status, error_message, package_type, build_id, nnios_branch
-        ) SELECT id, 'nn', name, version, summary, homepage, source_zip_url, podspec_content,
-          upload_time, status, error_message, package_type, build_id, nnios_branch
+          upload_time, status, error_message, package_type, build_id, main_app_branch
+        ) SELECT id, 'default', name, version, summary, homepage, source_zip_url, podspec_content,
+          upload_time, status, error_message, package_type, build_id, main_app_branch
           FROM pods_components_legacy;
         DROP TABLE pods_components_legacy;
       `);
@@ -232,8 +232,8 @@ export class PodService {
     if (!columns.includes('build_id')) {
       this.db.prepare('ALTER TABLE pods_components ADD COLUMN build_id TEXT').run();
     }
-    if (!columns.includes('nnios_branch')) {
-      this.db.prepare('ALTER TABLE pods_components ADD COLUMN nnios_branch TEXT').run();
+    if (!columns.includes('main_app_branch')) {
+      this.db.prepare('ALTER TABLE pods_components ADD COLUMN main_app_branch TEXT').run();
     }
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_pod_name ON pods_components(product_line_id, name);
@@ -244,8 +244,8 @@ export class PodService {
     this.ensureSpecRepos().catch((err) => {
       logger.warn('确保 spec repos 失败', { error: err.message });
     });
-    this.cleanupNNRtcTestDSYMs().catch((err) => {
-      logger.warn('清理 NNRtc 测试包 dSYM 失败', { error: err.message });
+    this.cleanupMobileRTCTestDSYMs().catch((err) => {
+      logger.warn('清理 MobileRTC 测试包 dSYM 失败', { error: err.message });
     });
   }
 
@@ -392,8 +392,8 @@ export class PodService {
       lib_type = 'framework',
       lib_name,
       summary = `${name} iOS 组件`,
-      homepage = `http://git.leigod.top/nn_ios/${name}`,
-      authors = 'NN iOS Team',
+      homepage = `https://github.com/example/${name}`,
+      authors = 'Mobile Platform Team',
       license = 'MIT',
       platform_version = '12.0',
       dependencies,
@@ -594,7 +594,7 @@ ${sourceLine}
     return firstUsefulLine || raw.split(/\r?\n/).find(Boolean)?.trim() || '未知错误';
   }
 
-  private normalizeNniosBranch(branch?: string): string | undefined {
+  private normalizeMainAppBranch(branch?: string): string | undefined {
     const normalized = (branch || '').trim().replace(/^origin\//, '');
     if (!normalized) return undefined;
     try {
@@ -609,7 +609,7 @@ ${sourceLine}
     return normalized;
   }
 
-  private assertNniosBranchExists(branch: string): void {
+  private assertMainAppBranchExists(branch: string): void {
     try {
       execSync(`git ls-remote --exit-code --heads ${shellQuote(mainRepoUrl())} ${shellQuote(branch)}`, {
         encoding: 'utf-8',
@@ -621,13 +621,13 @@ ${sourceLine}
     }
   }
 
-  private checkoutNniosBranch(branch: string): string {
-    const targetBranch = this.normalizeNniosBranch(branch);
+  private checkoutMainAppBranch(branch: string): string {
+    const targetBranch = this.normalizeMainAppBranch(branch);
     if (!targetBranch) {
       throw new Error('发布主仓库目标分支不能为空');
     }
 
-    this.assertNniosBranchExists(targetBranch);
+    this.assertMainAppBranchExists(targetBranch);
     const repoLocal = mainRepoLocal();
     if (!fs.existsSync(path.join(repoLocal, '.git'))) {
       fs.mkdirSync(path.dirname(repoLocal), { recursive: true });
@@ -667,8 +667,8 @@ ${sourceLine}
       .map(() => 'Podfile');
   }
 
-  private getNniosPodVersion(name: string, branch: string): { branch: string; version: string | null } {
-    const targetBranch = this.checkoutNniosBranch(branch);
+  private getMainAppPodVersion(name: string, branch: string): { branch: string; version: string | null } {
+    const targetBranch = this.checkoutMainAppBranch(branch);
     const candidateFiles = this.mainRepoDependencyFiles();
 
     for (const relativePath of candidateFiles) {
@@ -761,16 +761,16 @@ ${sourceLine}
   /**
    * 发布成功后，将当前组件版本同步到发布主仓库指定分支。
    */
-  private syncVersionToNnios(name: string, version: string, branch?: string): void {
-    const targetBranch = this.normalizeNniosBranch(branch);
+  private syncVersionToMainApp(name: string, version: string, branch?: string): void {
+    const targetBranch = this.normalizeMainAppBranch(branch);
     if (!targetBranch) return;
 
-    this.assertNniosBranchExists(targetBranch);
+    this.assertMainAppBranchExists(targetBranch);
     const repoLocal = mainRepoLocal();
     logger.info('同步组件版本到发布主仓库', { name, version, targetBranch, repo: repoLocal });
 
     try {
-      this.checkoutNniosBranch(targetBranch);
+      this.checkoutMainAppBranch(targetBranch);
 
       const candidateFiles = this.mainRepoDependencyFiles(repoLocal);
       let changed = false;
@@ -937,7 +937,7 @@ ${sourceLine}
       for (const line of lines) {
         const match = line.match(/\s+((\S+\.framework)\/)\s*$/);
         if (match) {
-          const fwPath = match[2]; // e.g. leigod_im_cross_sdk.framework 或 prefix/xxx.framework
+          const fwPath = match[2]; // e.g. mobile_im_cross_sdk.framework 或 prefix/xxx.framework
           logger.info('自动检测到 framework', { lib_name: fwPath });
           return { lib_type: 'framework', lib_name: fwPath };
         }
@@ -947,7 +947,7 @@ ${sourceLine}
       for (const line of lines) {
         const match = line.match(/\s+(\S+\.a)\s*$/);
         if (match) {
-          const aFile = match[1]; // e.g. libNNRtc.a
+          const aFile = match[1]; // e.g. libMobileRTC.a
           // 去掉路径前缀，只取文件名
           const aName = aFile.split('/').pop() || aFile;
           logger.info('自动检测到静态库', { lib_name: aName });
@@ -992,8 +992,8 @@ ${sourceLine}
       (lowerName.endsWith('.zip') || lowerName.endsWith('.tgz') || lowerName.endsWith('.tar.gz'));
   }
 
-  private getLeigodIMSDKRoot(): string {
-    const root = LEIGOD_IM_SDK_DIR_CANDIDATES.find((candidate) => {
+  private getMobileIMSDKRoot(): string {
+    const root = MOBILE_IM_SDK_DIR_CANDIDATES.find((candidate) => {
       try {
         return fs.existsSync(candidate) && fs.statSync(candidate).isDirectory();
       } catch {
@@ -1001,32 +1001,32 @@ ${sourceLine}
       }
     });
     if (!root) {
-      this.openLeigodIMSDKShare();
-      throw new Error(`IMSDK 共享目录未挂载，已尝试打开 ${LEIGOD_IM_SDK_SMB_URL}。请完成登录后重试，或配置 LEIGOD_IM_SDK_DIR`);
+      this.openMobileIMSDKShare();
+      throw new Error(`IMSDK 共享目录未挂载，已尝试打开 ${MOBILE_IM_SDK_SMB_URL}。请完成登录后重试，或配置 MOBILE_IM_SDK_DIR`);
     }
     return root;
   }
 
-  private openLeigodIMSDKShare(): void {
+  private openMobileIMSDKShare(): void {
     if (process.platform !== 'darwin') return;
     try {
-      execSync(`open ${shellQuote(LEIGOD_IM_SDK_SMB_URL)}`, {
+      execSync(`open ${shellQuote(MOBILE_IM_SDK_SMB_URL)}`, {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: 'ignore',
       });
-      logger.info('已尝试打开 IMSDK SMB 共享目录', { url: LEIGOD_IM_SDK_SMB_URL });
+      logger.info('已尝试打开 IMSDK SMB 共享目录', { url: MOBILE_IM_SDK_SMB_URL });
     } catch (error: any) {
-      logger.warn('打开 IMSDK SMB 共享目录失败', { url: LEIGOD_IM_SDK_SMB_URL, error: error.message });
+      logger.warn('打开 IMSDK SMB 共享目录失败', { url: MOBILE_IM_SDK_SMB_URL, error: error.message });
     }
   }
 
-  private resolveLeigodIMSDKVersionDir(version: string): string {
+  private resolveMobileIMSDKVersionDir(version: string): string {
     const cleanVersion = String(version || '').trim();
     if (!cleanVersion || cleanVersion.includes('/') || cleanVersion.includes('\\') || cleanVersion.includes('..')) {
       throw new Error('IMSDK 版本号不合法');
     }
-    const root = this.getLeigodIMSDKRoot();
+    const root = this.getMobileIMSDKRoot();
     const versionDir = path.join(root, cleanVersion);
     if (!fs.existsSync(versionDir) || !fs.statSync(versionDir).isDirectory()) {
       throw new Error(`IMSDK 共享目录中未找到版本 ${cleanVersion}`);
@@ -1034,14 +1034,14 @@ ${sourceLine}
     return versionDir;
   }
 
-  private findLeigodIMSDKPackage(versionDir: string): string | null {
+  private findMobileIMSDKPackage(versionDir: string): string | null {
     const entries = fs.readdirSync(versionDir, { withFileTypes: true });
     const files = entries
       .filter((entry) => entry.isFile() && this.isSupportedFrameworkPackage(entry.name))
       .map((entry) => path.join(versionDir, entry.name));
     if (files.length === 0) return null;
 
-    const preferred = files.find((file) => /^leigod_im_cross_sdk.*\.(zip|tgz|tar\.gz)$/i.test(path.basename(file)));
+    const preferred = files.find((file) => /^mobile_im_cross_sdk.*\.(zip|tgz|tar\.gz)$/i.test(path.basename(file)));
     return preferred || files[0];
   }
 
@@ -1055,17 +1055,17 @@ ${sourceLine}
       .sort(compareVersionNameDesc)[0] || '';
   }
 
-  listLeigodIMSDKVersions(): LeigodIMSDKVersion[] {
-    const root = this.getLeigodIMSDKRoot();
-    const currentHighestVersion = this.getHighestComponentVersion('leigod_im_cross_sdk');
+  listMobileIMSDKVersions(): MobileIMSDKVersion[] {
+    const root = this.getMobileIMSDKRoot();
+    const currentHighestVersion = this.getHighestComponentVersion('mobile_im_cross_sdk');
     const entries = fs.readdirSync(root, { withFileTypes: true });
     return entries
       .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && /^\d+(?:\.\d+)+(?:[._-][A-Za-z0-9]+)*$/.test(entry.name))
       .map((entry) => {
         const versionDir = path.join(root, entry.name);
-        const frameworkPath = path.join(versionDir, 'leigod_im_cross_sdk.framework');
-        const dsymPath = path.join(versionDir, 'leigod_im_cross_sdk.dSYM');
-        const packagePath = this.findLeigodIMSDKPackage(versionDir);
+        const frameworkPath = path.join(versionDir, 'mobile_im_cross_sdk.framework');
+        const dsymPath = path.join(versionDir, 'mobile_im_cross_sdk.dSYM');
+        const packagePath = this.findMobileIMSDKPackage(versionDir);
         const stat = fs.statSync(versionDir);
         return {
           version: entry.name,
@@ -1076,7 +1076,7 @@ ${sourceLine}
           updatedAt: stat.mtime.toISOString(),
         };
       })
-      .filter((item) => Boolean(this.findLeigodIMSDKPackage(item.path)))
+      .filter((item) => Boolean(this.findMobileIMSDKPackage(item.path)))
       .filter((item) => !currentHighestVersion || compareVersionNameDesc(item.version, currentHighestVersion) < 0)
       .sort((a, b) => compareVersionNameDesc(a.version, b.version))
       .slice(0, 8);
@@ -1164,8 +1164,8 @@ ${sourceLine}
     }
   }
 
-  private async extractNNRtcPackage(packagePath: string, originalFileName?: string, requireDSYM = true) {
-    return this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'NNRtc', requireDSYM);
+  private async extractMobileRTCPackage(packagePath: string, originalFileName?: string, requireDSYM = true) {
+    return this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'MobileRTC', requireDSYM);
   }
 
   private async saveComponentDSYM(componentName: string, dsymPath: string, version: string): Promise<void> {
@@ -1215,8 +1215,8 @@ ${sourceLine}
     logger.info('已清除符号化缓存（组件 dSYM 更新）', { componentName, uuid, appName, version });
   }
 
-  private async saveNNRtcDSYM(dsymPath: string, version: string): Promise<void> {
-    return this.saveComponentDSYM('NNRtc', dsymPath, version);
+  private async saveMobileRTCDSYM(dsymPath: string, version: string): Promise<void> {
+    return this.saveComponentDSYM('MobileRTC', dsymPath, version);
   }
 
   private async deleteComponentDSYMs(componentName: string, version: string): Promise<void> {
@@ -1239,12 +1239,12 @@ ${sourceLine}
     logger.info('已清除符号化缓存（组件 dSYM 删除）', { componentName, version });
   }
 
-  private async deleteNNRtcDSYMs(version: string): Promise<void> {
-    return this.deleteComponentDSYMs('NNRtc', version);
+  private async deleteMobileRTCDSYMs(version: string): Promise<void> {
+    return this.deleteComponentDSYMs('MobileRTC', version);
   }
 
-  async hasNNRtcDSYM(version: string): Promise<boolean> {
-    const dsyms = await this.storage.findByAppNameAndVersion('NNRtc', version);
+  async hasMobileRTCDSYM(version: string): Promise<boolean> {
+    const dsyms = await this.storage.findByAppNameAndVersion('MobileRTC', version);
     return dsyms.length > 0;
   }
 
@@ -1258,22 +1258,22 @@ ${sourceLine}
     }
   }
 
-  async syncNNRtcDSYMFromPackage(packagePath: string, originalFileName: string, version: string, buildId?: string): Promise<void> {
-    if (isNNRtcTestVersion(version)) {
-      await this.deleteNNRtcDSYMs(version);
+  async syncMobileRTCDSYMFromPackage(packagePath: string, originalFileName: string, version: string, buildId?: string): Promise<void> {
+    if (isMobileRTCTestVersion(version)) {
+      await this.deleteMobileRTCDSYMs(version);
       return;
     }
 
-    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, true);
+    const extracted = await this.extractMobileRTCPackage(packagePath, originalFileName, true);
     try {
       if (!extracted.dsymPath) {
-        throw new Error('包内未找到 NNRtc.dSYM');
+        throw new Error('包内未找到 MobileRTC.dSYM');
       }
-      await this.saveNNRtcDSYM(extracted.dsymPath, version);
+      await this.saveMobileRTCDSYM(extracted.dsymPath, version);
       if (buildId) {
         this.db
           .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run(buildId, currentComponentCatalogProductLineId(), 'NNRtc', version);
+          .run(buildId, currentComponentCatalogProductLineId(), 'MobileRTC', version);
       }
     } finally {
       fs.rmSync(extracted.workDir, { recursive: true, force: true });
@@ -1281,13 +1281,13 @@ ${sourceLine}
     }
   }
 
-  private async cleanupNNRtcTestDSYMs(): Promise<void> {
+  private async cleanupMobileRTCTestDSYMs(): Promise<void> {
     const dsyms = (await this.storage.getAllDSYMs())
-      .filter((item) => item.appName === 'NNRtc' && isNNRtcTestVersion(item.version));
+      .filter((item) => item.appName === 'MobileRTC' && isMobileRTCTestVersion(item.version));
     if (dsyms.length === 0) return;
 
     for (const dsym of dsyms) {
-      logger.info('清理 NNRtc 测试包 dSYM', {
+      logger.info('清理 MobileRTC 测试包 dSYM', {
         version: dsym.version,
         uuid: dsym.uuid,
         filePath: dsym.filePath,
@@ -1295,39 +1295,39 @@ ${sourceLine}
       await this.storage.deleteDSYM(dsym.uuid);
     }
     symbolicationCache.clear();
-    logger.info('已清除符号化缓存（NNRtc 测试包 dSYM 清理）', { count: dsyms.length });
+    logger.info('已清除符号化缓存（MobileRTC 测试包 dSYM 清理）', { count: dsyms.length });
   }
 
-  async publishNNRtcPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
-    if (params.name !== 'NNRtc') {
-      throw new Error('NNRtc 包发布仅支持组件 NNRtc');
+  async publishMobileRTCPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
+    if (params.name !== 'MobileRTC') {
+      throw new Error('MobileRTC 包发布仅支持组件 MobileRTC');
     }
-    const isTestPackage = params.package_type === 'test' || isNNRtcTestVersion(params.version);
+    const isTestPackage = params.package_type === 'test' || isMobileRTCTestVersion(params.version);
     const normalizedParams = isTestPackage
-      ? { ...params, version: normalizeNNRtcTestVersion(params.version) }
+      ? { ...params, version: normalizeMobileRTCTestVersion(params.version) }
       : params;
     const syncDSYM = !isTestPackage;
-    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, syncDSYM);
+    const extracted = await this.extractMobileRTCPackage(packagePath, originalFileName, syncDSYM);
     try {
-      const component = await this.publish(extracted.frameworkZipPath, 'NNRtc.zip', {
+      const component = await this.publish(extracted.frameworkZipPath, 'MobileRTC.zip', {
         ...normalizedParams,
         package_type: isTestPackage ? 'test' : 'release',
         lib_type: 'framework',
-        lib_name: 'NNRtc.framework',
+        lib_name: 'MobileRTC.framework',
       });
       if (syncDSYM && extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveNNRtcDSYM(extracted.dsymPath, params.version);
+          await this.saveMobileRTCDSYM(extracted.dsymPath, params.version);
         } catch (error: any) {
-          component.warning_message = `NNRtc Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('NNRtc dSYM 同步失败，Pod 发布已完成', {
+          component.warning_message = `MobileRTC Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('MobileRTC dSYM 同步失败，Pod 发布已完成', {
             version: normalizedParams.version,
             error: error.message,
           });
         }
       }
       if (!syncDSYM && component.status === 'published') {
-        await this.deleteNNRtcDSYMs(normalizedParams.version);
+        await this.deleteMobileRTCDSYMs(normalizedParams.version);
       }
       return component;
     } finally {
@@ -1336,37 +1336,37 @@ ${sourceLine}
     }
   }
 
-  async replaceNNRtcPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string, buildId?: string, syncDSYM = true): Promise<PodComponent> {
-    const shouldSyncDSYM = syncDSYM && !isNNRtcTestVersion(version);
-    const extracted = await this.extractNNRtcPackage(packagePath, originalFileName, shouldSyncDSYM);
+  async replaceMobileRTCPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string, buildId?: string, syncDSYM = true): Promise<PodComponent> {
+    const shouldSyncDSYM = syncDSYM && !isMobileRTCTestVersion(version);
+    const extracted = await this.extractMobileRTCPackage(packagePath, originalFileName, shouldSyncDSYM);
     try {
-      const component = await this.replaceZip('NNRtc', version, extracted.frameworkZipPath, 'NNRtc.zip', targetBranch);
+      const component = await this.replaceZip('MobileRTC', version, extracted.frameworkZipPath, 'MobileRTC.zip', targetBranch);
       if (buildId) {
         this.db
           .prepare('UPDATE pods_components SET build_id = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run(buildId, currentComponentCatalogProductLineId(), 'NNRtc', version);
+          .run(buildId, currentComponentCatalogProductLineId(), 'MobileRTC', version);
         component.build_id = buildId;
       }
       if (!shouldSyncDSYM) {
         this.db
-          .prepare('UPDATE pods_components SET package_type = ?, nnios_branch = ? WHERE product_line_id = ? AND name = ? AND version = ?')
-          .run('test', targetBranch, currentComponentCatalogProductLineId(), 'NNRtc', version);
+          .prepare('UPDATE pods_components SET package_type = ?, main_app_branch = ? WHERE product_line_id = ? AND name = ? AND version = ?')
+          .run('test', targetBranch, currentComponentCatalogProductLineId(), 'MobileRTC', version);
         component.package_type = 'test';
-        component.nnios_branch = targetBranch;
+        component.main_app_branch = targetBranch;
       }
       if (shouldSyncDSYM && extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveNNRtcDSYM(extracted.dsymPath, version);
+          await this.saveMobileRTCDSYM(extracted.dsymPath, version);
         } catch (error: any) {
-          component.warning_message = `NNRtc Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('NNRtc dSYM 同步失败，Pod 替换已完成', {
+          component.warning_message = `MobileRTC Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('MobileRTC dSYM 同步失败，Pod 替换已完成', {
             version,
             error: error.message,
           });
         }
       }
       if (!shouldSyncDSYM && component.status === 'published') {
-        await this.deleteNNRtcDSYMs(version);
+        await this.deleteMobileRTCDSYMs(version);
       }
       return component;
     } finally {
@@ -1375,25 +1375,25 @@ ${sourceLine}
     }
   }
 
-  async publishLeigodIMCrossSDKPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
-    if (params.name !== 'leigod_im_cross_sdk') {
-      throw new Error('leigod_im_cross_sdk 包发布仅支持组件 leigod_im_cross_sdk');
+  async publishMobileIMCrossSDKPackage(packagePath: string, originalFileName: string, params: PodUploadParams): Promise<PodComponent> {
+    if (params.name !== 'mobile_im_cross_sdk') {
+      throw new Error('mobile_im_cross_sdk 包发布仅支持组件 mobile_im_cross_sdk');
     }
 
-    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'leigod_im_cross_sdk', false);
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'mobile_im_cross_sdk', false);
     try {
-      const component = await this.publish(extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', {
+      const component = await this.publish(extracted.frameworkZipPath, 'mobile_im_cross_sdk.zip', {
         ...params,
         lib_type: 'framework',
-        lib_name: 'leigod_im_cross_sdk.framework',
+        lib_name: 'mobile_im_cross_sdk.framework',
       });
 
       if (extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, params.version);
+          await this.saveComponentDSYM('mobile_im_cross_sdk', extracted.dsymPath, params.version);
         } catch (error: any) {
-          component.warning_message = `leigod_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('leigod_im_cross_sdk dSYM 同步失败，Pod 发布已完成', {
+          component.warning_message = `mobile_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('mobile_im_cross_sdk dSYM 同步失败，Pod 发布已完成', {
             version: params.version,
             error: error.message,
           });
@@ -1407,28 +1407,28 @@ ${sourceLine}
     }
   }
 
-  async publishLeigodIMCrossSDKFromIMSDK(version: string, params: Omit<PodUploadParams, 'name' | 'version'>): Promise<PodComponent> {
-    const versionDir = this.resolveLeigodIMSDKVersionDir(version);
-    const packagePath = this.findLeigodIMSDKPackage(versionDir);
+  async publishMobileIMCrossSDKFromIMSDK(version: string, params: Omit<PodUploadParams, 'name' | 'version'>): Promise<PodComponent> {
+    const versionDir = this.resolveMobileIMSDKVersionDir(version);
+    const packagePath = this.findMobileIMSDKPackage(versionDir);
     const extracted = packagePath
-      ? await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'leigod_im_cross_sdk', false)
-      : await this.prepareFrameworkDSYMFromDirectory(versionDir, 'leigod_im_cross_sdk');
+      ? await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'mobile_im_cross_sdk', false)
+      : await this.prepareFrameworkDSYMFromDirectory(versionDir, 'mobile_im_cross_sdk');
 
     try {
-      const component = await this.publish(extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', {
+      const component = await this.publish(extracted.frameworkZipPath, 'mobile_im_cross_sdk.zip', {
         ...params,
-        name: 'leigod_im_cross_sdk',
+        name: 'mobile_im_cross_sdk',
         version,
         lib_type: 'framework',
-        lib_name: 'leigod_im_cross_sdk.framework',
+        lib_name: 'mobile_im_cross_sdk.framework',
       });
 
       if (extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+          await this.saveComponentDSYM('mobile_im_cross_sdk', extracted.dsymPath, version);
         } catch (error: any) {
-          component.warning_message = `leigod_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('leigod_im_cross_sdk IMSDK dSYM 同步失败，Pod 发布已完成', {
+          component.warning_message = `mobile_im_cross_sdk Pod 已发布成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('mobile_im_cross_sdk IMSDK dSYM 同步失败，Pod 发布已完成', {
             version,
             error: error.message,
           });
@@ -1442,17 +1442,17 @@ ${sourceLine}
     }
   }
 
-  async replaceLeigodIMCrossSDKPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
-    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'leigod_im_cross_sdk', false);
+  async replaceMobileIMCrossSDKPackage(version: string, packagePath: string, originalFileName: string, targetBranch: string): Promise<PodComponent> {
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, originalFileName, 'mobile_im_cross_sdk', false);
     try {
-      const component = await this.replaceZip('leigod_im_cross_sdk', version, extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', targetBranch);
+      const component = await this.replaceZip('mobile_im_cross_sdk', version, extracted.frameworkZipPath, 'mobile_im_cross_sdk.zip', targetBranch);
 
       if (extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+          await this.saveComponentDSYM('mobile_im_cross_sdk', extracted.dsymPath, version);
         } catch (error: any) {
-          component.warning_message = `leigod_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('leigod_im_cross_sdk dSYM 同步失败，Pod 替换已完成', {
+          component.warning_message = `mobile_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('mobile_im_cross_sdk dSYM 同步失败，Pod 替换已完成', {
             version,
             error: error.message,
           });
@@ -1466,23 +1466,23 @@ ${sourceLine}
     }
   }
 
-  async replaceLeigodIMCrossSDKFromIMSDK(version: string, targetBranch: string): Promise<PodComponent> {
-    const versionDir = this.resolveLeigodIMSDKVersionDir(version);
-    const packagePath = this.findLeigodIMSDKPackage(versionDir);
+  async replaceMobileIMCrossSDKFromIMSDK(version: string, targetBranch: string): Promise<PodComponent> {
+    const versionDir = this.resolveMobileIMSDKVersionDir(version);
+    const packagePath = this.findMobileIMSDKPackage(versionDir);
     if (!packagePath) {
       throw new Error(`IMSDK ${version} 目录下未找到可替换的 zip/tgz/tar.gz 包`);
     }
-    const extracted = await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'leigod_im_cross_sdk', false);
+    const extracted = await this.extractFrameworkDSYMPackage(packagePath, path.basename(packagePath), 'mobile_im_cross_sdk', false);
 
     try {
-      const component = await this.replaceZip('leigod_im_cross_sdk', version, extracted.frameworkZipPath, 'leigod_im_cross_sdk.zip', targetBranch);
+      const component = await this.replaceZip('mobile_im_cross_sdk', version, extracted.frameworkZipPath, 'mobile_im_cross_sdk.zip', targetBranch);
 
       if (extracted.dsymPath && component.status === 'published') {
         try {
-          await this.saveComponentDSYM('leigod_im_cross_sdk', extracted.dsymPath, version);
+          await this.saveComponentDSYM('mobile_im_cross_sdk', extracted.dsymPath, version);
         } catch (error: any) {
-          component.warning_message = `leigod_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
-          logger.error('leigod_im_cross_sdk IMSDK dSYM 同步失败，Pod 替换已完成', {
+          component.warning_message = `mobile_im_cross_sdk Pod 已替换成功，但 dSYM 同步失败: ${error.message}`;
+          logger.error('mobile_im_cross_sdk IMSDK dSYM 同步失败，Pod 替换已完成', {
             version,
             error: error.message,
           });
@@ -1589,7 +1589,7 @@ ${sourceLine}
     // 7. 同步当前组件版本到发布主仓库指定分支
     if (status === 'published' && params.target_branch) {
       try {
-        this.syncVersionToNnios(name, version, params.target_branch);
+        this.syncVersionToMainApp(name, version, params.target_branch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -1608,7 +1608,7 @@ ${sourceLine}
       error_message: errorMessage,
       package_type: params.package_type,
       build_id: params.build_id,
-      nnios_branch: params.package_type === 'test' ? params.target_branch : undefined,
+      main_app_branch: params.package_type === 'test' ? params.target_branch : undefined,
     });
 
     return component;
@@ -1643,7 +1643,7 @@ ${sourceLine}
 
     if (status === 'published' && params.target_branch) {
       try {
-        this.syncVersionToNnios(name, version, params.target_branch);
+        this.syncVersionToMainApp(name, version, params.target_branch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -1661,7 +1661,7 @@ ${sourceLine}
       error_message: errorMessage,
       package_type: params.package_type,
       build_id: params.build_id,
-      nnios_branch: params.package_type === 'test' ? params.target_branch : undefined,
+      main_app_branch: params.package_type === 'test' ? params.target_branch : undefined,
     });
   }
 
@@ -1679,13 +1679,13 @@ ${sourceLine}
     error_message?: string;
     package_type?: 'release' | 'test';
     build_id?: string;
-    nnios_branch?: string;
+    main_app_branch?: string;
   }): PodComponent {
     if (this.db.prepare('SELECT 1 FROM pods_components WHERE product_line_id = ? AND name = ? AND version = ?').get(currentComponentCatalogProductLineId(), data.name, data.version)) componentLibraryService.assertVersionMutable();
     // 使用 REPLACE 实现 upsert，覆盖同名同版本记录，刷新 upload_time
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO pods_components 
-        (product_line_id, name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, package_type, build_id, nnios_branch, upload_time)
+        (product_line_id, name, version, summary, homepage, source_zip_url, podspec_content, status, error_message, package_type, build_id, main_app_branch, upload_time)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
     `);
 
@@ -1701,7 +1701,7 @@ ${sourceLine}
       data.error_message || null,
       data.package_type || null,
       data.build_id || null,
-      data.nnios_branch || null
+      data.main_app_branch || null
     );
 
     const row = this.db
@@ -1781,8 +1781,8 @@ ${sourceLine}
       throw new Error(`组件 ${name}@${version} 不存在`);
     }
     if (componentLibraryService.status().shared) return { canDelete: false, branch: targetBranch || '', currentVersion: null, reason: '组件库被多个产品线共用，已有版本不可删除；请发布新版本' };
-    const isTestPackage = component.package_type === 'test' || (name === 'NNRtc' && isNNRtcTestVersion(version));
-    const branch = targetBranch || (isTestPackage ? component.nnios_branch : undefined);
+    const isTestPackage = component.package_type === 'test' || (name === 'MobileRTC' && isMobileRTCTestVersion(version));
+    const branch = targetBranch || (isTestPackage ? component.main_app_branch : undefined);
     if (!branch) {
       return {
         canDelete: true,
@@ -1792,7 +1792,7 @@ ${sourceLine}
     }
 
     const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
-    const currentRef = this.getNniosPodVersion(name, branch);
+    const currentRef = this.getMainAppPodVersion(name, branch);
     const fallbackVersion = currentRef.version === version ? remainingVersions[0]?.version : undefined;
     if (currentRef.version === version && !fallbackVersion) {
       return {
@@ -1821,7 +1821,7 @@ ${sourceLine}
 
     if (targetBranch) {
       const remainingVersions = (await this.getVersions(name)).filter((item) => item.version !== version);
-      const currentRef = this.getNniosPodVersion(name, targetBranch);
+      const currentRef = this.getMainAppPodVersion(name, targetBranch);
 
       if (currentRef.version === version) {
         fallbackVersion = remainingVersions[0]?.version;
@@ -1834,7 +1834,7 @@ ${sourceLine}
           targetBranch: currentRef.branch,
           fallbackVersion,
         });
-        this.syncVersionToNnios(name, fallbackVersion, currentRef.branch);
+        this.syncVersionToMainApp(name, fallbackVersion, currentRef.branch);
       } else {
         logger.info('删除版本无需回退发布主仓库组件版本', {
           name,
@@ -1858,7 +1858,7 @@ ${sourceLine}
     // 删除 spec 仓库中的版本目录
     await this.deleteFromSpecRepo(name, version);
     let warning: string | undefined;
-    if (name === 'NNRtc' || name === 'leigod_im_cross_sdk') {
+    if (name === 'MobileRTC' || name === 'mobile_im_cross_sdk') {
       try {
         await this.deleteComponentDSYMs(name, version);
       } catch (error: any) {
@@ -1890,7 +1890,7 @@ ${sourceLine}
     const dsymWarnings: string[] = [];
     for (const v of versions) {
       await this.deleteFromNexus(name, v.version);
-      if (name === 'NNRtc' || name === 'leigod_im_cross_sdk') {
+      if (name === 'MobileRTC' || name === 'mobile_im_cross_sdk') {
         try {
           await this.deleteComponentDSYMs(name, v.version);
         } catch (error: any) {
@@ -1949,7 +1949,7 @@ ${sourceLine}
     let status: 'published' | 'failed' = 'published';
     let errorMessage: string | undefined;
     try {
-      this.syncVersionToNnios(name, version, targetBranch);
+      this.syncVersionToMainApp(name, version, targetBranch);
     } catch (error: any) {
       status = 'failed';
       errorMessage = error.message;
@@ -2044,7 +2044,7 @@ ${sourceLine}
     // 8. 同步当前组件版本到发布主仓库指定分支
     if (status === 'published') {
       try {
-        this.syncVersionToNnios(name, version, targetBranch);
+        this.syncVersionToMainApp(name, version, targetBranch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -2087,7 +2087,7 @@ ${sourceLine}
       let status: 'published' | 'failed' = 'published';
       let errorMessage: string | undefined;
       try {
-        this.syncVersionToNnios(name, version, targetBranch);
+        this.syncVersionToMainApp(name, version, targetBranch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -2113,16 +2113,16 @@ ${sourceLine}
     const component = await this.getOne(name, version);
     if (!component) throw new Error(`组件 ${name}@${version} 不存在`);
     const shared = componentLibraryService.status().shared;
-    const isTestPackage = component.package_type === 'test' || isNNRtcTestVersion(component.version);
-    const branch = targetBranch || (!shared && isTestPackage ? component.nnios_branch : undefined);
+    const isTestPackage = component.package_type === 'test' || isMobileRTCTestVersion(component.version);
+    const branch = targetBranch || (!shared && isTestPackage ? component.main_app_branch : undefined);
     if (!branch) throw new Error('请选择发布主仓库分支');
     // A consuming project's branch result must not rewrite the shared artifact's status/provenance.
     try {
-      this.syncVersionToNnios(name, version, branch);
+      this.syncVersionToMainApp(name, version, branch);
       if (!shared) this.db
-        .prepare('UPDATE pods_components SET status = ?, error_message = NULL, nnios_branch = CASE WHEN ? THEN ? ELSE nnios_branch END WHERE product_line_id = ? AND name = ? AND version = ?')
+        .prepare('UPDATE pods_components SET status = ?, error_message = NULL, main_app_branch = CASE WHEN ? THEN ? ELSE main_app_branch END WHERE product_line_id = ? AND name = ? AND version = ?')
         .run('published', isTestPackage ? 1 : 0, branch, currentComponentCatalogProductLineId(), name, version);
-      return shared ? component : { ...component, status: 'published', error_message: undefined, nnios_branch: isTestPackage ? branch : component.nnios_branch };
+      return shared ? component : { ...component, status: 'published', error_message: undefined, main_app_branch: isTestPackage ? branch : component.main_app_branch };
     } catch (error: any) {
       if (!shared) this.db
         .prepare('UPDATE pods_components SET status = ?, error_message = ? WHERE product_line_id = ? AND name = ? AND version = ?')
@@ -2432,7 +2432,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
     if (status === 'published' && targetBranch) {
       try {
-        this.syncVersionToNnios(podName, pubVer, targetBranch);
+        this.syncVersionToMainApp(podName, pubVer, targetBranch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -2495,7 +2495,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
   private mapRow(row: any): PodComponent {
     return {
       id: row.id,
-      product_line_id: row.product_line_id || 'nn',
+      product_line_id: row.product_line_id || 'default',
       name: row.name,
       version: row.version,
       summary: row.summary || '',
@@ -2505,9 +2505,9 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       upload_time: row.upload_time,
       status: row.status,
       error_message: row.error_message || undefined,
-      package_type: row.package_type || (row.name === 'NNRtc' ? (isNNRtcTestVersion(row.version) ? 'test' : 'release') : undefined),
+      package_type: row.package_type || (row.name === 'MobileRTC' ? (isMobileRTCTestVersion(row.version) ? 'test' : 'release') : undefined),
       build_id: row.build_id || undefined,
-      nnios_branch: row.nnios_branch || undefined,
+      main_app_branch: row.main_app_branch || undefined,
     };
   }
 
@@ -2642,7 +2642,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
   /**
    * 查询官方组件的 podspec
-   * 先扫本地 spec repos（含 aliyun-specs / nnspec / trunk），命中则用 pod ipc spec 转 JSON；
+   * 先扫本地 spec repos（含 aliyun-specs / mobile-specs / trunk），命中则用 pod ipc spec 转 JSON；
    * 找不到再退回到 `pod spec cat`（仅对 trunk 有效）
    */
   async fetchOfficialPodspec(podName: string, version?: string): Promise<any> {
@@ -2917,7 +2917,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
   /**
    * 从官方 CocoaPods 导入组件到内部仓库
-   * 下载官方 zip → 上传 Nexus → 生成内部 podspec → 同步 NNSpec
+   * 下载官方 zip → 上传 Nexus → 生成内部 podspec → 同步 MobileSpec
    */
   async importFromOfficial(podName: string, version: string, publishVersion?: string, prepareCommand?: string, targetBranch?: string): Promise<PodComponent> {
     // publishVersion: 内部发布用的版本号，可追加后缀如 1.4.0.1
@@ -3059,7 +3059,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     }
     fs.unlinkSync(tempZip);
 
-    // 6. 同步 podspec 到 NNSpec
+    // 6. 同步 podspec 到 MobileSpec
     let status: 'published' | 'failed' = 'published';
     let errorMessage: string | undefined;
     try {
@@ -3071,7 +3071,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
     if (status === 'published' && targetBranch) {
       try {
-        this.syncVersionToNnios(podName, pubVer, targetBranch);
+        this.syncVersionToMainApp(podName, pubVer, targetBranch);
       } catch (error: any) {
         status = 'failed';
         errorMessage = error.message;
@@ -3584,7 +3584,7 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
 
       if (status === 'published' && targetBranch) {
         try {
-          this.syncVersionToNnios(podName, pubVer, targetBranch);
+          this.syncVersionToMainApp(podName, pubVer, targetBranch);
         } catch (error: any) {
           status = 'failed';
           errorMessage = error.message;
@@ -3732,9 +3732,9 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
     const minDeployTarget = parseFloat(iosVersion) < 13.0 ? '13.0' : iosVersion;
 
     // source 声明，确保能找到官方和第三方 spec repos
-    // 内部 nnspec 排最前，优先使用已发布的内部二进制版本（如 libwebp.framework）
+    // 内部 mobile-specs 排最前，优先使用已发布的内部二进制版本（如 libwebp.framework）
     const sources = [
-      "source 'http://git.leigod.top/nn_ios/nnspec.git'",
+      "source 'https://github.com/example/mobile-specs.git'",
       "source 'https://cdn.cocoapods.org/'",
       "source 'https://github.com/aliyun/aliyun-specs.git'",
     ].join('\n');
@@ -3782,14 +3782,14 @@ ${prepareCommand ? `\n  s.prepare_command = <<-CMD\n${prepareCommand}\n  CMD\n` 
       podLines = `  pod '${podName}', '${version}'\n`;
     }
 
-    const podDslPatch = `# 平台临时编译工程需要使用 CocoaPods 原生 pod DSL，避免全局 podx/nn_binary 插件改写 pod(...) 后影响官方组件解析。
-module NNPlatformPlainPodDSL
+    const podDslPatch = `# 平台临时编译工程需要使用 CocoaPods 原生 pod DSL，避免全局 podx/binary_plugin 插件改写 pod(...) 后影响官方组件解析。
+module MobilePlatformPlainPodDSL
   def pod(name = nil, *requirements)
     raise StandardError, 'A dependency requires a name.' unless name
     current_target_definition.store_pod(name, *requirements)
   end
 end
-Pod::Podfile::DSL.prepend(NNPlatformPlainPodDSL)
+Pod::Podfile::DSL.prepend(MobilePlatformPlainPodDSL)
 `;
 
     const podfile = `${sources}

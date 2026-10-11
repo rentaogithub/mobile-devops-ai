@@ -9,51 +9,51 @@ import { clearOpAccessToken, getOpAccessToken } from '../services/OpCookieJar';
 import { currentProductLineId } from '../services/ProductLineContext';
 
 const router = Router();
-const sourceBase = 'https://test1-doc.nn.com';
+const sourceBase = 'https://api-docs.example.com';
 const sources: Record<string, string> = {
-  'open-api': '/openApi/v2/api-docs?group=' + encodeURIComponent('NN第三方API接口接入'),
-  'nn-assist-frontend': '/nn-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心前端接口'),
-  'nn-assist-client': '/nn-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心客户端接口'),
-  'u-nnpc': '/u-nnpc/v2/api-docs?group=' + encodeURIComponent('PC接入层'),
+  'open-api': '/openApi/v2/api-docs?group=' + encodeURIComponent('第三方 API 接入'),
+  'default-assist-frontend': '/default-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心前端接口'),
+  'default-assist-client': '/default-assist/v2/api-docs?group=' + encodeURIComponent('帮助中心客户端接口'),
+  'desktop-api': '/desktop-api/v2/api-docs?group=' + encodeURIComponent('桌面端接入层'),
   'user-query': '/user-query/v2/api-docs?group=' + encodeURIComponent('用户查询服务'),
   'u-mobile': '/u-mobile/v2/api-docs?group=' + encodeURIComponent('移动端接入层'),
-  'u-miniapp': '/u-miniapp/v2/api-docs?group=' + encodeURIComponent('NN小程序接入层'),
-  'nchannel': '/nchannel/v2/api-docs?group=' + encodeURIComponent('社区频道接口文档'),
+  'u-miniapp': '/u-miniapp/v2/api-docs?group=' + encodeURIComponent('小程序接入层'),
+  'community-channel': '/community-channel/v2/api-docs?group=' + encodeURIComponent('社区频道接口文档'),
   'activity': '/activity/v2/api-docs?group=' + encodeURIComponent('活动中心-C端'),
-  'speed-platform': '/speed-platform/v2/api-docs?group=' + encodeURIComponent('武汉用户加速器接入'),
-  'wan-app': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：app接口'),
-  'wan-client': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：客户端接口'),
-  'wan-short-link': '/wan/v2/api-docs?group=' + encodeURIComponent('NN陪玩：短链接口'),
-  'nn-risk-v1': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:V1'),
-  'nn-risk-admin': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:管理后台'),
-  'nn-risk-activity': '/nn-risk/v2/api-docs?group=' + encodeURIComponent('NN风控审核服务:活动风控'),
+  'speed-platform': '/speed-platform/v2/api-docs?group=' + encodeURIComponent('加速服务接入'),
+  'wan-app': '/wan/v2/api-docs?group=' + encodeURIComponent('陪玩业务：app接口'),
+  'wan-client': '/wan/v2/api-docs?group=' + encodeURIComponent('陪玩业务：客户端接口'),
+  'wan-short-link': '/wan/v2/api-docs?group=' + encodeURIComponent('陪玩业务：短链接口'),
+  'default-risk-v1': '/default-risk/v2/api-docs?group=' + encodeURIComponent('风控审核服务:V1'),
+  'default-risk-admin': '/default-risk/v2/api-docs?group=' + encodeURIComponent('风控审核服务:管理后台'),
+  'default-risk-activity': '/default-risk/v2/api-docs?group=' + encodeURIComponent('风控审核服务:活动风控'),
   'operation-server': '/ncoperation/v2/api-docs?group=' + encodeURIComponent('operationServer'),
-  'im-friend': '/im-friend/v2/api-docs?group=' + encodeURIComponent('雷神IM好友服务客户端接口'),
-  'im-user': '/im-user/v2/api-docs?group=' + encodeURIComponent('雷神IM用户客户端接口'),
-  'order-open-api': '/nnorder/v2/api-docs?group=' + encodeURIComponent('order-open-api'),
-  'wan-v1': '/wan/v2/api-docs?group=' + encodeURIComponent('v1-NN陪玩接口'),
-  'wan-v2': '/wan/v2/api-docs?group=' + encodeURIComponent('v2-NN陪玩接口'),
-  'wan-v3': '/wan/v2/api-docs?group=' + encodeURIComponent('v3-NN陪玩接口'),
+  'im-friend': '/im-friend/v2/api-docs?group=' + encodeURIComponent('IM好友服务客户端接口'),
+  'im-user': '/im-user/v2/api-docs?group=' + encodeURIComponent('IM用户客户端接口'),
+  'order-open-api': '/order/v2/api-docs?group=' + encodeURIComponent('order-open-api'),
+  'wan-v1': '/wan/v2/api-docs?group=' + encodeURIComponent('v1-陪玩业务接口'),
+  'wan-v2': '/wan/v2/api-docs?group=' + encodeURIComponent('v2-陪玩业务接口'),
+  'wan-v3': '/wan/v2/api-docs?group=' + encodeURIComponent('v3-陪玩业务接口'),
   'wan-taobao': '/wan/v2/api-docs?group=' + encodeURIComponent('淘宝相关接口'),
-  'short-link-api': '/short-link-business/v2/api-docs?group=' + encodeURIComponent('NN短链服务:API'),
-  'leigod-rtc': '/leigod-rtc/v2/api-docs?group=' + encodeURIComponent('雷神rtc客户端接口'),
-  'privilege': '/privilege/v2/api-docs?group=' + encodeURIComponent('雷神用户权益客户端接口'),
-  'leigod-market-nn': '/leigod-market-nn/v2/api-docs?group=' + encodeURIComponent('雷神营销渠道服务(NN)客户端接口'),
-  'nn-game': '/nn-game/v2/api-docs?group=' + encodeURIComponent('雷神赛事客户端接口'),
+  'short-link-api': '/short-link-business/v2/api-docs?group=' + encodeURIComponent('短链服务:API'),
+  'mobile-rtc': '/mobile-rtc/v2/api-docs?group=' + encodeURIComponent('RTC客户端接口'),
+  'privilege': '/privilege/v2/api-docs?group=' + encodeURIComponent('用户权益客户端接口'),
+  'mobile-market-default': '/mobile-market-default/v2/api-docs?group=' + encodeURIComponent('营销渠道服务客户端接口'),
+  'default-game': '/default-game/v2/api-docs?group=' + encodeURIComponent('赛事客户端接口'),
   'cmp-bff': '/cmp-bff/v2/api-docs?group=' + encodeURIComponent('渠道中台bff客户端接口'),
   'gamehub': '/gamehub/v2/api-docs?group=' + encodeURIComponent('GameHub客户端接口'),
-  'union-server': '/nn-union/v2/api-docs?group=' + encodeURIComponent('unionServer'),
-  'nn-status': '/nn-status/v2/api-docs?group=' + encodeURIComponent('NN状态服务'),
-  'nn-version': '/nn-version/v2/api-docs?group=' + encodeURIComponent('NN版本服务'),
+  'union-server': '/default-union/v2/api-docs?group=' + encodeURIComponent('unionServer'),
+  'default-status': '/default-status/v2/api-docs?group=' + encodeURIComponent('状态服务'),
+  'default-version': '/default-version/v2/api-docs?group=' + encodeURIComponent('版本服务'),
   'fdfs': '/fdfs/v2/api-docs?group=' + encodeURIComponent('文件服务'),
 };
 const cache = new Map<string, { expiresAt: number; data: unknown }>();
-const cacheDirectory = path.resolve(__dirname, '../../../nn-ios-platform-data/api-docs-cache');
+const cacheDirectory = path.resolve(__dirname, '../../../mobile-devops-ai-data/api-docs-cache');
 const previousCacheDirectory = path.join(cacheDirectory, 'previous');
 const requestEnvironments: Record<string, string> = {
-  release: 'https://opapi.nnraytheon.com',
-  test: 'https://test-opapi.nn.com',
-  test1: 'https://test1-opapi.nn.com',
+  release: 'https://api.example.com',
+  test: 'https://opapi-test.example.com',
+  test1: 'https://opapi-test1.example.com',
 };
 const publicHeaders = {
   version: '51409',
@@ -62,8 +62,8 @@ const publicHeaders = {
   longitude: '0.0',
   osVersion: '5.14.9',
   platform: '1',
-  appId: 'nnMobileIm_6z0g3ut7',
-  appName: 'nn_accelerator',
+  appId: 'mobile-app-demo',
+  appName: 'mobile_app',
   reqChannel: '1',
   registerCanal: 'App Store',
 };
@@ -72,7 +72,7 @@ const invalidTokenRetCodes = new Set(['300002', 'auth_10003', 'auth_40001', 'aut
 function ensureApiDocRecordsTable(): void {
   getDatabase().prepare(`
     CREATE TABLE IF NOT EXISTS api_doc_view_records (
-      product_line_id TEXT NOT NULL DEFAULT 'nn',
+      product_line_id TEXT NOT NULL DEFAULT 'default',
       record_key TEXT NOT NULL,
       service TEXT NOT NULL,
       method TEXT NOT NULL,
@@ -89,7 +89,7 @@ function ensureApiDocRecordsTable(): void {
     getDatabase().exec(`
       ALTER TABLE api_doc_view_records RENAME TO api_doc_view_records_legacy;
       CREATE TABLE api_doc_view_records (
-        product_line_id TEXT NOT NULL DEFAULT 'nn',
+        product_line_id TEXT NOT NULL DEFAULT 'default',
         record_key TEXT NOT NULL,
         service TEXT NOT NULL,
         method TEXT NOT NULL,
@@ -102,7 +102,7 @@ function ensureApiDocRecordsTable(): void {
       );
       INSERT INTO api_doc_view_records (
         product_line_id, record_key, service, method, path, summary, tag, view_count, last_viewed_at
-      ) SELECT 'nn', record_key, service, method, path, summary, tag, view_count, last_viewed_at
+      ) SELECT 'default', record_key, service, method, path, summary, tag, view_count, last_viewed_at
         FROM api_doc_view_records_legacy;
       DROP TABLE api_doc_view_records_legacy;
     `);
@@ -399,11 +399,11 @@ function withFallbackDocument(service: string, data: unknown): unknown {
   };
   if (document.paths && Object.keys(document.paths).length > 0) return data;
 
-  if (service === 'nn-version') {
+  if (service === 'default-version') {
     return fallbackDocument(document, {
-      basePath: '/nn-version',
-      title: 'NN版本服务',
-      tag: 'NN版本服务',
+      basePath: '/default-version',
+      title: '版本服务',
+      tag: '版本服务',
       paths: {
         '/version/upgrade': { post: versionOperation('普通检测版本更新', 'checkUpgradeUsingPOST') },
         '/version/gray/release/update': { post: versionOperation('灰度版本更新', 'grayReleaseUpdateUsingPOST') },
@@ -415,10 +415,10 @@ function withFallbackDocument(service: string, data: unknown): unknown {
   if (service === 'im-user') {
     return fallbackDocument(document, {
       basePath: '/im-user',
-      title: '雷神IM用户客户端接口',
-      tag: '雷神IM用户客户端接口',
+      title: 'IM用户客户端接口',
+      tag: 'IM用户客户端接口',
       paths: {
-        '/app/v1/user/getUserList': { post: simpleOperation('批量查询用户列表', 'getUserListUsingPOST', '雷神IM用户客户端接口') },
+        '/app/v1/user/getUserList': { post: simpleOperation('批量查询用户列表', 'getUserListUsingPOST', 'IM用户客户端接口') },
       },
     });
   }
@@ -427,7 +427,7 @@ function withFallbackDocument(service: string, data: unknown): unknown {
 }
 
 function versionOperation(summary: string, operationId: string) {
-  return simpleOperation(summary, operationId, 'NN版本服务', 'OK。上游 Knife4j 当前未提供该服务的详细参数 schema，平台按客户端常量补充接口入口。');
+  return simpleOperation(summary, operationId, '版本服务', 'OK。上游 Knife4j 当前未提供该服务的详细参数 schema，平台按客户端常量补充接口入口。');
 }
 
 function simpleOperation(summary: string, operationId: string, tag: string, responseDescription = 'OK。上游 Knife4j 当前异常，平台先补充接口入口。') {
@@ -502,7 +502,7 @@ async function readSearchDocument(service: string, keyword: string): Promise<unk
         // 单个服务拉取失败不影响全局搜索。
       }
     }
-    if (service === 'nn-version' || service === 'im-user') {
+    if (service === 'default-version' || service === 'im-user') {
       return withFallbackDocument(service, {});
     }
     return undefined;
@@ -548,7 +548,7 @@ async function fetchDocument(service: string, options: { fallbackOnError?: boole
       lastError = error instanceof Error ? error : new Error('未知错误');
     }
   }
-  if (fallbackOnError && (service === 'nn-version' || service === 'im-user')) {
+  if (fallbackOnError && (service === 'default-version' || service === 'im-user')) {
     const fallback = withFallbackDocument(service, {});
     if (shouldWriteCache) writeCachedDocument(service, fallback);
     return fallback;

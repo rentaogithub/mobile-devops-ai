@@ -44,7 +44,7 @@ class WatermarkDecoderService {
     this.decoderDir,
     'target',
     'release',
-    process.platform === 'win32' ? 'nn-watermark-decode.exe' : 'nn-watermark-decode'
+    process.platform === 'win32' ? 'default-watermark-decode.exe' : 'default-watermark-decode'
   );
 
   async decode(imagePath: string, options: { deep?: boolean; limit?: number } = {}): Promise<WatermarkDecodeResult> {

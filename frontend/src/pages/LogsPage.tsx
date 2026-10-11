@@ -30,7 +30,7 @@ import LogsPairPage from './LogsPairPage';
 
 const { Title, Paragraph } = Typography;
 const FEEDBACK_LOG_URL = '/op/#/speed/logs';
-const EXTERNAL_FEEDBACK_LOG_URL = 'https://op.nn.com/#/speed/logs';
+const EXTERNAL_FEEDBACK_LOG_URL = 'https://op.example.com/#/speed/logs';
 
 const getUserRecordKey = (record: Partial<UserQueryRecord>) =>
   String(record.recordKey || record.userId || record.id || record.telNum || record.email || '');
@@ -300,7 +300,7 @@ export default function LogsPage() {
   const queryUserInfo = async (keyword = userSearchKey) => {
     const searchkey = keyword.trim();
     if (!searchkey) {
-      message.warning('请输入用户UID/NN号/手机号/用户昵称/邮箱');
+      message.warning('请输入用户UID/外部账号/手机号/用户昵称/邮箱');
       return;
     }
 
@@ -369,7 +369,7 @@ export default function LogsPage() {
   const searchFeedbackLogsByUid = (uid = feedbackLogSearchUid) => {
     const keyword = uid.trim();
     if (!keyword) {
-      message.warning('请输入用户 UID/NN号/手机号/用户昵称/邮箱');
+      message.warning('请输入用户 UID/外部账号/手机号/用户昵称/邮箱');
       return;
     }
 
@@ -542,7 +542,7 @@ export default function LogsPage() {
               </Button>
             ) : '-'}
           </Descriptions.Item>
-          <Descriptions.Item label="NN号">{record.nnNumber || '-'}</Descriptions.Item>
+          <Descriptions.Item label="外部账号">{record.externalNumber || '-'}</Descriptions.Item>
           <Descriptions.Item label="昵称">{record.nickName || '-'}</Descriptions.Item>
           <Descriptions.Item label="手机号">{record.telNum || '-'}</Descriptions.Item>
           <Descriptions.Item label="邮箱">{record.email || '-'}</Descriptions.Item>
@@ -580,9 +580,9 @@ export default function LogsPage() {
       ) : '-',
     },
     {
-      title: 'NN号',
-      dataIndex: 'nnNumber',
-      key: 'nnNumber',
+      title: '外部账号',
+      dataIndex: 'externalNumber',
+      key: 'externalNumber',
       width: 140,
       render: (value: string) => value || '-',
     },
@@ -743,7 +743,7 @@ export default function LogsPage() {
                             allowClear
                             enterButton="查询"
                             prefix={<SearchOutlined />}
-                            placeholder="用户UID/NN号/手机号/用户昵称/邮箱"
+                            placeholder="用户UID/外部账号/手机号/用户昵称/邮箱"
                             value={userSearchKey}
                             loading={userQueryLoading}
                             onChange={(event) => setUserSearchKey(event.target.value)}
@@ -871,7 +871,7 @@ export default function LogsPage() {
                             allowClear
                             enterButton="查询"
                             prefix={<SearchOutlined />}
-                            placeholder="输入用户 UID/NN号/手机号/用户昵称/邮箱 查询反馈日志"
+                            placeholder="输入用户 UID/外部账号/手机号/用户昵称/邮箱 查询反馈日志"
                             value={feedbackLogSearchUid}
                             loading={feedbackLogLoading}
                             onChange={(event) => {

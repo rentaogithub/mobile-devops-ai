@@ -34,7 +34,7 @@ export default function ApplicationsPage() {
   };
   return <Space direction="vertical" size={20} style={{ width: '100%' }}>
     <div><Typography.Title level={3}>应用接入 · {product?.name}</Typography.Title><Typography.Text type="secondary">同一产品线管理 iOS 与 Android，构建、产物和 AI 执行按应用隔离。</Typography.Text></div>
-    <Alert type="info" showIcon message="服务按产品线下的每个应用独立选配" description="例如 NN iOS 使用 Sentry、NN Android 使用 Bugly；同一系统的应用可选择共用组件库，Podx 目前仅支持 iOS。启用服务后还需配置对应资源，控制台入口不代表数据同步已接通。" />
+    <Alert type="info" showIcon message="服务按产品线下的每个应用独立选配" description="例如示例 iOS 应用使用 Sentry、示例 Android 应用使用 Bugly；同一系统的应用可选择共用组件库，Podx 目前仅支持 iOS。启用服务后还需配置对应资源，控制台入口不代表数据同步已接通。" />
     <Card extra={<Button type="primary" disabled={apps.some((app) => app.platform === 'android')} onClick={() => open(null)}>接入 Android 应用</Button>}>
       <Table rowKey="id" dataSource={apps} pagination={false} columns={[
         { title: '应用', dataIndex: 'name' }, { title: '平台', dataIndex: 'platform', render: (value) => <Tag color={value === 'android' ? 'green' : 'blue'}>{value}</Tag> },

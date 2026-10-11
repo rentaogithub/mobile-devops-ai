@@ -143,7 +143,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn print_usage() {
-    eprintln!("Usage: nn-watermark-decode <image> [--limit 20] [--deep]");
+    eprintln!("Usage: default-watermark-decode <image> [--limit 20] [--deep]");
 }
 
 fn load_luminance(path: &PathBuf) -> image::ImageResult<GrayImage> {

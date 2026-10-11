@@ -54,8 +54,8 @@
             "durationSeconds": 60,
             "goal": "进入左下第一个 Tab 的社区首页，只读验证社区首页核心模块可见",
             "sourceEvidence": [
-                "NNIM/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
-                "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+                "MobileApp/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
+                "MobileApp/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
                 "当前 WDA source 可见社区首页核心文案：搜索社区、用户名称/ID、首页、战队、活动、公告、攻略、社区看板、全员大厅"
             ],
             "entryLanguage": [
@@ -112,10 +112,10 @@
       "durationSeconds": 90,
       "goal": "进入社区首页，打开社区切换入口并只读验证已加入社区列表",
       "sourceEvidence": [
-        "NNIM/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
-        "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
-        "NNIM/Src/Root/TabBarController+SideMenu.swift: 左边缘右滑打开社区侧边栏",
-        "NNIMUITests/NNIMUITests.swift: community.sidebar.button / community.sidebar.table / community.sidebar.followed.*"
+        "MobileApp/Src/Root/TabBar/TabBarProtocol.swift: TabBarModuleType.communityNext = 0，左下第一个 Tab 是社区首页",
+        "MobileApp/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+        "MobileApp/Src/Root/TabBarController+SideMenu.swift: 左边缘右滑打开社区侧边栏",
+        "MobileAppUITests/MobileAppUITests.swift: community.sidebar.button / community.sidebar.table / community.sidebar.followed.*"
       ],
       "entryLanguage": ["社区"],
       "targetLanguage": ["社区看板", "我在社区的等级", "全员大厅", "搜索社区、用户名称/ID", "community.sidebar.table"],
@@ -139,7 +139,7 @@
       "durationSeconds": 90,
       "goal": "进入社区搜索页，使用安全关键词只读验证搜索能力",
       "sourceEvidence": [
-        "NNIM/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
+        "MobileApp/Src/Root/TabBar/TabBarModules.swift: CommunityNextModule.rootController = LSCommunityNewDiscoveryVC",
         "社区首页 WDA source 可见入口：搜索社区、用户名称/ID"
       ],
       "entryLanguage": ["社区"],

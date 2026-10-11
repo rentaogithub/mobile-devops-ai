@@ -11,9 +11,9 @@ describe('buildMgitPublishArgs', () => {
   });
 
   it('passes the selected product line before the mgit action', () => {
-    expect(buildMgitPublishArgs('release/1.8.0', 'develop', 'nnrtc')).toEqual([
+    expect(buildMgitPublishArgs('release/1.8.0', 'develop', 'mobileRtc')).toEqual([
       '--line',
-      'nnrtc',
+      'mobileRtc',
       'publish',
       'release/1.8.0',
       '--base-branch',
